@@ -1,0 +1,103 @@
+# feature_request — for something new, as opposed to parity-gap.yml (EQdkp Plus had it) or
+# bug_report.yml (it exists and is broken).
+#
+# config.yml routes half-formed ideas to Discussions on purpose. An issue is a thing somebody has
+# agreed should exist; a Discussion is a thing being argued about. Keeping those separate is what
+# stops the issue tracker from becoming a wish list nobody reads.
+
+name: Feature request
+description: Something new that does not exist in Dragon Kill Party or in EQdkp Plus.
+title: "feat: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two checks first, and they save everyone time:
+
+        - **`docs/design/` and the roadmap** — a fair amount is already planned and sequenced, and a
+          "deliberately deferred" table lists what was considered and left out, with reasons.
+        - **Discussions** — if you are still working out what you want, start there. Ideas get
+          better when they are argued about, and worse when they are frozen into an issue too early.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does your guild have?
+      description: >-
+        Describe the problem, not the solution. "Our officers spend twenty minutes after every raid
+        reconciling who was actually there" is a problem. "Add a bulk attendance editor" is a
+        solution to one guess about that problem, and possibly not the best one.
+      placeholder: >-
+        After every raid an officer manually cross-checks the RaidRoster dump against who was
+        actually in the zone, because people zone out for corpse runs and drop off the dump.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you handle it today?
+      description: >-
+        In EQdkp Plus, in a spreadsheet, in Discord, or by hand. Including "we just accept that it
+        is wrong sometimes" — that is a real answer and it tells us how much the fix is worth.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+      description: >-
+        A rough sketch is fine. If you have a strong opinion about where it should live in the UI or
+        in the API, say so — but the problem statement above matters more.
+
+  - type: dropdown
+    id: who
+    attributes:
+      label: Who would use this?
+      options:
+        - Every member
+        - Officers and raid leaders
+        - Whoever administers the instance
+        - Bot and script authors
+        - Guilds migrating from EQdkp Plus
+      default: 1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reach
+    attributes:
+      label: Is this specific to how your guild runs, or general?
+      description: >-
+        An honest "this is how we do it and I do not know if others do" is genuinely useful.
+        Point systems in particular vary enormously between guilds, and the answer to a
+        guild-specific rule is usually a configurable strategy rather than a feature.
+      options:
+        - "Most raiding guilds would want this"
+        - "Some would; it depends on the point system"
+        - "This is specific to us"
+        - "I do not know"
+      default: 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Anything that would make this wrong to build
+      description: >-
+        Optional, and worth a lot. A feature that would need member data leaving the instance, or a
+        rule that some members would find intrusive, or a number that could be argued about after
+        the fact — say so now. This project's whole trust argument rests on the ledger being
+        auditable and the data staying on the guild's own box.
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **What happens next.** Every accepted feature has to earn its place against a fixed budget:
+        a volunteer maintenance budget of about four hours a week, a CI budget of six minutes per
+        pull request, and an image size budget. A "yes" is a commitment to maintain it forever, so
+        "no, and here is why" is a real and frequent answer — you will get the reason either way.

@@ -1,0 +1,60 @@
+# Build output
+/bin/
+/dist/
+/dkp
+/dkp.exe
+coverage.out
+coverage.html
+*.test
+*.prof
+
+# Web build output — produced in CI and embedded in the binary
+/web/dist/
+/web/node_modules/
+/web/.vite/
+node_modules/
+.pnpm-store/
+
+# Runtime data. Never commit a guild's database.
+/data/
+/dkp-data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.key
+
+# Docs site build
+/docs/.astro/
+/docs/dist/
+.pagefind/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Claude Code local overrides — the shared settings.json IS committed
+.claude/settings.local.json
+
+# ---------------------------------------------------------------------------
+# NOT ignored, deliberately: these generated artefacts are committed and
+# diff-gated, which is what makes the drift checks work. Do not add them here.
+#   openapi/openapi.json
+#   internal/store/sqlitegen/
+#   internal/store/pggen/
+#   web/src/api/
+#   clients/ts/  clients/python/
+#   db/migrations-sqlite/  db/migrations-postgres/
+# ---------------------------------------------------------------------------

@@ -1,0 +1,32 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: Question, or "how do I…"
+    url: https://github.com/dragonkillparty/dragonkillparty/discussions/categories/q-a
+    about: >-
+      Not sure whether it is a bug? Ask here first. Nobody will mind, and a question is a much
+      better use of your evening than a bug report that turns out to be a config setting.
+
+  - name: Security vulnerability — do NOT open an issue
+    url: https://github.com/dragonkillparty/dragonkillparty/security/advisories/new
+    about: >-
+      Report privately through GitHub Security Advisories. See SECURITY.md. A public issue about
+      an auth bug is an exploit notice for every guild running this software.
+
+  - name: Feature idea you have not thought through yet
+    url: https://github.com/dragonkillparty/dragonkillparty/discussions/categories/ideas
+    about: >-
+      Half-formed ideas are welcome — in Discussions, where they can be argued about without
+      becoming a promise. A feature request becomes an issue once somebody agrees it should exist.
+
+  - name: EQdkp Plus feature that has no equivalent here
+    url: https://github.com/dragonkillparty/dragonkillparty/blob/main/docs/migration/what-does-not-migrate.md
+    about: >-
+      Check the "what does not migrate" page first — some gaps are deliberate and documented. If
+      yours is not listed, open a parity gap report.
+
+  - name: Project 1999 Discord
+    url: https://discord.gg/project1999
+    about: >-
+      Not run by us, and please do not report bugs there — but it is where the log formats, the
+      raid rules and the guilds actually live.

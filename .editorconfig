@@ -1,0 +1,74 @@
+# EditorConfig — https://editorconfig.org
+#
+# Indentation, line endings and final newlines only. The real formatters
+# (gofumpt, goimports, prettier, shfmt) own everything else and win every
+# disagreement; this file exists so an editor does not damage a file before a
+# formatter ever runs.
+#
+# Enforcement: `make lint` runs the formatters in check mode and `make check`
+# gates CI on it. This file is a convenience, not the gate.
+
+root = true
+
+# Default: 2-space, UTF-8, LF, final newline, no trailing whitespace.
+# Applies to YAML, JSON, JSON5, TS/TSX, CSS, SQL, HCL, HTML, Dockerfile.
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
+
+# Go is tabs, always. gofumpt rewrites anything else on save via the
+# PostToolUse hook in .claude/hooks/format-go.sh. tab_width is a display
+# preference and changes no bytes.
+[*.go]
+indent_style = tab
+tab_width = 4
+
+# Make requires a literal tab to open a recipe line. Spaces are a syntax error,
+# not a style opinion.
+[{Makefile,Makefile.*,*.mk}]
+indent_style = tab
+
+# Markdown: two trailing spaces is a hard line break, so trimming silently
+# changes rendered output. Prose wraps at 100 by convention, but tables run
+# long on purpose — no editor may hard-wrap this file.
+[*.md]
+trim_trailing_whitespace = false
+max_line_length = off
+
+# Shell follows shfmt's default (tabs), matching the hooks in .claude/hooks/.
+[*.sh]
+indent_style = tab
+
+# Golden files and fixtures are byte-exact expected output. An editor that
+# trims a trailing space, rewrites a line ending or appends a final newline
+# turns a passing test red and tempts the next agent to "fix" the fixture
+# instead of the code — which AGENTS.md forbids. Assumption (unverified):
+# some P99 client logs arrive CRLF-terminated and are stored verbatim.
+[{test/golden/**,test/fixtures/**}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+
+# Generated artefacts are committed and diff-gated against `make gen`. The
+# generator's output is by definition the correct formatting; any whitespace an
+# editor applies here surfaces as CI drift rather than as a diff you intended.
+[{openapi/openapi.json,internal/store/sqlitegen/**,internal/store/pggen/**,web/src/api/**,clients/**,db/migrations-sqlite/**,db/migrations-postgres/**}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+indent_size = unset
+
+# Windows batch wrappers only run with CRLF.
+[*.{bat,cmd}]
+end_of_line = crlf

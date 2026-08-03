@@ -1,0 +1,372 @@
+# SKELETON. Every step shells out to a `make` target; most of those targets are `notyet` stubs.
+# The job graph, the trigger, the permission split and the smoke-before-promote ordering are real
+# and final.
+#
+# Filled in by: Phase 0 PR 10 (GHCR publish, cosign, SBOM, provenance) and Phase 8 (goreleaser
+# desktop binaries, deb/rpm, the reference-database ladder). See ROADMAP.md and
+# docs/design/06-cicd-and-release.md sections 6-8.
+#
+# WHY THERE IS NO QEMU HERE, AND WHY THAT IS A LOAD-BEARING CHOICE
+# ----------------------------------------------------------------
+# Every other stack in the comparison builds multi-arch images by running the build INSIDE a
+# QEMU-emulated arm64 container. Emulated builds run roughly 10-25x slower than native, which turns
+# a two-minute image stage into 20-50 minutes and makes people either drop arm64 or stop releasing
+# often. That cost is a property of interpreted and JIT-heavy toolchains, not of multi-arch.
+#
+# Go cross-compiles. `GOOS=linux GOARCH=arm64 go build` runs at native speed on the same amd64
+# runner, `modernc.org/sqlite` is pure Go so CGO stays off, and the final image is FROM scratch with
+# three COPY layers. So: build every architecture natively on amd64, push one image per
+# architecture, and join them into a manifest list with `docker buildx imagetools create`, which
+# only writes a manifest and never executes a single instruction of the target architecture.
+# Whole multi-arch stage: about 90 seconds, of which the Vite build is the majority.
+#
+# arm64 RUNNERS are used for exactly one job in this entire project: the post-publish smoke test,
+# which must exercise the real binary on real hardware. Building is emulation-free; verifying is not
+# allowed to be.
+#
+# THE ORDERING RULE THAT MAKES THE RELEASE SAFE
+# ---------------------------------------------
+# Immutable tags publish first. The moving tags (:1.5, :1, :latest) advance ONLY after `smoke` has
+# pulled the immutable DIGEST on both amd64 and arm64 and passed first-boot plus /readyz plus an
+# upgrade from the previous release's reference database. If smoke fails: the immutable tag stays
+# (for forensics), the moving tags never move, the GitHub Release is left as a draft, and an issue
+# is filed. Nobody running :1 ever sees a build that failed to boot.
+#
+# ACTION PINS — see the note at the top of ci.yml. Digests below are unverified placeholders in the
+# correct shape until `make verify-action-pins` lands in Phase 0 PR 12.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# NOTE: a tag created with the default GITHUB_TOKEN does NOT trigger workflows, so this file would
+# silently never run if release-please pushed the tag with GITHUB_TOKEN. The tag is created by the
+# "DKP Release Bot" GitHub App instead. That is the single most expensive footgun in this pipeline.
+permissions:
+  contents: read
+
+concurrency:
+  # NEVER cancel a release. A cancelled release is a half-published release.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  REFDB: ghcr.io/${{ github.repository_owner }}/dkp-refdb
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  prepare:
+    name: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }} # 1.5.0   — container tags drop the leading v
+      tag: ${{ steps.v.outputs.tag }} # v1.5.0  — git tags keep it (Go module convention)
+      prerelease: ${{ steps.v.outputs.prerelease }} # true for v1.5.0-rc.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - id: v
+        run: make release-version
+        # Parses the tag, refuses anything that is not strict SemVer, refuses a tag whose commit is
+        # not an ancestor of main (or of a release-1.x branch), and writes the three outputs.
+
+  # ---------------------------------------------------------------------------------------------
+  # Per-architecture images, all built natively on amd64. No QEMU. No `--platform` emulation.
+  # ---------------------------------------------------------------------------------------------
+  image:
+    name: image / ${{ matrix.arch }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        # arm/v7 exists because older Raspberry Pis are genuinely over-represented in this audience
+        # and a pure-Go binary makes a third architecture cost one more `go build`.
+        arch: [amd64, arm64, armv7]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cross-compile and push the per-arch image
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: make release-image
+        # buildx build --provenance=mode=max --sbom=true, pushed as $IMAGE:$VERSION-$ARCH.
+        # Also builds the alpine `-debug` variant (a shell, for officers who need to look inside).
+
+  # ---------------------------------------------------------------------------------------------
+  # Join the manifest. This writes a manifest list only — it runs nothing.
+  # ---------------------------------------------------------------------------------------------
+  manifest:
+    name: manifest / immutable
+    needs: [prepare, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless: GH OIDC -> Fulcio -> Rekor
+      attestations: write # SLSA provenance + SBOM attestations
+    outputs:
+      digest: ${{ steps.join.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: join
+        name: docker buildx imagetools create
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: make release-manifest
+        # imagetools create -t $IMAGE:$VERSION $IMAGE:$VERSION-amd64 ... and emits `digest`.
+        # ONLY the immutable tag. :1.5, :1 and :latest are NOT written here — see `promote`.
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - name: cosign sign (keyless)
+        env:
+          DIGEST: ${{ steps.join.outputs.digest }}
+        run: make release-sign
+        # cosign sign --yes $IMAGE@$DIGEST
+        # The certificate identity is THIS workflow file at the tag ref. Refactoring this job into
+        # a reusable workflow CHANGES the identity and breaks every published verification snippet,
+        # so the README's --certificate-identity-regexp is pinned to
+        #   ^https://github\.com/<org>/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v
+
+      - name: SBOM
+        env:
+          DIGEST: ${{ steps.join.outputs.digest }}
+        run: make release-sbom # syft -> sbom.spdx.json for the manifest list
+
+      - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018 # v1.4.4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.join.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v1.4.1
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.join.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+        # Both mechanisms, because they serve different verifiers: `cosign verify` for the sigstore
+        # ecosystem, `gh attestation verify` for people who already have gh installed. Attach the
+        # SBOM as an ATTESTATION, never via the deprecated `cosign attach sbom` path.
+
+  # ---------------------------------------------------------------------------------------------
+  # Desktop binaries, deb/rpm, Homebrew tap. goreleaser owns this; it does not touch containers.
+  # ---------------------------------------------------------------------------------------------
+  binaries:
+    name: binaries / goreleaser
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # uploads release assets
+      id-token: write # cosign-signs the checksum file
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-toolchain
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+      - uses: goreleaser/goreleaser-action@9ed2f89a662bf1735a48bc8557fd212fa902bebf # v6.1.0
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Separate token: Homebrew mandates a dedicated tap repository, written by goreleaser and
+          # never by a human.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        # .goreleaser.yaml produces: linux/darwin/windows on amd64+arm64, deb, rpm, apk, a syft SBOM
+        # per archive, a cosign-signed checksums file, and the homebrew-dkp formula bump. The
+        # release is created as a DRAFT; `publish` un-drafts it after smoke passes.
+
+  # ---------------------------------------------------------------------------------------------
+  # Reference database for this release. This is what makes "any 1.x upgrades to any later 1.y" a
+  # nightly-verified property instead of a promise — nightly-verify.yml's upgrade ladder replays
+  # every published refdb against HEAD.
+  # ---------------------------------------------------------------------------------------------
+  refdb:
+    name: refdb / publish
+    needs: [prepare, manifest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+        run: make release-refdb
+        # Boot the JUST-RELEASED image, `dkp seed --profile demo` with a fixed seed, VACUUM INTO,
+        # zstd, push as $REFDB:$VERSION (a public OCI artifact, a few MB). Deterministic content:
+        # 3 pools, 4 strategies, 180 characters, 400 raids, 3000 ticks, 1200 awards, a completed
+        # EQdkp import and an open bid session.
+        #
+        # A release that publishes an image but no refdb leaves a silent hole in the upgrade ladder.
+        # nightly-verify.yml ENUMERATES GitHub Releases and fails on a missing refdb rather than
+        # iterating whatever happens to exist.
+
+  # ---------------------------------------------------------------------------------------------
+  # smoke — the gate. Pulls the immutable DIGEST (never a tag) on both architectures, on real
+  # hardware, and proves it boots before any moving tag is allowed to point at it.
+  # ---------------------------------------------------------------------------------------------
+  smoke:
+    name: smoke / ${{ matrix.runner }}
+    needs: [prepare, manifest, refdb]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - env:
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ github.token }}
+        run: make release-smoke
+        # 1. docker run $IMAGE@$DIGEST on an EMPTY volume: first boot, migrations apply,
+        #    /healthz 200, /readyz 200, `dkp doctor` clean, the SPA shell renders.
+        # 2. docker run $IMAGE@$DIGEST on the PREVIOUS release's refdb: the snapshot is written,
+        #    migrations apply, `dkp verify-ledger` is clean, protected-table row counts unchanged,
+        #    /readyz 200, and a six-endpoint API smoke passes.
+        # 3. `cosign verify` and `gh attestation verify` against the published digest, using the
+        #    exact commands the README tells users to run. If the README's snippet is wrong, this
+        #    is where it is discovered.
+
+  # ---------------------------------------------------------------------------------------------
+  # promote — the ONLY job that advances a moving tag. Never runs if smoke did not pass.
+  # ---------------------------------------------------------------------------------------------
+  promote:
+    name: promote / moving-tags
+    needs: [prepare, manifest, smoke]
+    if: success() && needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+        run: make release-promote
+        # imagetools create -t :1.5 -t :1 -t :latest  ->  the already-verified digest.
+        # :1 is the tag the documentation pins everywhere. :latest is discouraged in the README
+        # with a one-line reason: it will cross a major and change the deployment contract.
+
+  promote-rc:
+    name: promote / next
+    needs: [prepare, manifest, smoke]
+    if: success() && needs.prepare.outputs.prerelease == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+        run: make release-promote-rc # advances :next only
+
+  # ---------------------------------------------------------------------------------------------
+  # publish — assemble the release body and un-draft it. Last, always.
+  # ---------------------------------------------------------------------------------------------
+  publish:
+    name: publish / github-release
+    needs: [prepare, manifest, binaries, refdb, smoke]
+    if: success()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          GH_TOKEN: ${{ github.token }}
+        run: make release-notes
+        # The release body is ASSEMBLED, not copied. release-please's changelog, plus:
+        #   Migrations in this release — names, a flag on any that rewrite a table (SQLite's
+        #     12-step rebuild), and a duration measured against the largest refdb in CI
+        #   API changes — `oasdiff changelog` between the two tags' specs, in plain language
+        #   Configuration changes — diffed from the generated docs/reference/config.json
+        #   Breaking changes — every BREAKING CHANGE: trailer, verbatim
+        #   Action required — "None; docker pull ghcr.io/<org>/dkp:1 && docker restart dkp", or a
+        #     numbered list
+        #   Verify this release — the exact digest, the cosign command, the gh attestation command
+
+  # ---------------------------------------------------------------------------------------------
+  # on-failure — a failed release must be loud, and must leave the moving tags alone.
+  # ---------------------------------------------------------------------------------------------
+  release-failed:
+    name: release-failed
+    if: failure()
+    needs: [prepare, image, manifest, binaries, refdb, smoke, promote, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RESULTS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        run: make release-failure-issue
+        # Files an issue titled "release <tag> failed at <job>" with the run URL, labelled
+        # `release` and `pinned` so the stale bot never touches it. The GitHub Release stays a
+        # draft and the moving tags stay where they were.

@@ -1,0 +1,123 @@
+# parity-gap — "EQdkp Plus did X and this does not."
+#
+# Separate from feature_request.yml because the triage question is different: a parity gap is not
+# "should this exist?" but "was this deliberate?". Some gaps are documented decisions
+# (docs/migration/what-does-not-migrate.md), some are sequencing (the portal and CMS surface is
+# Phase 7 and may land in 1.1), and some are genuine oversights. Only the third kind is a bug.
+#
+# `parity` is a LABEL, not a promise. Scope creep is risk R3 and this template is one of the places
+# it would enter, so the template says so out loud rather than implying a commitment.
+
+name: Parity gap — EQdkp Plus did something this does not
+description: A feature, behaviour or output you relied on in EQdkp Plus that is missing or different here.
+title: "parity: "
+labels: ["parity", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Check `docs/migration/what-does-not-migrate.md` first.** Several gaps are deliberate and
+        already explained there — passwords are never migrated, and the P99 item and spell data is a
+        separate optional download rather than something bundled in the core product.
+
+        **We cannot read EQdkp's source to answer this.** EQdkp Plus is AGPL-3.0 and its game
+        modules are non-commercial CC BY-NC-SA; this project is Apache-2.0. So please do not paste
+        their PHP, their SQL, or their language strings into this issue — describe the *behaviour*
+        you saw instead. What it printed, what it calculated, what the officer clicked. Behaviour is
+        not copyrightable and a good description of it is exactly what we need.
+
+  - type: input
+    id: feature
+    attributes:
+      label: What is missing, in one line
+      placeholder: "Per-event DKP multipliers on the raid add form"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of EQdkp Plus?
+      options:
+        - DKP points, pools, or the calculation itself
+        - Raids, events, attendance
+        - Items, loot, item values
+        - Members, characters, ranks
+        - Auctions or bidding
+        - Portal, news, articles, comments
+        - Media library, shoutbox, portal blocks, menus, styles
+        - Calendar, raid signups, applications, recruitment
+        - Guild bank, item priority lists, team page
+        - Admin, permissions, user management
+        - api.php, or a bot that talked to it
+        - Import, export, or a report
+        - Something else
+      default: 12
+    validations:
+      required: true
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What did EQdkp Plus actually do?
+      description: >-
+        In your own words, as an officer. The screen, the buttons, the numbers it produced. If it
+        had a page that showed the result, describe what was on it — a screenshot of YOUR OWN
+        install is fine and often the fastest way to explain it.
+      placeholder: |
+        On "Add raid" there was a multiplier field. Setting it to 1.5 gave everyone on the raid one
+        and a half times the event's base value, and the raid detail page showed both the base value
+        and the multiplied value.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What does your guild use it for?
+      description: >-
+        This is the field that decides priority, and the one most often left blank. "We run bonus
+        DKP nights for unpopular raid targets and the multiplier is how we do it" is a case. "It was
+        there" is not, and that is a fine answer too — say so and we will file it as low priority
+        rather than guessing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Is there something here that nearly does it?
+      description: >-
+        If you have already tried a workaround, say what it was and where it fell short. If the
+        workaround is good enough, say that too — it changes the answer from "build it" to
+        "document it", which is a fix that can ship this week.
+
+  - type: dropdown
+    id: blocking
+    attributes:
+      label: Does this block your guild from switching?
+      options:
+        - "Yes — we cannot migrate without it"
+        - "No, but it would be a real loss"
+        - "No — nice to have"
+      default: 2
+    validations:
+      required: true
+
+  - type: input
+    id: eqdkp_version
+    attributes:
+      label: Which EQdkp Plus version did you see it in?
+      description: Behaviour changed across 2.0 / 2.1 / 2.2 / 2.3, and plugins added a lot of it.
+      placeholder: "2.3.39, with the multidkp plugin"
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **What happens next.** `parity` is a label, not a promise. It gets one of four answers, and
+        you will get whichever one applies with a reason: *deliberate* (linked to the documented
+        decision), *already possible* (with the steps), *sequenced* (with the phase — the portal and
+        CMS surface is planned and may land after 1.0), or *accepted* (with an issue that tracks
+        it). No work item enters a phase after that phase's exit criterion is written, so a genuine
+        gap found late lands in the next release rather than delaying the current one.

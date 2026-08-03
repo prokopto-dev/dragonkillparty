@@ -1,0 +1,134 @@
+# import-failure — an EQdkp Plus import that failed, refused, or produced numbers the guild does
+# not recognise. Importer fidelity is risk R1: a guild whose balances are wrong on day one does not
+# come back, and does not tell you why.
+#
+# The triage path is fixture-shaped, not debugger-shaped: reproduce the failure against a fixture
+# in test/fixtures/eqdkp/, add the case, fix the transform. So this template asks for the things
+# that let a maintainer build that fixture — table shapes, counts, and the import report — and
+# explicitly does NOT ask for a database dump, which nobody should upload to a public issue.
+
+name: Import failure — EQdkp Plus migration
+description: An import from EQdkp Plus failed, was refused, or produced balances that do not match.
+title: "import: "
+labels: ["importer", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Nothing has been damaged.** The importer defaults to `--dry-run` and writing requires an
+        explicit `--commit`; a committed import can be undone. Your EQdkp database is only ever
+        read, never written.
+
+        **Do not attach your database or a SQL dump.** It contains member emails and password
+        hashes, and this issue is public. Everything below is safe to paste. If a maintainer needs
+        real data, they will ask you to anonymise a dump privately.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where did it stop?
+      options:
+        - Connecting to the EQdkp database
+        - Staging — reading the EQdkp tables verbatim
+        - Transform — converting staged rows into DKP records
+        - Reconciliation — unmatched characters or items
+        - "`--commit` was refused"
+        - It completed, but the numbers are wrong
+      default: 5
+    validations:
+      required: true
+
+  - type: input
+    id: eqdkp_version
+    attributes:
+      label: EQdkp Plus version
+      description: >-
+        Admin panel footer, or `SELECT config_value FROM __config WHERE config_name='pdh_version'`.
+        If you do not know, say so — the importer prints the version it detected.
+      placeholder: "2.3.39"
+    validations:
+      required: true
+
+  - type: input
+    id: dkp_version
+    attributes:
+      label: Dragon Kill Party version
+      placeholder: "1.4.2"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command you ran
+      description: Redact the password in the connection string.
+      render: shell
+      placeholder: |
+        dkp import eqdkp --dsn 'mysql://dkpuser:REDACTED@10.0.0.5:3306/eqdkp' --dry-run
+    validations:
+      required: true
+
+  - type: textarea
+    id: report
+    attributes:
+      label: The import report
+      description: >-
+        The summary the importer prints, or the JSON from `--report-json`. It has row counts,
+        per-rule classification counts and residuals — no member data, no item names, no balances
+        attributable to a person. This is usually the single most useful thing in the report.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: The error, verbatim
+      description: The full message including the error `code`, plus the surrounding log lines.
+      render: text
+
+  - type: textarea
+    id: unexplained
+    attributes:
+      label: If balances are wrong — one worked example
+      description: >-
+        Use a placeholder name. The number EQdkp shows, the number DKP shows, and anything unusual
+        about that member: a rename, a merge with another account, a twink linked to a main, an
+        adjustment made by hand in the EQdkp admin panel, or a period when a plugin was writing
+        directly to the tables.
+      placeholder: |
+        Member "A": EQdkp shows 412.00, DKP shows 398.50. They were renamed in 2023 and their old
+        character was merged into the current one.
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: Anything unusual about the EQdkp install
+      description: >-
+        This is what decides whether it can be reproduced as a fixture. Plugins that touched DKP
+        (multidkp, item values, raid tracking), a database that was migrated between EQdkp major
+        versions, a non-UTF8 collation, names with umlauts or accents, manual SQL run against the
+        tables, or a second DKP pool nobody uses any more.
+      placeholder: |
+        Upgraded 2.1 -> 2.2 -> 2.3 over the years. latin1 tables. Three DKP pools, one dormant.
+
+  - type: input
+    id: scale
+    attributes:
+      label: Rough size
+      description: A bucket is fine. It tells us whether this is a shape problem or a scale problem.
+      placeholder: "~300 characters, ~1500 raids, ~8 years of history"
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: >-
+            I have not attached a database dump, and I have redacted the password from the
+            connection string.
+          required: true
+        - label: >-
+            The names in this report are placeholders, or members who are fine with being named
+            publicly.
+          required: true

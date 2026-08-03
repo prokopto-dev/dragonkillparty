@@ -1,0 +1,127 @@
+# parser-bug — the highest-value issue template in this repository.
+#
+# It is pre-filled by the in-app "report this line as a parser bug" button, which passes the raw
+# line, the detected format, the server and the parser version as URL query parameters matching the
+# `id:` fields below. Changing an `id:` breaks that deep link — the SPA's report button and this
+# file are one contract. `docs/reference/log-formats.md` lists the format ids.
+#
+# Roughly a dozen P99 log formats in the design are UNVERIFIED assumptions. Every issue filed here
+# is a free golden-file test case, and the triage step is literally: add the line to test/golden/,
+# watch it fail, fix the parser. These are never auto-closed and never closed unread.
+#
+# The person filing this is a guild officer at midnight, not a contributor. They should not need to
+# know what a parser is, what Go is, or that test/golden/ exists.
+
+name: Parser bug — a log line was read wrongly
+description: A line from your EverQuest logs or a /raid dump was misread, skipped, or attributed to the wrong character.
+title: "parser: "
+labels: ["parser-bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you — this is the single most useful kind of report this project receives. A real log
+        line is worth more than any amount of description, because it becomes a permanent test.
+
+        **Before you paste: check the line for anything private.** Replace character names you would
+        rather not publish with `Somename`, and delete `/tell` text entirely. Keep the *shape* of
+        the line — the spacing, the punctuation, the capitalisation and the timestamp format are the
+        parts the parser reads. A line with names replaced still fixes the bug; a line with the
+        spacing "tidied up" does not.
+
+  - type: textarea
+    id: raw_line
+    attributes:
+      label: The log line, exactly as it appears
+      description: >-
+        Copy and paste, do not retype. Trailing spaces, doubled spaces and the exact bracket style
+        all matter. Paste several lines if the surrounding context is part of the problem.
+      render: text
+      placeholder: |
+        [Tue Nov 12 21:04:33 2024] Somename tells the guild, 'DKP +1'
+    validations:
+      required: true
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Where did this line come from?
+      options:
+        - eqlog — the main character log file (eqlog_<Name>_<server>.txt)
+        - RaidRoster — a RaidRoster_<server>-<timestamp>.txt dump
+        - /who output pasted from the game window
+        - Guild dump — a guild roster export
+        - dkp_ or loot log produced by another tool
+        - I do not know
+      default: 5
+    validations:
+      required: true
+
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      description: Rule sets differ, and so do a few of the log strings.
+      placeholder: "Project 1999 Green / Blue / Red, or another emulated server"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should this line have done?
+      description: >-
+        In plain words. "It should have given Somename one raid tick." "It should have recorded
+        Blade of Carnage awarded to Someoneelse for 300 DKP." "It should have been ignored — it is
+        somebody talking, not an award."
+      placeholder: It should have awarded one tick to Somename for the 21:00 window.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+      description: >-
+        "Nothing — the line was skipped." "It landed in the reconciliation queue as an unknown
+        character." "It gave the points to the wrong person." "It gave 30 instead of 300."
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        The footer of any page, or `dkp version`. If you used the in-app report button this is
+        already filled in.
+      placeholder: "1.4.2"
+    validations:
+      required: true
+
+  - type: input
+    id: parse_line_id
+    attributes:
+      label: Parse line id
+      description: >-
+        Filled in automatically by the in-app report button. Leave it blank if you are filing by
+        hand — it just lets a maintainer find the exact ingest run.
+      placeholder: "01JBQ7Z2M4XKQ0F9A6R5T3W8YV"
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Before you submit
+      options:
+        - label: >-
+            I have checked the pasted line for anything I would not want published — this issue is
+            public and permanent, and the line will become a test fixture in this repository.
+          required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **What happens next.** The line goes into `test/golden/` as a case that currently fails, the
+        parser is fixed until it passes, and the fix ships in the next patch release. Your line then
+        protects that behaviour forever. You do not need to do anything else.

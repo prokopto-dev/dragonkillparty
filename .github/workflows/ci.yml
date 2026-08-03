@@ -1,0 +1,572 @@
+# SKELETON. Nothing this workflow calls exists yet — every step shells out to a `make` target, and
+# several of those targets are `notyet` stubs in the Makefile. The job graph, triggers, concurrency,
+# caching and the `ci-required` gate are real and final; the work inside them is not.
+#
+# Filled in by: Phase 0 PR 10 (workflows, GHCR publish, ci-required) and Phase 0 PR 12 (supply
+# chain: action pinning, govulncheck, licence gate). See ROADMAP.md and
+# docs/design/06-cicd-and-release.md.
+#
+# BUDGET — this is an SLO, not an aspiration. A non-draft PR reaches `ci-required` green in
+#   <= 6 min p50, <= 10 min p95, measured push-to-green.
+#   A draft PR reaches lint + unit green in <= 90 s.
+#   No single job may exceed 5 minutes; one that does gets sharded or moved to nightly-verify.yml.
+# The critical path is `changes -> build / binary -> test / e2e`. Everything else fits underneath it.
+# `build / binary` uploads an artifact precisely so no other job rebuilds; a second Go+Vite build
+# would put e2e past nine minutes on its own. ci-budget.yml measures the last 200 runs weekly.
+#
+# ACTION PINS — third-party actions are pinned to a full commit SHA with the version in a trailing
+# comment. The digests below are UNVERIFIED placeholders in the correct shape: Phase 0 PR 12 adds
+# `make verify-action-pins`, which resolves every trailing-comment tag against the upstream repo and
+# fails on a mismatch, and Renovate's `helpers:pinGitHubActionDigests` maintains them thereafter.
+# Do not add an action without a SHA — `lint / repo` fails on any `uses:` ending in a bare tag.
+
+name: ci
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+# Least privilege at the workflow level; a job that needs more elevates itself.
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded PR runs — the single biggest minute saver in an agent-driven repo, where six
+  # pushes in four minutes is normal. NEVER cancel main, tags or merge_group: a cancelled
+  # merge-queue run wedges the queue.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local # never silently download a different compiler than go.mod pins
+  DKP_ENV: test # turns on the response-validation middleware
+  FIXTURES: ghcr.io/${{ github.repository_owner }}/dkp-fixtures
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # changes — the path filter. Has NO `if:` and must never gain one: `ci-required` treats `skipped`
+  # as success, so this job is the fixed point the gate measures everything else against.
+  # ---------------------------------------------------------------------------------------------
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+      web: ${{ steps.filter.outputs.web }}
+      db: ${{ steps.filter.outputs.db }}
+      api: ${{ steps.filter.outputs.api }}
+      importer: ${{ steps.filter.outputs.importer }}
+      docs: ${{ steps.filter.outputs.docs }}
+      # deep == "run the expensive jobs". Draft PRs get lint + unit only.
+      deep: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: filter
+        uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        with:
+          # Inline rather than a separate file: one fewer artefact that can drift from the job graph.
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci.yml'
+            web:
+              - 'web/**'
+            db:
+              - 'db/**'
+              - 'internal/store/**'
+            api:
+              - 'internal/api/**'
+              - 'internal/authz/**'
+              - 'openapi/**'
+              - 'clients/**'
+            importer:
+              - 'internal/importer/**'
+              - 'test/fixtures/eqdkp/**'
+              - 'db/**'
+            docs:
+              - 'docs/**'
+              - '**/*.md'
+
+  # ---------------------------------------------------------------------------------------------
+  # lint — the grep gates run always and cost 15 seconds. They are the cheapest gate in the repo
+  # and the only one that catches an architectural-law violation before a human reads the diff.
+  # ---------------------------------------------------------------------------------------------
+  lint-repo:
+    name: lint / repo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # the test-integrity analyser diffs against the merge base
+      - name: Architectural grep gates and the licence firewall
+        run: make lint-repo
+        # Bans, each with a named rule id and a file:line in the failure message:
+        #   sql.Open / *sql.DB / .Query( / .Exec( outside internal/store
+        #   an HTTP route declared outside internal/api
+        #   float32 / float64 / REAL / NUMERIC / DECIMAL in internal/ledger, internal/strategy
+        #   time.Now outside internal/clock; math/rand in internal/strategy
+        #   fetch / XMLHttpRequest outside web/src/api; dangerouslySetInnerHTML anywhere
+        #   `-update` in any command a CI job runs (the golden-file rewrite fence)
+        #   DDL inside a goose `-- +goose Down` block (migrations are forward-only)
+        #   a `uses:` line ending in a tag rather than a 40-char SHA
+        #   pdh_ / gen_class / plus_exchange / __multidkp2event outside
+        #     internal/importer/legacy_names.go and internal/api/compat  [AGPL firewall]
+
+  lint-go:
+    name: lint / go
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make lint-go # gofumpt -l, goimports, golangci-lint
+
+  lint-web:
+    name: lint / web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make lint-web # eslint, prettier --check
+
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make vet # go build + go vet + staticcheck + tsc --noEmit
+
+  # ---------------------------------------------------------------------------------------------
+  # drift — two separate gates because they fail for different reasons and have different fixes.
+  # ---------------------------------------------------------------------------------------------
+  codegen-drift:
+    name: gen / codegen-drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - name: Regenerate everything and fail on a dirty tree
+        run: make verify-generated
+        # atlas migrate diff -> sqlc -> huma -> openapi.json -> openapi-typescript +
+        # openapi-python-client -> the generated docs reference pages. On failure this prints
+        # exactly one line: "Generated files are stale. Run 'make gen' and commit."
+
+  spec-drift:
+    name: gen / spec-drift
+    needs: changes
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make verify-spec
+        # Asserts properties of openapi/openapi.json that codegen-drift cannot see because they are
+        # true of any regenerated file: every operation has an explicit lowerCamelCase operationId,
+        # operationIds are unique and none was RENAMED versus origin/main (a renamed operationId is
+        # a breaking SDK change with an unchanged HTTP surface), every operation declares Security
+        # and x-dkp-permission, every x-dkp-permission key exists in internal/authz/catalogue.go,
+        # every money field is an unquoted integer named *_centipoints, and `Hidden: true` appears
+        # only on the five operations canonical conventions section 7 permits.
+
+  # ---------------------------------------------------------------------------------------------
+  # test — four fast suites split so a failure names its own category in the checks list.
+  # ---------------------------------------------------------------------------------------------
+  test-unit:
+    name: test / unit
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test-unit
+
+  test-property:
+    name: test / property
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test-property
+        # rapid, with a seed derived from the run id and PRINTED on failure. Separate from unit
+        # because a property failure is a counterexample to a claimed invariant, not a broken
+        # function, and the triage path is different: shrink, add the case to a table test, fix.
+      - name: Upload counterexamples
+        if: failure()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: property-counterexamples
+          path: test/property/failures/
+          if-no-files-found: ignore
+
+  test-golden:
+    name: test / golden
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          CI: "true" # the golden harness refuses `-update` when CI=true
+        run: make test-golden
+        # Also asserts the fixture count under test/golden/ is NON-DECREASING versus origin/main.
+        # Deleting a golden case to go green is the failure mode this exists to catch.
+
+  test-integration:
+    name: test / integration
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.db == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test
+        # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
+        # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
+        # thing under test. Response-validation middleware on; statement-count budgets; goleak.
+
+  test-migrations:
+    name: test / migrations
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.db == 'true' || github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test-migrations
+        # 1. fresh install: empty -> HEAD, PRAGMA integrity_check after every step
+        # 2. N-1: pull $REFDB:$(cat .support/oldest-tested) -> HEAD
+        # 3. the schema fingerprint of (1) equals the fingerprint of (2)
+        # 4. protected-table row counts and column digests NON-DECREASING across every migration
+        #    (ledger_batch, ledger_entry, raid, tick, attendance, award, adjustment, person,
+        #     character, item) — SQLite's 12-step table rebuild is where a mistyped column list
+        #     silently drops a column's data
+        # 5. the append-only triggers still fire AFTER the full migration set
+        # 6. a deliberately corrupted migration exits non-zero AND leaves the database
+        #    byte-identical to the pre-migration snapshot
+        # 7. every `-- +goose Down` block is a RAISE(ABORT), never DDL — migrations are
+        #    forward-only, so there is no down path to test and there never will be
+
+  test-authz:
+    name: test / authz-matrix
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test-authz
+        # Every (operation x principal) cell, enumerated from the Huma registry rather than written
+        # by hand, so a new endpoint cannot be added without a verdict for every principal kind.
+        # Asserts in particular: no PAT scope reaches a session+step-up operation (token minting,
+        # role edits, backup download, bulk PII read, import commit), and effective capability is
+        # exactly `role permissions INTERSECT token scopes`. This is the suite that catches an
+        # endpoint shipped without `Security` more usefully than the spec gate does, because it
+        # proves the runtime behaviour rather than the declaration.
+
+  # ---------------------------------------------------------------------------------------------
+  # api / breaking-change — oasdiff against origin/main's committed spec.
+  # ---------------------------------------------------------------------------------------------
+  api-breaking:
+    name: api / breaking-change
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # the sticky changelog comment
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-toolchain
+      - name: oasdiff breaking + changelog
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+          # The label is author-settable, so it is a "did you notice" control, not a security
+          # control. CODEOWNERS on docs/api-changelog.md converts it into a review control.
+          BREAKING_LABEL: ${{ contains(github.event.pull_request.labels.*.name, '!breaking-api') }}
+        run: make api-breaking
+        # Fails on a breaking delta unless BOTH: the PR carries `!breaking-api` AND the PR modifies
+        # docs/api-changelog.md. /api/v1 is additive-only forever; a genuinely breaking change mints
+        # /api/v2 and ships in an app MINOR (see docs/design/06-cicd-and-release.md section 5).
+      - name: Post the API delta in English
+        if: github.event_name == 'pull_request'
+        run: make api-changelog-comment
+        # `oasdiff changelog` as a sticky comment. Reviewers read prose, not a JSON diff.
+
+  # ---------------------------------------------------------------------------------------------
+  # build — one build, many consumers. Everything downstream downloads this artifact.
+  # ---------------------------------------------------------------------------------------------
+  build-binary:
+    name: build / binary
+    needs: [changes, codegen-drift]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make build # pnpm build -> go:embed -> go build, CGO_ENABLED=0
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: dkp-linux-amd64
+          path: bin/dkp
+          retention-days: 7
+
+  build-image:
+    name: build / image
+    needs: [changes, build-binary]
+    if: needs.changes.outputs.deep == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - name: Build amd64 and smoke it locally
+        env:
+          # Layer cache: READ everywhere, WRITE only on main. Actions caches are branch-scoped with
+          # read-through to the default branch, so `cache-to` on a PR burns quota for a cache no
+          # other run can see, while evicting the ones that are shared.
+          BUILDX_CACHE_FROM: type=gha
+          BUILDX_CACHE_TO: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min' || '' }}
+        run: make docker
+      - name: First-boot smoke
+        run: make smoke-local
+        # docker run, wait for /healthz, then /readyz, then `dkp version`. /healthz never touches
+        # the database (canonical conventions section 13) — a DB-touching healthcheck lets Docker
+        # kill the container mid-migration.
+
+  test-e2e:
+    name: test / e2e
+    needs: [changes, build-binary]
+    if: needs.changes.outputs.deep == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: dkp-linux-amd64
+          path: bin
+      - uses: actions/cache@6849a6489940f00c2f30c0fb92c6274307ccb58a # v4.1.2
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
+      - env:
+          SHARD: ${{ matrix.shard }}/2
+        run: |
+          chmod +x bin/dkp
+          make test-e2e
+        # --retries=0, deliberately. A flaky e2e is QUARANTINED, never retried. Retrying converts a
+        # four-hour debugging cost into an unbounded recurring one, and a retried test is a test an
+        # agent learns to trust when it should not.
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: failure()
+        with:
+          name: playwright-trace-${{ matrix.shard }}
+          path: web/test-results/
+
+  test-importer:
+    name: test / importer
+    needs: changes
+    if: (needs.changes.outputs.importer == 'true' && needs.changes.outputs.deep == 'true') || github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make test-importer
+        # Pulls the MariaDB data directories published by fixtures.yml as PUBLIC OCI artifacts, so
+        # a fork PR pulls them anonymously and nobody ever runs a PHP installer locally.
+
+  # ---------------------------------------------------------------------------------------------
+  # budgets — required despite living under a soft-sounding name. A budget is required if and only
+  # if its number is fully determined by the diff and fully actionable by the author. Bundle size
+  # is; a CVE feed is not, which is why image-cve is advisory and lives in nightly-verify.yml.
+  # ---------------------------------------------------------------------------------------------
+  bundle-budget:
+    name: budget / bundle
+    needs: [changes, build-binary]
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make budget-bundle
+        # SPA initial route <= 250 KB gzipped, and <= +5% versus the last release. Breaching it
+        # legitimately is a one-line edit to .github/size-budget.json — reviewed, in the diff, by a
+        # human. That turns a size regression into a decision instead of a drift.
+
+  # ---------------------------------------------------------------------------------------------
+  # docs — internal links only. External link checking is a nightly job: an external 404 appears on
+  # the world's schedule, not the contributor's, and blocking a parser fix on it loses contributors.
+  # ---------------------------------------------------------------------------------------------
+  docs-build:
+    name: docs / build
+    needs: changes
+    if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - run: make docs-build
+        # Builds the site AND the embed.FS the binary serves at /docs, so a docs page that 404s in
+        # the container fails here rather than in a guild's install.
+      - run: make docs-links
+        # Internal links and anchors only, resolved against the embed.FS. Also executes fenced
+        # ```dkp:exec blocks so a documented command that no longer exists fails the build.
+
+  # ---------------------------------------------------------------------------------------------
+  # mq — merge-queue only. The merge queue exists here for exactly one reason: it is the only place
+  # to run an expensive check ONCE PER MERGE instead of on every push to every PR. That two-tier
+  # split is what lets PR CI stay under six minutes without weakening the merge gate.
+  # ---------------------------------------------------------------------------------------------
+  mq-image-arm64:
+    name: mq / image-arm64
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+      - env:
+          PLATFORM: linux/arm64
+        run: make docker
+        # Go CROSS-COMPILES. No QEMU, here or in release.yml. See release.yml's header.
+
+  mq-upgrade-from-latest-release:
+    name: mq / upgrade-from-latest-release
+    if: github.event_name == 'merge_group'
+    needs: build-binary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: dkp-linux-amd64
+          path: bin
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: make test-upgrade
+        # Pulls the real ghcr.io/<org>/dkp-refdb:<latest tag>, runs HEAD against it, and asserts:
+        # migrations apply, the pre-migration snapshot was written, `dkp verify-ledger` is clean,
+        # /readyz returns 200, protected-table row counts did not decrease, and the append-only
+        # triggers still fire AFTER the full migration set (a table rebuild drops triggers — this
+        # is how you find out).
+
+  # ---------------------------------------------------------------------------------------------
+  # ci-required — the ONLY check in branch protection, alongside DCO.
+  #
+  # Path-filtered jobs plus required status checks is the classic way to wedge a repo: a skipped job
+  # never reports and the PR waits forever. `if: always()` over `needs.*.result` fixes that, but it
+  # opens a second hole, because `skipped` must count as success — so a job accidentally skipped by
+  # a wrong `if:` would pass silently. Three mitigations, all of which assert the SHAPE of the run
+  # rather than only its colour:
+  #   1. `changes` has no `if:` and cannot be skipped.
+  #   2. Jobs that must always run are asserted to be exactly "success", not "success or skipped".
+  #   3. When `deep == true`, the deep jobs are asserted NOT to be in state "skipped".
+  # ---------------------------------------------------------------------------------------------
+  ci-required:
+    name: ci-required
+    if: always()
+    needs:
+      - changes
+      - lint-repo
+      - lint-go
+      - lint-web
+      - typecheck
+      - codegen-drift
+      - spec-drift
+      - test-unit
+      - test-property
+      - test-golden
+      - test-integration
+      - test-migrations
+      - test-authz
+      - api-breaking
+      - build-binary
+      - build-image
+      - test-e2e
+      - test-importer
+      - bundle-budget
+      - docs-build
+      - mq-image-arm64
+      - mq-upgrade-from-latest-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Gate
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          DEEP: ${{ needs.changes.outputs.deep }}
+        run: |
+          set -euo pipefail
+
+          # 1. Nothing failed, cancelled, or errored. `skipped` is success by design.
+          bad=$(jq -r '
+            to_entries
+            | map(select(.value.result != "success" and .value.result != "skipped"))
+            | map(.key) | join(", ")' <<<"$RESULTS")
+          if [ -n "$bad" ]; then
+            echo "::error::ci-required: not green: ${bad}"
+            exit 1
+          fi
+
+          # 2. Positive assertion — these jobs are unconditional and MUST have actually run.
+          #    If one of them is "skipped", somebody added an `if:` that should not exist.
+          missing=$(jq -rn --argjson r "$RESULTS" '
+            ["changes","lint-repo","typecheck","codegen-drift","build-binary"]
+            | map(select($r[.].result != "success")) | join(", ")')
+          if [ -n "$missing" ]; then
+            echo "::error::ci-required: always-on jobs did not run: ${missing}"
+            echo "::error::A path filter or an if: condition is wrong. These jobs have no conditions."
+            exit 1
+          fi
+
+          # 3. Positive assertion — on a ready PR or in the merge queue, the deep jobs must not
+          #    have been silently skipped by a mis-scoped path filter.
+          if [ "$DEEP" = "true" ]; then
+            skipped=$(jq -rn --argjson r "$RESULTS" '
+              ["build-image","test-e2e"]
+              | map(select($r[.].result == "skipped")) | join(", ")')
+            if [ -n "$skipped" ]; then
+              echo "::error::ci-required: deep jobs were skipped on a non-draft run: ${skipped}"
+              exit 1
+            fi
+          fi
+
+          echo "ci-required: green (deep=${DEEP})"

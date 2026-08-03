@@ -1,0 +1,38 @@
+Dragon Kill Party
+Copyright 2026 The Dragon Kill Party contributors
+
+This product includes software developed by The Dragon Kill Party contributors
+(https://github.com/dragonkillparty/dkp).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+--------------------------------------------------------------------------------
+
+Documentation under docs/ is licensed under Creative Commons Attribution 4.0
+International (CC BY 4.0), not under the Apache License.
+
+The name "Dragon Kill Party" and the project logo are NOT licensed under the
+Apache License and are not granted by it. Apache-2.0 section 6 grants no
+trademark rights. See TRADEMARK.md.
+
+No third-party source is vendored into this repository. Each release artifact
+ships a THIRD_PARTY_NOTICES.txt generated from the resolved dependency graph.
+
+Dragon Kill Party is a clean-room reimplementation. It contains no source code,
+schema text, language strings, or assets from EQdkp Plus, which is licensed
+AGPL-3.0 (its game modules and raidlog XSD are CC BY-NC-SA 3.0, non-commercial).
+The importer reads a user's own EQdkp Plus database at runtime; that creates no
+derivative work.
+
+Not affiliated with, endorsed by, or connected to Daybreak Game Company LLC,
+Darkpaw Games LLC, or Project 1999. EverQuest is a trademark of Daybreak Game
+Company LLC. No game assets are bundled.

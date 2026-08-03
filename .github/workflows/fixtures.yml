@@ -1,0 +1,210 @@
+# SKELETON. Every step shells out to a `make` target; those targets are `notyet` stubs today.
+# The matrix, the publishing model and the anonymity gate are real and final.
+#
+# PHASE 0 PARALLEL LANE — START THIS ON DAY ONE.
+# ----------------------------------------------
+# This workflow has zero coupling to the application and a long lead time, and it BLOCKS PHASE 5
+# (the EQdkp Plus importer and compatibility shim). Nothing in the importer can be tested until
+# these artifacts exist, and building them means getting four different vintages of a PHP 5-era
+# application to complete their web installers unattended — which is discovery work, not
+# implementation work, and does not get faster by being started later.
+#
+# Filled in by: Phase 0 (the lane opens immediately; see ROADMAP.md "Parallel lane opened here,
+# never on the critical path"). Consumed by: Phase 5. See docs/design/06-cicd-and-release.md
+# sections 1 and 3, and the `refresh-eqdkp-fixture` skill.
+#
+# WHAT IT PRODUCES AND WHY IT IS SHAPED THIS WAY
+# ----------------------------------------------
+# `make test-importer` needs real EQdkp Plus databases — real column types, real PHP-serialised
+# blobs, real latin1/utf8 mojibake, real orphan rows. Hand-written SQL fixtures reproduce what we
+# *believe* EQdkp does, which is exactly the belief the importer exists to test.
+#
+# So: run the REAL PHP installer for each version in Docker, seed synthetic guild data through the
+# application's own forms and API, stop MariaDB cleanly, and publish the resulting data directory.
+#
+# Publishing model — public OCI artifacts on GHCR, not git, not git-lfs:
+#   git      — a MariaDB data directory is tens of MB of binary; it would bloat every clone forever
+#   git-lfs  — bandwidth quota is charged to the REPO OWNER and bites forks hardest, which is
+#              precisely the contributor you want to keep. A fork PR whose importer suite is red
+#              because of someone else's quota is an unacceptable first experience.
+#   GHCR     — free for public packages, no pull limits, anonymous pulls work from forks, and it is
+#              already where the container images and reference databases live.
+# What lives in git is small and reviewable: test/fixtures/eqdkp/<version>/{Dockerfile,seed.php,
+# install-answers.json,manifest.json}. The heavy output is a build product.
+#
+# THE LICENCE FIREWALL APPLIES HERE MORE THAN ANYWHERE ELSE.
+# EQdkp Plus core is AGPL-3.0 and its game modules are CC BY-NC-SA 3.0 (non-commercial). RUNNING
+# their installer to produce a database is fine; that database is user data. COPYING their PHP,
+# their DDL text, their language strings or their icons into this repository is not. Nothing under
+# test/fixtures/eqdkp/ may contain EQdkp source: the Dockerfiles DOWNLOAD the release tarball at
+# build time and the published artifact contains only the MariaDB data directory.
+#
+# ACTION PINS — see the note at the top of ci.yml. Digests below are unverified placeholders in the
+# correct shape until `make verify-action-pins` lands in Phase 0 PR 12.
+
+name: fixtures
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "EQdkp Plus version to build, or 'all'"
+        required: true
+        default: all
+        type: choice
+        options: [all, "2.0.5", "2.1.5", "2.2.27", "2.3.39"]
+      publish:
+        description: "Push to GHCR (unchecked = build and verify only)"
+        required: true
+        default: false
+        type: boolean
+  # Rebuild when the fixture definitions change, so a broken seed script is caught by the person
+  # who broke it. Build only — publishing is always a deliberate act.
+  pull_request:
+    paths:
+      - "test/fixtures/eqdkp/**"
+      - ".github/workflows/fixtures.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel: a half-built fixture that gets pushed is worse than a slow one.
+  group: fixtures-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FIXTURES: ghcr.io/${{ github.repository_owner }}/dkp-fixtures
+
+jobs:
+  build:
+    name: fixture / eqdkp-${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    # Generous on purpose: a PHP 5-era installer against a modern MariaDB is slow and occasionally
+    # needs a retry loop around "wait for the schema to settle".
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # The four vintages that cover the real installed base:
+        #   2.0.5   the oldest still found in the wild; pre-UTF8MB4, latin1 mojibake lives here
+        #   2.1.5   the multi-DKP-pool era
+        #   2.2.27  the most common version in P99 guilds  [EMPIRICAL ASSUMPTION — unverified;
+        #           docs/development/verify-before-phase-0.md names the experiment]
+        #   2.3.39  the last release, and the shape most migrations will actually see
+        version: ["2.0.5", "2.1.5", "2.2.27", "2.3.39"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Skip versions not selected
+        id: gate
+        env:
+          WANT: ${{ github.event.inputs.version || 'all' }}
+          HAVE: ${{ matrix.version }}
+        run: make fixture-gate # writes steps.gate.outputs.run = true|false
+
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+        if: steps.gate.outputs.run == 'true'
+
+      - name: Run the real EQdkp Plus installer
+        if: steps.gate.outputs.run == 'true'
+        env:
+          EQDKP_VERSION: ${{ matrix.version }}
+        run: make fixture-build
+        # docker compose up: MariaDB + PHP-FPM + nginx from test/fixtures/eqdkp/<version>/.
+        # The Dockerfile DOWNLOADS the upstream release tarball (checksum pinned in manifest.json);
+        # no EQdkp source is vendored into this repository. Then drive install/index.php to
+        # completion with install-answers.json — an unattended web installer is the whole trick and
+        # the reason this lane has a long lead time.
+
+      - name: Seed synthetic guild data
+        if: steps.gate.outputs.run == 'true'
+        env:
+          EQDKP_VERSION: ${{ matrix.version }}
+        run: make fixture-seed
+        # Through EQdkp's OWN forms and api.php, never by INSERTing into its tables — the point is
+        # to capture what the application actually writes, including how it serialises PHP arrays
+        # and how it mangles non-ASCII names. Deterministic seed. Includes, deliberately:
+        #   multiple DKP pools with different multipliers and per-pool item values
+        #   raids with attendance, twinks/alts linked to mains, and a member merge in the history
+        #   adjustments, decay runs, and at least one negative balance
+        #   an item with an apostrophe, one with an umlaut, one with a 4-byte emoji
+        #   an orphan row whose FK target was deleted through the UI
+        #   a user account with a password hash, to prove the importer never migrates it
+
+      - name: Stop cleanly and capture the data directory
+        if: steps.gate.outputs.run == 'true'
+        env:
+          EQDKP_VERSION: ${{ matrix.version }}
+        run: make fixture-capture
+        # SHUTDOWN, not `docker kill`: an unclean InnoDB shutdown produces a fixture that needs
+        # crash recovery on every single test run and adds seconds to every importer job forever.
+        # Then tar + zstd the data directory and record the row counts in manifest.json.
+
+      - name: Verify the fixture before anyone can depend on it
+        if: steps.gate.outputs.run == 'true'
+        env:
+          EQDKP_VERSION: ${{ matrix.version }}
+        run: make fixture-verify
+        # Restores the captured directory into a FRESH MariaDB and asserts:
+        #   it starts without crash recovery
+        #   every table in manifest.json exists with the recorded row count
+        #   the EQdkp-computed balances match the values recorded at seed time
+        #     (this is the oracle the importer's classifier is later checked against)
+        #   NO REAL PERSONAL DATA: greps every table for the canary set and for anything matching
+        #     an email, a Discord snowflake, or a real P99 character name from the donated-dump
+        #     denylist. A fixture is a PUBLIC artifact; a leak here is permanent and unrecallable.
+
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        if: steps.gate.outputs.run == 'true' && github.event.inputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish as a public OCI artifact
+        if: steps.gate.outputs.run == 'true' && github.event.inputs.publish == 'true'
+        env:
+          EQDKP_VERSION: ${{ matrix.version }}
+        run: make fixture-publish
+        # oras push $FIXTURES:eqdkp-$EQDKP_VERSION with the manifest as an annotation, then set the
+        # package visibility to PUBLIC. Public is not a convenience — without it, `test / importer`
+        # is red for every external contributor, and the importer is requirement number one.
+        #
+        # Tags are immutable by convention: a changed fixture gets `eqdkp-2.3.39-r2`, never a
+        # silent overwrite, because an overwritten fixture makes a green build go red with no diff
+        # to explain it. test/fixtures/eqdkp/versions.json pins the tag each suite consumes.
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always() && steps.gate.outputs.run == 'true'
+        with:
+          name: fixture-logs-${{ matrix.version }}
+          path: test/fixtures/eqdkp/${{ matrix.version }}/.build-logs/
+          if-no-files-found: ignore
+        # The installer logs are the whole debugging surface for this lane. Keep them even on
+        # success — the next person to bump a version starts by reading the last successful run.
+
+  # -----------------------------------------------------------------------------------------------
+  # Record what was published, so the importer suite and the docs agree on which tag is current.
+  # -----------------------------------------------------------------------------------------------
+  manifest:
+    name: fixture / manifest
+    needs: build
+    if: always() && github.event.inputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        run: make fixture-manifest
+        # Opens a PR updating test/fixtures/eqdkp/versions.json with the published tags and their
+        # digests. It is a PR, not a push: bumping the fixture a suite consumes changes what CI
+        # proves, and that belongs in a diff a human approved.

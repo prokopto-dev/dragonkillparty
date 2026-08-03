@@ -1,0 +1,134 @@
+// Renovate, not Dependabot. The reasoning is in docs/design/06-cicd-and-release.md section 9;
+// the short version is that the volunteer maintenance budget (<= 20 min/week on dependencies) is
+// only achievable with grouping, a weekly window, a concurrency limit and a dependency dashboard,
+// and Dependabot has none of those. Running both produces duplicate PRs and duplicate review load.
+//
+// Dependabot SECURITY ALERTS stay enabled — they are free and open no PRs unless asked. Renovate
+// raises the actual security PRs via `osvVulnerabilityAlerts`.
+//
+// json5, not json, so the rules can carry their reasons. Agents read this file; a rule whose
+// justification lives in a design document three directories away gets "simplified" away.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    "config:recommended",
+    // Pins every GitHub Action to a commit SHA with the version in a trailing comment, and keeps
+    // the SHA current thereafter. `lint / repo` fails any `uses:` ending in a bare tag, so this
+    // preset is what makes that gate survivable rather than a permanent chore.
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests",
+    // A quarantine window on npm specifically: the npm registry is where install-script supply
+    // chain attacks land, and they are usually yanked within days.
+    "security:minimumReleaseAgeNpm",
+    ":semanticCommitTypeAll(chore)",
+    ":maintainLockFilesWeekly",
+    ":configMigration",
+  ],
+
+  timezone: "UTC",
+  // ONE batch, early Monday. Volunteers, not a team. A trickle of dependency PRs across the week
+  // is how a maintainer ends up doing dependency review instead of product work.
+  schedule: ["* 2-7 * * 1"],
+  prConcurrentLimit: 3,
+  prHourlyLimit: 2,
+  // An application, not a library: pin exactly. A caret range means two operators building from
+  // source get different binaries, and "works on my build" is unfalsifiable from our side.
+  rangeStrategy: "pin",
+  minimumReleaseAge: "7 days",
+  // ONE issue listing everything pending. This is the budget knob: the dashboard absorbs the
+  // backlog so the PR list stays short enough that people still open it.
+  dependencyDashboard: true,
+  dependencyDashboardTitle: "Dependency dashboard",
+  osvVulnerabilityAlerts: true,
+  labels: ["dependencies"],
+  postUpdateOptions: ["gomodTidy", "pnpmDedupe"],
+
+  // Security updates ignore every rate limit above. A quarantine window is the wrong trade when
+  // the alternative is shipping a known-exploited version to self-hosts we cannot patch remotely.
+  vulnerabilityAlerts: {
+    schedule: ["at any time"],
+    minimumReleaseAge: null,
+    prPriority: 10,
+    labels: ["security", "dependencies"],
+  },
+
+  packageRules: [
+    // ----------------------------------------------------------------------------------------
+    // Grouped and automerged: things whose breakage CI catches instantly and completely.
+    // ----------------------------------------------------------------------------------------
+    {
+      groupName: "golang.org/x",
+      matchPackageNames: ["golang.org/x/**"],
+    },
+    {
+      groupName: "frontend tooling",
+      matchDepTypes: ["devDependencies"],
+      matchPackageNames: ["@vitejs/**", "vite", "eslint**", "prettier", "@types/**"],
+      automerge: true,
+      platformAutomerge: true,
+    },
+    {
+      groupName: "tanstack",
+      matchPackageNames: ["@tanstack/**"],
+    },
+    {
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      automerge: true,
+      platformAutomerge: true,
+      pinDigests: true,
+    },
+    {
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["patch"],
+      automerge: true,
+      platformAutomerge: true,
+    },
+
+    // ----------------------------------------------------------------------------------------
+    // NEVER automerged. Dashboard-approval gated: Renovate lists the update and does nothing
+    // until a human ticks the box. This is the mechanism that implements "pin River exactly" —
+    // riversqlite is an early-preview job driver (risk R6), and modernc.org/sqlite is the entire
+    // storage engine. A green CI run is not sufficient evidence for either.
+    // ----------------------------------------------------------------------------------------
+    {
+      matchPackageNames: [
+        "github.com/riverqueue/river",
+        "github.com/riverqueue/riverdriver/**",
+        "modernc.org/sqlite",
+        "github.com/pressly/goose/**",
+        "github.com/danielgtaylor/huma/**",
+        "go",
+        "node",
+        "react",
+        "react-dom",
+      ],
+      dependencyDashboardApproval: true,
+      automerge: false,
+      labels: ["dependencies", "dep:high-risk"],
+    },
+    {
+      matchUpdateTypes: ["major"],
+      automerge: false,
+      dependencyDashboardApproval: true,
+      separateMajorMinor: true,
+    },
+
+    // ----------------------------------------------------------------------------------------
+    // The EQdkp fixture images are deliberately frozen. They exist to reproduce four specific
+    // vintages of somebody else's application; "updating" one silently changes what the importer
+    // suite proves. A new vintage is a new matrix entry in fixtures.yml, never a bump.
+    // ----------------------------------------------------------------------------------------
+    {
+      matchFileNames: ["test/fixtures/eqdkp/**"],
+      enabled: false,
+    },
+  ],
+
+  // Renovate's hosted app cannot run postUpgradeTasks, so a sqlc or Huma bump that changes
+  // generated output arrives permanently red on `gen / codegen-drift`. regen-bot.yml handles it:
+  // triggered on push to renovate/**, `if: github.actor == 'renovate[bot]'`, runs `make gen` and
+  // commits the result with the App token. Without that, a human checks out every branch by hand.
+  ignorePaths: ["web/dist/**", "clients/**", "internal/store/sqlitegen/**"],
+}

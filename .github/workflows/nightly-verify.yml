@@ -1,0 +1,253 @@
+# SKELETON. Every step shells out to a `make` target; most of those targets are `notyet` stubs.
+# The schedule, the fork guard, the job graph and the issue-filing behaviour are real and final.
+#
+# Filled in by: Phase 0 PR 10 (the workflow itself + link checking), Phase 1 (River soak),
+# Phase 5 (importer matrix), Phase 8 (upgrade ladder, Postgres convergence). See ROADMAP.md and
+# docs/design/06-cicd-and-release.md sections 3 and 8.
+#
+# WHAT THIS FILE IS FOR
+# ---------------------
+# ci.yml answers "is this diff correct?" in under six minutes. This file answers "is the product
+# still true?" and is allowed to take an hour. A check belongs here, and not in ci.yml, when its
+# failure is NOT deterministic given a PR's diff, or NOT actionable by that PR's author:
+#   - external links break on the world's schedule
+#   - a new CVE in ca-certificates appears on the world's schedule
+#   - the upgrade ladder depends on every PUBLISHED release, not on this diff
+#   - a 10k-job soak takes longer than the entire PR budget
+# Blocking a P99 parser fix on any of those is how you lose contributors.
+#
+# Failures file an issue rather than emailing a maintainer, because an issue is triageable by
+# whoever has time on Saturday and an email is not.
+#
+# ACTION PINS — see the note at the top of ci.yml. Digests below are unverified placeholders in the
+# correct shape until `make verify-action-pins` lands in Phase 0 PR 12.
+
+name: nightly-verify
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # 03:17 UTC. Off the hour on purpose — the top of the hour is congested.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-verify
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  REFDB: ghcr.io/${{ github.repository_owner }}/dkp-refdb
+  FIXTURES: ghcr.io/${{ github.repository_owner }}/dkp-fixtures
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Fork guard. Without this, every fork of this repository runs the full nightly suite forever,
+  # which is rude and becomes a support burden the first time a forker's Actions bill surprises
+  # them. Every scheduled job in this file needs it.
+  # ---------------------------------------------------------------------------------------------
+  guard:
+    name: guard
+    if: github.repository_owner == 'dragonkillparty' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo "running nightly for ${{ github.repository }}"
+
+  # ---------------------------------------------------------------------------------------------
+  # importer — the full EQdkp Plus matrix. ci.yml runs this only when the importer, schema or
+  # fixtures change; here it runs against EVERY fixture every night, because importer fidelity is
+  # risk R1 and a guild that loses faith on day one does not come back.
+  # ---------------------------------------------------------------------------------------------
+  importer:
+    name: importer / ${{ matrix.fixture }}
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture:
+          - eqdkp-2.0.5
+          - eqdkp-2.1.5
+          - eqdkp-2.2.27
+          - eqdkp-2.3.39
+          - hostile # mojibake, PHP-serialised blobs, orphan FKs, duplicate names, NULL dates
+          - real-anonymised # one donated guild dump, anonymised, CODEOWNERS-protected
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: make test-importer
+        # Pulls ghcr.io/<org>/dkp-fixtures:${FIXTURE} (a public OCI artifact built by fixtures.yml),
+        # restores it into MariaDB via testcontainers, runs the two-phase ETL, and asserts the
+        # classifier oracle: every delta between the EQdkp-computed balance and the DKP-computed
+        # balance is EXPLAINED by a named rule. Any `unexplained` classification fails the build.
+        # The importer default is --dry-run; this suite never passes --commit.
+
+  # ---------------------------------------------------------------------------------------------
+  # postgres — convergence only, not a supported engine in 1.0. Ninety nightly seconds that keep
+  # the post-1.0 door open at zero PR-time cost.
+  # ---------------------------------------------------------------------------------------------
+  postgres-convergence:
+    name: postgres / schema-convergence
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # pinned by Renovate docker:pinDigests
+        env:
+          POSTGRES_PASSWORD: dkp
+          POSTGRES_DB: dkp_convergence
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          PGURL: postgres://postgres:dkp@localhost:5432/dkp_convergence?sslmode=disable
+        run: make verify-postgres
+        # 1. build with the CI-only `postgres` tag and assert the compile-time interface assertion
+        #    `var _ Queries = (*pggen.Queries)(nil)` still holds
+        # 2. apply db/migrations-postgres/ to an empty database
+        # 3. `atlas schema inspect` on BOTH dialects, normalise, and assert the two logical
+        #    fingerprints are identical
+        # Failing here means a SQLite-only construct entered the schema. That is fine to do
+        # deliberately and not fine to do accidentally — this job is the difference.
+
+  # ---------------------------------------------------------------------------------------------
+  # soak — River is an early-preview job driver (risk R6). A 10k-job soak is the only cheap way to
+  # find a stuck queue, a lost periodic run, or a leaked connection before a guild does.
+  # ---------------------------------------------------------------------------------------------
+  river-soak:
+    name: soak / river-10k
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          JOBS: "10000"
+        run: make soak-jobs
+        # Enqueue 10k jobs across every registered kind against a real SQLite file, with the worker
+        # pool at production settings. Asserts: every job reaches a terminal state, zero dead
+        # letters, no job runs twice (idempotency keys hold under concurrency), periodic jobs fire
+        # exactly once per period, `dkp_outbox_lag_seconds` returns under 30 s, goroutine count is
+        # flat at the end, and the WAL does not grow without bound.
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: river-soak-report
+          path: test/soak/report/
+
+  # ---------------------------------------------------------------------------------------------
+  # upgrade ladder — this is what converts "any 1.x upgrades directly to any later 1.y" from a
+  # promise into a verified property. About ten two-minute jobs.
+  # ---------------------------------------------------------------------------------------------
+  upgrade-ladder-enumerate:
+    name: upgrade-ladder / enumerate
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.e.outputs.versions }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - id: e
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make upgrade-ladder-enumerate
+        # Enumerates GitHub RELEASES — every published minor from the oldest supported version to
+        # the latest — and FAILS if any of them lacks a $REFDB artifact. Iterating "whatever refdbs
+        # happen to exist" is how the ladder rots silently: a release that fails after the image
+        # step but before `refdb` leaves a hole nobody notices until an upgrade breaks.
+        # Emits a JSON array for the matrix below.
+
+  upgrade-ladder:
+    name: upgrade-ladder / ${{ matrix.version }}
+    needs: upgrade-ladder-enumerate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        version: ${{ fromJSON(needs.upgrade-ladder-enumerate.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: ./.github/actions/setup-toolchain
+      - env:
+          FROM_VERSION: ${{ matrix.version }}
+        run: make test-upgrade-ladder
+        # Pull $REFDB:$FROM_VERSION, run HEAD against it, and assert:
+        #   the pre-migration snapshot was written before anything else happened
+        #   every migration applies, with PRAGMA integrity_check after each one
+        #   protected-table row counts and column digests did not DECREASE
+        #     (ledger_batch, ledger_entry, raid, tick, attendance, award, adjustment, person,
+        #      character, item) — SQLite's 12-step table rebuild is exactly where a mistyped
+        #      column list silently drops a column's data
+        #   the append-only triggers still fire AFTER the full migration set
+        #   `dkp verify-ledger` is clean and every balance equals the SUM over its batches
+        #   /readyz returns 200
+        # Migrations are forward-only: there is no down path to test, and there never will be.
+
+  # ---------------------------------------------------------------------------------------------
+  # links — external link checking, deliberately NOT in PR CI.
+  # ---------------------------------------------------------------------------------------------
+  links:
+    name: links / lychee
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: lycheeverse/lychee-action@f81112d0d2814ded911bd23e3beaa9dda9093915 # v2.0.2
+        with:
+          args: >-
+            --no-progress --max-concurrency 8 --timeout 20 --max-retries 2
+            --accept 200,206,429
+            --exclude-path test/fixtures --exclude-path test/golden
+            './**/*.md' './docs/**/*.md'
+          output: lychee-report.md
+          fail: true
+        # 429 is accepted: several docs targets rate-limit CI IPs and a rate limit is not a dead
+        # link. The P99 wiki and Discord invite links are the ones that actually rot.
+
+  # ---------------------------------------------------------------------------------------------
+  # File ONE issue for the whole night, not one per job. A nightly that opens six issues gets muted.
+  # ---------------------------------------------------------------------------------------------
+  nightly-report:
+    name: nightly-report
+    if: always() && needs.guard.result == 'success'
+    needs:
+      - guard
+      - importer
+      - postgres-convergence
+      - river-soak
+      - upgrade-ladder-enumerate
+      - upgrade-ladder
+      - links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+          GH_TOKEN: ${{ github.token }}
+        run: make nightly-report
+        # Green: does nothing, and closes yesterday's issue if it is still open.
+        # Red: updates the single open `nightly` issue in place with the failing job names, the run
+        # URL, and — for each failure — the exact local reproduce command. The deletion rule applies
+        # here too: any check whose failure a maintainer cannot diagnose in 60 seconds is deleted.

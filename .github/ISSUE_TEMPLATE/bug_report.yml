@@ -1,0 +1,145 @@
+# bug_report — the general template. A misread log line goes to parser-bug.yml, a failed EQdkp
+# import goes to import-failure.yml, and a missing EQdkp feature goes to parity-gap.yml, because
+# each of those has a different first triage question and a different fix path.
+#
+# Bug reports are NEVER auto-closed. Closing a real bug because a volunteer was busy is a
+# community-destroying move that is invisible until people stop reporting.
+
+name: Bug report
+description: Something is broken, wrong, or does not behave as documented.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two fields below do most of the work: **what you expected** and **the exact steps**. If you
+        are short on time, fill in those and submit — a partial report is far better than none.
+
+        A DKP number that looks wrong is not necessarily a bug in the ledger: open the member's
+        statement, which shows every batch that produced the balance. If the statement adds up and
+        the displayed total does not, that *is* a bug, and it is one we want to know about today.
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      placeholder: >-
+        Finalising the Thursday raid returned a 500 and the tick was created twice.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: >-
+        Numbered, from a clean page load. If it happens intermittently, say roughly how often and
+        what you were doing the times it did.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The page footer, or `dkp version`.
+      placeholder: "1.4.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker / docker compose
+        - Unraid
+        - Coolify, Railway, or another PaaS
+        - The binary directly, with systemd
+        - The binary directly, by hand
+        - Windows (dkp.exe)
+        - macOS
+        - I did not install it — I use somebody else's instance
+      default: 0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - The web UI
+        - The REST API (/api/v1)
+        - The EQdkp compatibility shim (an existing bot)
+        - A CLI command
+        - A background job (decay, backup, import)
+        - Discord login
+        - Somewhere else, or I am not sure
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: request_id
+    attributes:
+      label: Request id
+      description: >-
+        If you saw an error page or an API error, it carried a request id — it is in the error box,
+        in the `X-Request-Id` response header, and in the JSON error body. One id lets a maintainer
+        find the exact request in your logs.
+      placeholder: "01JBQ7Z2M4XKQ0F9A6R5T3W8YV"
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`dkp doctor` output"
+      description: >-
+        Run `dkp doctor` (or `docker exec dkp dkp doctor`). It reports version, schema version,
+        backup age, disk, job queue health and clock skew, and it never prints secrets or member
+        data.
+      render: text
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >-
+        The lines around the failure. Passwords, tokens and cookies are already redacted by the
+        logger, but read them before pasting anyway.
+      render: text
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        **If a maintainer asks for more, `dkp support-bundle` is the fast path.** It collects
+        versions, schema state, config with every secret rendered as `<set>`/`<unset>`, row *counts*
+        (never rows), job stats and redacted logs into one zip. It contains no database, no ledger
+        row, no character or person name, and no token — a CI test seeds an instance with canary
+        strings and fails the build if any of them reaches the bundle. Run `dkp support-bundle
+        --dry-run` first to see exactly what it would include.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues, including closed ones.
+          required: true
+        - label: >-
+            This is not a security vulnerability. (Those go to Security Advisories privately — see
+            SECURITY.md.)
+          required: true

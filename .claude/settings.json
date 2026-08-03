@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-protected-paths.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.sh",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/scan-secrets.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/format-go.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(make gen)",
+      "Bash(make test-unit)",
+      "Bash(make test)",
+      "Bash(make test-importer)",
+      "Bash(make lint)",
+      "Bash(make vet)",
+      "Bash(make build)",
+      "Bash(make fmt)",
+      "Bash(make check)",
+      "Bash(make clean)",
+      "Bash(make help)",
+      "Bash(make docker)",
+      "Bash(make migration:*)",
+      "Bash(make seed:*)",
+      "Bash(make verify-commands)",
+      "Bash(make verify-generated)",
+
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go run ./cmd/dkp:*)",
+      "Bash(go doc:*)",
+      "Bash(go list:*)",
+      "Bash(go env:*)",
+      "Bash(go fmt:*)",
+      "Bash(go version)",
+      "Bash(go mod tidy)",
+      "Bash(go mod verify)",
+      "Bash(go mod graph)",
+      "Bash(go mod why:*)",
+      "Bash(go mod download)",
+
+      "Bash(gofumpt:*)",
+      "Bash(goimports:*)",
+      "Bash(staticcheck:*)",
+      "Bash(golangci-lint run:*)",
+      "Bash(golangci-lint version)",
+
+      "Bash(sqlc generate)",
+      "Bash(sqlc vet)",
+      "Bash(sqlc diff)",
+      "Bash(sqlc version)",
+
+      "Bash(atlas migrate diff:*)",
+      "Bash(atlas migrate lint:*)",
+      "Bash(atlas migrate validate:*)",
+      "Bash(atlas migrate status:*)",
+      "Bash(atlas schema inspect:*)",
+      "Bash(atlas version)",
+
+      "Bash(goose status:*)",
+      "Bash(goose version)",
+
+      "Bash(pnpm install --frozen-lockfile)",
+      "Bash(pnpm run build)",
+      "Bash(pnpm run lint)",
+      "Bash(pnpm run test:*)",
+      "Bash(pnpm run generate:client)",
+      "Bash(pnpm exec tsc:*)",
+      "Bash(pnpm exec vite build:*)",
+      "Bash(pnpm exec vitest run:*)",
+      "Bash(pnpm exec eslint:*)",
+      "Bash(pnpm exec prettier:*)",
+      "Bash(pnpm exec playwright test:*)",
+
+      "Bash(docker build:*)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git blame:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git describe:*)",
+      "Bash(git branch:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(git add:*)",
+      "Bash(git stash:*)",
+      "Bash(git worktree list)",
+
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh issue view:*)",
+      "Bash(gh issue list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh run list:*)",
+
+      "Bash(rg:*)",
+      "Bash(jq:*)",
+      "Bash(oasdiff:*)",
+      "Bash(gitleaks:*)",
+      "Bash(sqlite3 ./dkp-data/dkp.db .schema:*)",
+
+      "Read(./**)",
+      "Edit(./internal/**)",
+      "Edit(./cmd/**)",
+      "Edit(./db/queries/**)",
+      "Edit(./db/schema.hcl)",
+      "Edit(./web/src/**)",
+      "Edit(./test/**)",
+      "Edit(./docs/**)",
+      "Edit(./deploy/**)",
+      "Edit(./scripts/**)",
+
+      "WebFetch(domain:pkg.go.dev)",
+      "WebFetch(domain:go.dev)",
+      "WebFetch(domain:huma.rocks)",
+      "WebFetch(domain:docs.sqlc.dev)",
+      "WebFetch(domain:atlasgo.io)",
+      "WebFetch(domain:riverqueue.com)",
+      "WebFetch(domain:sqlite.org)",
+      "WebFetch(domain:wiki.project1999.com)"
+    ],
+    "ask": [
+      "Bash(make setup)",
+      "Bash(make dev)",
+      "Bash(git commit:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(chmod:*)",
+
+      "Edit(./test/golden/**)",
+      "Edit(./test/fixtures/**)",
+      "Edit(./Makefile)",
+      "Edit(./AGENTS.md)",
+      "Edit(./CLAUDE.md)",
+      "Edit(./README.md)",
+      "Edit(./.github/**)",
+      "Edit(./.claude/hooks/**)",
+      "Edit(./.claude/settings.json)",
+      "Edit(./.claude/rules/**)",
+      "Edit(./.claude/skills/**)",
+      "Edit(./.claude/agents/**)",
+      "Edit(./docs/design/00-canonical-conventions.md)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git tag:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git rebase:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+
+      "Bash(gh pr merge:*)",
+      "Bash(gh release:*)",
+      "Bash(gh workflow run:*)",
+      "Bash(gh secret:*)",
+      "Bash(gh api -X POST:*)",
+      "Bash(gh api -X DELETE:*)",
+      "Bash(gh api --method POST:*)",
+      "Bash(gh api --method DELETE:*)",
+
+      "Bash(docker push:*)",
+      "Bash(docker login:*)",
+      "Bash(goreleaser release:*)",
+      "Bash(cosign:*)",
+      "Bash(npm publish:*)",
+      "Bash(pnpm publish:*)",
+      "Bash(yarn publish:*)",
+      "Bash(kubectl apply:*)",
+      "Bash(helm install:*)",
+      "Bash(helm upgrade:*)",
+      "Bash(terraform apply:*)",
+      "Bash(flyctl deploy:*)",
+      "Bash(fly deploy:*)",
+      "Bash(vercel:*)",
+      "Bash(netlify deploy:*)",
+      "Bash(railway up:*)",
+      "Bash(wrangler deploy:*)",
+
+      "Bash(go get:*)",
+      "Bash(go install:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm remove:*)",
+      "Bash(npm install:*)",
+      "Bash(npm i:*)",
+      "Bash(yarn add:*)",
+
+      "Bash(atlas migrate apply:*)",
+      "Bash(atlas schema apply:*)",
+      "Bash(atlas migrate hash --force:*)",
+      "Bash(goose up:*)",
+      "Bash(goose down:*)",
+      "Bash(goose redo:*)",
+      "Bash(goose reset:*)",
+
+      "Bash(dkp import:*)",
+      "Bash(dkp restore:*)",
+      "Bash(dkp admin:*)",
+      "Bash(dkp token:*)",
+
+      "Bash(dropdb:*)",
+      "Bash(psql:*)",
+      "Bash(mysql:*)",
+      "Bash(mysqladmin:*)",
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)",
+
+      "Edit(./openapi/openapi.json)",
+      "Edit(./internal/store/sqlitegen/**)",
+      "Edit(./internal/store/pggen/**)",
+      "Edit(./web/src/api/**)",
+      "Edit(./web/dist/**)",
+      "Edit(./clients/ts/**)",
+      "Edit(./clients/python/**)",
+      "Edit(./db/migrations-sqlite/**)",
+      "Edit(./db/migrations-postgres/**)",
+      "Edit(./go.mod)",
+      "Edit(./go.sum)",
+      "Edit(./web/pnpm-lock.yaml)",
+      "Edit(./web/package.json)",
+      "Edit(./LICENSE)",
+      "Edit(./CODEOWNERS)",
+
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./dkp-data/**)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(~/.aws/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.config/gh/**)"
+    ]
+  }
+}
