@@ -45,6 +45,8 @@ resolves to a real target, not that every target appears here.)
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.
   Never hand-edit. Change the source, run `make gen`, commit the diff.
 - `test/golden/`, `test/fixtures/` — expected outputs. CODEOWNERS-protected.
+- `test/repo/` — tests about the repository itself, not the product: they assert the gates in this
+  file actually fire. Add one when you add a gate, not when you add a feature.
 
 ## The four laws — each enforced by a test or a lint rule, not by trust
 

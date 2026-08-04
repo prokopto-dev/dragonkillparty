@@ -4,8 +4,14 @@
 # reverse is not asserted: the targets below the divider are called by CI, not by hand, and listing
 # them in a file agents read every session would be noise.
 #
-# Nothing is implemented yet. Targets that cannot do real work yet call `notyet` with the roadmap
-# phase that fills them in, and exit 0 so `make check` and CI stay green through Phase 0.
+# Targets that cannot do real work yet call `notyet` with the roadmap phase that fills them in, and
+# exit 0 so `make check` and CI stay green through Phase 0. `make status` derives the list of what
+# is still stubbed straight from those call sites — there is no hand-maintained progress list, and
+# adding one would be a third place to forget.
+#
+# A target that CAN do real work must do it unconditionally. A guard that skips the work when its
+# inputs are missing turns into a guard that hides a broken toolchain the moment the inputs exist,
+# and a green `make check` that ran nothing is worse than a red one.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -15,9 +21,28 @@ PKG            := ./...
 BIN            := dkp
 BUILD_DIR      := ./bin
 IMAGE          ?= ghcr.io/dragonkillparty/dkp
-VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-COMMIT         ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-LDFLAGS        := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
+# Each is filtered to [A-Za-z0-9.+_-] before it reaches -ldflags. A git tag is attacker-influenced
+# in the sense that it is arbitrary text a maintainer can be socially engineered into creating, and
+# these values land inside a double-quoted shell word in the build recipe: a tag containing a quote
+# and a semicolon would execute in the build shell. Not reachable from PR CI (checkout fetches no
+# tags, so --always yields a bare SHA), but release.yml does fetch tags and runs this same recipe.
+VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null | tr -cd 'A-Za-z0-9.+_-' || echo dev)
+COMMIT         ?= $(shell git rev-parse --short HEAD 2>/dev/null | tr -cd 'A-Za-z0-9' || echo none)
+# The COMMIT date, not the wall clock: two builds of the same commit must be byte-identical.
+DATE           ?= $(shell git log -1 --format=%cI 2>/dev/null | tr -cd 'A-Za-z0-9:.+_-' || echo unknown)
+LDFLAGS        := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
+# The `go` directive in go.mod is the single source of the minimum toolchain. `make setup` asserts
+# the installed Go satisfies it; it cannot install Go itself.
+GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
+
+# Pinned dev tools. Never @latest — an unpinned tool makes CI and the laptop disagree silently.
+# renovate: datasource=go depName=mvdan.cc/gofumpt
+GOFUMPT_VERSION        ?= v0.11.0
+# renovate: datasource=go depName=golang.org/x/tools
+GOIMPORTS_VERSION      ?= v0.48.0
+# renovate: datasource=go depName=github.com/golangci/golangci-lint/v2
+GOLANGCI_LINT_VERSION  ?= v2.12.2
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -30,7 +55,7 @@ endef
         lint-repo lint-go lint-web verify-action-pins docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
         test-property test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
-        upgrade-ladder-enumerate soak-jobs smoke-local nightly-report \
+        upgrade-ladder-enumerate soak-jobs smoke-local nightly-report status \
         fixture-build fixture-seed fixture-capture fixture-verify fixture-manifest \
         fixture-publish fixture-gate release-version release-notes release-image \
         release-manifest release-sign release-sbom release-smoke release-promote \
@@ -45,7 +70,30 @@ help:
 
 ## setup: install the toolchain (run once)
 setup:
-	@$(call notyet,Phase 0 PR 1,installs gofumpt goimports golangci-lint sqlc atlas goose oasdiff vale lychee and pnpm deps)
+	@command -v $(GO) >/dev/null 2>&1 || { \
+		printf '\033[31m  Go is not installed or not on PATH\033[0m\n'; \
+		printf '  go.mod requires go %s — install it from https://go.dev/dl/ (or: brew install go)\n' '$(GO_REQUIRED)'; \
+		exit 1; }
+	@have=$$($(GO) env GOVERSION | sed 's/^go//'); want='$(GO_REQUIRED)'; \
+	if [ "$$(printf '%s\n%s\n' "$$want" "$$have" | sort -V | head -1)" != "$$want" ]; then \
+		printf '\033[31m  Go %s is too old\033[0m — go.mod requires go %s\n' "$$have" "$$want"; \
+		printf '  Upgrade from https://go.dev/dl/ (or: brew upgrade go), then re-run make setup.\n'; \
+		exit 1; \
+	fi; \
+	printf '  go %s satisfies the go %s directive in go.mod\n' "$$have" "$$want"
+	@printf '  installing gofumpt $(GOFUMPT_VERSION)\n'
+	@$(GO) install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
+	@printf '  installing goimports $(GOIMPORTS_VERSION)\n'
+	@$(GO) install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
+	@printf '  installing golangci-lint $(GOLANGCI_LINT_VERSION)\n'
+	@$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@bin=$$($(GO) env GOBIN); [ -n "$$bin" ] || bin="$$($(GO) env GOPATH)/bin"; \
+	printf '\033[32m  toolchain installed\033[0m into %s — make sure it is on your PATH\n' "$$bin"
+	@printf '  not installed yet, and deliberately so — nothing needs them at this phase:\n'
+	@printf '    sqlc, atlas, goose   lands in: Phase 0 PR 3 (schema, migrations, generated queries)\n'
+	@printf '    oasdiff              lands in: Phase 2 (spec breaking-change gate)\n'
+	@printf '    vale, lychee         lands in: Phase 0 PR 11 (the docs site and its gates)\n'
+	@printf '    pnpm + web deps      lands in: Phase 0 PR 6 (the SPA)\n'
 
 ## dev: run the dev servers — Go on :8080, Vite on :5173
 dev:
@@ -57,19 +105,11 @@ gen:
 
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
-	@if compgen -G "*/*.go" >/dev/null 2>&1; then \
-		$(GO) test -short -shuffle=on -count=1 $(PKG); \
-	else \
-		$(call notyet,Phase 0 PR 2,no Go sources yet); \
-	fi
+	@$(GO) test -short -shuffle=on -count=1 $(PKG)
 
 ## test: integration tests against a real SQLite database (budget ~30s)
 test:
-	@if compgen -G "*/*.go" >/dev/null 2>&1; then \
-		$(GO) test -race -shuffle=on -count=1 $(PKG); \
-	else \
-		$(call notyet,Phase 0 PR 2,no Go sources yet); \
-	fi
+	@$(GO) test -race -shuffle=on -count=1 $(PKG)
 
 ## test-importer: EQdkp Plus importer suite — needs Docker (budget ~120s)
 test-importer:
@@ -79,9 +119,10 @@ test-importer:
 lint: lint-repo lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
+# Today this runs build + vet only. staticcheck is folded into golangci-lint, so it runs under
+# `make lint`; tsc lands with the SPA in Phase 0 PR 6. AGENTS.md documents the eventual composition.
 vet:
-	@if compgen -G "*/*.go" >/dev/null 2>&1; then $(GO) build $(PKG) && $(GO) vet $(PKG); \
-	else $(call notyet,Phase 0 PR 1,no Go sources yet); fi
+	@$(GO) build $(PKG) && $(GO) vet $(PKG)
 
 ## fmt: gofumpt + goimports over the tree
 fmt:
@@ -110,15 +151,11 @@ docker:
 
 ## build: compile the binary to ./bin
 build:
-	@if compgen -G "cmd/dkp/*.go" >/dev/null 2>&1; then \
-		CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/dkp; \
-	else \
-		$(call notyet,Phase 0 PR 1,cmd/dkp is empty); \
-	fi
+	@CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/dkp
 
 ## verify-commands: assert AGENTS.md's command table matches this Makefile
 verify-commands:
-	@bash scripts/verify-commands.sh
+	@env -u DKP_REPO_ROOT bash scripts/verify-commands.sh
 
 ## verify-generated: fail if generated files drift from their sources
 verify-generated:
@@ -127,6 +164,18 @@ verify-generated:
 ## check: everything CI runs (budget ~60s)
 check: verify-commands lint vet test
 	@printf '\033[32m  make check complete\033[0m\n'
+
+## status: which targets are still stubbed, and the roadmap phase that fills each in
+# Derived from the `notyet` call sites — never hand-maintained. A target that starts doing real
+# work drops off this list on its own, with nobody remembering to update anything.
+status:
+	@printf 'Dragon Kill Party — targets not yet implemented\n\n'
+	@awk '/^[a-zA-Z][a-zA-Z0-9_-]*:/ { t = $$0; sub(/:.*/, "", t) } \
+	      /\$$\(call notyet,/ { p = $$0; sub(/^.*call notyet,/, "", p); sub(/,.*$$/, "", p); n++; \
+	        printf "  \033[33m%-24s\033[0m %s\n", t, p } \
+	      END { printf "\n  %d stubbed target(s); every other target does real work.\n", n }' \
+	    $(MAKEFILE_LIST)
+	@printf '  Planned vs implemented: ROADMAP.md and docs/development/first-ten-prs.md\n'
 
 ## clean: remove build output
 clean:
@@ -138,22 +187,27 @@ clean:
 # table row resolves to a target, not that every target has a row.
 # ---------------------------------------------------------------------------
 
+# `env -u DKP_REPO_ROOT` is not decoration. The gate scripts honour that variable so their negative
+# fixtures can run against a tainted tree in t.TempDir() — but an existing-but-empty directory makes
+# every gate skip vacuously and still print "repo gates passed". Stripping it here means the only
+# way to point the gates somewhere else is to invoke the script directly, which is what the tests
+# do and what a CI job has no reason to do.
 lint-repo:
-	@bash scripts/repo-gates.sh
+	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh
 
+# Hard-fails when golangci-lint is missing. Exiting 0 would report a green `make check` that linted
+# nothing, which is the defect this target exists to prevent.
 lint-go:
-	@if compgen -G "*/*.go" >/dev/null 2>&1 && command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run; \
-	else \
-		$(call notyet,Phase 0 PR 1,no Go sources or golangci-lint not installed); \
-	fi
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		printf '\033[31m  golangci-lint not installed — run make setup\033[0m\n'; exit 1; }
+	@golangci-lint run
 
 lint-web:
 	@if [ -f web/package.json ]; then cd web && pnpm run lint; \
 	else $(call notyet,Phase 0 PR 6,web/ is not scaffolded yet); fi
 
 verify-action-pins:
-	@bash scripts/repo-gates.sh
+	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh
 
 docs-build:
 	@if [ -f docs/package.json ]; then cd docs && pnpm run build; \

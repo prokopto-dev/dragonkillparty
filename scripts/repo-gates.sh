@@ -9,7 +9,12 @@
 # is installed before the code it gates, which is the whole point (ROADMAP sequencing doctrine #1).
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# DKP_REPO_ROOT lets a test point the gates at a tree other than this checkout. It exists so the
+# gates can be *tested rather than trusted*: a test writes a deliberately tainted tree into
+# t.TempDir() — an unpinned action, a stray sql.Open — and requires this script to exit non-zero.
+# Such a fixture cannot live inside the repo, because the real `make lint-repo` would find it and
+# fail the project's own CI. Unset (the CI and local default), behaviour is exactly as before.
+cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
 fail=0
 note() { printf '  \033[33m%s\033[0m %s\n' "$1" "$2"; }
