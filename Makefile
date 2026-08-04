@@ -36,6 +36,25 @@ LDFLAGS        := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X m
 # the installed Go satisfies it; it cannot install Go itself.
 GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
 
+# Where `go install` puts things, and therefore where `make setup` puts the dev tools. GOBIN wins
+# when set, otherwise GOPATH/bin.
+GOTOOLS_BIN    := $(shell $(GO) env GOBIN 2>/dev/null)
+ifeq ($(GOTOOLS_BIN),)
+GOTOOLS_BIN    := $(shell $(GO) env GOPATH 2>/dev/null)/bin
+endif
+
+# Put it on PATH for every recipe in this file.
+#
+# Without this, `make setup` installs golangci-lint into GOTOOLS_BIN and the very next `make check`
+# reports "golangci-lint not installed — run make setup" — the command it just ran. The tool is
+# there; make cannot see it, because GOPATH/bin is not on a default macOS or Ubuntu PATH. A setup
+# target that does not close its own loop is worse than no setup target: it teaches you to distrust
+# the error message. Telling contributors to edit their shell profile is not a fix, it is a support
+# burden that a one-line export removes.
+#
+# Appended, not prepended: a deliberately chosen system tool still wins.
+export PATH := $(PATH):$(GOTOOLS_BIN)
+
 # Pinned dev tools. Never @latest — an unpinned tool makes CI and the laptop disagree silently.
 # renovate: datasource=go depName=mvdan.cc/gofumpt
 GOFUMPT_VERSION        ?= v0.11.0
@@ -87,8 +106,11 @@ setup:
 	@$(GO) install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
 	@printf '  installing golangci-lint $(GOLANGCI_LINT_VERSION)\n'
 	@$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	@bin=$$($(GO) env GOBIN); [ -n "$$bin" ] || bin="$$($(GO) env GOPATH)/bin"; \
-	printf '\033[32m  toolchain installed\033[0m into %s — make sure it is on your PATH\n' "$$bin"
+	@printf '\033[32m  toolchain installed\033[0m into %s\n' '$(GOTOOLS_BIN)'
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		printf '\033[31m  installed but not on PATH\033[0m — every make target adds %s itself, so\n' '$(GOTOOLS_BIN)'; \
+		printf '  `make check` will work. To run the tools directly, add this to your shell profile:\n'; \
+		printf '    export PATH="$$PATH:%s"\n' '$(GOTOOLS_BIN)'; }
 	@printf '  not installed yet, and deliberately so — nothing needs them at this phase:\n'
 	@printf '    sqlc, atlas, goose   lands in: Phase 0 PR 3 (schema, migrations, generated queries)\n'
 	@printf '    oasdiff              lands in: Phase 2 (spec breaking-change gate)\n'
@@ -126,8 +148,9 @@ vet:
 
 ## fmt: gofumpt + goimports over the tree
 fmt:
-	@command -v gofumpt >/dev/null 2>&1 && gofumpt -l -w . || \
-		printf '\033[33m  gofumpt not installed — run make setup\033[0m\n'
+	@bin=$$(command -v gofumpt 2>/dev/null || echo '$(GOTOOLS_BIN)/gofumpt'); \
+	if [ -x "$$bin" ]; then "$$bin" -l -w .; \
+	else printf '\033[33m  gofumpt not installed — run make setup\033[0m\n'; fi
 
 ## migration: create a migration — make migration NAME=add_bid_hold
 migration:
@@ -197,10 +220,18 @@ lint-repo:
 
 # Hard-fails when golangci-lint is missing. Exiting 0 would report a green `make check` that linted
 # nothing, which is the defect this target exists to prevent.
+# Resolved and invoked inside ONE shell block, via a variable, on purpose.
+#
+# A recipe line that is a single simple command is exec'd by make directly, without a shell, using
+# the PATH make started with — so the `export PATH` above does not apply to it and a bare
+# `golangci-lint run` fails with "make: golangci-lint: No such file or directory" even though the
+# line above just found it. Keeping the lookup and the call in one `$$(...)`-using block forces the
+# shell and makes the export effective. Do not "tidy" this into a bare command.
 lint-go:
-	@command -v golangci-lint >/dev/null 2>&1 || { \
-		printf '\033[31m  golangci-lint not installed — run make setup\033[0m\n'; exit 1; }
-	@golangci-lint run
+	@bin=$$(command -v golangci-lint 2>/dev/null || echo '$(GOTOOLS_BIN)/golangci-lint'); \
+	[ -x "$$bin" ] || { \
+		printf '\033[31m  golangci-lint not installed — run make setup\033[0m\n'; exit 1; }; \
+	"$$bin" run
 
 lint-web:
 	@if [ -f web/package.json ]; then cd web && pnpm run lint; \
