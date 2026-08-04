@@ -83,11 +83,33 @@ e='([^[:alnum:]_-]|$)'
 # 1. Publishing history. There is no undo for a push and no undo for a tag
 #    someone has already fetched.
 # ---------------------------------------------------------------------------
+# A blanket push ban blocks the very flow this repo requires — branch, push, PR, review — and so
+# makes an agent unable to propose a change at all. What actually needs guarding is history that
+# cannot be undone: a push to a protected branch, a force push, and a tag push. Pushing a feature
+# branch is proposing, not publishing; `main` is protected server-side and the PR is the review.
 if m "${w}git( +-[^ ]+)* +push${e}"; then
-	deny "git push — including --force and --force-with-lease — is a human action.
+	if m ' (-f|--force|--force-with-lease|--force-if-includes)($|[^[:alnum:]_-])'; then
+		deny "Force push rewrites history someone may already have fetched. There is no undo.
 
-Commit locally and stop. Say the branch is ready and let the maintainer push.
-AGENTS.md: \"Do not git push, tag, publish, deploy, or run dkp import --commit.\""
+If a branch needs reshaping, make a new commit or a new branch and let the maintainer decide."
+	fi
+
+	if m ' (--tags|--follow-tags)($|[^[:alnum:]_-])' || m 'push +[^ ]+ +(refs/tags/|v[0-9])'; then
+		deny "Pushing a tag cuts a release: tags drive the release workflow, the container tags and
+the reference database. That is a human action taken from a signed tag.
+
+AGENTS.md: \"Do not git push [to main], tag, publish, deploy, or run dkp import --commit.\""
+	fi
+
+	# Pushing main/master directly, or setting it as the upstream target.
+	if m 'push +[^ ]+ +(main|master)($|[^[:alnum:]_/-])' \
+		|| m 'push +[^ ]+ +HEAD:(refs/heads/)?(main|master)($|[^[:alnum:]_/-])' \
+		|| m 'push( +-[^ ]+)* +(origin +)?(main|master)($|[^[:alnum:]_/-])'; then
+		deny "Direct push to main. main is protected and every change goes through a PR.
+
+Push a branch instead, then open a PR:
+  git checkout -b <type>/<slug> && git push -u origin <type>/<slug> && gh pr create --fill"
+	fi
 fi
 
 if m "${w}git( +-[^ ]+)* +tag${e}"; then
