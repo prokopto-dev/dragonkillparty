@@ -114,6 +114,151 @@ func writeWorkflow(t *testing.T, tree, uses string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "fixture.yml"), []byte(body), 0o644))
 }
 
+// writeGo writes a Go source file into tree at the given repo-relative path.
+//
+// The bodies are never compiled — the gates are greps — but they are written as real Go so that a
+// future reader cannot mistake the fixture for something that only looks like a violation.
+func writeGo(t *testing.T, tree, rel, body string) {
+	t.Helper()
+
+	path := filepath.Join(tree, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
+// TestRepoGates_MisplacedSQLOpen_FailsGate is the law-2 half of PR 2's acceptance criteria: a
+// *sql.DB opened, queried or executed outside internal/store must make repo-gates.sh exit
+// non-zero, naming SQL001 and SQL002.
+//
+// It asserts the ALLOWLIST as well as the ban, in the same run. A gate that fired on everything
+// would pass a ban-only test while making internal/store itself unbuildable, and the first person
+// to hit that would reach for `git commit --no-verify` rather than for the rule id.
+func TestRepoGates_MisplacedSQLOpen_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// The violation: a handler holding its own database handle.
+	writeGo(t, tree, "internal/api/handler.go", `package api
+
+func handler(ctx context.Context) error {
+	db, err := sql.Open("sqlite", "file:dkp.db")
+	if err != nil {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT 1")
+	_ = rows
+	return err
+}
+`)
+
+	// Permitted: the same calls, inside the one package law 2 allows them in.
+	writeGo(t, tree, "internal/store/store.go", `package store
+
+func open(ctx context.Context) error {
+	db, err := sql.Open("sqlite", "file:dkp.db")
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, "PRAGMA optimize")
+	return err
+}
+`)
+
+	// Permitted: a zero-argument .Query() is net/url's accessor, not a database call. Without that
+	// exclusion SQL002 would fire on most of internal/api.
+	writeGo(t, tree, "internal/api/params.go", `package api
+
+func params(r *http.Request) url.Values {
+	return r.URL.Query()
+}
+`)
+
+	// The trap: a real violation on a line that ALSO contains r.URL.Query(). This is the most
+	// natural shape a law-2 violation takes — read a query parameter, run a query — and if the
+	// zero-argument exclusion is ever moved from the pattern into the allowlist, this whole line
+	// gets dropped and the gate goes quietly blind. It is a separate file so the assertion below
+	// cannot be satisfied by handler.go's hit.
+	writeGo(t, tree, "internal/api/search.go", `package api
+
+func search(ctx context.Context, r *http.Request, conn *sql.DB) error {
+	rows, err := conn.QueryContext(ctx, "SELECT 1 WHERE x = "+r.URL.Query().Get("q"))
+	_ = rows
+	return err
+}
+`)
+
+	// A call whose arguments wrap to the next line. grep is line-based, so the character after the
+	// opening paren is the end of the line — which the SQL002 pattern's `|$` arm is what handles.
+	// Whether `$` is an anchor inside an alternation is a regex-flavour question (POSIX ERE says
+	// yes, context-independently; BSD and GNU grep agree), and this fixture is how CI finds out
+	// rather than the pattern going quietly blind on a different runner.
+	writeGo(t, tree, "internal/api/wrapped.go", `package api
+
+func wrapped(ctx context.Context, conn *sql.DB) error {
+	_, err := conn.ExecContext(
+		ctx,
+		"DELETE FROM ledger_entry",
+	)
+	return err
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a misplaced sql.Open must fail the gates\n%s", out)
+	require.Contains(t, out, "SQL001", "sql.Open outside internal/store must fire SQL001\n%s", out)
+	require.Contains(t, out, "SQL002", ".QueryContext outside internal/store must fire SQL002\n%s", out)
+	require.Contains(t, out, "internal/api/handler.go:",
+		"the failure must name the offending file, repo-root-relative\n%s", out)
+
+	require.NotContains(t, out, "internal/store/store.go",
+		"internal/store is where a *sql.DB is SUPPOSED to live — the allowlist is not working\n%s", out)
+	require.NotContains(t, out, "internal/api/params.go",
+		"r.URL.Query() is not a database call; SQL002 must not fire on a zero-argument .Query()\n%s", out)
+	require.Contains(t, out, "internal/api/search.go:",
+		"SQL002 went blind on a line that mentions r.URL.Query() — the zero-argument exclusion "+
+			"belongs in the pattern, not in the line-scoped allowlist\n%s", out)
+	require.Contains(t, out, "internal/api/wrapped.go:",
+		"SQL002 missed a call whose arguments wrap to the next line — this grep flavour does not "+
+			"treat `$` as an anchor inside the alternation\n%s", out)
+	require.NotContains(t, out, tree,
+		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
+}
+
+// TestRepoGates_TotalInGoSQL_FailsGate covers the other half of the query bans PR 2 installs.
+//
+// total() returns a REAL where sum() returns an INTEGER, so a single total() silently converts the
+// centipoint ledger to floating point — no error, no warning, just a balance that is wrong by a
+// fraction of a point for years. The ban has to reach SQL embedded in Go, not only db/*.sql, or it
+// covers nothing at all until PR 3 creates that directory.
+func TestRepoGates_TotalInGoSQL_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/ledger/balance.go", `package ledger
+
+const balanceQuery = "SELECT total(amount_cp) FROM ledger_entry WHERE account_id = ?"
+`)
+
+	// A comment naming the rule must not fire it — otherwise no file could document the ban.
+	writeGo(t, tree, "internal/ledger/doc.go", `package ledger
+
+// total( is banned here: it returns a REAL. Use sum() with COALESCE.
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "total() in embedded SQL must fail the gates\n%s", out)
+	require.Contains(t, out, "MONEY002", "%s", out)
+	require.Contains(t, out, "internal/ledger/balance.go:", "%s", out)
+	require.NotContains(t, out, "internal/ledger/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+}
+
 // TestRepoGates_UnpinnedAction_FailsGate is the supply-chain half of the acceptance criteria: a
 // fixture workflow containing an unpinned `actions/checkout@v4` must make repo-gates.sh exit
 // non-zero, and PIN001 must be the rule that says so.

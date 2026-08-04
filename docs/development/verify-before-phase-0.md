@@ -116,7 +116,7 @@ upward invalidates every budget in the roadmap simultaneously.
 
 ### V4 — A template-DB clone costs ~0.3 ms, so integration tests are cheap
 
-- [ ] In PR 2, benchmark `newDB(t)` over 200 iterations and print the p50 in the CI log. Extrapolate
+- [x] In PR 2, benchmark `newDB(t)` over 200 iterations and print the p50 in the CI log. Extrapolate
       to the planned ~900 integration tests with response validation on every response.
 
 **Load-bearing on:** the entire testing strategy. "Prefer integration tests over unit tests because
@@ -124,9 +124,44 @@ they are nearly free" is the thesis the test pyramid inverts on.
 
 **Cost:** it falls out of PR 2 at no extra cost.
 
-**If it comes out the other way** — 3 ms rather than 0.3 ms: 900 integration tests become ~27 s of
-clone time alone, `make check ≤ 60 s` is unreachable, and the pyramid has to be re-drawn with a real
-unit-test layer. Better to learn this at 50 tests than at 900.
+**If it comes out the other way** — 3 ms rather than 0.3 ms: 900 integration tests become ~2.7 s of
+clone time alone. Better to learn this at 50 tests than at 900.
+
+**Outcome (PR 2, 2026-08-04): the assumption is wrong by ~3×, and the conclusion it supports still
+holds.** `make bench-clone` runs `BenchmarkNewDB_Clone` with `-benchtime=1x -count=200` and takes
+the median of the 200 independent samples.
+
+| Measurement | p50 | p95 |
+|---|---|---|
+| `NewDB(t)` — clone + open both pools + ping both | **0.97 ms** | 1.30 ms |
+| the file copy alone (`BenchmarkCloneTemplate_FileOnly`) | 0.44 ms | 0.81 ms |
+
+Local, Apple Silicon, NVMe. Median of three warm runs; the first run after a cold page cache
+measured 1.87 ms, so treat ~1 ms as the steady state and ~2 ms as the first-test cost. The CI number
+is printed by the `bench-clone` step of the `test / integration` job and will be slower; the
+SD-card case is V5's problem, not this one.
+
+Three things follow.
+
+1. **The pyramid stands.** 900 × 0.97 ms ≈ **0.9 s** of setup for the whole planned integration
+   suite — under 2 s even at the cold-cache figure, and a rounding error against the 30 s
+   `make test` budget. "Integration tests are nearly free" survives at 1 ms just as it would have
+   at 0.3 ms.
+2. **The original 0.3 ms was a file-copy estimate, and the file copy is not the dominant term.**
+   Only 0.44 ms of the 0.97 ms is the copy; the rest is fixed per-test cost — `t.TempDir()`, two
+   `sql.OpenDB` pools, two pings — that no amount of schema will change. So the number will not
+   grow proportionally with the schema, which is the failure mode this item existed to catch.
+3. **The 27 s in the paragraph above was an arithmetic slip**, corrected here: 900 × 3 ms is 2.7 s,
+   not 27 s. Worth recording, because the wrong figure was the entire reason this item was framed as
+   a threat to `make check`.
+
+**Caveat, and PR 3 owes a re-measure.** Migrations do not exist until PR 3, so PR 2's template is
+built from a size-matched stand-in — a single `STRICT` table padded with deterministic rows to
+256 KiB, the size `docs/design/04-testing.md` projects for the real schema plus its reference data.
+File size dominates the copy, so this measures the right *magnitude*, but it is not the real schema:
+page layout, index count and free-page distribution all differ. When PR 3 replaces the stand-in with
+the goose runner, re-run `make bench-clone` and update this table. If the copy term stays near
+0.5 ms, this item is closed for good.
 
 ### V5 — `/standings` answers in ≤ 4 SQL statements at ≤ 150 ms p99 on SD-card storage
 
@@ -342,7 +377,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V1 | Officers want `dkp.exe` | Phase 0 exit | the stack tie-break | open |
 | V2 | Two pilot guilds recruitable | **before Phase 4** | Phase 4 entry | open |
 | V3 | Guild scale ~280 / 3,400 / 520k | week 1 | `seed.Perf`, all budgets | open |
-| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | open |
+| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **partially resolved (2026-08-04): `NewDB` p50 0.97 ms warm, of which 0.44 ms is the copy — ~3× the assumption, ~0.9 s over 900 tests, pyramid unchanged. Measured against a size-matched stand-in template; PR 3 re-measures against the real schema** |
 | V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | open |
 | V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | open |
 | V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | open |

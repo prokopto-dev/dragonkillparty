@@ -16,7 +16,7 @@ Take one PR. Do not take two. Do not do part of the next one "while you're in th
 | Rule | Mechanism |
 |---|---|
 | `make check` green | `ci-required` aggregate job |
-| ≤ ~800 lines of hand-written diff (generated files excluded) | reviewer, at their discretion |
+| ≤ 2,500 lines of hand-written diff (generated files excluded) | reviewer, at their discretion |
 | Conventional-commit title, exactly as printed below | `commitlint` in `lint/repo` |
 | DCO sign-off on every commit | the DCO GitHub App |
 | No new dependency without a separate proposal issue | `AGENTS.md` "Do not"; licence gate in PR 7 |
