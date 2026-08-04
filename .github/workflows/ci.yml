@@ -328,11 +328,23 @@ jobs:
     needs: [changes, codegen-drift]
     runs-on: ubuntu-24.04
     timeout-minutes: 8
+    outputs:
+      # Whether a binary actually exists. Pre-Phase-0 `make build` is a no-op, so downstream
+      # consumers must not try to download an artifact that was never produced. This output
+      # removes itself: once cmd/dkp has sources, it is permanently 'true'.
+      built: ${{ steps.built.outputs.built }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
       - run: make build # pnpm build -> go:embed -> go build, CGO_ENABLED=0
+      - name: Detect binary
+        id: built
+        run: |
+          if [ -f bin/dkp ]; then echo "built=true"  >> "$GITHUB_OUTPUT"
+          else echo "built=false" >> "$GITHUB_OUTPUT"
+               echo "::notice::no binary yet — cmd/dkp lands in Phase 0 PR 1"; fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: steps.built.outputs.built == 'true'
         with:
           name: dkp-linux-amd64
           path: bin/dkp
@@ -375,6 +387,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        # Only when build / binary actually produced one. The job still RUNS either way, so the
+        # ci-required anti-silent-skip assertion holds; the make target below is a no-op until
+        # there is something to exercise.
+        if: needs.build-binary.outputs.built == 'true'
         with:
           name: dkp-linux-amd64
           path: bin
@@ -476,6 +492,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        # Only when build / binary actually produced one. The job still RUNS either way, so the
+        # ci-required anti-silent-skip assertion holds; the make target below is a no-op until
+        # there is something to exercise.
+        if: needs.build-binary.outputs.built == 'true'
         with:
           name: dkp-linux-amd64
           path: bin
