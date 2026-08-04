@@ -24,18 +24,31 @@ violation() {
     printf '%s\n' "$3" | sed 's/^/  /'
     fail=1
 }
-# strip_comments — drop whole-line comments so a gate never fires on prose describing itself
-strip_comments() { grep -vE '^\s*[0-9]+:\s*#' || true; }
+# strip_comments — drop whole-line comments so a gate never fires on prose describing itself.
+#
+# The pattern must skip the `path:line:` prefix that `grep -rn` prints. The original was anchored
+# at `^[0-9]+:`, which never matched that prefix, so this function silently stripped nothing and
+# every gate was quietly firing on its own documentation. Nothing had gone red only because no
+# comment happened to contain a banned token yet — the first one to do so would have looked like a
+# real violation. A helper that does nothing is worse than an absent one: the call sites read as
+# though the case is handled.
+strip_comments() { grep -vE '^[^:]*:[0-9]+:[[:space:]]*#' || true; }
+
+# strip_go_comments — the same, for Go's '//'.
+strip_go_comments() { grep -vE '^[^:]*:[0-9]+:[[:space:]]*//' || true; }
 
 # has <dir> — true when the tree exists and contains at least one file
 has() { [ -d "$1" ] && [ -n "$(find "$1" -type f -print -quit 2>/dev/null)" ]; }
 
 # gate <id> <description> <tree> <extension-glob> <extended-regex> [allowlist-regex]
+#
+# Whole-line comments are dropped in BOTH syntaxes before matching, so a rule never fires on the
+# prose that documents it. The AGPL firewall below deliberately does not do this — see its note.
 gate() {
     local id="$1" desc="$2" tree="$3" glob="$4" re="$5" allow="${6:-}"
     has "$tree" || { note "skip" "[$id] $tree does not exist yet"; return 0; }
     local hits
-    hits=$(grep -rnE --include="$glob" "$re" "$tree" 2>/dev/null | strip_comments || true)
+    hits=$(grep -rnE --include="$glob" "$re" "$tree" 2>/dev/null | strip_comments | strip_go_comments || true)
     [ -n "$allow" ] && hits=$(printf '%s\n' "$hits" | grep -vE "$allow" || true)
     if [ -n "$hits" ]; then
         violation "$id" "$desc" "$(printf '%s\n' "$hits" | head -20)"
@@ -45,10 +58,32 @@ gate() {
 echo "repo gates"
 
 # --- Law 2: *sql.DB is held only by internal/store -------------------------------------------
-gate SQL001 "sql.Open outside internal/store" \
-    internal '*.go' '\bsql\.Open\(' '^internal/store/'
-gate SQL002 "db.Query/db.Exec outside internal/store" \
-    internal '*.go' '\b(db|DB)\.(Query|Exec)(Context)?\(' '^internal/store/'
+# cmd/ is gated as well as internal/: `sql.Open` in a Cobra command is the same violation, and it
+# is where a "just for the migrate subcommand" handle would be reached for first.
+for tree in internal cmd; do
+    # sql.OpenDB, not only sql.Open. Interposing anything on connections — the statement counter in
+    # internal/store does exactly this — requires OpenDB, so a gate that watched only sql.Open
+    # would be blind to the very call the escape hatch needs.
+    gate SQL001 "sql.Open/sql.OpenDB outside internal/store" \
+        "$tree" '*.go' '\bsql\.Open(DB)?\(' '^internal/store/'
+
+    # Receiver-independent. The previous form matched only receivers literally named db or DB, so
+    # renaming the variable to `conn` walked straight through it.
+    #
+    # `\(([^)]|$)` excludes a ZERO-ARGUMENT .Query() — net/url's Values accessor, which appears all
+    # over internal/api and cannot be a database call, since every real one takes at least the SQL
+    # string. The `|$` arm keeps a call whose arguments wrap to the next line matched.
+    #
+    # The exclusion lives in the PATTERN, not in the allowlist, and that distinction is the whole
+    # rule. An allowlist is applied to the entire `path:line:text` line, so exempting `.Query()`
+    # there would drop any line that merely MENTIONED it — including
+    #   conn.QueryContext(ctx, "SELECT ..."+r.URL.Query().Get("q"))
+    # which is the single most natural shape a law-2 violation takes, and even
+    #   db.ExecContext(ctx, del) // filters come from r.URL.Query()
+    # Do not "simplify" this back into the allowlist.
+    gate SQL002 ".Query/.Exec outside internal/store" \
+        "$tree" '*.go' '\.(Query|QueryRow|Exec)(Context)?\(([^)]|$)' '^internal/store/'
+done
 
 # --- Law 3: internal/strategy is pure --------------------------------------------------------
 gate PURE001 "internal/strategy imports internal/store" \
@@ -64,6 +99,13 @@ for tree in internal/ledger internal/strategy; do
 done
 gate MONEY002 "SQLite total() returns a float — use sum()" \
     db '*.sql' '\btotal\s*\('
+# The same ban over Go, because SQL reaches SQLite as a Go string literal just as readily as from a
+# .sql file — and db/ does not exist yet, so until PR 3 the .sql gate above skips vacuously and
+# this is the only one of the pair that runs.
+for tree in internal cmd; do
+    gate MONEY002 "SQLite total() returns a float — use sum()" \
+        "$tree" '*.go' '\btotal\s*\('
+done
 gate MONEY003 "REAL/NUMERIC/DECIMAL column type" \
     db '*.sql' '\b(REAL|NUMERIC|DECIMAL)\b'
 
@@ -101,10 +143,15 @@ fi
 # EQdkp Plus is AGPL-3.0; its game modules are CC BY-NC-SA. Reading a user's database at runtime is
 # fine. Transcribing their PHP is a licence violation — and it is exactly what a helpful agent does
 # when the task is "match EQdkp's behaviour".
+#
+# This gate does NOT strip comments, and that is the one place where the difference matters.
+# Everywhere else a banned token inside a comment is prose about the rule; here it is the thing
+# itself. Transcribing EQdkp's PHP into a Go comment is exactly as much of a licence violation as
+# transcribing it into code, and "I only pasted it as a reference" is precisely how it happens.
 AGPL_ALLOW='^(internal/importer/legacy_names\.go|internal/api/compat/|docs/|\.claude/|\.github/|scripts/repo-gates\.sh|AGENTS\.md|README\.md|ROADMAP\.md|CONTRIBUTING\.md)'
 for tree in internal web cmd db; do
     has "$tree" || continue
-    hits=$(grep -rnE '\b(pdh_|gen_class|plus_exchange|__multidkp2event)' "$tree" 2>/dev/null | strip_comments \
+    hits=$(grep -rnE '\b(pdh_|gen_class|plus_exchange|__multidkp2event)' "$tree" 2>/dev/null \
         | grep -vE "$AGPL_ALLOW" || true)
     [ -n "$hits" ] && violation AGPL001 "EQdkp Plus identifier outside the allowlisted files" "$hits"
 done

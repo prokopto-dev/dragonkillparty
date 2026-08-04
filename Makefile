@@ -71,7 +71,7 @@ endef
 
 .PHONY: help setup dev gen test-unit test test-importer lint vet migration seed docker check \
         build clean fmt verify-generated verify-commands \
-        lint-repo lint-go lint-web verify-action-pins docs-build docs-links verify-spec \
+        lint-repo lint-go lint-web bench-clone verify-action-pins docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
         test-property test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
         upgrade-ladder-enumerate soak-jobs smoke-local nightly-report status \
@@ -236,6 +236,29 @@ lint-go:
 lint-web:
 	@if [ -f web/package.json ]; then cd web && pnpm run lint; \
 	else $(call notyet,Phase 0 PR 6,web/ is not scaffolded yet); fi
+
+# The template-database clone cost, printed as a p50 in the CI log. This is the measurement behind
+# item V4 of docs/development/verify-before-phase-0.md — "integration tests are nearly free" is the
+# thesis the whole test pyramid inverts on, and it is either true at a fraction of a millisecond or
+# the pyramid needs redrawing.
+#
+# -benchtime=1x -count=200 gives 200 INDEPENDENT samples rather than one mean over 200 iterations,
+# which is what a median needs. The median is taken in awk rather than in Go on purpose: computing
+# it in Go would need time.Now, which CLOCK001 bans outside internal/clock, and the testing package
+# is already timing this correctly.
+#
+# `set -o pipefail` is not decoration. Without it the recipe's status is the last awk's, so a panic,
+# a data race or a goleak failure AFTER the first sample has printed leaves the step green while
+# reporting a healthy p50 — a benchmark that reports a number for a run that crashed.
+bench-clone:
+	@set -o pipefail; $(GO) test -run '^$$' -bench '^BenchmarkNewDB_Clone$$' -benchtime=1x -count=200 \
+		./internal/store \
+		| awk '/^BenchmarkNewDB_Clone/ { print $$3 }' \
+		| sort -n \
+		| awk '{ ns[NR] = $$1 } \
+		       END { if (NR == 0) { print "  no benchmark samples — did BenchmarkNewDB_Clone run?"; exit 1 } \
+		             printf "  BenchmarkNewDB_Clone  p50 %.3f ms  (p95 %.3f ms, n=%d)\n", \
+		                    ns[int((NR + 1) / 2)] / 1e6, ns[int(NR * 0.95)] / 1e6, NR }'
 
 verify-action-pins:
 	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh

@@ -69,24 +69,39 @@ nothing else.
 
 ## The two pools, and their exact pragmas
 
+Both pools carry the **same four pragmas**; only `_txlock` and the connection cap differ. The live
+code is `internal/store/pragma.go`, and `TestPragmas_BothPools_MatchSpec` asserts every value below
+by querying each pool.
+
 ```go
-writeDB, _ := sql.Open("sqlite", dsn+"?_txlock=immediate"+
-    "&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)"+
-    "&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)")
+const pragmas = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)" +
+    "&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)"
+
+writeDB := sql.OpenDB(connector(dsn + "?_txlock=immediate&" + pragmas))
 writeDB.SetMaxOpenConns(1)
 
-readDB, _ := sql.Open("sqlite", dsn+
-    "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+readDB := sql.OpenDB(connector(dsn + "?" + pragmas))
 readDB.SetMaxOpenConns(max(4, runtime.NumCPU()))
 ```
 
 | Setting | Why |
 |---|---|
 | `SetMaxOpenConns(1)` on the writer | One writer, **enforced in Go rather than discovered at runtime as `SQLITE_BUSY`**. It is also what makes `SELECT COALESCE(max(seq),0)+1` a safe sequence allocator on SQLite — the property that does *not* hold on Postgres |
-| `_txlock=immediate` | Takes the write lock at `BEGIN` instead of on first write, converting mid-transaction busy errors into a clean queue at the door |
+| `_txlock=immediate`, write pool only | Takes the write lock at `BEGIN` instead of on first write, converting mid-transaction busy errors into a clean queue at the door. Never on the read pool: a reader taking the write lock serialises every read against the writer |
 | `journal_mode(WAL)` | Readers never block the writer |
 | `foreign_keys(ON)` | Off by default in SQLite. `parse_line` pruning depends on `ON DELETE SET NULL` actually firing |
-| `busy_timeout` 10 s write / 5 s read | Absorbs the backup job's checkpoint pause |
+| `synchronous(NORMAL)` | The correct pairing with WAL. `FULL` fsyncs every commit for no durability gain under WAL |
+| `busy_timeout` 10 s, **both pools** | Absorbs the backup job's checkpoint pause |
+
+> An earlier revision of this file gave the read pool `busy_timeout(5000)` and set neither
+> `synchronous` nor `foreign_keys` on it, contradicting the PR 2 acceptance criteria in
+> `docs/development/first-ten-prs.md`. The acceptance criteria won and the code follows them: the
+> read pool is not a second-class connection, and a reader with `foreign_keys` off can observe a
+> row a constraint should have pruned.
+
+`sql.OpenDB` with a `Connector` rather than `sql.Open` with a driver name, because the statement
+counter interposes on connections and `sql.Register` is process-global, panics on a repeated name
+and cannot be undone.
 
 Driver is `modernc.org/sqlite` (pure Go) — that is what makes `CGO_ENABLED=0`, cross-compilation and
 `FROM scratch` possible at all.

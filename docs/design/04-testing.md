@@ -20,10 +20,12 @@ axis the classic trophy omits (static, architectural and contract gates) that is
 load-bearing in an agent-heavy codebase, because those gates fail at build time and cannot be
 weakened by editing a `_test.go` file.
 
-**(assumption)** The 25 ms figure and the ~0.3 ms clone below are the design's own estimates. Phase 0
-writes 50 dummy integration tests and extrapolates. If a clone is 3 ms rather than 0.3 ms, the thesis
-this whole document rests on is false and the shape must be revisited —
-`docs/development/verify-before-phase-0.md` carries this as a named experiment.
+**(assumption)** The 25 ms figure is still the design's own estimate. The clone is no longer: PR 2
+measured `newDB(t)` at **~1.0 ms p50** warm (0.44 ms of it the file copy), against a size-matched
+stand-in template — roughly 3× the 0.3 ms guessed here, and still under a second across all ~900
+planned integration tests, so the thesis holds. The measurement, its caveats and PR 3's obligation to
+re-run it against the real schema are recorded as item V4 of
+`docs/development/verify-before-phase-0.md`.
 
 | Layer | Share of test *count* at maturity | Share of defects caught (estimate) | Runner | Budget |
 |---|---|---|---|---|
@@ -175,10 +177,18 @@ func TestMain(m *testing.M) { store.BuildTemplate(); goleak.VerifyTestMain(m, ..
 func newDB(t *testing.T) *store.Store {
     t.Helper()
     path := filepath.Join(t.TempDir(), "test.db")
-    store.CloneTemplate(t, path)          // os.Link where possible, io.Copy otherwise
+    store.CloneTemplate(t, path)          // io.Copy — see the note below, NOT os.Link
     return store.Open(t.Context(), path)  // same pragmas, same two pools as production
 }
 ```
+
+**Not `os.Link`.** An earlier draft of this section suggested hard-linking the template where the
+filesystem allows it. That is wrong for a file the test is about to write to: a hard link shares the
+inode, so the first write through the "clone" mutates the template itself and silently contaminates
+every test that clones it afterwards — including ones that have already passed. The saving is
+microseconds; the failure is cross-test corruption that reproduces only under `-shuffle=on`. A
+copy-on-write clone (`clonefile` on APFS, `FICLONE` on Btrfs/XFS) would be safe, but is not portable
+and is not worth the build tags at 0.44 ms per copy.
 
 Every test is `t.Parallel()`; every test owns its own file; the only serialisation is inside a single
 database, which is exactly the production topology. The shared in-memory VFS is permitted **only** for
@@ -231,7 +241,7 @@ aspirational: a `TestMain` wrapper records per-test duration and fails the packa
 | Cost | Budget |
 |---|---|
 | Template build (migrate + vacuum), once per package | ~120 ms |
-| Per-test DB clone | ~0.3 ms |
+| Per-test `newDB(t)` — clone, open both pools, ping both | ~1.0 ms p50 warm (0.44 ms of it the copy); measured in PR 2, see V4 |
 | `httptest` server boot (routes + middleware) | ~4 ms |
 | `seed.Small` | ~15 ms |
 | Typical integration test | 10–40 ms |

@@ -68,27 +68,45 @@ jobs:
         uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         with:
           # Inline rather than a separate file: one fewer artefact that can drift from the job graph.
+          #
+          # EVERY filter below includes the Makefile and setup-toolchain, because every job it
+          # gates is invoked as `make <target>` and gets its toolchain from that action. A change
+          # to either can break a job without touching a file the filter names, and the omission is
+          # self-concealing: the PR that rewrote the lint-go and test-unit recipes skipped
+          # lint / go and test / unit and reported green through ci-required. A filter that
+          # excludes the file defining a job is the same defect as a target that exits 0 without
+          # doing the work — and half-fixing it, for the `go` filter only, would leave lint / web,
+          # budget / bundle, test / importer and test / migrations with exactly that hole.
           filters: |
+            build: &build
+              - 'Makefile'
+              - '.github/actions/setup-toolchain/**'
             go:
+              - *build
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - '.golangci.yml'
             web:
+              - *build
               - 'web/**'
             db:
+              - *build
               - 'db/**'
               - 'internal/store/**'
             api:
+              - *build
               - 'internal/api/**'
               - 'internal/authz/**'
               - 'openapi/**'
               - 'clients/**'
             importer:
+              - *build
               - 'internal/importer/**'
               - 'test/fixtures/eqdkp/**'
               - 'db/**'
             docs:
+              - *build
               - 'docs/**'
               - '**/*.md'
 
@@ -255,6 +273,13 @@ jobs:
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
         # thing under test. Response-validation middleware on; statement-count budgets; goleak.
+      - name: Template-clone cost (verify-before-phase-0 item V4)
+        run: make bench-clone
+        # Prints the p50 of 200 independent BenchmarkNewDB_Clone samples. "Integration tests are
+        # nearly free" is the thesis the whole test pyramid inverts on, and this is the only place
+        # the number is observed on CI hardware rather than on somebody's laptop. It is a printed
+        # measurement, not a threshold: a regression is read in the log, not enforced here, because
+        # a wall-clock assertion on a shared runner is a flake generator.
 
   test-migrations:
     name: test / migrations
