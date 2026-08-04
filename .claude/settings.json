@@ -60,7 +60,6 @@
       "Bash(make seed:*)",
       "Bash(make verify-commands)",
       "Bash(make verify-generated)",
-
       "Bash(go build:*)",
       "Bash(go test:*)",
       "Bash(go vet:*)",
@@ -75,28 +74,23 @@
       "Bash(go mod graph)",
       "Bash(go mod why:*)",
       "Bash(go mod download)",
-
       "Bash(gofumpt:*)",
       "Bash(goimports:*)",
       "Bash(staticcheck:*)",
       "Bash(golangci-lint run:*)",
       "Bash(golangci-lint version)",
-
       "Bash(sqlc generate)",
       "Bash(sqlc vet)",
       "Bash(sqlc diff)",
       "Bash(sqlc version)",
-
       "Bash(atlas migrate diff:*)",
       "Bash(atlas migrate lint:*)",
       "Bash(atlas migrate validate:*)",
       "Bash(atlas migrate status:*)",
       "Bash(atlas schema inspect:*)",
       "Bash(atlas version)",
-
       "Bash(goose status:*)",
       "Bash(goose version)",
-
       "Bash(pnpm install --frozen-lockfile)",
       "Bash(pnpm run build)",
       "Bash(pnpm run lint)",
@@ -108,9 +102,7 @@
       "Bash(pnpm exec eslint:*)",
       "Bash(pnpm exec prettier:*)",
       "Bash(pnpm exec playwright test:*)",
-
       "Bash(docker build:*)",
-
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -125,7 +117,6 @@
       "Bash(git add:*)",
       "Bash(git stash:*)",
       "Bash(git worktree list)",
-
       "Bash(gh pr view:*)",
       "Bash(gh pr diff:*)",
       "Bash(gh pr list:*)",
@@ -133,13 +124,11 @@
       "Bash(gh issue list:*)",
       "Bash(gh run view:*)",
       "Bash(gh run list:*)",
-
       "Bash(rg:*)",
       "Bash(jq:*)",
       "Bash(oasdiff:*)",
       "Bash(gitleaks:*)",
       "Bash(sqlite3 ./dkp-data/dkp.db .schema:*)",
-
       "Read(./**)",
       "Edit(./internal/**)",
       "Edit(./cmd/**)",
@@ -150,7 +139,6 @@
       "Edit(./docs/**)",
       "Edit(./deploy/**)",
       "Edit(./scripts/**)",
-
       "WebFetch(domain:pkg.go.dev)",
       "WebFetch(domain:go.dev)",
       "WebFetch(domain:huma.rocks)",
@@ -161,13 +149,13 @@
       "WebFetch(domain:wiki.project1999.com)"
     ],
     "ask": [
+      "Bash(git push:*)",
       "Bash(make setup)",
       "Bash(make dev)",
       "Bash(git commit:*)",
       "Bash(curl:*)",
       "Bash(wget:*)",
       "Bash(chmod:*)",
-
       "Edit(./test/golden/**)",
       "Edit(./test/fixtures/**)",
       "Edit(./Makefile)",
@@ -183,14 +171,12 @@
       "Edit(./docs/design/00-canonical-conventions.md)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(git tag:*)",
       "Bash(git reset --hard:*)",
       "Bash(git rebase:*)",
       "Bash(git filter-branch:*)",
       "Bash(git remote add:*)",
       "Bash(git remote set-url:*)",
-
       "Bash(gh pr merge:*)",
       "Bash(gh release:*)",
       "Bash(gh workflow run:*)",
@@ -199,7 +185,6 @@
       "Bash(gh api -X DELETE:*)",
       "Bash(gh api --method POST:*)",
       "Bash(gh api --method DELETE:*)",
-
       "Bash(docker push:*)",
       "Bash(docker login:*)",
       "Bash(goreleaser release:*)",
@@ -217,7 +202,6 @@
       "Bash(netlify deploy:*)",
       "Bash(railway up:*)",
       "Bash(wrangler deploy:*)",
-
       "Bash(go get:*)",
       "Bash(go install:*)",
       "Bash(pnpm add:*)",
@@ -225,7 +209,6 @@
       "Bash(npm install:*)",
       "Bash(npm i:*)",
       "Bash(yarn add:*)",
-
       "Bash(atlas migrate apply:*)",
       "Bash(atlas schema apply:*)",
       "Bash(atlas migrate hash --force:*)",
@@ -233,19 +216,16 @@
       "Bash(goose down:*)",
       "Bash(goose redo:*)",
       "Bash(goose reset:*)",
-
       "Bash(dkp import:*)",
       "Bash(dkp restore:*)",
       "Bash(dkp admin:*)",
       "Bash(dkp token:*)",
-
       "Bash(dropdb:*)",
       "Bash(psql:*)",
       "Bash(mysql:*)",
       "Bash(mysqladmin:*)",
       "Bash(rm -rf:*)",
       "Bash(sudo:*)",
-
       "Edit(./openapi/openapi.json)",
       "Edit(./internal/store/sqlitegen/**)",
       "Edit(./internal/store/pggen/**)",
@@ -261,7 +241,6 @@
       "Edit(./web/package.json)",
       "Edit(./LICENSE)",
       "Edit(./CODEOWNERS)",
-
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./dkp-data/**)",
