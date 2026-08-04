@@ -401,7 +401,7 @@ jobs:
       - env:
           SHARD: ${{ matrix.shard }}/2
         run: |
-          chmod +x bin/dkp
+          if [ -f bin/dkp ]; then chmod +x bin/dkp; fi
           make test-e2e
         # --retries=0, deliberately. A flaky e2e is QUARANTINED, never retried. Retrying converts a
         # four-hour debugging cost into an unbounded recurring one, and a retried test is a test an
