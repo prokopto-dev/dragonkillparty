@@ -1,0 +1,73 @@
+# golangci-lint configuration — v2 config schema.
+#
+# The v1 and v2 schemas differ substantially (v2 splits formatters out of linters, and
+# goimports' local-prefixes became a list). Validated against the published v2 JSON schema:
+# https://golangci-lint.run/jsonschema/golangci.v2.jsonschema.json
+#
+# The pinned binary version lives in the Makefile (GOLANGCI_LINT_VERSION); `make setup` installs it
+# and `make lint-go` hard-fails if it is missing.
+#
+# AGENTS.md: "Do not disable a lint rule, a hook, or a CI gate to land a change." If a rule fires,
+# fix the code or bring the exception to a human — do not add a nolint here.
+version: "2"
+
+run:
+  # Test files are lint-gated too: the depguard testify/assert rule below is worthless otherwise.
+  tests: true
+
+linters:
+  # `none` rather than `standard`: this list is the whole story, and it does not move when
+  # golangci-lint changes what it considers standard.
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - forbidigo
+    - govet
+    - ineffassign
+    - staticcheck # AGENTS.md documents `make vet` as including staticcheck; it runs here instead.
+    - unused
+
+  # Deliberately NOT enabled — do not "helpfully" turn these on:
+  #
+  # gochecknoglobals — cmd/dkp/version.go declares `var version, commit, date` precisely so that
+  #   `go build -ldflags -X main.version=...` can stamp them. Package-level vars are the only way
+  #   -X works, so this linter's core finding is, here, the intended design.
+  #
+  # wrapcheck — the repo already mandates `%w` plus context in AGENTS.md, and at the current call
+  #   count wrapcheck is almost entirely false positives on stdlib returns. Revisit when there is
+  #   enough cross-package error flow for it to find something a reviewer would not.
+
+  settings:
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: github.com/stretchr/testify/assert
+              desc: >-
+                assert is banned because it continues after failure and produces cascading noise.
+                Use github.com/stretchr/testify/require.
+
+    forbidigo:
+      # Match against type-resolved expressions, so an aliased import cannot slip past.
+      analyze-types: true
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: >-
+            Do not print to stdout directly. CLI output goes to cmd.OutOrStdout(); everything else
+            logs with slog.
+        - pattern: ^log\.
+          msg: >-
+            The standard log package is not used here. Log with slog, structured — no secrets, no
+            PATs, no bid amounts before reveal.
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      module-path: github.com/prokopto-dev/dragonkillparty
+    goimports:
+      local-prefixes:
+        - github.com/prokopto-dev/dragonkillparty

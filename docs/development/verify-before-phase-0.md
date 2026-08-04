@@ -306,6 +306,18 @@ deliberately off the queue, so the blast radius of getting this wrong is bounded
       Huma v2, and the OpenAPI validator. Record the version that CI actually resolved, not the
       version the design named.
 
+**The Go half is answered, and it holds (asked by Courtney, 2026-08-04, in PR 1):** `go.mod` declares
+`go 1.26`, and the toolchain actually installed and exercised locally is **Go 1.26.5**
+(darwin/arm64, Homebrew). CI does not pin a version of its own — `.github/actions/setup-toolchain`
+resolves Go from `go-version-file: go.mod`, so it installs some 1.26.x patch release; **which one is
+not yet known, and the first CI run on this PR is what records it.** One consequence worth writing
+down: the action's `1.24` pre-Phase-0 fallback branch is now unreachable, because it is gated on
+`go.mod` not existing and `go.mod` exists.
+
+**Still open, because nothing here has been exercised yet:** `testing/synctest`, `os.Root`, Vite 7,
+Huma v2, and the OpenAPI validator — including the stale-claim question below, which is the part of
+this item that can still change a committed dependency.
+
 **Load-bearing on:** `make setup` reproducing, and on `kin-openapi` specifically — the testing design
 prescribes replacing it with `pb33f/libopenapi-validator` on the grounds that kin-openapi lacks
 OpenAPI 3.1 support, but current sources indicate it supports 3.0, 3.1 and 3.2. The committed
@@ -341,7 +353,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V12 | Guilds want server-side auctions | before Phase 6 | bid UX emphasis | open |
 | V13 | 250 KB gzipped initial route | PR 6 | the bundle budget | open |
 | V14 | `riversqlite` maturity | Phase 1 | the job queue | **resolved: early preview, not production ready — spike the alternative** |
-| V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | open |
+| V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | **partially resolved (2026-08-04): Go 1.26 pinned via `go.mod`, 1.26.5 exercised locally; CI's resolved patch, `testing/synctest`, `os.Root`, Vite 7, Huma v2 and the validator all still open** |
 
 Nothing on this list is a blocker to *starting*. V2 is a blocker to entering Phase 4, V6 is a blocker
 to merging PR 9, and V1 is a blocker to publishing the stack decision as settled. The others change

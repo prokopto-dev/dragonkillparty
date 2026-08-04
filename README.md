@@ -6,7 +6,9 @@ parsers, Discord bots, spreadsheets — can drive as first-class citizens.
 
 > **Status: pre-1.0, design phase. Do not run your guild on this yet.**
 > There is no working software in this repository. What exists is the design, the roadmap, and the
-> contract that implementation follows. Track progress in [ROADMAP.md](ROADMAP.md).
+> contract that implementation follows. For what is *implemented*, run `make status` — it is derived
+> from the Makefile itself, so it cannot drift. For what is *planned*, read [ROADMAP.md](ROADMAP.md)
+> and [the first ten PRs](docs/development/first-ten-prs.md).
 
 ## Why not EQdkp Plus
 

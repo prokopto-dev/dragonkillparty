@@ -36,21 +36,18 @@ flowchart TB
 The arrow that is missing is the point: nothing reaches `store` except through `ledger` for money, and
 nothing reaches the database except through `store`.
 
-## The four laws
+## The laws this shape enforces
 
-Each is enforced by a test or a lint rule, not by trust.
+That diagram is the picture of four rules — route declaration, `*sql.DB` ownership, strategy purity,
+and where `fetch` may be called. [AGENTS.md](../../AGENTS.md) states them normatively and is the only
+place they are written down; they are not restated here, because a rule with two copies has one copy
+too many and no way to tell which is stale. Each is held by an architectural test, an import-graph
+test, a lint rule or a CI grep, not by trust.
 
-| Law | Enforced by |
-|---|---|
-| HTTP routes are declared only in `internal/api` | An architectural test over the route registry |
-| `*sql.DB` is held only by `internal/store` | An import-graph test |
-| `internal/strategy` is pure — no `internal/store`, no `time.Now`, no `math/rand` | Import-graph test plus lint rules; the clock and a seeded generator are injected and the seed is persisted onto every batch |
-| `web/src` contains no `fetch` or `XMLHttpRequest` outside `web/src/api` | An ESLint rule plus a CI grep |
-
-And the law that makes the API claim real: **the SPA is a pure API client.** A test replays the web
-UI's exact requests using a scoped token and fails the build if any capability turns out to be
-browser-only. There is no BFF, no server actions, no UI-private endpoint. Exactly three surfaces are
-server-rendered — the first-run wizard, `/ops`, and public standings — each because a single-page app
+One more rule belongs to the architecture rather than to that list, and it is the one that makes the
+API claim real: **the SPA is a pure API client.** A test replays the web UI's exact requests using a
+scoped token and fails the build if any capability turns out to be browser-only. There is no BFF, no
+server actions, no UI-private endpoint. Exactly three surfaces are server-rendered — the first-run wizard, `/ops`, and public standings — each because a single-page app
 is a liability there.
 
 ## Where code goes

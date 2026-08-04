@@ -127,6 +127,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+          tools: "gofumpt golangci-lint"
       - run: make lint-go # gofumpt -l, goimports, golangci-lint
 
   lint-web:
@@ -147,6 +150,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make vet # go build + go vet + staticcheck + tsc --noEmit
 
   # ---------------------------------------------------------------------------------------------
@@ -195,6 +200,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make test-unit
 
   test-property:
@@ -242,6 +249,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
@@ -336,6 +345,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make build # pnpm build -> go:embed -> go build, CGO_ENABLED=0
       - name: Detect binary
         id: built

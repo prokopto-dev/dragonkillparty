@@ -10,7 +10,11 @@
 # most likely to drift, because nothing executes it.
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# DKP_REPO_ROOT lets a test point this check at a tree other than this checkout — an AGENTS.md and
+# Makefile pair written into t.TempDir(). It exists so the check is *tested rather than trusted*:
+# a test can assert that a row with no matching target actually fails, without committing a broken
+# AGENTS.md to the repo. Unset (the CI and local default), behaviour is exactly as before.
+cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
 [ -f AGENTS.md ] || { echo "AGENTS.md not found"; exit 1; }
 [ -f Makefile ]  || { echo "Makefile not found";  exit 1; }

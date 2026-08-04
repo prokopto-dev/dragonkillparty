@@ -1,0 +1,66 @@
+# CODEOWNERS — a notification and review control, NOT access control.
+#
+# Listing a path here does not restrict who may change it. It requests a review from the named
+# owner and, with branch protection's "require review from Code Owners" enabled, holds the merge
+# until that review arrives. Anyone with write access can still open the PR and write the code.
+#
+# Today every owner below is the same small group of people, so this file buys the notification and
+# the pause, not the gatekeeping (CONTRIBUTING.md, "Branching and merging"). Do not read the list
+# as a permissions boundary — permissions live in the repository's collaborator and
+# branch-protection settings.
+#
+# ORDERING: in CODEOWNERS the LAST matching pattern wins — unlike .gitignore, matches do not
+# accumulate. Broad patterns therefore come first and narrow ones last. A broad pattern added at
+# the bottom of this file silently unowns every specific path above it.
+#
+# Paths carry a leading `/` so they anchor at the repository root.
+#
+# Why each entry is here: CONTRIBUTING.md:48 (owned paths), CONTRIBUTING.md:85 (the licence
+# firewall), docs/adr/0009-apache-2-0-and-dco.md:31, docs/adr/0010-agpl-clean-room-firewall.md:42.
+
+# ---------------------------------------------------------------------------------------------
+# Broad — the machinery that enforces every other rule in the repository.
+# ---------------------------------------------------------------------------------------------
+
+# CI, the action pins, the issue and PR templates, and this file itself. "Do not edit
+# .github/workflows/ to make a job green" (CONTRIBUTING.md) is only reviewable if someone is asked
+# to look.
+/.github/                                   @prokopto-dev
+
+# ---------------------------------------------------------------------------------------------
+# Narrow — single files and leaf directories where a plausible-looking wrong change is expensive
+# and hard to spot in review.
+# ---------------------------------------------------------------------------------------------
+
+# The agent contract and the normative conventions document. These two win over every other
+# document, so a change here silently re-aims every rule in the repository.
+/AGENTS.md                                  @prokopto-dev
+/docs/design/00-canonical-conventions.md    @prokopto-dev
+
+# Licence and trademark. Apache-2.0 with a DCO and no CLA cannot be changed without every past
+# contributor (ADR-0009); NOTICE carries the §4 attribution obligations; the name and logo are
+# deliberately not licensed. ADR-0009:31 and ADR-0010:42 both name these three.
+/LICENSE                                    @prokopto-dev
+/NOTICE                                     @prokopto-dev
+/TRADEMARK.md                               @prokopto-dev
+
+# Highest blast radius in the repo: the append-only ledger writer plus the invariant engine, and
+# the pure point strategies. A wrong rounding or a lost invariant is a guild losing points its
+# members earned, and it does not look wrong in a diff read quickly.
+/internal/ledger/                           @prokopto-dev
+/internal/strategy/                         @prokopto-dev
+
+# Sources of truth for generated artefacts. schema.hcl drives every migration Atlas writes;
+# openapi.json is the published API contract and its operationIds are permanent public surface.
+/db/schema.hcl                              @prokopto-dev
+/openapi/openapi.json                       @prokopto-dev
+
+# The `!breaking-api` label is author-settable, so on its own it is only a "did you notice"
+# control. Ownership of the changelog is what turns it into a review control — see the
+# `api / breaking-change` job in .github/workflows/ci.yml.
+/docs/api-changelog.md                      @prokopto-dev
+
+# Expected outputs. Rewriting a golden file or a fixture is the standard way to turn a red build
+# green while destroying the evidence that it was ever red.
+/test/golden/                               @prokopto-dev
+/test/fixtures/                             @prokopto-dev

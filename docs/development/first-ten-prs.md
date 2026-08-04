@@ -82,7 +82,7 @@ scripts/repo-gates.sh
   commit SHA. A fixture workflow containing `actions/checkout@v4` makes the script exit non-zero, and
   a test asserts that.
 - `CLAUDE.md` contains the line `@AGENTS.md` and does not restate the four laws. A test asserts the
-  string "The four laws" appears in exactly one tracked file.
+  four-laws heading appears in exactly one tracked file.
 - `dkp version` prints the version, commit and build date, all injected by `-ldflags`, and
   `TestVersion_UnstampedBuild_ReportsDev` asserts the unstamped default is `dev`, never empty.
 
