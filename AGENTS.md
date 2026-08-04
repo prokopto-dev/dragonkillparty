@@ -127,5 +127,7 @@ If two instructions conflict, the invariant wins and the conflict is a bug: say 
   the task is "match EQdkp's behaviour" — that is when the temptation appears.
 - Do not write raw SQL outside `db/queries/`, or call `db.Query`/`db.Exec` outside `internal/store`.
 - Do not add a bespoke pagination shape, error shape, or list envelope. Use the helpers.
-- Do not `git push`, tag, publish, deploy, or run `dkp import --commit`.
+- Do not push to `main`, force push, push a tag, publish, deploy, or run `dkp import --commit`.
+  Pushing a feature branch and opening a PR is the expected flow, not a violation — `main` is
+  protected and the PR is the review.
 - Do not disable a lint rule, a hook, or a CI gate to land a change.
