@@ -9,7 +9,13 @@
 # Contract:  exit 0 = allow · exit 2 + stderr = block
 # Budget:    ~15 ms for non-commits, ~200 ms for a normal staged diff.
 # Fails open on a missing tool: with no gitleaks it runs a narrow built-in pattern set and
-# says so. It never blocks a commit because a tool is missing — CI runs gitleaks regardless.
+# says so. It never blocks a commit because a tool is missing.
+#
+# NOTE: there is no CI secret-scanning job yet — SECURITY.md lists gitleaks as planned. So this
+# fallback is currently the ONLY scan, not a fast local approximation of one that CI repeats. That
+# makes failing open a real gap rather than a latency trade-off. It stays open because a hook that
+# blocks every commit on a machine without gitleaks is a hook people disable, but do not read the
+# fallback as "CI will catch it" until the `security / secrets` job exists.
 #
 # This hook never prints a matched secret, only the pattern that matched.
 #
@@ -193,8 +199,9 @@ that .gitignore covers, and rotate the credential — a secret that reaches a co
 compromised even if the commit is never pushed.
 
 gitleaks is not installed, so this was the built-in fallback only, and it is narrow by
-design. Run \`make setup\` to install gitleaks; CI runs it either way."
+design. Install gitleaks (\`brew install gitleaks\`) for the real scan — and note that
+there is no CI secret-scanning job yet, so nothing else is checking this."
 fi
 
-printf 'scan-secrets.sh: gitleaks not installed — ran the narrow built-in pattern set only. Run `make setup`.\n' >&2
+printf 'scan-secrets.sh: gitleaks not installed — ran the narrow built-in pattern set only, and no CI job repeats it.\n' >&2
 exit 0

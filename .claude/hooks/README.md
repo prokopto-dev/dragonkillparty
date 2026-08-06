@@ -93,8 +93,10 @@ miss them.
    Discord bot tokens. It prints a note saying the scan was the fallback.
 
 The hook **never prints the matched value**, only the pattern name — consistent with the `slog`
-rule that secrets never reach a log. CI runs gitleaks over the full history regardless, so a
-missing local binary is a gap in speed of feedback, not in coverage.
+rule that secrets never reach a log.
+
+There is **no CI secret-scanning job yet** (SECURITY.md lists gitleaks as planned), so a missing
+local binary is currently a gap in coverage, not merely in speed of feedback. Install `gitleaks`.
 
 ## format-go.sh
 
@@ -198,7 +200,7 @@ Two related warnings:
 | Nothing builds, vets or type-checks on `Stop` | `make vet`, `make check`, and CI. A `Stop` hook doing regenerate-and-diff is a reasonable future addition |
 | Nothing lints on save | `make lint` |
 | No `SessionStart` context injection | `CLAUDE.md`, `AGENTS.md`, and `.claude/rules/` |
-| The built-in secret patterns are narrow | Install `gitleaks` (`make setup`); CI runs it either way |
+| The built-in secret patterns are narrow, and no CI job backs them up yet | Install `gitleaks` locally. The `security / secrets` CI job is still planned — see SECURITY.md |
 | Path matching is textual — a path with `..` in it is not resolved | `permissions.deny` globs, plus CI regenerate-and-diff |
 | `guard-bash.sh` matches text, so a command that merely *mentions* a blocked phrase is blocked | Accepted. It is what catches `sh -c "git push"`; see the note under Testing locally |
 | With `gitleaks` installed and `git commit -a`, the diff is scanned as a file rather than as a repo | Stage explicitly (`git add`, then `git commit`) for the stronger path |

@@ -64,7 +64,7 @@ ledger's invariants stop being tested.
 | E2E | Playwright + `@axe-core/playwright` | Runs against the shipped binary, not a dev server |
 | Coverage | `go test -cover`, plus `go build -cover` + `GOCOVERDIR` + `go tool covdata` for the E2E binary | A genuine merged unit + integration + E2E profile |
 | CI reporting | `gotestsum --format testname --junitfile`, **`--rerun-fails=0`** | JUnit for the UI, `go test -json` retained for flake mining |
-| Tool pinning | the `tool` directive in `go.mod` — `go tool sqlc`, `go tool oasdiff`, `go tool goose` | No separate install step; an agent cannot use the wrong version |
+| Tool pinning | `go install <tool>@$(<TOOL>_VERSION)` in `make setup`, with the pins and a `# renovate:` comment per tool in the Makefile | One number per tool, in one file. `.github/actions/setup-toolchain` reads those same Makefile lines, so CI and the laptop cannot install different binaries and disagree about a green build |
 
 ### Open item: which OpenAPI response validator
 

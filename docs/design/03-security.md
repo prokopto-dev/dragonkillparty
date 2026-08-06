@@ -1241,13 +1241,16 @@ chain nobody knows how to check is decoration, so `docs/operations/verify.md` gi
 and diffs the digest.
 
 **Continuous monitoring.** Renovate (grouped weekly, security updates ungrouped and immediate);
-`govulncheck` on every PR and nightly, whose call-graph analysis reports only *reachable*
-vulnerabilities and therefore keeps the signal high enough that people act on it; `osv-scanner`
-across both lockfiles; Trivy on the image (near-empty for scratch, but it reads Go build info out of
-the binary, so the embedded module list is still scanned). A **licence gate** fails the build on any
-GPL/AGPL runtime dependency, and the **AGPL firewall grep** fails on EQdkp identifiers outside
-`internal/importer/legacy_names.go` and `internal/api/compat/` (canonical §15) — an agent asked to
-"match EQdkp behaviour" will otherwise paste AGPL code helpfully and disastrously.
+`govulncheck` on every PR, whose call-graph analysis reports only *reachable* vulnerabilities and
+therefore keeps the signal high enough that people act on it; `osv-scanner` across both lockfiles;
+Trivy on the image (near-empty for scratch, but it reads Go build info out of the binary, so the
+embedded module list is still scanned). A **licence gate** fails the build on any copyleft, non-commercial
+or source-available licence in the runtime dependency graph, and the **AGPL firewall grep** fails on EQdkp
+identifiers outside `internal/importer/legacy_names.go` and `internal/api/compat/` (canonical §15) —
+an agent asked to "match EQdkp behaviour" will otherwise paste AGPL code helpfully and disastrously.
+
+Of these, `govulncheck`, the licence gate and the AGPL firewall run today; the nightly `govulncheck`
+leg, `osv-scanner` and Trivy do not. SECURITY.md carries the authoritative live/planned split.
 
 **Vulnerability response** (`SECURITY.md`, short and actually followed): GitHub Private Vulnerability
 Reporting or `security@`; acknowledgement 3 business days; triage 7 days with CVSS **and** a
@@ -1272,7 +1275,7 @@ code it constrains, or it becomes a grandfathering exercise.
 
 | Phase | Controls landing |
 |---|---|
-| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore |
+| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore. *Landed: the grep gates, SHA pinning, the licence gate, the AGPL firewall and `govulncheck`. Outstanding: CI secret scanning, `ignore-scripts`, the image and migrate-on-boot.* |
 | **1** | Append-only triggers **and the tests that assert they fire**; `actor_is_beneficiary`; mandatory `reason`; strategy purity gate |
 | **2** | argon2id; sessions; **MFA/TOTP enrolment and step-up**; the permission catalogue; the capability floor; the authz matrix; first-run bootstrap; Discord OAuth and OIDC; **`internal/net/safehttp` and its grep gate**; audit hash chain; rate limiting; idempotency |
 | **3** | Security headers and CSP on the server-rendered surfaces; the class-colour contrast validator; the i18n lint rule (no bare strings, so nothing user-facing bypasses escaping later) |
@@ -1378,11 +1381,12 @@ Each box is a CI assertion or a `dkp doctor` check, not a manual review item.
 ## 15. Security gates in CI
 
 The pipeline itself is specified in the CI/CD design; this is the security-owned subset, all
-blocking on every PR unless noted.
+blocking on every PR unless noted. This table is the target state — SECURITY.md's "What we do
+continuously" carries the authoritative list of which rows run today.
 
 | Gate | Form |
 |---|---|
-| Reachable dependency vulnerabilities | `govulncheck ./...` (also nightly) |
+| Reachable dependency vulnerabilities | `govulncheck ./...` — live, required, not `continue-on-error`. The nightly leg is not wired up yet |
 | All-ecosystem vulnerabilities | `osv-scanner`, `pnpm audit --audit-level high` |
 | Go SAST | `gosec`, with every `#nosec` requiring a justification comment (asserted by a test) |
 | Custom repo rules | `semgrep`: SQL string building, `http.Client` outside `safehttp`, `sql.Open` outside `store`, `time.Now` outside `clock`, `dangerouslySetInnerHTML`, missing `Security`, floats in ledger or strategy |
@@ -1404,7 +1408,7 @@ blocking on every PR unless noted.
 | Fuzzing | Log parsers, PHP-serialize reader, zip reader, cursor decoder, markdown sanitiser — smoke on PRs, 10 min each nightly |
 | Concurrency and idempotency | Two simultaneous full-balance bids → exactly one success; 100× replay → one effect |
 | Enumeration and timing | Login and reset responses identical for existing and non-existing accounts |
-| Licence gate + AGPL firewall | `go-licenses` + `license-checker`; the EQdkp identifier grep |
+| Licence gate + AGPL firewall | `scripts/licence-gate.sh` over `go list -deps ./...`, unioned across the release platforms; the EQdkp identifier grep (AGPL001) in `scripts/repo-gates.sh`. Both live. Allowlist-based (LIC001 denied, LIC002 unrecognised, LIC003 embedded third-party copyleft). The gate covers the **Go** graph only — `web/` does not exist yet, and the PR that scaffolds it (Phase 0 PR 6) must extend the gate to `pnpm-lock.yaml` or the SPA's dependencies ship unchecked |
 | Goroutine leaks | `goleak` in `TestMain` for `events`, `webhook`, `bids`, `jobs`, `server` |
 
 **Two meta-rules protect the tests themselves**, because in an agent-heavy codebase the fastest path

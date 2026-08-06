@@ -1,9 +1,12 @@
-# SKELETON. Nothing this workflow calls exists yet — every step shells out to a `make` target, and
-# several of those targets are `notyet` stubs in the Makefile. The job graph, triggers, concurrency,
-# caching and the `ci-required` gate are real and final; the work inside them is not.
+# PARTLY IMPLEMENTED. Every step shells out to a `make` target, and several of those targets are
+# still `notyet` stubs in the Makefile. The job graph, triggers, concurrency, caching and the
+# `ci-required` gate are real and final; some of the work inside them is not. `make status` lists
+# what remains, derived from the `notyet` call sites rather than from a hand-maintained list here.
 #
-# Filled in by: Phase 0 PR 10 (workflows, GHCR publish, ci-required) and Phase 0 PR 12 (supply
-# chain: action pinning, govulncheck, licence gate). See ROADMAP.md and
+# Landed so far: Phase 0 PR 10 (workflows, GHCR publish, ci-required) and Phase 0 PR 12 (supply
+# chain), whose three controls are now all real — action pinning as PIN001 in scripts/repo-gates.sh,
+# `security / licences` over scripts/licence-gate.sh, and `security / govulncheck`. All three are
+# required jobs and none is `continue-on-error`. See ROADMAP.md and
 # docs/design/06-cicd-and-release.md.
 #
 # BUDGET — this is an SLO, not an aspiration. A non-draft PR reaches `ci-required` green in
@@ -15,10 +18,15 @@
 # would put e2e past nine minutes on its own. ci-budget.yml measures the last 200 runs weekly.
 #
 # ACTION PINS — third-party actions are pinned to a full commit SHA with the version in a trailing
-# comment. The digests below are UNVERIFIED placeholders in the correct shape: Phase 0 PR 12 adds
-# `make verify-action-pins`, which resolves every trailing-comment tag against the upstream repo and
-# fails on a mismatch, and Renovate's `helpers:pinGitHubActionDigests` maintains them thereafter.
-# Do not add an action without a SHA — `lint / repo` fails on any `uses:` ending in a bare tag.
+# comment. Do not add an action without a SHA: `lint / repo` fails on any `uses:` ending in a bare
+# tag (PIN001), and Renovate's `helpers:pinGitHubActionDigests` maintains the digests thereafter.
+#
+# What is NOT yet checked: that each digest is the commit its trailing comment claims. PIN001
+# asserts the SHAPE of a pin, not its truth, so a digest that does not match its `# v7.0.1` comment
+# passes today. `make verify-action-pins` is currently an alias for the same script and adds
+# nothing. Resolving each tag against the upstream repository needs authenticated, rate-limited
+# GitHub API calls from a lint job — a non-hermetic gate that is its own design question, tracked
+# separately. Treat the digests as unverified until it lands.
 
 name: ci
 
@@ -81,6 +89,10 @@ jobs:
             build: &build
               - 'Makefile'
               - '.github/actions/setup-toolchain/**'
+              # The gate scripts. Their negative fixtures live in test/repo and run under
+              # `make test`, so a change here must reach `test / integration` — without this a
+              # scripts-only PR would edit a gate and run none of the tests that prove it fires.
+              - 'scripts/**'
             go:
               - *build
               - '**/*.go'
@@ -160,6 +172,51 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
       - run: make lint-web # eslint, prettier --check
+
+  # ---------------------------------------------------------------------------------------------
+  # security — the supply-chain gates.
+  #
+  # Both are UNCONDITIONAL, and deliberately so. `scripts/**` is in no path filter, so a job whose
+  # own definition lives there and which gated itself on `changes` would be the exact defect the
+  # filters comment above warns about: a gate that stops running when the file defining it changes.
+  # Neither job is on the critical path (changes -> build/binary -> test/e2e), so running them on
+  # every PR costs no wall-clock against the budget.
+  #
+  # Neither is `continue-on-error`, and both are asserted in ci-required's always-on list below.
+  # ---------------------------------------------------------------------------------------------
+  security-licences:
+    name: security / licences
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+      - name: Dependency licence gate
+        run: make licence-gate
+        # Fails on any GPL, AGPL, LGPL or CC BY-NC licence in the RUNTIME module graph
+        # (`go list -deps ./...`, without -test), with a named rule id and the module at fault:
+        #   LIC001  a runtime dependency is under a denied licence
+        #   LIC002  a runtime dependency's licence could not be identified — the gate fails closed
+        # Modules reachable only from a dependency's own test binary are out of scope: they are not
+        # linked into dkp. This project is Apache-2.0 and must not take a copyleft runtime dep.
+
+  security-govulncheck:
+    name: security / govulncheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+          tools: "govulncheck"
+      - name: Reachable dependency vulnerabilities
+        run: make govulncheck
+        # `govulncheck ./...` — call-graph analysis, so only vulnerabilities that are actually
+        # reachable from this module's code are reported. That is what keeps the signal high enough
+        # that people act on it rather than learning to skim past it.
 
   typecheck:
     name: typecheck
@@ -564,6 +621,8 @@ jobs:
       - lint-repo
       - lint-go
       - lint-web
+      - security-licences
+      - security-govulncheck
       - typecheck
       - codegen-drift
       - spec-drift
@@ -605,7 +664,8 @@ jobs:
           # 2. Positive assertion — these jobs are unconditional and MUST have actually run.
           #    If one of them is "skipped", somebody added an `if:` that should not exist.
           missing=$(jq -rn --argjson r "$RESULTS" '
-            ["changes","lint-repo","typecheck","codegen-drift","build-binary"]
+            ["changes","lint-repo","typecheck","codegen-drift","build-binary",
+             "security-licences","security-govulncheck"]
             | map(select($r[.].result != "success")) | join(", ")')
           if [ -n "$missing" ]; then
             echo "::error::ci-required: always-on jobs did not run: ${missing}"

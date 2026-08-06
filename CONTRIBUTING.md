@@ -132,7 +132,7 @@ and `DCO`. Everything else reports into `ci-required`.
 | `lint` | `go` (gofumpt, vet, golangci-lint, staticcheck) · `web` (eslint, prettier, `tsc --noEmit`) · `repo` (grep gates + the licence firewall) |
 | `test` | `go-unit` (`-race -shuffle=on`) · `go-integration` · `contract` (oasdiff breaking-change, `operationId` set diff, SDK regen diff) · `migrations` · `importer` · `e2e` |
 | `build` | `binary` (pnpm build → `go build`, uploads the artifact every other job reuses) · `image` |
-| `security` | `govulncheck` · `licenses` · `secrets` (gitleaks) |
+| `security` | `govulncheck` (`govulncheck ./...`, reachable vulnerabilities) · `licences` (GPL/AGPL/LGPL/CC BY-NC in the runtime module graph). Both unconditional and required. `secrets` (gitleaks) is not wired up yet — see SECURITY.md |
 | `docs` | link resolution, Pages build, executable fenced blocks |
 | `advisory` | image CVEs, bundle size, image size, operation coverage |
 

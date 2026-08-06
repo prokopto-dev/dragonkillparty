@@ -62,6 +62,8 @@ GOFUMPT_VERSION        ?= v0.11.0
 GOIMPORTS_VERSION      ?= v0.48.0
 # renovate: datasource=go depName=github.com/golangci/golangci-lint/v2
 GOLANGCI_LINT_VERSION  ?= v2.12.2
+# renovate: datasource=go depName=golang.org/x/vuln
+GOVULNCHECK_VERSION    ?= v1.6.0
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -71,7 +73,8 @@ endef
 
 .PHONY: help setup dev gen test-unit test test-importer lint vet migration seed docker check \
         build clean fmt verify-generated verify-commands \
-        lint-repo lint-go lint-web bench-clone verify-action-pins docs-build docs-links verify-spec \
+        lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
+        docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
         test-property test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
         upgrade-ladder-enumerate soak-jobs smoke-local nightly-report status \
@@ -106,6 +109,8 @@ setup:
 	@$(GO) install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
 	@printf '  installing golangci-lint $(GOLANGCI_LINT_VERSION)\n'
 	@$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@printf '  installing govulncheck $(GOVULNCHECK_VERSION)\n'
+	@$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@printf '\033[32m  toolchain installed\033[0m into %s\n' '$(GOTOOLS_BIN)'
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		printf '\033[31m  installed but not on PATH\033[0m — every make target adds %s itself, so\n' '$(GOTOOLS_BIN)'; \
@@ -137,8 +142,8 @@ test:
 test-importer:
 	@$(call notyet,Phase 5,runs against real EQdkp 2.0.5/2.1.5/2.2.27/2.3.39 fixtures plus the hostile fixture)
 
-## lint: the repo grep gates, golangci-lint and eslint
-lint: lint-repo lint-go lint-web
+## lint: the repo grep gates, the dependency licence gate, golangci-lint and eslint
+lint: lint-repo licence-gate lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
 # Today this runs build + vet only. staticcheck is folded into golangci-lint, so it runs under
@@ -218,6 +223,19 @@ clean:
 lint-repo:
 	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh
 
+# The dependency licence gate. Same `env -u` reasoning as lint-repo above: its negative fixtures
+# point DKP_REPO_ROOT at a fabricated module tree in t.TempDir(), and a value leaking in from a
+# developer's shell would make `make check` inspect the wrong graph while printing that it passed.
+#
+# In `lint` rather than a job of its own because it is one `go list` plus shell, and a licence
+# violation should stop a laptop before it stops CI. It is the cheapest half of the supply-chain
+# gates; govulncheck below is the expensive half.
+# GOFLAGS is stripped alongside DKP_REPO_ROOT: it can carry -mod=vendor or -tags, either of which
+# changes which modules `go list` resolves. A developer's environment must not decide which
+# dependency graph the licence gate inspects.
+licence-gate:
+	@env -u DKP_REPO_ROOT -u GOFLAGS bash scripts/licence-gate.sh
+
 # Hard-fails when golangci-lint is missing. Exiting 0 would report a green `make check` that linted
 # nothing, which is the defect this target exists to prevent.
 # Resolved and invoked inside ONE shell block, via a variable, on purpose.
@@ -236,6 +254,20 @@ lint-go:
 lint-web:
 	@if [ -f web/package.json ]; then cd web && pnpm run lint; \
 	else $(call notyet,Phase 0 PR 6,web/ is not scaffolded yet); fi
+
+# Reachable-vulnerability analysis. Same one-shell-block idiom and the same hard-fail-when-missing
+# rule as lint-go: a govulncheck that exits 0 because the binary is absent is worse than no gate,
+# because CI would report the scan as green.
+#
+# Deliberately NOT in `lint` or `check`, and the reason is network, not time — it runs in about
+# four seconds. It fetches the vulnerability database from vuln.go.dev, and `make check` is expected
+# to work on a laptop with no connectivity; a check that fails on a train teaches people to skip it.
+# CI runs it as its own required job; run it by hand before proposing a dependency.
+govulncheck:
+	@bin=$$(command -v govulncheck 2>/dev/null || echo '$(GOTOOLS_BIN)/govulncheck'); \
+	[ -x "$$bin" ] || { \
+		printf '\033[31m  govulncheck not installed — run make setup\033[0m\n'; exit 1; }; \
+	"$$bin" ./...
 
 # The template-database clone cost, printed as a p50 in the CI log. This is the measurement behind
 # item V4 of docs/development/verify-before-phase-0.md — "integration tests are nearly free" is the
@@ -260,6 +292,14 @@ bench-clone:
 		             printf "  BenchmarkNewDB_Clone  p50 %.3f ms  (p95 %.3f ms, n=%d)\n", \
 		                    ns[int((NR + 1) / 2)] / 1e6, ns[int(NR * 0.95)] / 1e6, NR }'
 
+# Currently an alias for lint-repo, and knowingly so: PIN001 in repo-gates.sh is the only pin check
+# that exists. It asserts every `uses:` carries a 40-character SHA — the SHAPE of a pin.
+#
+# What it does NOT do is verify that a digest is the commit its trailing `# v7.0.1` comment claims.
+# A wrong-but-well-formed digest passes. Closing that needs authenticated, rate-limited GitHub API
+# calls from a lint job, which makes the gate non-hermetic and is its own design question; the
+# header of .github/workflows/ci.yml says so rather than promising it. Kept as a separate target so
+# that work has somewhere to land without changing what CI calls.
 verify-action-pins:
 	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh
 

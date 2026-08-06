@@ -24,8 +24,11 @@ The name "Dragon Kill Party" and the project logo are NOT licensed under the
 Apache License and are not granted by it. Apache-2.0 section 6 grants no
 trademark rights. See TRADEMARK.md.
 
-No third-party source is vendored into this repository. Each release artifact
-ships a THIRD_PARTY_NOTICES.txt generated from the resolved dependency graph.
+No third-party source is vendored into this repository. A CI licence gate
+(scripts/licence-gate.sh) fails the build on any GPL, AGPL, LGPL or CC BY-NC
+licence in the runtime dependency graph. Release artifacts will ship a
+THIRD_PARTY_NOTICES.txt generated from that graph; the release train that
+attaches it has not landed yet, so no published artifact carries one today.
 
 Dragon Kill Party is a clean-room reimplementation. It contains no source code,
 schema text, language strings, or assets from EQdkp Plus, which is licensed
