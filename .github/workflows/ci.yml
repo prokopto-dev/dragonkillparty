@@ -89,16 +89,19 @@ jobs:
             build: &build
               - 'Makefile'
               - '.github/actions/setup-toolchain/**'
-              # The gate scripts. Their negative fixtures live in test/repo and run under
-              # `make test`, so a change here must reach `test / integration` — without this a
-              # scripts-only PR would edit a gate and run none of the tests that prove it fires.
-              - 'scripts/**'
             go:
               - *build
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - '.golangci.yml'
+              # The gate scripts, on the `go` filter alone rather than in the *build anchor.
+              # Their negative fixtures live in test/repo and run under `make test`, so a change
+              # here must reach `test / integration` or a scripts-only PR edits a gate and runs
+              # none of the tests that prove it fires. Putting them in *build would have been the
+              # lazy way to get that, and would also drag in the web, api, docs and importer jobs,
+              # none of which can be affected by a shell gate.
+              - 'scripts/**'
             web:
               - *build
               - 'web/**'
