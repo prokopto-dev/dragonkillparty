@@ -73,16 +73,17 @@ step 'Gate 1/5  architectural tests (security · permission · operationId · id
 
 if ! have_tool go; then
     cannot 'architectural tests' 'go is not on PATH. Run: make setup'
-elif ! have_path internal/api; then
-    cannot 'architectural tests' 'internal/api does not exist yet (Phase 0 PR 4 mounts Huma).'
-elif ! compgen -G 'internal/api/*_test.go' >/dev/null; then
-    cannot 'architectural tests' \
-        'no test files in internal/api. arch_test.go lands in Phase 0 PR 4; until it does, check
-         internal/api/EXAMPLE_ENDPOINT.md "What the architectural tests will reject" by hand.'
-elif go test -count=1 -run 'TestArch' ./internal/api/... ; then
-    pass 'architectural tests'
-else
+elif ! have_path internal/api/arch_test.go; then
+    # `go test -run TestArch` exits 0 when nothing matches, so a missing arch_test.go would read as
+    # a PASS rather than as a gate that never ran. This branch existed until Phase 0 PR 4 to say
+    # "arch_test.go lands in PR 4"; it now guards against its deletion.
+    fail 'architectural tests: internal/api/arch_test.go is missing, so this gate would pass without running'
+elif ! go test -count=1 -run 'TestArch' ./internal/api/... ; then
     fail 'architectural tests'
+elif ! go test -count=1 -list 'TestArch' ./internal/api/... | grep -q '^TestArch'; then
+    fail 'architectural tests: no TestArch* test exists, so `go test -run TestArch` passed vacuously'
+else
+    pass 'architectural tests'
 fi
 
 # ---------------------------------------------------------------------------
@@ -95,10 +96,9 @@ if ! have_target verify-generated; then
         'no verify-generated target in the Makefile. Add it (and its AGENTS.md row) before relying
          on this gate; it is `make gen` followed by `git diff --exit-code`.'
 elif ! have_path "$SPEC"; then
-    # Without a committed spec the target is a stub that exits 0, which would read as a pass.
-    cannot 'generated-artefact drift' \
-        "$SPEC does not exist yet, so make verify-generated is a no-op stub. This gate is real from
-         Phase 0 PR 4."
+    # The spec has been committed since Phase 0 PR 4, so reaching this branch means it was deleted
+    # rather than never written — which makes verify-generated inspect one fewer tree in silence.
+    fail "generated-artefact drift: $SPEC is missing. It is a committed generated artefact — run \`make gen\`."
 elif make verify-generated; then
     if git diff --quiet -- "$SPEC" internal/store/sqlitegen clients web/src/api 2>/dev/null; then
         pass 'generated artefacts are in sync'
@@ -117,7 +117,7 @@ step "Gate 3/5  oasdiff breaking-change check vs ${BASE_REF}"
 if ! have_tool oasdiff; then
     cannot 'oasdiff' 'oasdiff is not on PATH. Run: make setup'
 elif ! have_path "$SPEC"; then
-    cannot 'oasdiff' "$SPEC does not exist yet (Phase 0 PR 4 commits the first spec)."
+    fail "oasdiff: $SPEC is missing. It has been committed since Phase 0 PR 4 — run \`make gen\`."
 elif ! git rev-parse --verify --quiet "${BASE_REF}" >/dev/null; then
     cannot 'oasdiff' "base ref ${BASE_REF} not found. Run: git fetch origin main"
 elif ! git show "${BASE_REF}:${SPEC}" > "${TMPDIR_V}/base.json" 2>/dev/null; then

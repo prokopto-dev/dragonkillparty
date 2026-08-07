@@ -21,16 +21,18 @@ const healthzAttempts = 50
 // TestServe_UnreadableDatabasePath_HealthzStillReturns200 fences canonical conventions §13:
 // /healthz must never touch the database.
 //
-// READ THIS ASSERTION HONESTLY. It is vacuously true today. There is no database code anywhere in
-// this repo — serve reads DKP_DB_PATH into a config field and nothing opens it — so no change to
-// today's code could make this test fail, and passing it proves nothing about today's behaviour.
+// THIS ASSERTION IS NO LONGER VACUOUS, and the change is worth recording because the comment here
+// used to say the opposite. Until PR 3 there was no database code at all — serve read DKP_DB_PATH
+// into a config field and nothing opened it — so no change to the code could have made this test
+// fail. PR 3 landed migrate-on-boot and the readiness checker, and both open that path; PR 4 put a
+// Huma mount and two middleware layers in front of the handler. The unreadable path below is now
+// genuinely exercised on the boot path, and /healthz answering 200 through it is a real result.
 //
-// Its entire value is in the future. PR 3 adds migrate-on-boot, and with it the first moment where
-// making /healthz "useful" (ping the DB, check the migration version) looks like an improvement.
-// It is not: Docker's HEALTHCHECK calls /healthz, and a healthcheck that fails during a long
-// migration makes Docker kill the container mid-migration. This test is the tripwire that goes red
-// on the day someone reaches for that improvement. It is installed before the code it gates, which
-// is the point, not a hole.
+// Why it matters: Docker's HEALTHCHECK calls /healthz, and a healthcheck that fails during a long
+// migration makes Docker kill the container mid-migration, which is how a guild loses its ledger.
+// This is the tripwire that goes red on the day someone makes /healthz "useful" by pinging the
+// database or reporting the migration version. PR 4 considered making it a Huma operation and
+// decided against it for a related reason — see internal/api/health.go.
 //
 // No t.Parallel here, deliberately: t.Setenv panics in a parallel test. The env var is the subject
 // of the test, so it wins over the house rule — and the conflict is noted rather than hidden.

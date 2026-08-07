@@ -42,27 +42,17 @@ type ReadyChecker interface {
 	Ready() ReadyReport
 }
 
-// readyBody is the response when no checker is wired. It is not the same thing as "ready": a mux
-// built without a checker is a programming error in cmd/, and reporting ready would hide it behind
-// a green load-balancer probe.
+// readyUnwired is the response when a checker was registered but is nil. It is not the same thing
+// as "ready": a mux built that way is a programming error in cmd/, and reporting ready would hide it
+// behind a green load-balancer probe.
+//
+// Note that Config.Readiness == nil does not reach here — New omits the route entirely in that case,
+// preserving the split PR 3 introduced. This value covers a non-nil interface holding a nil
+// implementation, which is the shape that survives a compile and fails at 3am.
 var readyUnwired = ReadyReport{
 	Check:  "migrations",
 	State:  ReadyStateFailed,
 	Detail: "no readiness checker configured",
-}
-
-// NewMuxWithReadiness returns the router with /readyz backed by checker.
-//
-// Kept separate from NewMux so that PR 1's caller and every test that only wants /healthz stay
-// unchanged, and so the dependency direction is visible: readiness needs the database, /healthz
-// must never touch it, and the two endpoints are wired from different places on purpose.
-func NewMuxWithReadiness(checker ReadyChecker) *http.ServeMux {
-	mux := NewMux()
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		handleReadyz(w, r, checker)
-	})
-
-	return mux
 }
 
 // handleReadyz answers the readiness probe.

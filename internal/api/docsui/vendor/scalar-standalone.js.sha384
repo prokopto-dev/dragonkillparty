@@ -1,0 +1,19 @@
+# Subresource-integrity hash of the UNCOMPRESSED upstream asset.
+#
+# Format: <base64 sha384>  <upstream URL>
+# Same role as scripts/atlas.sha256 — a pin that makes "where did this binary blob come from?"
+# answerable without trusting the person who committed it.
+#
+# The file next to this one is the gzip of that asset, not the asset itself: 984 KB against
+# 3,544,608 bytes, in git history forever and in every binary. TestDocsUI_VendoredAsset_MatchesUpstreamHash
+# decompresses it and checks it against the hash below, so the compression cannot hide a substitution.
+#
+# This exact value is also the SRI hash Huma pins in its own CDN-based docs handler
+# (huma/v2@v2.39.1 api.go:684), which is where it was cross-checked from — two independent sources
+# agreeing on the bytes.
+#
+# To refresh: download the new standalone.js, verify its hash against the upstream package, gzip -9 -n
+# (the -n matters: without it gzip stores a timestamp and the committed file changes on every rebuild),
+# and update this file, the URL below and internal/api/docsui/docsui.go's version constant together.
+
+tMz7GAo6dMy55x9tLFtH+sHtogji6Scmb+feBR31TAHmvSPRUTboK9H3M5NFaP4R  https://unpkg.com/@scalar/api-reference@1.44.20/dist/browser/standalone.js

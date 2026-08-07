@@ -229,7 +229,7 @@ of that one declaration. **The spec is derived from these types**, which is why 
 | Missing `Security` | `arch_test.go` security coverage |
 | Missing `x-dkp-permission` | `arch_test.go` permission coverage |
 | A mutating `POST` under `/raids`, `/awards`, `/adjustments`, `/bid-sessions`, `/raid-submissions`, `/ledger` without a required `Idempotency-Key` | `arch_test.go` idempotency coverage |
-| `Hidden: true` outside the four-item allowlist | `arch_test.go` no-hidden-operations |
+| `Hidden: true` outside `api.HiddenOperationAllowlist()` | `arch_test.go` no-hidden-operations |
 | A bespoke list envelope instead of the shared cursor helper | `arch_test.go` envelope shape |
 | A route declared outside `internal/api` | `arch_test.go` package scan vs registry |
 

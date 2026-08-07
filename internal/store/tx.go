@@ -10,9 +10,15 @@ import (
 
 // DBTX is the handle a transaction body runs against.
 //
-// It is deliberately the shape sqlc generates against, so PR 3 can construct
-// `sqlitegen.New(tx)` inside Tx and change the callback to `func(store.Queries) error` without
-// touching this file's locking, rollback or panic handling.
+// It is deliberately the shape sqlc generates against, so that a later PR can construct
+// `sqlitegen.New(tx)` inside Tx and change the callback to `func(store.Queries) error` — the form
+// .claude/rules/store-and-sql.md documents — without touching this file's locking, rollback or
+// panic handling.
+//
+// That change belongs to PR 5. This comment named PR 3 until PR 4 corrected it: PR 3 did not make
+// the change, because there were no callers and it would have churned tests for no gain, and PR 4
+// did not either, because its one endpoint (GET /api/v1/meta) reads no database. PR 5 writes the
+// first query-backed endpoint, which is the moment the new signature has a caller to justify it.
 //
 // It is an interface rather than *sql.Tx because "never pass a *sql.Tx into a domain package"
 // (.claude/rules/store-and-sql.md) — but note that DBTX is not a licence either. Its four methods

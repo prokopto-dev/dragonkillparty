@@ -1,0 +1,293 @@
+{
+  "components": {
+    "schemas": {
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "A per-field reason code",
+            "type": "string"
+          },
+          "location": {
+            "description": "Where the error occurred, e.g. 'body.items[3].tags'",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable explanation of this one problem",
+            "type": "string"
+          },
+          "suggestions": {
+            "description": "Legal values or a corrected form, when they can be named",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "MetaBody": {
+        "additionalProperties": false,
+        "properties": {
+          "api_versions": {
+            "description": "Versioned API prefixes this instance serves",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "server": {
+            "$ref": "#/components/schemas/MetaServer",
+            "description": "Build identity of the running binary"
+          },
+          "spec_version": {
+            "description": "Version of the OpenAPI contract this instance implements",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "api_versions",
+          "spec_version"
+        ],
+        "type": "object"
+      },
+      "MetaServer": {
+        "additionalProperties": false,
+        "properties": {
+          "built_at": {
+            "description": "Build timestamp as stamped at link time, or \"unknown\"",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Git commit the binary was built from, or \"none\"",
+            "type": "string"
+          },
+          "version": {
+            "description": "Release version, or \"dev\" for an unstamped build",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "commit",
+          "built_at"
+        ],
+        "type": "object"
+      },
+      "ProblemDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable discriminator from a closed enum",
+            "enum": [
+              "unauthenticated",
+              "token_invalid",
+              "token_expired",
+              "token_revoked",
+              "token_in_query_string",
+              "session_required",
+              "step_up_required",
+              "insufficient_scope",
+              "permission_denied",
+              "not_found",
+              "method_not_allowed",
+              "unsupported_media_type",
+              "payload_too_large",
+              "validation_failed",
+              "unknown_field",
+              "invalid_filter",
+              "invalid_sort_field",
+              "invalid_expand",
+              "cursor_invalid",
+              "cursor_filter_mismatch",
+              "bad_request",
+              "idempotency_key_required",
+              "idempotency_key_reused",
+              "idempotency_key_in_flight",
+              "precondition_required",
+              "precondition_failed",
+              "conflict",
+              "unknown_character",
+              "unknown_item",
+              "ambiguous_item",
+              "artifact_unparseable",
+              "submission_stale",
+              "raid_finalized",
+              "invalid_field_value",
+              "insufficient_balance",
+              "invariant_violation",
+              "ledger_immutable",
+              "batch_already_reversed",
+              "pool_strategy_mismatch",
+              "pool_is_mirroring",
+              "session_state_invalid",
+              "session_closed",
+              "outbid",
+              "invalid_increment",
+              "hold_conflict",
+              "bid_not_permitted",
+              "sealed_bids_not_revealed",
+              "session_already_settled",
+              "resolution_failed",
+              "rate_limited",
+              "setup_required",
+              "engine_unsupported",
+              "service_unavailable",
+              "internal_error"
+            ],
+            "type": "string"
+          },
+          "detail": {
+            "description": "Explanation specific to this occurrence",
+            "type": "string"
+          },
+          "errors": {
+            "description": "Per-field problems, populated for validation failures",
+            "items": {
+              "$ref": "#/components/schemas/ErrorDetail"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "instance": {
+            "description": "URI reference identifying this specific occurrence",
+            "type": "string"
+          },
+          "meta": {
+            "additionalProperties": {},
+            "description": "Structured, code-specific context a client can act on",
+            "type": "object"
+          },
+          "request_id": {
+            "description": "Correlation id, echoed in the X-Request-Id header",
+            "type": "string"
+          },
+          "status": {
+            "description": "HTTP status code",
+            "format": "int64",
+            "type": "integer"
+          },
+          "title": {
+            "description": "Short, stable summary of the problem type",
+            "type": "string"
+          },
+          "type": {
+            "description": "URI reference to documentation for this error type",
+            "format": "uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "DKP and guild management for Project 1999 EverQuest raiding guilds.",
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache-2.0"
+    },
+    "title": "Dragon Kill Party",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/meta": {
+      "get": {
+        "description": "Returns the running binary's version, the API versions this instance serves, and the version of the OpenAPI contract it implements. Unauthenticated: a client needs this before it can decide how to authenticate.",
+        "operationId": "getMeta",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetaBody"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "security": [],
+        "summary": "Get server capabilities and build information",
+        "tags": [
+          "meta"
+        ],
+        "x-dkp-permission": "public"
+      }
+    }
+  },
+  "webhooks": {
+    "ping": {
+      "post": {
+        "description": "A no-op event that exists to prove the `webhooks` block round-trips through the spec pipeline. Replaced by the generated event catalogue; it is not emitted by any code and should not be subscribed to.",
+        "operationId": "webhookPing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "event": {
+                    "description": "The event name.",
+                    "enum": [
+                      "ping"
+                    ],
+                    "type": "string"
+                  },
+                  "occurred_at": {
+                    "description": "RFC 3339 timestamp, always UTC (canonical §2).",
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "event",
+                  "occurred_at"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The consumer accepted the event. Any 2xx is treated as success."
+          }
+        },
+        "summary": "Placeholder webhook event",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    }
+  }
+}

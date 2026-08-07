@@ -258,9 +258,9 @@ jobs:
           tools: "atlas sqlc"
       - name: Regenerate everything and fail on a dirty tree
         run: make verify-generated
-        # Today: atlas.sum, the schema/migration sync assertion, and sqlc. huma -> openapi.json
-        # lands in Phase 0 PR 4; openapi-typescript, openapi-python-client and the generated docs
-        # reference pages land in Phase 0 PR 6. On failure this prints exactly one line:
+        # Today: atlas.sum, the schema/migration sync assertion, sqlc, and huma -> openapi.json.
+        # openapi-typescript, openapi-python-client and the generated docs reference pages land in
+        # Phase 0 PR 6. On failure this prints exactly one line:
         # "generated files are stale — run 'make gen' and commit".
 
   spec-drift:
@@ -271,15 +271,29 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The operationId-rename check compares against origin/main, which a shallow clone does
+          # not have. Without this the gate reports the base revision as unavailable and fails.
+          fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # scripts/verify-spec.py itself needs only python3, which the runner has. Go is here
+          # because the gate is worthless against a stale committed spec, and `make gen` needs a
+          # compiler to regenerate one.
+          go: "true"
       - run: make verify-spec
         # Asserts properties of openapi/openapi.json that codegen-drift cannot see because they are
         # true of any regenerated file: every operation has an explicit lowerCamelCase operationId,
         # operationIds are unique and none was RENAMED versus origin/main (a renamed operationId is
         # a breaking SDK change with an unchanged HTTP surface), every operation declares Security
         # and x-dkp-permission, every x-dkp-permission key exists in internal/authz/catalogue.go,
-        # every money field is an unquoted integer named *_centipoints, and `Hidden: true` appears
-        # only on the five operations canonical conventions section 7 permits.
+        # and every money field is an unquoted integer named *_centipoints.
+        #
+        # The `Hidden: true` allowlist of canonical conventions section 7 was listed here until
+        # PR 4 and has moved to internal/api/arch_test.go, where it is implementable: Huma never
+        # adds a hidden operation to `paths`, so a hidden operation is ABSENT from this document
+        # and reading the JSON cannot distinguish one that was correctly hidden from one that was
+        # never written. The registry can. See TestArch_HiddenOperations_AreAllowlisted.
 
   # ---------------------------------------------------------------------------------------------
   # test — four fast suites split so a failure names its own category in the checks list.

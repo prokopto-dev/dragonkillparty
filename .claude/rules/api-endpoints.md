@@ -15,7 +15,7 @@ gets wrong from memory.
 
 | You want | Huma v2 (correct) | Huma v1 (does not exist here) |
 |---|---|---|
-| Adapter | `humachi.New(router, huma.DefaultConfig(...))` | `huma.NewRouter(...)` |
+| Adapter | `humago.New(mux, cfg)` — see below | `huma.NewRouter(...)` |
 | Declare an operation | `huma.Register(api, huma.Operation{...}, handler)` | `huma.Resource(...).Get(...)` |
 | Handler | the third argument to `huma.Register` | `huma.Operation{Handler: ...}` |
 | Handler signature | `func(ctx context.Context, in *In) (*Out, error)` | `func(w, r)` / positional params |
@@ -23,6 +23,20 @@ gets wrong from memory.
 
 If you are typing `huma.Resource`, `huma.NewRouter`, or an `Operation` literal with a `Handler`
 field, stop — you are writing v1 and it will not compile.
+
+### The adapter is `humago`, not `humachi`
+
+This file said `humachi.New(router, ...)` over a `chi.Router` until Phase 0 PR 4, which mounted Huma
+and chose otherwise. `humago` adapts a Go 1.22+ `net/http.ServeMux`, which is what `internal/api`
+already was, and it imports nothing outside the Huma module — so the mount added **one** dependency
+rather than two, and AGENTS.md requires a human to approve each. `humachi` bought nothing PR 4 used:
+the middleware here are plain `http.Handler` wrappers, and Go's own mux supplies method-aware routing
+and a correct `405` with `Allow`.
+
+You do not call the adapter yourself. `api.New(api.Config{...})` builds the whole tree —
+`internal/api/server.go` — and `api.NewHumaAPI` builds the registry alone for `dkp openapi` and the
+architectural tests. A second assembly site is how the committed spec starts describing a server
+nobody runs.
 
 ## The Operation struct — every field below is mandatory
 
@@ -37,7 +51,11 @@ huma.Register(api, huma.Operation{
         {"pat": {"raids:write"}},                  // PAT scope, family:verb
         {"session": {}},                           // cookie sessions carry no scope
     },
-    Metadata:      map[string]any{"x-dkp-permission": "raid.tick.create"}, // resource.action
+    // Extensions, NOT Metadata. huma.Operation.Metadata is tagged `yaml:"-"` and never reaches the
+    // OpenAPI document, so a permission declared there emits a spec with no x-dkp-permission at all
+    // — and `make verify-spec` asserts the property against the committed JSON. This file said
+    // Metadata until Phase 0 PR 4 found that following it verbatim fails the gate it describes.
+    Extensions:    map[string]any{"x-dkp-permission": "raid.tick.create"}, // resource.action
     DefaultStatus: http.StatusCreated,
     Errors: []int{http.StatusBadRequest, http.StatusForbidden, http.StatusConflict,
         http.StatusUnprocessableEntity},
@@ -52,8 +70,14 @@ huma.Register(api, huma.Operation{
   key is a **boot failure**. Adding one is a schema change — stop and ask.
 - Session-only operations (token minting, role edits, backup download, bulk PII read, import commit)
   declare `{"session": {}}` **only**, with no `pat` alternative. There is no all-powerful token.
+- A **public** operation declares `Security: []map[string][]string{}` — explicitly empty, never
+  omitted. In OpenAPI those mean opposite things: `security: []` overrides any document-level
+  requirement, an absent key inherits it. Its `x-dkp-permission` is the `public` sentinel
+  (`api.PermissionPublic`); `self` is the other. Both are allowlisted rather than catalogue keys.
 - `Hidden: true` is allowed only on `/healthz`, `/readyz`, `/metrics`, the OAuth callback and the
-  compat shim.
+  compat shim — the list is `api.HiddenOperationAllowlist()`. Note it carries **four** entries, not
+  five: the OAuth callback's path is not written down anywhere in this repository, and guessing it
+  would put an unverified path in a merge-blocking gate. Whoever adds that route adds its path.
 
 **One file per resource** under `internal/api/`. Never a shared registry file — it conflicts on
 every parallel feature PR.
@@ -119,8 +143,19 @@ other collection uses the opaque ULID cursor. The outbox sequence is `event_seq`
 ```
 
 `code` is what SDKs discriminate on — a `type` URI is a documentation address and will move. The
-enum is **closed**, lives in `internal/api/errors.go`, and adding a member is a spec change that
-needs a docs page at the `type` URI or the docs-sync check fails.
+enum is **closed** and lives in `internal/api/errors.go`. Its members are exactly the catalogue
+published in [`docs/api/errors.md`](../../docs/api/errors.md), and
+`TestErrors_Enum_MatchesPublishedCatalogue` compares the two in both directions and in order.
+
+**Adding a member means adding a row to `docs/api/errors.md` in the same change.** That is the whole
+obligation today, and it is what the test enforces. The per-code pages at the `type` URI
+(`reference/errors/<code>.md`) are **generated from this enum in phase 2** — see `docs/README.md`'s
+generated-pages table — so they are not something to hand-write when adding a code now; getting the
+enum and the guide right is what makes them correct when they are generated.
+
+Do not add an `enum` struct tag to `ProblemDetail.Code`. `Code` implements `huma.SchemaProvider` and
+supplies its own schema from `AllCodes()`, so the published enum is derived rather than copied — a
+tag would reintroduce the hand-maintained second list that removal was the point of.
 
 Codes you will reach for most: `validation_failed` (422, populate `errors[]` with
 `location`/`code`/`message`/`suggestions`), `not_found`, `permission_denied`, `insufficient_scope`

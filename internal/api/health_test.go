@@ -14,7 +14,7 @@ func TestHealthz_GET_Returns200WithOKBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
-	NewMux().ServeHTTP(rec, req)
+	New(Config{}).ServeHTTP(rec, req)
 
 	res := rec.Result()
 	t.Cleanup(func() { _ = res.Body.Close() })
@@ -43,7 +43,7 @@ func TestHealthz_WrongMethod_IsNotRouted(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(tc.method, "/healthz", nil)
 
-			NewMux().ServeHTTP(rec, req)
+			New(Config{}).ServeHTTP(rec, req)
 
 			res := rec.Result()
 			t.Cleanup(func() { _ = res.Body.Close() })
