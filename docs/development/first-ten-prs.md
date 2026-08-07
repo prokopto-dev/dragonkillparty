@@ -216,6 +216,25 @@ openapi/openapi.json                          # GENERATED, committed
     is a deliberate edit a reviewer sees.
   - the route is declared inside `internal/api`, proven by an AST scan of every package for
     `huma.Register` and comparing the set to the registry (law 1).
+
+  > **Corrected in PR 4, on both halves of the Hidden bullet.**
+  >
+  > **It is read from the source, not the registry, because the registry cannot see it.**
+  > `huma.Register` runs `else if !op.Hidden { oapi.AddOperation(&op) }`, so a hidden operation is
+  > never added to `Paths` and is indistinguishable from one that was never written. The same AST
+  > scan that proves law 1 reads `Hidden` and `Path` out of the `huma.Operation` literal.
+  > `.github/workflows/ci.yml` had listed this assertion under `make verify-spec`, where it is even
+  > less implementable — the committed JSON holds strictly less than the registry — and that comment
+  > is corrected in the same change.
+  >
+  > **The allowlist has four entries, not five, and is a function rather than a `const` slice.** Go
+  > has no const slices; a package-level `var` would be the mutable global state
+  > `.claude/rules/go-idioms.md` bans, so `api.HiddenOperationAllowlist()` returns a fresh literal —
+  > which preserves the property this bullet actually asks for, that a new entry is a visible edit.
+  > The fifth path is missing because the OAuth callback's route is not written down anywhere in
+  > this repository: canonical §7 and `docs/design/02-api-design.md:609` both name it in prose and
+  > neither gives a path. Guessing one would put an unverified value in a merge-blocking gate. The
+  > omission is the correct behaviour — the PR that adds that route adds its path here.
 - `TestArch_MissingOperationID_FailsBuild`: deleting `OperationID` from `getMeta` fails CI.
 - `TestArch_RouteOutsideAPIPackage_FailsBuild`: a fixture package calling `huma.Register` fails CI.
 - `go run ./cmd/dkp openapi` output equals the committed `openapi/openapi.json` byte for byte.
@@ -227,6 +246,24 @@ openapi/openapi.json                          # GENERATED, committed
   body and in every `slog` line for the request.
 - `/openapi.json` and `/docs` (embedded Scalar) are served from the binary with no network fetch —
   asserted by a test that runs with outbound networking blocked.
+
+  > **Corrected in PR 4.** Both paths are served under the version prefix, as
+  > `/api/v1/openapi.json` and `/api/v1/docs`. This criterion wrote them at the root while
+  > `docs/api/getting-started.md:162-163` — the page a user reads — and
+  > `docs/design/02-api-design.md:170-171` both put them under `/api/v1`, and that document's §4.1
+  > preamble states every path in its table is relative to `/api/v1` unless marked otherwise, which
+  > `/healthz` and `/readyz` are and these are not. Two sources to one, canonical conventions silent,
+  > so this line was the outlier. Recorded rather than quietly picked, per AGENTS.md.
+  >
+  > **The "outbound networking blocked" test was written differently, and deliberately.** Blocking
+  > egress from inside a Go test is not portable — it would run on Linux CI and skip on the macOS
+  > laptops, which is the half that matters for a contributor. `TestDocs_Page_FetchesNothingFromThe`
+  > `Network` asserts the stronger property instead: the served HTML contains no external URL at
+  > all, so there is nothing to block. A blocked-network test passes both when a page fetches
+  > nothing and when it fetches something and degrades quietly; this one does not.
+  > `TestDocs_Page_CSPForbidsEveryExternalOrigin` adds the enforcement half — `default-src 'none'`
+  > with a self-only allowlist, so the browser refuses an external fetch even if a future Scalar
+  > build attempts one.
 
 **Also resolves.** Item V7 of `verify-before-phase-0.md`: emit one placeholder OpenAPI 3.1 `webhooks`
 entry and confirm the document still parses. The three-generator confirmation completes in PR 6.

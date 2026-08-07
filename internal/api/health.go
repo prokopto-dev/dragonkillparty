@@ -6,37 +6,28 @@ import "net/http"
 // the byte sequence is part of the contract and a test asserts on it.
 const healthBody = `{"status":"ok"}`
 
-// NewMux returns the HTTP router for the binary.
-//
-// This is the PR 1 skeleton: a plain *http.ServeMux carrying the single
-// infrastructure route. PR 4 introduces the Huma mount, and the concrete
-// *http.ServeMux return type is expected to change then — .claude/rules/
-// api-endpoints.md specifies humachi.New over a chi.Router, which is not a
-// ServeMux. Treat this signature as settled for PR 1 and as PR 4's to revise,
-// not as a contract PR 4 has to work around. cmd/dkp/serve.go is the only
-// caller.
-func NewMux() *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", handleHealthz)
-	return mux
-}
-
 // handleHealthz answers the container HEALTHCHECK with 200 and {"status":"ok"}.
 //
 // Four things about this handler are load-bearing, and each is easy to destroy
 // by accident. Read all four before changing it.
 //
-//  1. It is pre-Huma by design. Huma does not exist in the repo at PR 1, so a
-//     bare ServeMux handler is the correct shape here, not a shortcut. PR 4
-//     introduces huma.Register for getMeta; whether /healthz itself becomes a
-//     Huma operation or stays a raw handler on the same underlying router is
-//     NOT decided — first-ten-prs.md scopes PR 4 to one route and does not list
-//     this file. Decide it there; do not read this comment as instruction.
+//  1. It is a raw net/http handler, not a Huma operation, and PR 4 DECIDED that
+//     rather than inheriting it. The router it is registered on is now behind a
+//     Huma mount (see server.go), so making it an operation was a live option.
+//     The reason it is not one is /readyz next door: that endpoint answers 503
+//     with a body which is deliberately NOT problem+json, and registering the
+//     pair with Huma would force a choice between breaking that wire contract
+//     and breaking "every error is RFC 9457" (first-ten-prs.md PR 4). Both
+//     endpoints would also be Hidden, so they would be absent from the
+//     published spec either way — all of the coupling, none of the benefit.
+//     health_test.go additionally pins this body byte for byte, which Huma's
+//     content negotiation would put at risk for no gain.
 //
-//  2. If it ever does become a Huma operation, it takes Hidden: true. Canonical
-//     §7 permits Hidden on exactly five paths — /healthz, /readyz, /metrics,
-//     the OAuth callback, and the compat shim — and that allowlist is a const
-//     slice precisely so a sixth entry is a deliberate edit a reviewer sees.
+//  2. If some later change does make it an operation, it takes Hidden: true.
+//     Canonical §7 permits Hidden on exactly five paths — /healthz, /readyz,
+//     /metrics, the OAuth callback, and the compat shim. The allowlist lives in
+//     permissions.go as HiddenOperationAllowlist, and adding an entry is a
+//     deliberate edit a reviewer sees. Nothing sets Hidden today.
 //
 //  3. /healthz is deliberately outside /api/v1. It is infrastructure, not API
 //     surface: no version prefix, no scope, no permission, no SDK method. Do

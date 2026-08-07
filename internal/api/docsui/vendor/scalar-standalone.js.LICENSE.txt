@@ -1,0 +1,40 @@
+Licence of the vendored asset in this directory (scalar-standalone.js.gz).
+
+Named `<asset>.LICENSE.txt` rather than `LICENSE` on purpose: a bare `LICENSE` file inside the
+source tree would be a second top-level-looking licence in a repository whose own licence is
+Apache-2.0, and the licence firewall in canonical conventions §15 is about keeping the difference
+between "this project's licence" and "a bundled third party's licence" unmistakable. The name is
+also what JS bundlers emit for exactly this case.
+
+MIT is compatible with this project's Apache-2.0 and is on the allowlist in scripts/licence-gate.sh
+(the `allowed` function). Note that the gate itself resolves Go modules via `go list -deps` and so
+cannot see this file — the firewall for vendored assets is review, and this file is what a reviewer
+reads.
+
+Upstream: @scalar/api-reference 1.44.20
+Source:   https://unpkg.com/@scalar/api-reference@1.44.20/dist/browser/standalone.js
+Project:  https://github.com/scalar/scalar
+
+---
+
+MIT License
+
+Copyright (c) 2023-present Scalar
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -143,15 +143,16 @@ dev:
 	@$(call notyet,Phase 0 PR 6,needs cmd/dkp and web/ to exist)
 
 ## gen: regenerate ALL generated code — migrations, sqlc, openapi, clients
-# Today: atlas.sum, the schema/migration sync assertion, and sqlc. `dkp openapi ->
-# openapi/openapi.json` lands in Phase 0 PR 4; openapi-typescript and openapi-python-client land
-# with the SPA and the SDKs in Phase 0 PR 6. Each arrives as another line here.
+# Today: atlas.sum, the schema/migration sync assertion, sqlc, and `dkp openapi ->
+# openapi/openapi.json`. openapi-typescript and openapi-python-client land with the SPA and the SDKs
+# in Phase 0 PR 6. Each arrives as another line here.
 #
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
 # its negative fixtures can run against a tree in t.TempDir(), and a value leaking in from a
 # developer's shell would regenerate somebody else's tree while reporting success here.
 gen:
 	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
+	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
@@ -378,8 +379,23 @@ docs-build:
 docs-links:
 	@python3 scripts/check-links.py
 
+# verify-spec: assert the properties of openapi/openapi.json that regenerating it cannot establish.
+#
+# This stub used to say "vacuum lint". It is not vacuum, and the reason is worth recording rather
+# than quietly changing: the properties .github/workflows/ci.yml's spec-drift job specifies —
+# operationId casing and stability, x-dkp-permission resolving against the authz catalogue, money as
+# unquoted integer centipoints — are DKP rules that no general-purpose OpenAPI linter knows. vacuum's
+# own job (an operation must carry a summary, a description and an example, per
+# docs/design/07-documentation-system.md §"Gates") is documentation quality, and it belongs with
+# vale and lychee in Phase 0 PR 11 where the docs site and its gates land. Adding it here would have
+# meant a third pinned tool that did not answer the question the job asks.
+#
+# `env -u DKP_REPO_ROOT` for the reason given above lint-repo. DKP_SPEC_BASE_REF is stripped for the
+# same class of reason: an empty value disables the operationId-rename check, and that switch exists
+# only so the negative fixtures in test/repo can run against a tree with no git history. A value
+# leaking in from a developer's shell would turn a merge-blocking gate green.
 verify-spec:
-	@$(call notyet,Phase 0 PR 4,vacuum lint over openapi/openapi.json)
+	@env -u DKP_REPO_ROOT -u DKP_SPEC_BASE_REF python3 scripts/verify-spec.py
 
 api-breaking:
 	@$(call notyet,Phase 2,oasdiff against main's openapi.json)

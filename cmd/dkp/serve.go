@@ -15,14 +15,17 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 )
 
 const (
-	// dbPathEnv names the SQLite file the server will use once storage exists. serve resolves it
-	// into config and NEVER OPENS IT. That is canonical conventions §13: /healthz must not touch
+	// dbPathEnv names the SQLite file the server uses.
+	//
+	// PR 3 made this real: migrateOnBoot and the readiness adapter both open it. What has NOT
+	// changed is the fence it was put here for — canonical conventions §13, /healthz must not touch
 	// the database, because a DB-touching healthcheck lets Docker kill the container mid-migration.
-	// There is no database code in this repo yet, which is precisely why the fence goes in now.
+	// The database is opened on the boot path and by /readyz, and by nothing that /healthz reaches.
 	dbPathEnv = "DKP_DB_PATH"
 
 	// defaultAddr is the documented default listen address for the single binary.
@@ -169,7 +172,7 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 // runServe binds cfg.addr, serves until ctx is cancelled, then drains within shutdownTimeout.
 //
 // It declares no routes. Law 1: routes are declared only in internal/api, so the whole handler
-// tree arrives as api.NewMux().
+// tree — router, Huma mount and middleware — arrives as api.New(api.Config{...}).
 func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error {
 	// Migrate BEFORE the listener opens. Not for tidiness: a listener bound first would accept
 	// requests during the migration, and the SPA would render half-migrated data as though it were
@@ -198,7 +201,17 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 	}
 
 	srv := &http.Server{
-		Handler:           api.NewMuxWithReadiness(readiness{runner: runner}),
+		Handler: api.New(api.Config{
+			// The link-time stamps, so GET /api/v1/meta can report which build this is to a bot
+			// whose author has no shell access to the box. They are runtime values only: the
+			// committed openapi/openapi.json must not vary with them, which is why the spec's
+			// info.version is api.SpecVersion and not this.
+			Version:   version,
+			Commit:    commit,
+			BuildDate: date,
+			Clock:     clock.System{},
+			Readiness: readiness{runner: runner},
+		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

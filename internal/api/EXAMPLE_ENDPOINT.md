@@ -162,7 +162,10 @@ func registerGuild(api huma.API, svc *guild.Service) {
             {"pat": {"roster:read"}},
             {"session": {}},
         },
-        Metadata:      map[string]any{"x-dkp-permission": "roster.read"},
+        // Extensions, NOT Metadata: huma.Operation.Metadata is tagged `yaml:"-"` and never
+        // reaches the OpenAPI document, so a permission declared there emits a spec with no
+        // x-dkp-permission and fails both arch_test.go and `make verify-spec`.
+        Extensions:    map[string]any{"x-dkp-permission": "roster.read"},
         DefaultStatus: http.StatusOK,
         Errors:        []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound},
     }, func(ctx context.Context, _ *struct{}) (*GuildOutput, error) {
@@ -183,9 +186,9 @@ func registerGuild(api huma.API, svc *guild.Service) {
         // `admin:*` scope and no `admin:settings` scope — inventing one is canonical §6's
         // single biggest prohibition. See docs/design/02-api-design.md §4.2.
         Security: []map[string][]string{{"session": {}}},
-        Metadata: map[string]any{
-            "x-dkp-permission":      "admin.settings",
-            "x-dkp-pat-forbidden":   true,
+        Extensions: map[string]any{
+            "x-dkp-permission":    "admin.settings",
+            "x-dkp-pat-forbidden": true,
         },
         DefaultStatus: http.StatusOK,
         Errors: []int{http.StatusBadRequest, http.StatusForbidden,
@@ -229,7 +232,7 @@ of that one declaration. **The spec is derived from these types**, which is why 
 | Missing `Security` | `arch_test.go` security coverage |
 | Missing `x-dkp-permission` | `arch_test.go` permission coverage |
 | A mutating `POST` under `/raids`, `/awards`, `/adjustments`, `/bid-sessions`, `/raid-submissions`, `/ledger` without a required `Idempotency-Key` | `arch_test.go` idempotency coverage |
-| `Hidden: true` outside the four-item allowlist | `arch_test.go` no-hidden-operations |
+| `Hidden: true` outside `api.HiddenOperationAllowlist()` | `arch_test.go` no-hidden-operations |
 | A bespoke list envelope instead of the shared cursor helper | `arch_test.go` envelope shape |
 | A route declared outside `internal/api` | `arch_test.go` package scan vs registry |
 

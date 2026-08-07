@@ -1,0 +1,158 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humago"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
+	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+)
+
+const (
+	// BasePath is the versioned API prefix. Canonical §7: within v1 the surface is additive only,
+	// and a breaking change mints /api/v2 rather than editing this.
+	BasePath = "/api/v1"
+
+	// SpecVersion is the `info.version` of the OpenAPI document.
+	//
+	// It is the version of the API CONTRACT, not of the binary, and the distinction is load-bearing.
+	// openapi/openapi.json is committed and diff-gated: if this were the ldflags-stamped binary
+	// version, every release build would regenerate a different document and `make verify-generated`
+	// would report drift on a tree nobody edited. The binary's version, commit and build date are
+	// runtime facts and belong in the GET /api/v1/meta response, which is where they are.
+	SpecVersion = "1.0.0"
+
+	// specTitle is `info.title`. It reaches users as the name of the generated SDK packages and the
+	// heading of the reference page, so it is prose rather than an identifier.
+	specTitle = "Dragon Kill Party"
+)
+
+// Config is everything the handler tree needs from the process around it.
+//
+// Every field is a RUNTIME value. None of them may influence the OpenAPI document, because
+// `dkp openapi` has to emit the same bytes on a laptop and in a release build or the drift gate
+// fires on an untouched tree. TestOpenAPI_ConfigVariation_ProducesIdenticalSpec holds that line.
+type Config struct {
+	// Version, Commit and BuildDate are the ldflags stamps from cmd/dkp. They are reported by
+	// GET /api/v1/meta so a bot can tell which build it is talking to.
+	Version   string
+	Commit    string
+	BuildDate string
+
+	// Clock is injected because time.Now is grep-banned outside internal/clock (gate CLOCK001).
+	// A nil Clock falls back to clock.System — New is called from tests that do not care about
+	// time, and making every one of them construct a clock would be ceremony without a reader.
+	Clock clock.Clock
+
+	// Readiness backs GET /readyz. A nil Readiness means the route is not registered at all,
+	// preserving the split PR 3 introduced: /healthz must never touch the database, /readyz must,
+	// and the two are wired from different places so that dependency is visible in the call site.
+	Readiness ReadyChecker
+}
+
+// New builds the complete HTTP handler tree: routes, Huma mount, and middleware.
+//
+// It replaces PR 1's NewMux and PR 3's NewMuxWithReadiness, which internal/api/health.go:12-17
+// explicitly handed to this PR to revise. They were a no-argument constructor and a
+// one-argument constructor over the same router; adding the build stamps, the clock and (in PR 5)
+// a store would have made a third and a fourth, each differing from its neighbour by one field.
+// One Config-taking constructor is the shape that stops growing. cmd/dkp/serve.go and
+// internal/api/health_test.go are the two call sites.
+//
+// The return type is http.Handler rather than *http.ServeMux, and that is the substantive part of
+// the change. The request-id and problem middleware wrap the router, so what a caller mounts is no
+// longer the router itself — and a concrete *http.ServeMux return type would either leak the
+// unwrapped router (letting a caller serve it and silently lose every middleware) or force the
+// middleware to be applied in cmd/, which is where routes are forbidden to be known about.
+//
+// Order matters, outermost first:
+//
+//  1. RequestID — so the id exists before anything can log or fail, including /healthz and /readyz,
+//     which are raw handlers Huma never sees.
+//  2. Problem — so an unrouted path, a method mismatch or a panic still answers problem+json.
+//  3. the router.
+func New(cfg Config) http.Handler {
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System{}
+	}
+
+	mux := http.NewServeMux()
+
+	// Infrastructure routes, deliberately NOT Huma operations and deliberately outside /api/v1.
+	// See handleHealthz for the four reasons; the short version is that /readyz answers 503 with a
+	// body that is not problem+json by design, and registering it with Huma would force a choice
+	// between breaking that wire contract and breaking "every error is RFC 9457".
+	mux.HandleFunc("GET /healthz", handleHealthz)
+
+	if cfg.Readiness != nil {
+		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+			handleReadyz(w, r, cfg.Readiness)
+		})
+	}
+
+	humaAPI := humago.New(mux, humaConfig())
+
+	registerMeta(humaAPI, cfg)
+	registerDocs(mux)
+
+	// Both arguments are the same mux: Problem asks it which pattern would match, then delegates to
+	// it. Two parameters rather than one because the Matcher it needs is an interface and the
+	// handler it wraps is not — a single parameter would force every caller to satisfy both.
+	handler := middleware.Problem(mux, problemRenderer{}, mux)
+
+	return middleware.RequestID(clk, handler)
+}
+
+// NewHumaAPI builds the Huma API alone, with no server around it.
+//
+// It exists for `dkp openapi` and for arch_test.go, both of which need the operation registry
+// without a listener. Keeping it as one function rather than letting each caller assemble its own
+// config is what makes the emitted document and the served document the same document — a second
+// assembly site is how the committed spec starts describing a server nobody runs.
+func NewHumaAPI(cfg Config) huma.API {
+	humaAPI := humago.New(http.NewServeMux(), humaConfig())
+	registerMeta(humaAPI, cfg)
+
+	return humaAPI
+}
+
+// humaConfig assembles the OpenAPI document's fixed parts.
+//
+// Built explicitly rather than from huma.DefaultConfig, for one reason worth stating: DefaultConfig
+// installs a SchemaLinkTransformer, which adds a `$schema` key to every response body and a `Link`
+// header alongside it. That is a wire-format addition no design document specifies, it would be
+// baked into the committed spec and then protected by the drift gate forever, and it would have to
+// be explained to every SDK consumer. Opting in later is a one-line change; opting out after the
+// SDKs ship is a breaking one.
+//
+// DocsPath is empty for the same class of reason: Huma's built-in renderer is a <script> tag
+// pointing at unpkg.com, and acceptance criterion 7 requires the reference to be served from the
+// binary with no network fetch. registerDocs serves a vendored Scalar instead.
+func humaConfig() huma.Config {
+	registry := huma.NewMapRegistry("#/components/schemas/", huma.DefaultSchemaNamer)
+
+	return huma.Config{
+		OpenAPI: &huma.OpenAPI{
+			OpenAPI: "3.1.0",
+			Info: &huma.Info{
+				Title:       specTitle,
+				Version:     SpecVersion,
+				Description: "DKP and guild management for Project 1999 EverQuest raiding guilds.",
+				License: &huma.License{
+					Name:       "Apache-2.0",
+					Identifier: "Apache-2.0",
+				},
+			},
+			Components: &huma.Components{Schemas: registry},
+			Webhooks:   webhookPlaceholder(),
+		},
+		OpenAPIPath:   BasePath + "/openapi",
+		DocsPath:      "",
+		SchemasPath:   "",
+		Formats:       huma.DefaultFormats,
+		DefaultFormat: "application/json",
+	}
+}

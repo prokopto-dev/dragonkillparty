@@ -102,6 +102,7 @@ condition never changes inside v1. Both are enforced by the `oasdiff` gate.
 | `invalid_expand` | 400 | Target not expandable here, or depth > 1. `meta.allowed` | Fix it |
 | `cursor_invalid` | 400 | Tampered, truncated, or from an older cursor format | Start the walk over from the beginning |
 | `cursor_filter_mismatch` | 400 | The cursor was minted under different filters or a different sort | Start over with the filters you actually want. This exists so you get an error instead of quietly wrong rows |
+| `bad_request` | 400 | The request was malformed in a way no more specific code above covers — most often a body that is not valid JSON | Fix the request. This is the fallback, so if you are seeing it and one of the specific 400s would fit better, that is worth reporting |
 
 ### Idempotency and concurrency
 

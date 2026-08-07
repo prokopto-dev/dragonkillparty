@@ -261,8 +261,9 @@ Two distinct behaviours, and the distinction is the whole finding:
 
 ### V7 — Huma v2 emits OpenAPI 3.1 `webhooks` that all three consumers accept
 
-- [ ] Emit one placeholder `webhooks` entry in PR 4; in PR 6 run `openapi-typescript`,
-      `openapi-python-client` and Scalar over the committed document.
+- [x] Emit one placeholder `webhooks` entry in PR 4.
+- [ ] In PR 6 run `openapi-typescript`, `openapi-python-client` and Scalar over the committed
+      document.
 
 **Load-bearing on:** the "one document" promise — that webhooks are documented in the same OpenAPI
 file as the REST surface, generated into both SDKs, and rendered in the embedded reference.
@@ -273,6 +274,45 @@ file as the REST surface, generated into both SDKs, and rendered in the embedded
 path, `docs/api/webhooks.md` becomes hand-written rather than generated, and the SDK helpers in
 Phase 6 lose their generated types. Survivable, but it should be a known cost in Phase 0 rather than
 a discovery in Phase 6.
+
+**Outcome (PR 4, 2026-08-07): the emitting half holds. Huma v2 has a first-class `Webhooks` field,
+the placeholder round-trips, and the document still parses.** Huma v2.39.1, `humago` adapter.
+`huma.OpenAPI.Webhooks` is `map[string]*PathItem` (`openapi.go:1472`) and is marshalled by the same
+ordered writer as the rest of the document, so the entry needed no hand-written JSON and no
+post-processing step.
+
+One placeholder event, `ping`, is emitted from `internal/api/webhooks.go` — a `post` operation with
+`operationId: webhookPing`, a required JSON request body and a `204` response. It is deliberately a
+placeholder rather than a real event such as `bid_session.settled`: the real catalogue is generated
+from `openapi/registry/events.yaml` (`docs/design/02-api-design.md:551-563`), and inventing a payload
+for an event no code emits would put a guess into a committed, diff-gated artefact.
+
+| Checked | Result |
+|---|---|
+| Huma emits a top-level `webhooks` block | **Yes** — no library patch, no post-processing |
+| The document parses after adding it | **Yes** — `encoding/json` decode/encode round trip, `TestOpenAPI_Webhooks_PlaceholderIsPresentAndParses` |
+| `openapi: "3.1.0"` retained | **Yes** — `TestOpenAPI_Document_IsOpenAPI31` |
+| `openapi-typescript`, `openapi-python-client`, Scalar accept it | **not tested — PR 6** |
+
+**Two things learned that V7 did not ask for, and one of them is a 3.1 hazard:**
+
+- **The document already contains 3.1-only constructs beyond `webhooks`.** Huma emits nullable
+  slices as `"type": ["array", "null"]` — a JSON Schema 2020-12 type union with no 3.0 equivalent —
+  for every Go slice field, including `api_versions` on the one existing endpoint. So the 3.0-era
+  consumer risk this item was written about is not confined to the webhooks block and cannot be
+  avoided by dropping it. That raises the stakes on the validator question in
+  `docs/design/04-testing.md` §"Response validation", which V15 also lists as open.
+- **`Hidden: true` is invisible in the emitted document.** `huma.Register` runs
+  `else if !op.Hidden { oapi.AddOperation(&op) }` (`huma.go:816`), so a hidden operation is absent
+  from `paths` entirely. `.github/workflows/ci.yml` had listed the canonical §7 Hidden allowlist as a
+  `make verify-spec` assertion; it is not implementable against the JSON and moved to
+  `internal/api/arch_test.go`, which reads the source declaration. Recorded here because it is the
+  same class of finding — a property assumed to survive into the document that does not.
+
+**This item stays open rather than closing.** The question it asks is whether all three consumers
+accept the block, and PR 4 ran none of them: `openapi-typescript` and `openapi-python-client` arrive
+with the SDKs in PR 6, and Scalar renders the committed file but is only vendored — not yet pointed
+at a webhooks-bearing document in a test. PR 6 closes it.
 
 ### V8 — EQdkp Plus PHP installers still run in Docker in 2026, and APA rules live only on disk
 
@@ -443,7 +483,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **partially resolved (2026-08-06): re-measured against the real migrations at 0.769 ms p50 (n=200). Pyramid unchanged. Still open because the real schema is one table today — re-measure at PR 9 and once seed data exists** |
 | V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | open |
 | V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | **resolved (2026-08-06), and the answer is NO for triggers: the community edition cannot express them and a 12-step rebuild drops them silently. Partial indexes, CHECKs, STRICT and WITHOUT ROWID all survive. Mitigation shipped in PR 3 — the fresh-install fingerprint covers `type='trigger'`; PR 9 must re-create triggers in any migration that rebuilds a ledger table** |
-| V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | open |
+| V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | **partially resolved (2026-08-07): Huma emits a top-level `webhooks` block from a first-class field, the `ping` placeholder round-trips and the document still parses. The three-generator confirmation is PR 6's and was not attempted. Also found: the document carries 3.1-only `["array","null"]` type unions outside the webhooks block, so 3.0-era consumer risk is not confined to it** |
 | V8 | EQdkp installers run; APA on disk only | week 1 | the fixture lane, the classifier | open |
 | V9 | A guild donates a real dump | Phase 0 | importer test realism | open |
 | V10 | The ~12 P99 log formats | week 1 | all of Phase 4 | open |
