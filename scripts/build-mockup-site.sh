@@ -100,4 +100,26 @@ for src in "$SRC"/*.dc.html; do
 done
 
 green "  [MOCK003] $count surfaces rewritten, no stale runtime references"
+
+# ── [MOCK004] every page is noindex ──────────────────────────────────────────────────────────────
+#
+# The mockups are fabricated guild data for an unreleased product; a search result for one would
+# read as a live instance. The banner cannot say so in a search snippet, and neither robots.txt nor
+# X-Robots-Tag is available on a Pages project site (see the ROBOTS note in scripts/dc-publish.py),
+# so the per-page meta tag is the only mechanism there is — and the only one worth gating.
+#
+# Checked over the *output*, not the source: index.html carries the tag by hand while the surfaces
+# get it from dc-publish.py, and this has to hold no matter which path produced the file.
+missing=""
+for page in "$OUT"/*.html; do
+  grep -qi '<meta[^>]*name="robots"[^>]*content="[^"]*noindex' "$page" || missing="$missing $(basename "$page")"
+done
+if [ -n "$missing" ]; then
+  red "[MOCK004] page(s) published without a noindex robots meta:"
+  printf '  %s\n' $missing
+  red "Surfaces get it from scripts/dc-publish.py; index.html carries it inline."
+  exit 1
+fi
+green "  [MOCK004] every published page is noindex"
+
 green "mockup site ready: $OUT"

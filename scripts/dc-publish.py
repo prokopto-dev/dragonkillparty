@@ -10,6 +10,7 @@ readable. Everything needed to publish them happens here, on a copy:
   4. strip type="text/x-dc" so the authored logic executes as an ordinary classic script
   5. lift <sc-for>/<sc-if> onto their child element where the child is unambiguous
   6. inject the "MOCKUP - not a live instance" banner
+  7. inject <meta name="robots" content="noindex">
 
 Step 5 is the one with teeth. An unknown element inside a <table> is *foster-parented* out of the
 table by the HTML parser — the browser hoists <sc-for> above the <table> and then discards the <tr>
@@ -198,6 +199,18 @@ BANNER = (
     "</div>"
 )
 
+# Every surface carries its own noindex. The mockups are fabricated guild data for an unreleased
+# product, and a stray search result would read as a live instance — the banner says "not a live
+# instance", but a search snippet does not show the banner.
+#
+# It has to be per page. index.html has had this by hand since the site was created, but noindex
+# does not propagate to the pages it links to, so the five surfaces were indexable. A robots.txt
+# cannot cover them either: Pages serves this repo as a *project* site under /dragonkillparty/, and
+# crawlers only read robots.txt at the origin root — which belongs to a different repository. Nor
+# can we set X-Robots-Tag, since Pages does not let us add response headers. The meta tag is the
+# only mechanism available here, which is why [MOCK004] enforces it rather than trusting it.
+ROBOTS = '<meta name="robots" content="noindex">'
+
 
 def main() -> None:
     if len(sys.argv) != 4:
@@ -231,8 +244,13 @@ def main() -> None:
 
     assert_no_directive_in_table(template, src.name)
 
-    # 6 — the banner, and the styles that keep it clear of the mockups' own sticky chrome.
-    html = html.replace("</head>", BANNER_STYLE + "\n</head>", 1)
+    # 6 + 7 — the banner (plus the styles that keep it clear of the mockups' own sticky chrome) and
+    # the noindex. Both go in the head, so the absence of one is checked once, here: str.replace
+    # returns the string unchanged when there is no match, which would drop both silently.
+    if "</head>" not in html:
+        raise SystemExit("dc-publish: no </head> in %s" % src)
+    html = html.replace("</head>", ROBOTS + "\n" + BANNER_STYLE + "\n</head>", 1)
+
     body = re.search(r"<body[^>]*>", html)
     if not body:
         raise SystemExit("dc-publish: no <body> in %s" % src)

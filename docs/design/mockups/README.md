@@ -49,7 +49,7 @@ tool's file read: it caps at 256 KiB, which silently truncates `admin-console.dc
 the rest through a model to retype them is lossy for files whose whole value is being byte-exact.
 
 Refreshing them changes no product code, but the build does check the result — see MOCK001 and
-MOCK002 below.
+MOCK002 below. A refreshed export carries no `noindex`; the build injects it and MOCK004 checks it.
 
 ## The harness — our own, not the design tool's
 
@@ -85,6 +85,19 @@ a `<table>`, so a `<sc-for>` wrapping `<tr>`s is hoisted above the table and its
 which silently emptied 37 of these tables. The build lifts each directive onto the element it
 repeats (`<tr data-sc-for="…" data-sc-as="…">`), which is valid HTML anywhere, and then asserts no
 `<sc-*>` element survives inside table context.
+
+### Nothing here is indexable
+
+Every published page carries `<meta name="robots" content="noindex">`, and `MOCK004` fails the build
+if one does not. These are fabricated guild rosters, balances and bids for a product that has not
+shipped; a search result for one would read as a live instance, and a search snippet does not show
+the banner that says otherwise.
+
+It has to be the meta tag on each page, which is why it is worth a gate rather than a convention.
+`noindex` does not propagate from `index.html` to the pages it links to. A `robots.txt` would not be
+read at all — Pages serves this repo as a *project* site under `/dragonkillparty/`, and crawlers only
+fetch `robots.txt` from the origin root, which belongs to a different repository. And Pages does not
+let us set an `X-Robots-Tag` header. The meta tag is the only mechanism available.
 
 Published pages fetch the Phosphor icon font from unpkg at runtime. That is a CDN request made by a
 static design-reference page, not a vendored dependency — the repo's pinning rules cover CI actions
