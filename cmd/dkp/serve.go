@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 )
 
 const (
@@ -55,6 +56,10 @@ const (
 	// shutdownTimeout bounds the graceful drain after the first signal. A second signal is not
 	// caught — signal.NotifyContext restores the default disposition, so it kills the process.
 	shutdownTimeout = 15 * time.Second
+
+	// readyCheckTimeout bounds one /readyz evaluation. A readiness probe that can hang is a
+	// readiness probe that turns a slow database into an unbounded pile of goroutines.
+	readyCheckTimeout = 5 * time.Second
 )
 
 // serveConfig is the resolved configuration for one `dkp serve` invocation.
@@ -62,8 +67,66 @@ type serveConfig struct {
 	// addr is the host:port to listen on.
 	addr string
 
-	// dbPath is DKP_DB_PATH, carried but not opened. See dbPathEnv.
+	// dbPath is DKP_DB_PATH.
 	dbPath string
+
+	// autoMigrate is DKP_AUTO_MIGRATE. False means pending migrations are reported through /readyz
+	// rather than applied.
+	autoMigrate bool
+}
+
+// readiness adapts the migrator to api.ReadyChecker.
+//
+// The adapter lives here rather than on either side of it so that internal/api does not import the
+// migrator and internal/migrate does not import the API. cmd/ is where wiring belongs; both
+// packages stay independently testable.
+type readiness struct{ runner *migrate.Runner }
+
+// Ready answers GET /readyz.
+//
+// A nil runner means the boot path could not build one at all — an unset or unusable DKP_DB_PATH.
+// That reports failed rather than ready: the whole reason /readyz exists separately from /healthz
+// is to be the endpoint that is allowed to say no.
+func (r readiness) Ready() api.ReadyReport {
+	if r.runner == nil {
+		return api.ReadyReport{
+			Check:  "migrations",
+			State:  api.ReadyStateFailed,
+			Detail: "no database configured",
+		}
+	}
+
+	// Its own context: the readiness probe must not inherit a request's cancellation from a client
+	// that hung up, and it must not outlive the check either.
+	ctx, cancel := context.WithTimeout(context.Background(), readyCheckTimeout)
+	defer cancel()
+
+	status, err := r.runner.Status(ctx)
+	if err != nil {
+		return api.ReadyReport{
+			Check:  "migrations",
+			State:  api.ReadyStateFailed,
+			Detail: err.Error(),
+		}
+	}
+
+	switch status.State {
+	case migrate.StatePending:
+		// This exact body is a contract: docs/development/first-ten-prs.md:167 and
+		// docs/design/06-cicd-and-release.md:523 both specify it, and the SPA renders a banner
+		// containing the command verbatim.
+		return api.ReadyReport{Check: "migrations", State: api.ReadyStatePending, Command: "dkp migrate"}
+	case migrate.StateAhead:
+		return api.ReadyReport{
+			Check:  "migrations",
+			State:  api.ReadyStateFailed,
+			Detail: "database schema is newer than this binary",
+		}
+	case migrate.StateUpToDate:
+		return api.ReadyReport{Check: "migrations", State: api.ReadyStateReady}
+	}
+
+	return api.ReadyReport{Check: "migrations", State: api.ReadyStateFailed, Detail: "unknown state"}
 }
 
 // newServeCmd builds `dkp serve`.
@@ -89,8 +152,9 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 			defer stop()
 
 			cfg := serveConfig{
-				addr:   addr,
-				dbPath: os.Getenv(dbPathEnv),
+				addr:        addr,
+				dbPath:      os.Getenv(dbPathEnv),
+				autoMigrate: autoMigrateEnabled(),
 			}
 
 			return runServe(ctx, cfg, ready)
@@ -107,6 +171,25 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 // It declares no routes. Law 1: routes are declared only in internal/api, so the whole handler
 // tree arrives as api.NewMux().
 func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error {
+	// Migrate BEFORE the listener opens. Not for tidiness: a listener bound first would accept
+	// requests during the migration, and the SPA would render half-migrated data as though it were
+	// the guild's real standings.
+	//
+	// A failure here is fatal only when it is a failed migration or a downgrade — see
+	// migrateOnBoot. Everything else serves, because /healthz must keep answering 200 whatever the
+	// database is doing (canonical §13).
+	runner, err := newMigrator(cfg.dbPath, cfg.autoMigrate)
+	if err != nil {
+		slog.ErrorContext(ctx, "could not build the migrator; serving anyway so /healthz stays up",
+			"error", err, "db_path", cfg.dbPath)
+	}
+
+	if runner != nil {
+		if migrateErr := migrateOnBoot(ctx, runner); migrateErr != nil {
+			return migrateErr
+		}
+	}
+
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
@@ -115,7 +198,7 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 	}
 
 	srv := &http.Server{
-		Handler:           api.NewMux(),
+		Handler:           api.NewMuxWithReadiness(readiness{runner: runner}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

@@ -12,8 +12,9 @@ agent — must be able to write a failing test, run it, fix it, and re-run insid
 ```bash
 git clone https://github.com/dragonkillparty/dkp
 cd dkp
-make setup      # once — gofumpt, goimports, golangci-lint, sqlc, atlas, goose,
-                #        oasdiff, vale, lychee, and the pnpm dependencies
+make setup      # once — gofumpt, goimports, golangci-lint, govulncheck, sqlc and atlas.
+                #        oasdiff, vale, lychee and the pnpm dependencies arrive with the
+                #        phases that need them; `make setup` prints what is still missing.
 make check      # everything CI runs
 ```
 
@@ -99,7 +100,7 @@ Never hand-edit these. Change the source, run `make gen`, commit the diff.
 |---|---|
 | `openapi/openapi.json` | The Go handler types, via Huma |
 | `internal/store/sqlitegen/`, `internal/store/pggen/` | `db/queries/*.sql`, via sqlc |
-| `db/migrations-*/` | `db/schema.hcl`, via Atlas |
+| `db/migrations-*/` | `db/schema.hcl`, via Atlas (`make migration NAME=…` writes them; `make gen` only re-hashes and checks) |
 | `web/src/api/` | `openapi/openapi.json` |
 | `clients/` | `openapi/openapi.json` |
 

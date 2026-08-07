@@ -14,9 +14,9 @@ inputs:
     default: "false"
   tools:
     description: >
-      Space-separated dev tools to install: gofumpt golangci-lint govulncheck sqlc atlas goose
+      Space-separated dev tools to install: gofumpt golangci-lint govulncheck sqlc atlas
       oasdiff vale lychee. An unknown or not-yet-available entry is reported and skipped, never
-      fatal.
+      fatal. `goose` is accepted and skipped: it is a library, not a CLI this project uses.
     required: false
     default: ""
 
@@ -77,7 +77,7 @@ runs:
         pin() { awk -v k="$1" '$1==k { print $3; exit }' Makefile; }
         for t in $DKP_TOOLS; do
           case "$t" in
-            gofumpt|golangci-lint|govulncheck|sqlc|goose|oasdiff)
+            gofumpt|golangci-lint|govulncheck|sqlc|oasdiff)
               if command -v go >/dev/null 2>&1 && [ -f go.mod ]; then
                 echo "::group::install $t"
                 case "$t" in
@@ -89,10 +89,9 @@ runs:
                   # The command lives at cmd/govulncheck inside the golang.org/x/vuln module, which
                   # is what the GOVULNCHECK_VERSION pin tracks.
                   govulncheck)   go install "golang.org/x/vuln/cmd/govulncheck@$(pin GOVULNCHECK_VERSION)" ;;
-                  # Not yet pinned because no job requests them; the PR that first needs each one
-                  # adds its pin to the Makefile alongside the others. See Phase 0 PR 3 and PR 4.
-                  sqlc)          go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest ;;
-                  goose)         go install github.com/pressly/goose/v3/cmd/goose@latest ;;
+                  sqlc)          go install "github.com/sqlc-dev/sqlc/cmd/sqlc@$(pin SQLC_VERSION)" ;;
+                  # Not yet pinned because no job requests it; the PR that first needs it adds its
+                  # pin to the Makefile alongside the others. See Phase 2.
                   oasdiff)       go install github.com/oasdiff/oasdiff@latest ;;
                 esac
                 echo "::endgroup::"
@@ -100,7 +99,29 @@ runs:
                 echo "note: skipping $t — no Go module yet (lands in Phase 0 PR 1)"
               fi
               ;;
-            atlas)  echo "note: skipping atlas — installed in Phase 0 PR 3" ;;
+            # Atlas cannot be `go install`ed: ariga.io/atlas/cmd/atlas carries a `replace` directive
+            # in its own go.mod, which `go install <pkg>@<version>` refuses, and the newest version
+            # ever published to the proxy for that path is v0.13.1 from 2023. It is a
+            # checksum-verified binary instead.
+            #
+            # Through `make install-atlas` rather than calling the script directly, so that
+            # GOTOOLS_BIN is computed in exactly one place. This action re-deriving an install
+            # directory is how CI ends up installing to one path and putting a different one on
+            # PATH.
+            atlas)
+              if command -v go >/dev/null 2>&1 && [ -f go.mod ]; then
+                echo "::group::install atlas"
+                make install-atlas
+                echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+                echo "::endgroup::"
+              else
+                echo "note: skipping atlas — no Go module yet (lands in Phase 0 PR 1)"
+              fi
+              ;;
+            # The goose CLI is deliberately absent. Atlas authors the migrations and the goose
+            # LIBRARY applies them from inside the binary, so nothing ever invokes `goose` on PATH;
+            # installing it would be a second copy of the migration engine to version and to drift.
+            goose)  echo "note: skipping goose — the library is a go.mod dependency, the CLI is not used" ;;
             vale)   echo "note: skipping vale — installed with the docs gates" ;;
             lychee) echo "note: skipping lychee — installed with the docs gates" ;;
             *)      echo "note: unknown tool '$t', skipped" ;;

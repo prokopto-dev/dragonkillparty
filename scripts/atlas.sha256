@@ -1,0 +1,29 @@
+# SHA-256 pins for the Atlas CLI, community edition.
+#
+# Format: <sha256>  <asset-name>, matching sha256sum(1) output. Parsed by scripts/install-atlas.sh,
+# which looks the row up by asset name; comment lines never match an asset name, so they are safe.
+#
+# The version is NOT repeated here. It lives in exactly one place — ATLAS_VERSION in the Makefile —
+# and the asset names below embed it, so bumping Atlas is a two-file change that cannot half-happen:
+# a new ATLAS_VERSION with no matching row makes install-atlas.sh exit non-zero before it touches
+# the network, and a stale row is simply never looked up.
+#
+# To refresh after bumping ATLAS_VERSION, for each platform:
+#   curl -fsSL https://release.ariga.io/atlas/atlas-community-<os>-<arch>-<version>.sha256
+#
+# Ariga publishes those .sha256 sidecars, but this file is what the installer trusts. A sidecar
+# fetched at install time is served by the same host as the binary, so it proves nothing an attacker
+# who can serve the binary could not also forge; a checksum committed to this repository and
+# reviewed in a pull request is the only version of this check that is worth running.
+#
+# Community edition deliberately, per docs/adr/0008-atlas-authors-goose-applies.md: it is the
+# Apache-2.0 build. The default `atlas-*` artifact ships under Ariga's own terms, which has no place
+# in the build path of an Apache-2.0 project whose PR template opens with a licence firewall.
+#
+# Windows is not published for the community edition (release.ariga.io answers 403) and is not a
+# supported development platform here. install-atlas.sh reports that rather than guessing.
+
+10d7913e3dce43ab99b8d71534a4cbadaf11a16dc293adf3b91d10e83a0ac70b  atlas-community-linux-amd64-v1.3.0
+082188c57a53439596a3ee52173b12e785aa83ec718505674e2052db0fec0c4c  atlas-community-linux-arm64-v1.3.0
+650981a024301775ec964e5134e2d5712b7ef1b25fec4b2ec54bad762b4bdf6f  atlas-community-darwin-amd64-v1.3.0
+4e5ffdc10b2b4fd3a06074aba72848150907d5316cacad7b19bae6c6ae3db991  atlas-community-darwin-arm64-v1.3.0

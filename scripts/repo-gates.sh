@@ -119,6 +119,15 @@ gate WEB002 "dangerouslySetInnerHTML" \
 gate MIG001 "DDL inside a goose Down block (migrations are forward-only)" \
     db/migrations-sqlite '*.sql' '^\s*(DROP|ALTER)\b'
 
+# Atlas emits `dkp_meta` — MySQL-style backtick quoting, which SQLite accepts as a compatibility
+# extension. sqlc's SQLite parser does not, and it fails SILENTLY: the schema file is accepted, no
+# table is parsed out of it, and the error surfaces as `relation "x" does not exist` against the
+# query file, which is the one file that was correct. scripts/new-migration.sh rewrites them to
+# double quotes at generation time; this gate is what catches a migration that got here another
+# way, because "make gen produced an empty sqlitegen package" is not a thing anyone notices.
+gate MIG002 "backtick-quoted identifier in a migration (sqlc parses no table and says so about the query)" \
+    db/migrations-sqlite '*.sql' '`'
+
 # --- The golden-file rewrite fence ------------------------------------------------------------
 # Only `run:` lines count. A comment explaining the fence is not a breach of it.
 if has .github/workflows; then

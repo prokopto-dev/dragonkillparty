@@ -55,7 +55,7 @@ password.
 
 | Variable | Default | Secret | What it does |
 |---|---|---|---|
-| `DKP_DATA_DIR` | `/data` | no | Directory holding the database, backups, artifacts and generated secrets. |
+| `DKP_DATA_DIR` | `/data` | no | Directory holding the database, backups, artifacts and generated secrets. When unset, the directory containing `DKP_DB_PATH` is used — which is `/data` in the container and the right answer for a binary install elsewhere. |
 | `DKP_LISTEN` | `:8080` | no | Address the HTTP server binds. |
 | `DKP_BASE_URL` | none | no | The public URL members type; every generated link, OAuth redirect and webhook user-agent is built from it. |
 | `DKP_EXTRA_HOSTS` | none | no | Additional `Host` values accepted alongside `DKP_BASE_URL`, comma-separated. |

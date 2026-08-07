@@ -163,6 +163,20 @@ page layout, index count and free-page distribution all differ. When PR 3 replac
 the goose runner, re-run `make bench-clone` and update this table. If the copy term stays near
 0.5 ms, this item is closed for good.
 
+**Re-measured (PR 3, 2026-08-06): `NewDB` p50 0.769 ms, p95 0.906 ms, n=200.** The stand-in is gone;
+`TestMain` now builds the template from the real migrations via the goose runner.
+
+The number went *down*, and the reason is worth writing down rather than celebrating: the real
+schema at PR 3 is **one table**, so the template is a few KB rather than the padded 256 KiB. This
+measurement is therefore a floor, not the answer — it confirms the fixed per-test cost (two
+`sql.OpenDB` pools, two pings, `t.TempDir()`) is around 0.75 ms and that the copy term is now
+negligible, which is consistent with PR 2's finding that the copy was never the dominant term.
+
+**This item stays open rather than closing**, because the question it asks — does cloning a
+*realistic* template stay cheap — cannot be answered against a one-table schema. Re-measure when
+PR 9 lands the ledger tables and again when the seeded reference data exists. The thing to watch is
+whether the total grows *proportionally* with schema size; PR 2's decomposition says it should not.
+
 ### V5 — `/standings` answers in ≤ 4 SQL statements at ≤ 150 ms p99 on SD-card storage
 
 - [ ] Hand-write the four queries against a generated 520k-row ledger and measure, **before any API
@@ -181,7 +195,7 @@ story. Both are cheaper to decide now than after Phase 3 builds a UI on the fast
 
 ### V6 — Atlas preserves hand-added triggers, partial indexes and CHECKs across `migrate diff`
 
-- [ ] In PR 3: add a trigger and a partial index to `dkp_meta`, change an unrelated column, re-diff,
+- [x] In PR 3: add a trigger and a partial index to `dkp_meta`, change an unrelated column, re-diff,
       and inspect the generated migration.
 
 **Load-bearing on:** the append-only guarantee. The ledger triggers are the mechanism behind the
@@ -195,6 +209,55 @@ the pipeline needs an explicit preservation strategy — hand-maintained trigger
 after each Atlas diff, plus a test asserting all four triggers exist after every migration. That test
 should probably exist regardless; if Atlas drops triggers, it is mandatory and it ships in PR 3
 rather than PR 9.
+
+**Outcome (PR 3, asked by Courtney, 2026-08-06): it came out the other way. Atlas silently destroys
+triggers, and preserves everything else.** Atlas community edition v1.3.0, SQLite dialect. The
+experiment ran exactly as specified: a migration creating `dkp_meta` with a hand-added
+`BEFORE DELETE` trigger and a partial index, then an unrelated column change, then re-diff.
+
+| Object | Expressible in `schema.hcl`? | Survives a 12-step rebuild? |
+|---|---|---|
+| Partial index (`WHERE …`) | **Yes** — `index "x" { where = "updated_at > 0" }` round-trips through `schema inspect` | **Yes** — re-created after the rename, `WHERE` clause intact |
+| `CHECK` constraint | **Yes** — `check { expr = "(amount_cp <> 0)" }` round-trips | **Yes** — it is part of the `CREATE TABLE` the rebuild writes |
+| `STRICT`, `WITHOUT ROWID` | **Yes** — `strict = true`, `without_rowid = true` | **Yes** |
+| **Trigger** | **No.** The community edition prints: *"advanced database objects such as views, triggers, and stored procedures are not supported"* | **NO — dropped, silently** |
+
+Two distinct behaviours, and the distinction is the whole finding:
+
+1. **A trigger Atlas cannot see does not provoke a `DROP TRIGGER`.** With a trigger present in the
+   migration directory and absent from `schema.hcl`, `atlas migrate diff` reports *"The migration
+   directory is synced with the desired state, no changes to be made."* Ordinary additive schema
+   changes are therefore safe.
+2. **A table rebuild destroys it.** Making a column nullable produced the documented 12-step
+   rebuild — `CREATE TABLE new_dkp_meta` / `INSERT … SELECT` / **`DROP TABLE dkp_meta`** / `ALTER
+   TABLE … RENAME` — followed by a `CREATE INDEX` re-creating the partial index and **nothing at
+   all re-creating the trigger**. No warning, no comment, no diff to review. Exactly the catastrophe
+   `docs/design/01-domain-model.md:1174` and ADR-0008 name.
+
+**What ships in PR 3 because of this**, per the "if it comes out the other way" paragraph above:
+
+- `TestMigrate_FreshInstall_MatchesFingerprint` fingerprints **every** `sqlite_schema` row including
+  `type='trigger'`. A rebuild that eats a trigger changes the fingerprint and fails CI. This is the
+  mechanism, it exists now, and it predates the triggers it will protect.
+- The hand-edit allowlist in `.claude/rules/migrations.md` narrows in practice: **case 3 (CHECK
+  constraints) is unnecessary** — CHECKs belong in `schema.hcl`, where Atlas maintains them across
+  rebuilds — and **case 2 (partial indexes) is unnecessary for indexes Atlas can express**, which is
+  all of them tested here. Case 1 (triggers) is the real one, and it is now known to be fragile
+  rather than merely hand-written.
+- **PR 9 must re-create the append-only triggers inside any migration that rebuilds a ledger table**,
+  in the same file, after the rename — and `TestLedger_Update_RaisesTrigger` must run after the
+  *full* migration set, not against a freshly created table.
+
+**Two further findings from the same hour, neither of which V6 asked for:**
+
+- **Atlas's generated `-- +goose Down` block contains DDL** (`DROP INDEX`, `DROP TABLE`), which
+  violates the forward-only rule in `docs/design/06-cicd-and-release.md` §8 and trips gate MIG001.
+  It is not even self-consistent: it emits `DROP TABLE new_dkp_meta`, a name the Up block already
+  renamed away. `scripts/new-migration.sh` now replaces the Down block wholesale.
+- **Atlas emits backtick-quoted identifiers and sqlc's SQLite parser cannot read them.** sqlc does
+  not reject the schema — it parses no table out of it and then reports `relation "dkp_meta" does
+  not exist` against the *query* file, which is the one file that was correct. `new-migration.sh`
+  rewrites them to standard double quotes, and gate MIG002 is the backstop.
 
 ### V7 — Huma v2 emits OpenAPI 3.1 `webhooks` that all three consumers accept
 
@@ -377,9 +440,9 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V1 | Officers want `dkp.exe` | Phase 0 exit | the stack tie-break | open |
 | V2 | Two pilot guilds recruitable | **before Phase 4** | Phase 4 entry | open |
 | V3 | Guild scale ~280 / 3,400 / 520k | week 1 | `seed.Perf`, all budgets | open |
-| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **partially resolved (2026-08-04): `NewDB` p50 0.97 ms warm, of which 0.44 ms is the copy — ~3× the assumption, ~0.9 s over 900 tests, pyramid unchanged. Measured against a size-matched stand-in template; PR 3 re-measures against the real schema** |
+| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **partially resolved (2026-08-06): re-measured against the real migrations at 0.769 ms p50 (n=200). Pyramid unchanged. Still open because the real schema is one table today — re-measure at PR 9 and once seed data exists** |
 | V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | open |
-| V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | open |
+| V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | **resolved (2026-08-06), and the answer is NO for triggers: the community edition cannot express them and a 12-step rebuild drops them silently. Partial indexes, CHECKs, STRICT and WITHOUT ROWID all survive. Mitigation shipped in PR 3 — the fresh-install fingerprint covers `type='trigger'`; PR 9 must re-create triggers in any migration that rebuilds a ledger table** |
 | V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | open |
 | V8 | EQdkp installers run; APA on disk only | week 1 | the fixture lane, the classifier | open |
 | V9 | A guild donates a real dump | Phase 0 | importer test realism | open |
@@ -390,6 +453,8 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V14 | `riversqlite` maturity | Phase 1 | the job queue | **resolved: early preview, not production ready — spike the alternative** |
 | V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | **partially resolved (2026-08-04): Go 1.26 pinned via `go.mod`, 1.26.5 exercised locally; CI's resolved patch, `testing/synctest`, `os.Root`, Vite 7, Huma v2 and the validator all still open** |
 
-Nothing on this list is a blocker to *starting*. V2 is a blocker to entering Phase 4, V6 is a blocker
-to merging PR 9, and V1 is a blocker to publishing the stack decision as settled. The others change
+Nothing on this list is a blocker to *starting*. V2 is a blocker to entering Phase 4, and V1 is a
+blocker to publishing the stack decision as settled. V6 was a blocker to merging PR 9 and is now
+answered — PR 9 is unblocked, but it inherits an obligation rather than a clean bill of health: it
+must re-create the append-only triggers inside any migration that rebuilds a ledger table. The others change
 numbers, not directions.
