@@ -397,7 +397,7 @@ Live-uniqueness is `UNIQUE(item_instance_id) WHERE state IN ('draft','open','ext
 
 ### 4.11 Portal and CMS
 
-Full portal parity is owner-mandated scope, sequenced as Phase 7. **The API is the only way the SPA
+Full portal parity is owner-mandated scope, sequenced as Phase 8. **The API is the only way the SPA
 reaches any of it** — there is no template-rendering back door, and gate 3 in §10 proves it.
 Untrusted rich text lives only in `internal/cms`, and `internal/richtext` is the only place HTML is
 produced from user input.

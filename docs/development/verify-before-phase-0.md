@@ -44,7 +44,7 @@ building anything.
 **Load-bearing on:** the entire stack tie-break. This premise is what broke the tie toward Go, and
 through Go it justifies SQLite as the only 1.0 engine, `FROM scratch`, the no-container test story,
 `go:embed` for the SPA, the six-platform goreleaser matrix, and the `.deb`/`.rpm`/Homebrew/Unraid
-distribution work in Phase 8. It is the single most load-bearing empirical claim in the project and
+distribution work in Phase 9. It is the single most load-bearing empirical claim in the project and
 nobody has checked it.
 
 **Cost:** one message. 48 hours for a usable sample.
@@ -59,7 +59,7 @@ nobody has checked it.
   grounds (one process, one file, one backup, no runtime). But the tie was broken on a premise that
   would then be false, and the honest response is to re-run the comparison with the real distribution
   mix in hand, in Phase 0, while the answer is still cheap.
-- Phase 8 reprioritises regardless: the Coolify / Unraid / Railway templates become the primary
+- Phase 9 reprioritises regardless: the Coolify / Unraid / Railway templates become the primary
   install path and the Windows `.exe` becomes a nicety rather than the headline.
 - The 1.0 human exit criterion "an officer with no Docker experience installs the binary" gets
   rewritten to match whatever the poll actually says officers do.

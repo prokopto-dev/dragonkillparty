@@ -1139,7 +1139,7 @@ the IP is trustworthy (§8.3). Defaults matter because nobody changes them.
 | Bid placement | 30/min/account, burst 5/s | bots hammer during anti-snipe |
 | Artifact upload | 20/h/principal, 200/h instance | plus the storage quota |
 | Recruitment application (unauthenticated) | 3/h/IP, 30/h instance | Phase 7 |
-| Shoutbox / comments | 20/h/person | Phase 7 |
+| Shoutbox / comments | 20/h/person | Phase 8 |
 | Import job | 1 concurrent | per-job lock; SQLite has one writer anyway |
 | SSE connections | 5/session, 50/instance | plus the send buffer and `resync` eviction |
 | CSP reports | 10/min/IP, 8 KiB | ring buffer, never a table |

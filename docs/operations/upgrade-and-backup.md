@@ -1,7 +1,7 @@
 # Upgrade and backup
 
 **Status:** migrate-on-boot with snapshot and auto-restore lands in Phase 0; scheduled backups and
-`dkp restore` in Phase 8. This page is the runbook the implementation must make true.
+`dkp restore` in Phase 9. This page is the runbook the implementation must make true.
 
 Read this once before your first upgrade. It is the page that stands between a volunteer officer and
 ten years of guild history.

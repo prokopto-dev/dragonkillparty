@@ -73,9 +73,14 @@ recorded on the resolution so you can explain it in chat.
 delta, running balance, who did it, and a link to the raid dump behind it. This single screen
 settles most loot arguments before they start.
 
+**Guild operations** — a guild bank with categories, NO-DROP holder tracking and two-sided
+delivery; recruitment with a form builder, signed member feedback and a vouch bonus; versioned
+policies with a stable link for every clause; priced main swaps; and advisory item priority lists.
+*(Phase 7 — see the roadmap.)*
+
 **Guild portal** — news and articles, comments, categories, media library, calendar and raid
-signups, recruitment applications, guild bank, item priority lists, shoutbox, portal blocks, and a
-team page. Full parity with what EQdkp Plus offered. *(Phase 7 — see the roadmap.)*
+signups, shoutbox, portal blocks, a theme editor and a team page. Full parity with what EQdkp Plus
+offered. *(Phase 8 — see the roadmap.)*
 
 **Migration** — import an existing EQdkp Plus install from an ACP backup zip, a `mysqldump`, or a
 live read-only database connection. Dry run is the default. You get a reconciliation report that

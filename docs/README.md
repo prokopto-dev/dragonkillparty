@@ -149,6 +149,10 @@ argumentative than the guides above.
 | [06 CI/CD and release](design/06-cicd-and-release.md) | Pipelines, gates, publishing |
 | [07 Documentation system](design/07-documentation-system.md) | How these pages are built, linted and shipped |
 | [08 nParse Plus integration](design/08-nparse-plus-integration.md) | The desktop log companion |
+| [09 Frontend and design system](design/09-frontend-and-design-system.md) | **Normative.** Nocturne — tokens, type, components, and the officer/member IA |
+| [10 UI decisions](design/10-ui-decisions.md) | Why each screen behaves the way it does |
+| [11 UI backend contract](design/11-ui-backend-contract.md) | What the screens expect of the server, with the reconciliation verdicts |
+| [Mockups](design/mockups/) | Five HTML surfaces, ~55 screens. Read the screen before building it |
 | [Decision records](adr/README.md) | Why, including the downsides |
 
 ## Reference pages are generated

@@ -26,9 +26,9 @@ product whose front page is the guild's website, parity without the website is n
 who decides whether a guild migrates is usually the officer who maintains that website; telling them
 they keep their DKP and lose their site is not a migration, it is a partial one.
 
-**The mitigation is sequencing.** The portal is **Phase 7 — eighth of nine, last of the feature
-phases, with only the hardening phase after it** — at ≈36 pt
-of a ≈324 pt plan, and it depends only on `internal/richtext` (Phase 4) and the outbox (Phase 6). It
+**The mitigation is sequencing.** The portal is **Phase 8 — ninth of ten, last of the feature
+phases, with only the hardening phase after it** — at ≈38 pt
+of a ≈438 pt plan, and it depends only on `internal/richtext` (Phase 4) and the outbox (Phase 6). It
 is deliberately off the critical path so that **if it slips, it slips to 1.1 without blocking guild
 adoption**. The DKP product is complete and useful at the end of Phase 6.
 
@@ -64,15 +64,15 @@ surface:
   theme tokens are a long tail of individually-small features that never naturally ends; the defence
   is the published deferred list and the rule that no work item enters a phase after its exit
   criterion is written.
-- **Bad, because if Phase 7 slips, 1.0 ships with a headline requirement unmet** and the README's
+- **Bad, because if Phase 8 slips, 1.0 ships with a headline requirement unmet** and the README's
   parity claim must be qualified honestly rather than quietly.
 - **Bad, because parts of it may genuinely be dead surface.** Whether guilds still want a shoutbox and
   a news feed when they live in Discord is *an assumption, not a finding* — answerable by the two
-  pilot guilds (`docs/development/verify-before-phase-0.md` V2) long before Phase 7 starts. That
-  answer should reorder Phase 7's deliverables, though it does not change this decision.
+  pilot guilds (`docs/development/verify-before-phase-0.md` V2) long before Phase 8 starts. That
+  answer should reorder Phase 8's deliverables, though it does not change this decision.
 
 ### Reversal cost
 
-Cutting Phase 7 before it starts is free — that is the entire point of sequencing it last. Cutting it
+Cutting Phase 8 before it starts is free — that is the entire point of sequencing it last. Cutting it
 after it ships means removing tables a guild's content lives in, which is a data-loss event and
 therefore not a real option.

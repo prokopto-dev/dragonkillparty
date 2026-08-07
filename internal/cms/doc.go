@@ -2,5 +2,5 @@
 // that holds untrusted rich text, and HTML is produced from that text only by
 // internal/richtext.
 //
-// Lands in: Phase 7.
+// Lands in: Phase 8.
 package cms

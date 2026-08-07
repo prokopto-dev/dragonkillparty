@@ -1,7 +1,7 @@
 # Domain model and database schema
 
 **Status:** normative for the schema. **Audience:** contributor, agent.
-**Implements:** Phase 1 (ledger, pools, roster) and Phase 4 (raids, ticks, ingest). Phase 7 adds the
+**Implements:** Phase 1 (ledger, pools, roster) and Phase 4 (raids, ticks, ingest). Phase 8 adds the
 portal/CMS tables in §19.
 
 `db/schema.hcl` is the single source of schema truth; Atlas generates the migrations from it. The
@@ -2416,7 +2416,7 @@ CREATE UNIQUE INDEX ux_cal_template ON calendar_raid_template(name_norm) WHERE d
 
 ## 19. Portal and CMS
 
-Full EQdkp portal parity is in scope, sequenced last (Phase 7) so it can slip to 1.1 without
+Full EQdkp portal parity is in scope, sequenced last (Phase 8) so it can slip to 1.1 without
 blocking guild adoption. It is not optional: the importer already reads `__articles`,
 `__article_categories` and `__comments`, and `feed_token.kind` includes `articles_rss` — a design
 where those have no destination is self-contradictory.

@@ -61,3 +61,6 @@ Thumbs.db
 
 # Build output of `make mockup-site` — assembled from docs/design/mockups/, never edited by hand.
 /_site/
+
+# Bytecode from scripts/*.py (scripts/dc-publish.py runs during `make mockup-site`).
+__pycache__/

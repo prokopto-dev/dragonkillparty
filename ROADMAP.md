@@ -6,7 +6,21 @@ disagree, that one wins and this file has a bug.
 
 No calendar dates. The planning unit is **`1 pt` = one well-scoped agent PR** — roughly a half-day of
 agent work plus ~20 minutes of human review. Reviewer attention, not agent throughput, is the binding
-constraint on a volunteer project. **1.0 ≈ 324 pt.**
+constraint on a volunteer project. **1.0 ≈ 438 pt.**
+
+> **Revised 2026-08-07, against the UI mockups.** Five surfaces covering ~55 screens
+> ([`docs/design/mockups/`](docs/design/mockups/)) were reconciled against this plan. Most of it
+> survived: the ledger, holds, `server_time` and the `seq` machinery needed nothing. What the plan
+> did not carry was **six subsystems it had never named** — quakes and draft week, guild-character
+> custody, character keys and raid eligibility, main-swap pricing, versioned policies, and the vouch
+> economy — plus **three it carried at a fraction of their real size**: the guild bank, recruitment,
+> and item priority lists were one table row each in the old Phase 7. Add tiered bidding and enough
+> UI to cover the screens and that is
+> ≈114 pt, and it is why this file went from 324 pt and nine phases to 438 pt and ten.
+>
+> The full verdict table is [`docs/design/11-ui-backend-contract.md`](docs/design/11-ui-backend-contract.md).
+> Nothing from the mockups was dropped; where something moved out of 1.0 it is named in
+> **Deliberately deferred** as a decision, not a silence.
 
 ---
 
@@ -18,8 +32,8 @@ Five rules generate every phase below.
 |---|---|---|
 | 1 | **Never merge a red main.** No phase temporarily disables a gate. | **Gates ship before the code they gate.** Retrofitting a gate onto 40 routes is a week of grandfathering; installing it at route #1 is 20 lines. |
 | 2 | **Generated boundaries are crossed once, early, in a walking skeleton.** | Phase 0 produces one worked, committed, in-repo example of each boundary (`internal/api/EXAMPLE_ENDPOINT.md`, `db/RECIPES.md`). Every later task becomes "copy the example, change the nouns". |
-| 3 | **Depth before breadth, except for the UI.** Domain → API → UI, per feature. | The UI gets exactly one foundation phase (Phase 3). After that every feature phase carries its own thin UI slice. |
-| 4 | **Work items are sized to one PR, one reviewer sitting, one reversible decision.** | ≤ ~800 lines of hand-written diff (generated files excluded). A task that cannot state its own acceptance test in one sentence is not ready to hand to an agent. |
+| 3 | **Depth before breadth, except for the UI.** Domain → API → UI, per feature. | The UI gets exactly one foundation phase (Phase 3), which also builds the design system every later slice is written against. After that every feature phase carries its own thin UI slice. A vocabulary of components has to exist before slices can be thin. |
+| 4 | **Work items are sized to one PR, one reviewer sitting, one reversible decision.** | ≤ 3,500 lines of hand-written diff (generated files excluded), raised from 800 once three Phase 0 PRs came in above it — see [`docs/development/first-ten-prs.md`](docs/development/first-ten-prs.md). A task that cannot state its own acceptance test in one sentence is not ready to hand to an agent. |
 | 5 | **Nothing is "done at the end".** | Tests, docs and the release pipeline are per-phase exit criteria, not phases. Distribution ships in Phase 0 so every later phase produces a pullable image. |
 
 ### Ordering defects fixed in this revision
@@ -32,14 +46,14 @@ repeated.
 | Phase 2's exit criterion required PAT-parity green, but PAT-parity was defined as replaying recorded Playwright journeys — and Playwright shipped in Phase 3. Circular. | **Phase 2 ships hand-written parity cases.** Phase 3 adds the recorder and a test asserting recorded coverage is a superset of the hand-written set. |
 | The EQdkp compat shim shipped in Phase 6, but the cutover checklist telling guilds to point their bots at it was a Phase 5 deliverable. A guild cutting over after Phase 5 had dead bots. | **The shim moves to Phase 5**, next to the checklist. It is also its natural home: it resolves legacy `member_id`s through `import_id_map`, a Phase 5 artifact. Every service it calls exists by end of Phase 4. |
 | `seed.Perf` was created in Phase 3 item 9, after the standings work in item 3 that budgets against it. | **`seed.Perf` starts in Phase 1** (ledger-only, 520k entries), extends in Phase 2 (roster) and Phase 4 (raids). A `seed_profile_test` asserts non-decreasing row-count floors per profile. |
-| `internal/net/safehttp` and `internal/richtext` were scheduled for the hardening phase, after the code that needs them. | **`safehttp` ships in Phase 2** (OIDC/JWKS is the first outbound client) and **`richtext` in Phase 4** (raid notes are the first user-authored text). Their grep gates ship with them, so Phases 5–7 inherit a choke point instead of grandfathering one. |
+| `internal/net/safehttp` and `internal/richtext` were scheduled for the hardening phase, after the code that needs them. | **`safehttp` ships in Phase 2** (OIDC/JWKS is the first outbound client) and **`richtext` in Phase 4** (raid notes are the first user-authored text). Their grep gates ship with them, so Phases 5–8 inherit a choke point instead of grandfathering one. |
 
 Supply-chain controls (Actions pinned to commit SHAs, `--ignore-scripts`, the licence gate) move to
 Phase 0 for the same reason: cheap at zero dependencies, expensive at two hundred.
 
 ---
 
-## Phase 0 — Foundations and the walking skeleton (≈20 pt, 6%)
+## Phase 0 — Foundations and the walking skeleton (≈22 pt, 5%)
 
 **Goal.** A repository in which an agent handed any later task finds the toolchain, the gates, the
 worked example and the release pipeline already answering every "how do I…" question.
@@ -66,7 +80,11 @@ deliverable N is generally not PR N — 10 below is its PR 7. Cite these as "del
 8. `internal/api/EXAMPLE_ENDPOINT.md` + `db/RECIPES.md` — `GET`/`PATCH /api/v1/guild` walked end to
    end: schema → query → sqlc → handler → spec → generated client → integration test.
 9. `web/` scaffold: Vite + React 19 + TanStack, generated client, `go:embed` + SPA fallback, runtime
-   `/config.json`, ESLint `no-restricted-globals` for `fetch`, bundle budget.
+   `/config.json`, ESLint `no-restricted-globals` for `fetch`, bundle budget. **Plus the Nocturne
+   token layer** (`web/src/styles/tokens.css`) and a design-system fixture route rendering every
+   token and base class. The tokens are ~50 custom properties and land with the scaffold rather than
+   after it, because the alternative is a phase of components written against ad-hoc hex values that
+   someone then has to retrofit — canonical §17, [`docs/design/09-frontend-and-design-system.md`](docs/design/09-frontend-and-design-system.md).
 10. `Dockerfile` (`FROM scratch`, `HEALTHCHECK` invoking `dkp healthcheck` which GETs `/healthz`),
     goreleaser, `ci.yml` + `release.yml` + `edge.yml`, GHCR publish, cosign + SBOM + provenance,
     `ci-required` aggregate gate.
@@ -108,7 +126,7 @@ blocks Phase 5. Start it on day one.
 
 ---
 
-## Phase 1 — Ledger, strategies, invariants (≈34 pt, 11%)
+## Phase 1 — Ledger, strategies, invariants (≈38 pt, 9%)
 
 **Goal.** Make the money correct and make it impossible to make it incorrect. Everything else in the
 product is a client of this package.
@@ -141,6 +159,18 @@ product is a client of this package.
     query spike run against it *before any API exists*. This is the experiment that decides whether
     `balance_snapshot` survives (see `docs/development/verify-before-phase-0.md`, item 5).
 
+12. **Tier-aware auction resolution** in `auction_open` / `auction_sealed`: the `main`,
+    `main_offspec`, `alt`, `anyone` ladder (canonical §5), two-phase resolution — highest tier
+    holding any bid takes the item, *then* amount within it — and second price computed **within the
+    winning tier**. Reversal and the invariant suite extend to cover it. This is pure strategy code
+    and belongs here rather than with the bid FSM in Phase 6, so the arithmetic is settled and
+    property-tested before anything transacts on it.
+13. **`internal/swap` — the main-swap rule evaluator.** An ordered stack: first-match-free rules
+    (open window, annual allowance) then stacking discounts (level 60, needed class), producing a
+    quote that names which rules applied and in what order. Pure, with an injected clock, so a quote
+    is reproducible; the ledger posting is Phase 7. Discounts **stack** by owner decision
+    ([`docs/design/10-ui-decisions.md`](docs/design/10-ui-decisions.md) §12).
+
 **Conditional, not scheduled.** `epgp` and `suicide_kings` (×3) are held until a pilot guild asks for
 them. They serve WoW-lineage systems the EQdkp inventory itself rates low-value for P99, and their
 `PlanReversal` implementations are the hardest single piece of ledger code in the spec (~8 pt). The
@@ -171,7 +201,7 @@ reverse one, print a member statement, and run `verify-ledger` clean — in unde
 
 ---
 
-## Phase 2 — API, auth, permissions, and the gates (≈44 pt, 14%)
+## Phase 2 — API, auth, permissions, and the gates (≈52 pt, 12%)
 
 **Goal.** Establish the public contract and the machine-checked guarantees *before* the surface is
 large enough for exceptions to hide in.
@@ -238,6 +268,16 @@ large enough for exceptions to hide in.
 18. `seed.Perf` v2: roster layered onto the Phase 1 ledger. `seed.Small` and `seed.Demo` land here
     too.
 
+19. **`character_key` and `character_flag`** — typed and queryable, not a JSON blob. A key is a
+    three-state cycle (`have` / `partial` / `missing`) per `(character, zone)` carrying a provenance
+    class: `self_reported`, `officer_verified`, or `parsed` (a `/consider` line). `character.key.verify`
+    is a separate permission from `roster.write` because self-report and verification are the same
+    column with different authority. Raid eligibility is **computed, never stored** — flipping a key
+    changes which raids a member qualifies for immediately, which is the whole feature.
+20. The permission catalogue and authz matrix grow by the twenty keys the new subsystems need
+    (canonical §6). The matrix is generated, so this is a catalogue edit plus its assertions, not
+    twenty hand-written cases.
+
 **Tests that must exist by the end.** Full authz matrix (~8 s) · token lifecycle (expired, revoked,
 zero-scope, rotated with overlap) · TOTP enrolment and step-up · idempotency replay ×100 concurrent →
 one effect and 99 replays · `412`/`428` semantics with `meta.current` · cursor round-trip and
@@ -260,16 +300,18 @@ zero-scope token.
 
 ---
 
-## Phase 3 — Web foundation and read surfaces (≈30 pt, 9%)
+## Phase 3 — Web foundation, the design system, and read surfaces (≈46 pt, 10%)
 
-**Goal.** Make the product visible to a human without creating a private channel into the domain.
-After this phase the UI stops being a phase and becomes a per-feature slice.
+**Goal.** Make the product visible to a human without creating a private channel into the domain,
+and build the design system every later slice is written against. After this phase the UI stops
+being a phase and becomes a per-feature slice — which only works if the component vocabulary exists
+first.
 
 **Deliverables, in order.**
 
 1. App shell: TanStack Router, auth guard, error boundary, layout, theme, guild-configurable class
    colours **with a contrast-validator unit test** — an officer will otherwise pick an unreadable
-   one.
+   one. The validator is server-side, so a bot setting a theme is held to the same 3:1 floor.
 2. **Message-catalogue scaffolding.** English-only at 1.0, but no hardcoded user-facing string from
    this point on. An ESLint rule fails on a bare string literal in JSX. Retrofitting i18n costs 10×;
    the scaffolding costs ~2 pt now.
@@ -289,6 +331,22 @@ After this phase the UI stops being a phase and becomes a per-feature slice.
    recorded set covers them.
 10. Dev-mode request inspector ("copy as curl") — a permanent forcing function on API quality.
 11. The `demo.dragonkillparty.org` deploy from `:edge`, reset nightly from `seed.Demo`.
+
+12. **The Nocturne component library** — the system's own classes (`btn`, `card`, `table`, `tag`,
+    `seg`, `field`, `input`, `radio`, `dialog`) plus the application families no library provides:
+    tick strip with its three states, stat tile, bar/meter row, filter chip, statement row, drag
+    handle, master–detail, side-by-side diff, stepper. One file per component, which makes this a
+    genuine parallel lane. The 48px end-fade on every rule, outlined-never-filled buttons, and the
+    hairline-ring elevation are the details that decide whether the result reads as Nocturne or as a
+    generic dark theme — [`docs/design/09-frontend-and-design-system.md`](docs/design/09-frontend-and-design-system.md).
+13. **Officer console chrome**: the seven-group icon rail, the three nav layouts (`rail` / `hybrid` /
+    `top`) behind one control, and the density axis (`comfortable` / `compact`) retuning **spacing
+    only**. Three layouts ship because the right answer depends on screen width and officer habit,
+    and the cost is one derived boolean each.
+14. **Standings with the as-of cursor** (`?as_of_seq=`), and the two phone views — balance, and
+    whether the tick counted. The as-of cursor is not a convenience feature: it is the visible proof
+    that a balance is a `SUM` over an append-only log, and an approximation there would be worse than
+    no feature at all.
 
 **Tests that must exist by the end.** Playwright journeys 1, 2, 6, 8, 10 (wizard, login, standings
 density, statement drill-down, server-rendered surfaces) · PAT-parity superset assertion · traffic
@@ -311,7 +369,7 @@ click one, and read six years of that member's DKP as a bank statement.
 
 ---
 
-## Phase 4 — Raid operations and log ingest (≈48 pt, 15%)
+## Phase 4 — Raid operations and log ingest (≈62 pt, 14%)
 
 The largest phase, and the one that decides whether guilds actually use this.
 
@@ -365,6 +423,34 @@ entry, and nothing is ever silently dropped.
     preview, calendar.
 16. `seed.Perf` v3: raids, ticks, attendance and awards layered on.
 
+17. **Guild characters and custody.** A `guild_character` nobody owns (bank mules, trackers) carries
+    a timeline of `(operator, from, to, log entry point)`. An event inside a window is attributed to
+    that operator; an event inside a **gap** is quarantined, never guessed. Log entry points are
+    assigned per operator machine, not per character, and the shared character's own log is flagged
+    ambiguous so nobody wires it up as an authority. Attributing writes an ordinary reversible batch.
+    A custody gap **warns and does not block** finalisation — blocking a raid close on a parser
+    ambiguity punishes the officer for the tool's limits.
+18. **`GET /raids/{id}/credit-gaps`** — people seen in any source for the raid but missing from at
+    least one tick, each with the reason. Finalising over these is what a dispute is made of, so the
+    screen says so before the officer clicks.
+19. **Quakes and draft week.** A quake is detected as a log pattern and **always published by a
+    human** — never auto-published at any confirmation count, because a quake banner mobilises the
+    guild at unsocial hours. Publishing fires `server.quake`. Draft week is a scheduled window
+    carrying the guild's draft position and the snake order: availability is asked by *night* first,
+    then targets are ranked, because the targets are not known until the draft happens. Ballots are
+    Borda-counted, signed, editable until close, and only officers see who voted for what.
+    Withdrawing a target keeps every ballot valid. Recording a pick creates the raid session and the
+    calendar event; **nothing about the draft touches the ledger**.
+20. **Attendance, both ways.** `raids attended ÷ raids held` is the headline everywhere, with the
+    tick ratio served alongside as a secondary column — never instead, because a late arrival should
+    not be scored like an absence. Both come from the same window and the same `no_attendance`
+    exclusion; `attendance_rollup` and `docs/guides/attendance-and-windows.md` change together.
+21. **`GET /dashboard/changes`** — the "since you last looked" digest, per officer, over an opaque
+    cursor plus a stored per-officer watermark. Deliberately **not** `?since_seq=`: canonical §4
+    keeps that parameter to `/ledger/*`, `/audit` and `/events/replay`, and the digest spans pools,
+    where a single `seq` means nothing anyway. Officers dip in and out; the alternative is re-reading
+    the ledger to find the one reversal.
+
 **Tests that must exist by the end.** Golden files for every parser (CODEOWNERS-protected, `-update`
 refused when `CI=true`) · Playwright journeys 3 and 4 · the attendance **two-implementation
 cross-check** (a slow, obviously-correct Go loop versus the SQL, on 50 random member/window pairs
@@ -387,7 +473,7 @@ of attendance.
 
 ---
 
-## Phase 5 — EQdkp Plus importer and compatibility (≈48 pt, 15%)
+## Phase 5 — EQdkp Plus importer and compatibility (≈50 pt, 11%)
 
 **Goal.** A guild can move without losing anything, can *prove* they didn't lose anything, and their
 existing bots keep working the day they cut over.
@@ -458,7 +544,7 @@ statement.
 
 ---
 
-## Phase 6 — Bidding, real time, integrations (≈34 pt, 10%)
+## Phase 6 — Bidding, real time, integrations (≈44 pt, 10%)
 
 **Goal.** Close the double-spend factory: the platform owns the rules and the balance; the bot
 becomes a dumb terminal. Server-authoritative bid sessions are a 1.0 item by owner decision.
@@ -491,6 +577,23 @@ becomes a dumb terminal. Server-authoritative bid sessions are a 1.0 item by own
     idempotency-key generator, `Retry-After`/`RateLimit`-aware retry policy.
 11. UI: bid board, officer resolve/override screen, webhook admin with the delivery log.
 
+12. **Tiered bidding end to end.** `bid.tier` is derived server-side from the bidding character at
+    bid time and **never accepted from a client**; `bid_resolution` persists the winning tier, the
+    full trace, the ladder version in force and the visibility mode, so an officer explains an
+    outcome months later from that row alone. `item_award` records the tier permanently and never
+    re-derives it from the character's *current* main flag — mains change. The leaderboard index
+    changes from amount-first to tier-then-amount.
+13. **Blind-mode disclosure, as a leakage test.** Before close, and to anyone but an officer, the API
+    discloses **exactly one thing**: whether a *higher* tier holds any bids. Not the top bid, not any
+    amount, and **not the count in the caller's own tier** — "no bids in Main yet" tells a main they
+    win at the floor, which is precisely what sealed second-price bidding exists to prevent. This is
+    a leak that will be reintroduced by accident if it is not a test.
+14. **The notification matrix**: per member, per event, per channel (in-app / Discord / email), with
+    quiet hours that suppress into a digest rather than dropping. **Two rows are locked on** — a
+    reversal touching you, and the resolution of a dispute you raised — because a correction you
+    cannot see is worse than the mistake. Plus the "connected bots" delegation view: what acts on
+    your behalf, which scopes it holds, revocable in one click.
+
 **Tests that must exist by the end.** Property P4 (double-spend across concurrent sessions) as a
 `rapid` state machine · the concurrency test (two goroutines, exactly one `201`, one `409
 insufficient_balance`) · Playwright journeys 5 and 12 (two browser contexts plus the polling
@@ -511,11 +614,104 @@ simultaneously, with the countdown identical on both because both render `closes
 
 ---
 
-## Phase 7 — Portal, CMS and plugin parity (≈36 pt, 11%)
+## Phase 7 — Guild operations (≈52 pt, 12%)
+
+**Goal.** The things a guild does between raids — lending gear, recruiting, swapping mains, agreeing
+rules — stop living in Discord pins and officer memory and become part of the record.
+
+Split out of the old Phase 7 in the mockup reconciliation. These five subsystems have almost nothing
+to do with articles and portal blocks, they carry real ledger consequences where the CMS carries
+none, and together they were more than half of what had become an 80 pt phase.
+
+**Deliverables, in order.**
+
+1. **Guild bank inventory.** `bank_category` with a default disposition and a per-category "who may
+   request" rule — a role, *or* an attendance threshold, chosen per category. Categories are
+   user-defined; the shipped set is a starting point a guild edits, and the member-facing filters are
+   the same categories, so what an officer defines is literally what a member browses.
+2. **One item, one disposition.** An item is an auction lot *or* free-as-needed *or* loaned — never
+   two lists with different stories. **NO DROP items can be banked while a person holds them**: the
+   item physically cannot be traded, so the loot log carries a separate *goes to* axis (`winner` /
+   `guild_bank` / `unassigned`) alongside the looter, who becomes the recorded holder. A banked NO
+   DROP item is **priced per item by an officer** and posts a real ledger transaction — not zero, not
+   a nominal split, because an accounting hole in a zero-sum pool is not a rounding error. This is
+   the single most-requested real-world case the incumbent handles badly.
+3. **Request and delivery.** `requested → approved → pulled → delivered`, two-sided: the officer
+   marks handover, the member confirms receipt, and an officer close **auto-confirms after 72 hours**
+   so neither party can stall the other. Anything stuck in `pulled` for a week surfaces on the
+   officer dashboard. Without the second confirmation the bank list quietly rots.
+4. **Bank auctions** — open (first price, anti-snipe) and blind (sealed, second price), as **recurring
+   schedules** with a run-now escape hatch, because a guild's bank auction is a calendar habit rather
+   than an ad-hoc event. Reuses the Phase 6 bid machinery; distinct from raid-loot sessions.
+5. **Item age.** How long each free-as-needed item has sat unclaimed, six weeks or older in warning
+   colour. A bank nobody draws from is a bank nobody knows about.
+6. **Main swaps.** The Phase 1 evaluator gains its transaction: a quote is **held at request time**
+   and changing a rule afterwards never re-prices a pending or approved swap (same reasoning as
+   strategy config snapshots). Guards are separate from cost — 90-day cooldown, 50% attendance floor,
+   **two officer approvals** — and approving posts the adjustment batch and moves the main flag **in
+   one transaction**, so both reverse together. The member sees the same numbers the officer does
+   before asking.
+7. **The application form as data.** Question types — short, long, dropdown, multiple choice,
+   check-all, true/false, file upload — plus two composites: a **character roster** repeater with
+   exactly one main (a recruit brings a stable; asking for one name loses that), and a **rules panel
+   whose accept control is locked until the applicant scrolls to the end**. That gate is deliberate
+   friction on the one thing guilds always claim was read and never was.
+8. **Members read, officers decide.** Feedback is **signed** — anonymous comments cause more damage
+   than they prevent — visible to members and officers, hidden from the applicant, with a separate
+   officer-only note thread that says on its face it is not visible to the applicant. Applying
+   carries the Discord identity through, so acceptance links the listed main instead of starting a
+   fresh claim.
+9. **The vouch economy.** `pending → paid | void`. A vouch pays out **when the recruit is promoted**,
+   not on application and not on trial start, after a 14-day trial at 50% attendance; it is clawed
+   back by reversal if they leave inside 30 days, and capped at three per person per year. The payout
+   posts **in the same transaction as the promotion**, so no officer has to remember and the pair
+   reverses together. The bonus rewards judgement, not introductions.
+10. **Policies as one versioned library.** A policy is a document with **addressable clauses**: a
+    stable public path (`/policies/dkp`) and a stable anchor per section derived from its heading.
+    Anchors survive reordering, so a link an officer pasted a year ago still lands on the right
+    clause — that is the point of the feature. Old versions stay readable; "what did the rule say
+    when this happened" is the same question the ledger answers about points.
+11. **Re-acceptance, per policy per version**, triggered only by a change the author flags
+    **material**. Members see a banner until they accept and officers can see who has not; nudges go
+    to Discord **once**, not repeatedly. An un-accepted policy **nags only** and blocks nothing — a
+    policy that blocks participation becomes a weapon in an argument, which is the opposite of the
+    point.
+12. **Everything that states a rule links here.** The application's rules panel, the main-swap cost
+    explainer, the dispute button on a statement and the bank's free-as-needed note all point at
+    policy anchors instead of restating the rule inline.
+13. **Item priority lists** — per class and slot, versioned, referenced from the bid board and the
+    loot screen, and **advisory**. No warning, no flag, no review queue: bidding out of order happens
+    in public and that is enough.
+14. UI slices: the bank with its spell shelf and request queue, the recruitment form builder and
+    review surface, the policy library, the main-swap policy screen and member quote.
+
+**Tests that must exist by the end.** The 72-hour auto-confirm across a DST boundary · a NO DROP
+banked item reconciling to the centipoint in a zero-sum pool · one-item-one-disposition as a
+constraint, not a convention · per-category requester rules for both the role and the attendance
+form · a held quote surviving a rule change · main-swap approval and flag-move in one transaction,
+reversing together · vouch payout transactional with promotion, and clawback as a reversal · the
+scroll gate as a Playwright journey · policy anchors stable across a section reorder · a material
+change flagging exactly the members who had accepted the prior version.
+
+**Docs written during.** `docs/guides/guild-bank.md` · `docs/guides/recruitment.md` ·
+`docs/guides/policies.md` · `docs/guides/main-swaps.md` · `docs/guides/item-priorities.md`.
+
+**Exit criterion.** A member requests an item from the bank and confirms receipt; an officer prices a
+banked NO DROP item and the pool still reconciles; an applicant completes the form without an
+account, is voted on by members, is promoted by an officer, and the voucher's bonus lands in the same
+batch as the promotion; a main swap is quoted, held, approved twice and posted; and a material policy
+change re-prompts exactly the members who had accepted the previous version.
+
+**Demo.** At the end of this phase you can settle an argument by sending a link to a clause, and the
+guild bank is something members actually draw from.
+
+---
+
+## Phase 8 — Portal, CMS and plugin parity (≈38 pt, 9%)
 
 **Goal.** Full EQdkp Plus site parity, so a migrating guild loses no part of their web presence — not
-just their DKP. Owner-mandated scope. Sequenced last of the **feature** phases — eighth of nine,
-with only the hardening phase after it — so that if it slips to 1.1, guild adoption is not blocked.
+just their DKP. Owner-mandated scope. Sequenced last of the **feature** phases — ninth of ten, with
+only the hardening phase after it — so that if it slips to 1.1, guild adoption is not blocked.
 
 Every surface here is a client of the same public API as everything else. `internal/richtext`
 (Phase 4) is the only place HTML is produced from user input, and `internal/cms` is the only package
@@ -533,37 +729,39 @@ that holds untrusted rich text.
 | 6 | Portal blocks + layouts | `portal_block`, `portal_layout`, per-route and per-category binding. Ships with the standard block set: standings, next raids, last raids, last items, last comments, guild news, whoisonline, birthdays, login, search. |
 | 7 | **Leaderboard block** | Top-N per class or per role. One query over `balance_snapshot` grouped by class; visible on every EQdkp install's front page. |
 | 8 | Menu manager | `menu_item` tree with permission-gated visibility. |
-| 9 | Theme editor | Design **tokens** (CSS custom properties) with a contrast validator, logo, favicon, banner, column widths. Not a LESS compiler and not per-file template overrides — those are deferred. |
+| 9 | Theme editor | Overrides for the Nocturne **tokens** (canonical §17) with the contrast validator, plus logo, favicon, banner and column widths. Not a LESS compiler and not per-file template overrides — those are deferred. A guild retunes token *values*; it never adds CSS. |
 | 10 | Team page | Officers and staff by role, ordered, with per-person blurbs. |
-| 11 | Guild bank | Inventory items, holder, notes, request/issue workflow, and a ledger link where a bank sale credits the `guild_bank` system account. |
-| 12 | Recruitment and applications | Per-class openings, a questionnaire builder, the officer review workflow, and the public application form (rate-limited, no account required). |
-| 13 | **Item priority lists** | Per class and slot, versioned, referenced from the bid board and the loot screen. The EQdkp inventory rates `plugin-itemprio` as directly relevant to P99. |
-| 14 | RSS/Atom feeds | Per category and all-categories, authenticated by `feed_token`, `feed_token.kind = articles_rss`. |
-| 15 | Search extended | Articles join persons, characters and items in the Phase 4 `/search` index. |
+| 11 | RSS/Atom feeds | Per category and all-categories, authenticated by `feed_token`, `feed_token.kind = articles_rss`. |
+| 12 | Search extended | Articles, policies and bank items join persons, characters and items in the Phase 4 `/search` index. |
+
+The guild bank, recruitment and item priority lists were here until the mockup reconciliation and are
+now **Phase 7**. They post to the ledger and this phase deliberately does not, which is the line the
+split was drawn along.
 
 **Tests that must exist by the end.** An XSS corpus (stored, reflected, mutation-XSS, bidi controls,
 SVG upload, polyglot image) against every CMS write path, asserting `internal/richtext` is the only
 choke point · a lint assertion that `dangerouslySetInnerHTML` appears nowhere in `web/src` · comment
 flood and rate-limit tests · media re-encode tests proving EXIF/GPS is destroyed and SVG is rejected
 · portal-layout render statement budget (≤ 8 statements for the default layout) · Playwright journeys
-"publish an article" and "submit an application" · RSS feed validity against a schema · a feed-token
+"publish an article" · RSS feed validity against a schema · a feed-token
 scoping test proving an `articles_rss` token cannot read anything else.
 
 **Docs written during.** `docs/guides/site-and-articles.md` · `docs/guides/portal-layouts.md` ·
-`docs/guides/recruitment.md` · `docs/guides/guild-bank.md` · `docs/guides/item-priorities.md` ·
 `docs/reference/theme-tokens.md`.
 
 **Exit criterion.** A guild imported in Phase 5 has its articles, categories, comments and media
 visible and editable; the front page is assembled from portal blocks an officer arranged in the
-browser; an applicant submits a recruitment form without an account and an officer processes it; and
-the XSS corpus passes with `internal/richtext` as the single sanitisation point.
+browser and saved as a server-side resource rather than a browser blob; the theme editor refuses a
+class colour under 3:1; and the XSS corpus passes with `internal/richtext` as the single
+sanitisation point.
 
 **Demo.** At the end of this phase you can point a guild's domain at this binary and it is their
-whole website — news, recruitment, bank, priorities and DKP — not a DKP tool bolted next to one.
+whole website — news, recruitment, bank, policies, priorities and DKP — not a DKP tool bolted next to
+one.
 
 ---
 
-## Phase 8 — Hardening, distribution, 1.0 (≈30 pt, 9%)
+## Phase 9 — Hardening, distribution, 1.0 (≈34 pt, 8%)
 
 **Goal.** Convert "it works" into "a volunteer officer installs it, forgets it for eighteen months,
 and finds it still running."
@@ -641,18 +839,22 @@ import your backup, raid tonight" and watch it happen.
 | Ledger | Append-only, integer centipoints, bitemporal, reversal-only corrections, hash-chained, nightly verified, per-account statement view |
 | Strategies | `fixed_price`, `tick`, `zero_sum`, `attendance_weighted`, `decay_percent`, `decay_window`, `cap`, `start_points`, `loot_council`, `roll`, `relative_bid`, `auction_open`, `auction_sealed` (first and second price). `epgp` and `suicide_kings` on pilot-guild request only. |
 | Pools | Multiple pools, per-pool strategy and config, event→pool and item-pool→pool mapping, `no_attendance`, per-pool alt policy |
-| Roster | person/account/character, alts without sentinels, claims (officer, roster-dump, log-nonce), rename and attribute history, merges, typed custom fields, away mode |
+| Roster | person/account/character, alts without sentinels, claims (officer, roster-dump, log-nonce), rename and attribute history, merges, typed custom fields, away mode, **zone keys and flags with provenance**, **computed raid eligibility**, **guild characters with custody windows** |
 | Raids | Sessions with N ticks, weighted/standby/bench attendance, 0..N kill credits, connected-raid dedup, finalize plus a dispute window, saved raid templates |
 | Ingest | RaidRoster, `/who`, guild dump, loot lines, `/random`, chat grammars; preview-and-commit with a durable `raid_submission`; reconciliation queue; bulk folder import; 180-day artifact retention with `/tell` redaction |
 | Loot | Item catalogue, aliases, fuzzy resolution, multi-buyer splits, rot handling, award reversal, priority lists |
-| Auctions | Server-authoritative bid sessions, holds, anti-snipe, sealed bids, tie-break chain, officer override before settle |
-| Portal / CMS | Articles with an editor, categories, tags, comments, votes, media library, shoutbox, portal blocks and layouts, leaderboard block, menu manager, theme tokens, team page, guild bank, recruitment and applications, RSS |
+| Auctions | Server-authoritative bid sessions, **four-tier bidding where tier outranks amount**, holds, anti-snipe, sealed bids, second price **within the winning tier**, the recorded tie-break chain, officer override before settle |
+| Portal / CMS | Articles with an editor, categories, tags, comments, votes, media library, shoutbox, portal blocks and layouts, leaderboard block, menu manager, theme tokens, team page, RSS |
+| Guild operations | Guild bank with categories, NO-DROP holder tracking, two-sided delivery and recurring auctions; recruitment with a form builder and signed member feedback; the vouch bonus; versioned policies with stable clause anchors; priced main swaps; advisory item priority lists |
+| Raid week | Quake detection with officer publication, draft week with per-night availability and Borda-counted ranked ballots, and a pick that creates the session and the calendar event |
+| Frontend | Nocturne design system as the one shipped theme — dark only, tokens with a contrast validator, three officer nav layouts, two density modes, a server-side saved-layout resource, and two phone views |
 | API | Full REST + OpenAPI 3.1, scoped PATs on service accounts, idempotency, ETags, cursor sync, RFC 9457 errors, SSE + webhooks + polling, TypeScript and Python SDKs, EQdkp compat shim |
 | Auth | Local (argon2id), Discord OAuth, generic OIDC, TOTP enrolment and step-up, one generated permission catalogue, no all-powerful token |
 | Migration | EQdkp Plus importer (three entry points, dry-run default, verification report, undo, delta and parallel run), CSV, Sheets file upload, raid-dump backfill |
 | Ops | One container / one binary, migrate-on-boot with snapshot and auto-restore, backups on by default, `dkp doctor`, `dkp support-bundle`, `/ops`, metrics |
 | Docs | Getting started, migration, officer guides, API reference, error pages, config reference — all served offline by the binary |
 | Language | English only. Message-catalogue scaffolding from Phase 3, so 1.1 translations are a data change. |
+| Attendance | `raids attended ÷ raids held` as the headline, with the tick ratio served alongside — both computed over the same window, only one the headline |
 
 ---
 
@@ -680,7 +882,11 @@ not a debate. **No new work item enters a phase after its exit criterion is writ
 | Forum bridges (all 24), EQdkp-as-OAuth-provider, Steam/Twitch/Battle.net/Facebook login | — | Generic OIDC covers the login cases. Guilds using EQdkp as SSO for a WoltLab forum are warned in `what-does-not-migrate.md`. |
 | `format=lua` output, WoW/other game modules, print views, mass mail | — | EverQuest has no addon API. Discord is the notification channel. |
 | Plugin/extension system + online repository | — | The API is the extension point. Build outside this repo in whatever language you like; here is the SDK. |
-| Free-form LESS, per-file template overrides, the 70-variable style engine | — | Phase 7 ships design tokens with a contrast validator instead. |
+| Free-form LESS, per-file template overrides, the 70-variable style engine | — | Phase 8 ships design tokens with a contrast validator instead. |
+| A light theme | 1.1 | Nocturne ships one palette and no screen has been drawn against a light one. Authoring a counterpart means designing a second system and doubling every contrast check (canonical §17). |
+| Auto-published quakes | — | Detection is a log pattern; publication is always a human. A quake banner mobilises the guild at unsocial hours, so no confirmation count is enough. |
+| Enforced item priorities | — | Advisory by owner decision. Bidding out of order happens in public and that is enough — no warning, no flag, no review queue. |
+| Boxing support ("willing to box") | — | Not a supported option under Project 1999 rules; offering the flag implies the guild sanctions it. |
 | Localisation beyond English — German in particular | 1.1 | EQdkp Plus is German-first and a large share of its install base is German. **German guilds cannot migrate at 1.0.** Message-catalogue scaffolding ships in Phase 3 so this is a data change, not a rewrite. See R13. |
 | Mobile apps | — | The SPA is responsive; that is the answer. |
 | Email as a first-class channel | — | SMTP is optional; claim codes are the universal path. |
@@ -706,17 +912,18 @@ P0 store + migrations + gates
       → P4 raid / tick / attendance domain
         → P5 importer + compat shim
           → P6 bid sessions + outbox/SSE
-            → P8 RC
+            → P9 RC
 ```
 
 Everything on that path shares two files that cannot be edited concurrently without pain:
 **`db/schema.hcl`** and the ledger service. Batch schema changes into deliberate "schema PRs" with one
 owner at a time.
 
-**Phase 3 and Phase 7 are not on the critical path.** Phase 3 can run alongside the back half of
-Phase 2. Phase 7 depends only on `internal/richtext` (Phase 4) and the outbox (Phase 6) and can slip
-to 1.1 without blocking a guild's adoption — which is precisely why it is sequenced eighth of nine,
-last among the feature phases.
+**Phases 3, 7 and 8 are not on the critical path.** Phase 3 can run alongside the back half of
+Phase 2. Phase 7 needs the ledger (Phase 1) and the bid machinery (Phase 6) but nothing after them.
+Phase 8 depends only on `internal/richtext` (Phase 4) and the outbox (Phase 6) and can slip to 1.1
+without blocking a guild's adoption — which is precisely why it is sequenced ninth of ten, last among
+the feature phases.
 
 **Fully parallel lanes** (different agents, near-zero conflict surface):
 
@@ -732,7 +939,9 @@ last among the feature phases.
 | SDK ergonomics (webhook verifier, SSE resume, retry policy) | `openapi.json` is stable | `clients/**`, non-generated files only | Phase 2 |
 | Docs narrative (guides, concepts, migration walkthrough) | The feature's API shape is frozen | `docs/**` | Per-phase |
 | Server-rendered surfaces (`/ops`, public standings) | Read APIs exist | `internal/ops/*.tmpl` | Phase 3 |
-| Portal blocks | The block interface is frozen | One file + one test per block | Phase 7, after item 6 |
+| Portal blocks | The block interface is frozen | One file + one test per block | Phase 8, after item 6 |
+| Design-system components | The token layer exists | One file + one test per component in `web/src/components` | Phase 3, after item 1 |
+| Quakes and draft week | Calendar and parsers exist | `internal/draft/*`, its own routes | Phase 4, after item 13 |
 
 **Conflict-avoidance rules, enforced by repo layout rather than by asking nicely:**
 
@@ -753,18 +962,18 @@ last among the feature phases.
 |---|---|---|---|---|
 | R1 | **Importer fidelity** — balances don't match and the guild loses faith on day one | Δ set ≠ predicted set on any fixture; any `unexplained` classification | The classifier oracle as a **build-failing** assertion; five synthetic fixtures plus one anonymised real dump; `--dry-run` default; `--commit` refuses on unexplained or large residuals; three reconciliation modes so the honest answer is always available; the per-member statement link as the trust artifact | P0 fixtures / P5 |
 | R2 | **Point-math disputes** — "the site says 412, I had 430" | Any nightly `verify-ledger` drift; any dispute unanswerable from the statement | Balances are `SUM` over an append-only log; the snapshot is a droppable cache verified nightly with a drift alarm; bitemporal `effective_at`/`recorded_at` answers "what did it say last Tuesday"; decay is posted, not computed; every batch carries its `config_snapshot` and `rng_seed`; 12 properties + 95% coverage floors | P1 |
-| R3 | **Scope creep** — now larger, because the CMS is in scope | Issues that grow a phase after its exit criterion is written; "while we're in there" PRs | The deferred table above is published here and linked from the issue template; "parity gap" is a *label*, not a promise; the hard rule that no work item enters a phase after its exit criterion is written; Phase 7 is sequenced last among the feature phases precisely so it can slip without blocking adoption | All |
+| R3 | **Scope creep** — now larger, because the CMS is in scope | Issues that grow a phase after its exit criterion is written; "while we're in there" PRs | The deferred table above is published here and linked from the issue template; "parity gap" is a *label*, not a promise; the hard rule that no work item enters a phase after its exit criterion is written; Phases 7 and 8 are sequenced last among the feature phases precisely so they can slip without blocking adoption; the mockup reconciliation added ≈114 pt and every item of it is named in this file rather than absorbed quietly | All |
 | R4 | **Adoption / trust** — guilds don't switch | Demo traffic without imports; imports without cutovers | The compat shim makes every existing P99 bot work on cutover day (and now ships *with* the cutover checklist); parallel run and `mirror` mode make trying it zero-risk; undo-this-import; the export story round-tripped in CI as a first-run feature; publicly linkable verification reports; **two pilot guilds recruited before Phase 4, not at RC** | P4–P8 |
 | R5 | **Maintainer burnout** | CI p50 creeping past 6 min; Renovate backlog; unread parser-bug issues | A ≤4 h/week budget with named line items; `ci-budget.yml` files an issue when the SLO breaks; the deletion rule (any check nobody has acted on in 90 days is removed); zero-retry flake policy with a 7-day time-boxed quarantine; automerge on low-risk deps; releases are "merge the Release PR" | All |
 | R6 | **`riversqlite` maturity** — still an early preview, explicitly "needs more vetting to be considered fully production ready" | Stuck jobs, lost periodic runs, dead letters with no cause | Exact version pin; a six-method `jobs.Queue` interface so replacement is a day of work; nightly 10k-job soak; the job table lives in the file the officer backs up and is visible at `/admin/jobs`; bid timers deliberately not on the queue. **Spike the ~200-line hand-rolled alternative in Phase 1** — if it is a day, make it the default | P1 |
 | R7 | **Parser formats are wrong at first** — ~12 P99 log strings are unverified assumptions | The reconciliation queue fills with `unparsed_line` | The golden-file harness makes a fix a one-line test addition; `raw_extra` and defensive splitting instead of assumed column counts; the in-app "report this line as a parser bug" button files a pre-filled, redacted issue, so every user becomes a fixture contributor. **Collect 20 real dumps from the P99 Discord in week one, not in Phase 4** | P4 |
 | R8 | **An agent weakens a test to go green** | Loosened assertions, rewritten golden files, raised budgets in a feature PR | A test-diff analyser flagging removed assertions, `cmpopts.Ignore*` and raised budgets, forcing CODEOWNERS review; one-way ratchets; `-update` refused when `CI=true`; a non-decreasing fixture-count test; oracles (properties, reference implementations, the spec, `EXPLAIN` goldens) that cannot be edited invisibly; the `test-relax:` commit prefix convention | P0 |
-| R9 | **AGPL contamination from EQdkp source** | Any `pdh_`, `gen_class`, `plus_exchange`, `__multidkp2event` identifier outside the two allowlisted files | The CI grep gate; stated in `AGENTS.md`, `CONTRIBUTING.md` and the PR template; class/race/zone tables shipped as our own literals; the importer reads a database, never transcribes DDL or ports PHP. The risk peaks in Phases 5 and 7, where the task is literally "match EQdkp's behaviour" | P0, peaks P5/P7 |
-| R10 | **Security of hand-rolled auth** — ~900 lines you own, with no CVE feed | — | The authz matrix as the single highest-value suite; argon2id only; opaque tokens; no all-powerful token by construction; TOTP enrolment in Phase 2 so the step-up gates are real; `govulncheck`, licence gate and secret scanning; an external review of `internal/auth` before RC; the support-bundle canary test so incident reporting doesn't leak | P2 / P8 |
+| R9 | **AGPL contamination from EQdkp source** | Any `pdh_`, `gen_class`, `plus_exchange`, `__multidkp2event` identifier outside the two allowlisted files | The CI grep gate; stated in `AGENTS.md`, `CONTRIBUTING.md` and the PR template; class/race/zone tables shipped as our own literals; the importer reads a database, never transcribes DDL or ports PHP. The risk peaks in Phases 5 and 8, where the task is literally "match EQdkp's behaviour" | P0, peaks P5/P8 |
+| R10 | **Security of hand-rolled auth** — ~900 lines you own, with no CVE feed | — | The authz matrix as the single highest-value suite; argon2id only; opaque tokens; no all-powerful token by construction; TOTP enrolment in Phase 2 so the step-up gates are real; `govulncheck`, licence gate and secret scanning; an external review of `internal/auth` before RC; the support-bundle canary test so incident reporting doesn't leak | P2 / P9 |
 | R11 | **SQLite-only caps the future** | A hosted offering, or a guild large enough to matter | The `Queries` interface, the `pggen` compile assertion and nightly Postgres schema convergence ship in 1.0 at ~zero cost; the four schema decisions (integer micros, centipoints, ULID text keys, never query into JSON) make the port cheap; the three genuine divergences (`seq` allocation, bid-hold lock, FTS) are named in `db/RECIPES.md` on day one | P0 |
 | R12 | **Bus factor on Huma** (one primary maintainer) | Upstream goes quiet | It is a codegen layer over `net/http`, forkable in a weekend; pin exactly; the spec is a committed artifact, so a fork changes nothing downstream | P2 |
 | R13 | **German parity regression** — EQdkp Plus is German-first and a large share of its install base is German. An English-only product is a *regression* for the incumbent's actual users | German-language issues; migration enquiries that stop at "is there a German UI?" | Say it loudly in the README and in `what-does-not-migrate.md` rather than discovering it in a launch thread; message-catalogue scaffolding from Phase 3 with an ESLint rule failing on bare JSX strings, so 1.1 German is a data change; recruit a German-speaking translator during the RC | P3 |
-| R14 | **Phase 7 (CMS) is the largest untyped blast radius in the product** — untrusted rich text, uploads and a public application form | Any XSS-corpus failure; any HTML produced outside `internal/richtext` | `internal/richtext` ships in Phase 4, four phases before its heaviest consumer, with its grep gate; `dangerouslySetInnerHTML` banned by lint; images re-encoded server-side and SVG rejected outright; CSP `script-src 'self'` with no `unsafe-inline`; the XSS corpus is a 1.0 exit criterion | P4 / P7 |
+| R14 | **The CMS (Phase 8) and the public application form (Phase 7) are the largest untyped blast radius in the product** — untrusted rich text, and file uploads from unauthenticated applicants | Any XSS-corpus failure; any HTML produced outside `internal/richtext` | `internal/richtext` ships in Phase 4, four phases before its heaviest consumer, with its grep gate; `dangerouslySetInnerHTML` banned by lint; images re-encoded server-side and SVG rejected outright; CSP `script-src 'self'` with no `unsafe-inline`; the XSS corpus is a 1.0 exit criterion; the application form's upload path is content-addressed, re-encoded and size-capped like the media library, and rate-limited because it needs no account | P4 / P7 / P8 |
 | R15 | **The empirical premises are never checked** — roughly twenty load-bearing claims in this design are assumptions about P99 guilds, not findings | Phase 4 starts with zero pilot guilds; the `dkp.exe` premise is still unpolled at Phase 2 | `docs/development/verify-before-phase-0.md` is a checklist with named experiments, worked *during* Phase 0. **Two pilot guilds recruited before Phase 4 is a gate, not an aspiration** — most of those twenty premises are answerable by two officers in a Discord channel and unanswerable by any further design work | P0 / P4 |
 
 ---
