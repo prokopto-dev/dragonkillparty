@@ -19,8 +19,8 @@
 # Failures file an issue rather than emailing a maintainer, because an issue is triageable by
 # whoever has time on Saturday and an email is not.
 #
-# ACTION PINS — see the note at the top of ci.yml. Digests below are unverified placeholders in the
-# correct shape until `make verify-action-pins` lands in Phase 0 PR 12.
+# ACTION PINS — see the note at the top of ci.yml. PIN001 in `lint / repo` asserts the SHAPE of every
+# pin below, not that a digest is the commit its trailing comment claims. Treat them as unverified.
 
 name: nightly-verify
 
