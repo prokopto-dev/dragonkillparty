@@ -148,8 +148,21 @@ canonical §7:
 
 Four routes live outside `/api/v1` and carry their own credential rather than a permission key:
 `/healthz` and `/readyz` (public), `/metrics` (`DKP_METRICS_TOKEN`, on a separate listener), and
-`/feeds/{feed_token}/…` (a single-purpose feed token). Together with the compat shim they are exactly
-the `Hidden: true` allowlist of canonical §7, and nothing else may join them.
+`/feeds/{feed_token}/…` (a single-purpose feed token).
+
+> **Corrected in Phase 0 PR 4.** This paragraph used to continue "together with the compat shim they
+> are exactly the `Hidden: true` allowlist of canonical §7". They are not: canonical §7 lists
+> `/healthz`, `/readyz`, `/metrics`, **the OAuth callback** and the compat shim, and does not include
+> `/feeds/{feed_token}/…`. Canonical conventions is the normative tie-breaker, so this document was
+> the bug. The two lists overlap but are different questions — this one is "routes outside `/api/v1`
+> carrying their own credential", canonical §7's is "operations permitted to be absent from the
+> published spec" — and a route can be either without being both.
+>
+> The live allowlist is `api.HiddenOperationAllowlist()`, enforced by
+> `TestArch_HiddenOperations_AreAllowlisted`. It carries **four** entries rather than five because
+> the OAuth callback's path is not written down anywhere in this repository; whoever adds that route
+> adds its path. If `/feeds/{feed_token}/…` should also be Hidden-eligible, that is an addition to
+> canonical §7 first, and then to the allowlist.
 
 A dash in the **Scope** column means **no PAT scope exists for this operation**: it is
 **session-only**, and the operations marked **step-up** additionally require re-authentication within

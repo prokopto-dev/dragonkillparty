@@ -287,6 +287,32 @@ def check_money_and_floats(doc: dict) -> None:
     with itself, because JSON numbers round-trip through IEEE-754 doubles in every client language.
     """
 
+    def check_field(name: str, schema: dict, at: str) -> None:
+        """Apply the money and float rules to one named field."""
+        types = schema.get("type")
+        types = types if isinstance(types, list) else [types]
+
+        if name.endswith("_centipoints") and "integer" not in types:
+            violation(
+                "SPEC006",
+                f"{at} is money and its type is {schema.get('type')!r}. Centipoints are "
+                f"unquoted JSON integers — never a string, never a float.",
+            )
+
+        if name.endswith("_cp"):
+            violation(
+                "SPEC006",
+                f"{at} uses the SQL suffix `_cp`. On the wire the suffix is `_centipoints` "
+                f"(canonical conventions §16).",
+            )
+
+        if "number" in types:
+            violation(
+                "SPEC006",
+                f"{at} is `type: number`, a float on the wire. Money is int64 centipoints and "
+                f"ratios are integer basis points (`_bp`); neither is a float.",
+            )
+
     def walk(node, trail: str) -> None:
         if isinstance(node, list):
             for i, item in enumerate(node):
@@ -297,33 +323,23 @@ def check_money_and_floats(doc: dict) -> None:
             return
 
         for name, prop in (node.get("properties") or {}).items():
-            if not isinstance(prop, dict):
+            if isinstance(prop, dict):
+                check_field(name, prop, f"{trail}.{name}")
+
+        # Parameters are a DIFFERENT SHAPE and were missed by the first version of this gate: a
+        # query, header or path parameter is {"name": ..., "in": ..., "schema": {...}}, not an entry
+        # under a `properties` map, so walking properties alone never saw one. A money-suffixed
+        # query parameter — `?min_value_centipoints=` on a future filter — is exactly the field this
+        # rule exists to catch, and it would have passed.
+        for i, param in enumerate(node.get("parameters") or []):
+            if not isinstance(param, dict):
                 continue
 
-            at = f"{trail}.{name}"
-            types = prop.get("type")
-            types = types if isinstance(types, list) else [types]
+            name = param.get("name")
+            schema = param.get("schema")
 
-            if name.endswith("_centipoints") and "integer" not in types:
-                violation(
-                    "SPEC006",
-                    f"{at} is money and its type is {prop.get('type')!r}. Centipoints are "
-                    f"unquoted JSON integers — never a string, never a float.",
-                )
-
-            if name.endswith("_cp"):
-                violation(
-                    "SPEC006",
-                    f"{at} uses the SQL suffix `_cp`. On the wire the suffix is `_centipoints` "
-                    f"(canonical conventions §16).",
-                )
-
-            if "number" in types:
-                violation(
-                    "SPEC006",
-                    f"{at} is `type: number`, a float on the wire. Money is int64 centipoints and "
-                    f"ratios are integer basis points (`_bp`); neither is a float.",
-                )
+            if isinstance(name, str) and isinstance(schema, dict):
+                check_field(name, schema, f"{trail}.parameters[{i}].{name}")
 
         for key, value in node.items():
             if key != "properties":

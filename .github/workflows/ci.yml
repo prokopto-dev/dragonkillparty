@@ -287,7 +287,10 @@ jobs:
         # operationIds are unique and none was RENAMED versus origin/main (a renamed operationId is
         # a breaking SDK change with an unchanged HTTP surface), every operation declares Security
         # and x-dkp-permission, every x-dkp-permission key exists in internal/authz/catalogue.go,
-        # and every money field is an unquoted integer named *_centipoints.
+        # every money field is an unquoted integer named *_centipoints and nothing on the wire is a
+        # float, and every documented path lives under /api/v1 (SPEC007 — an unversioned path in the
+        # document means an infrastructure route was registered without Hidden and is now published
+        # API, which is the no-hidden-operations rule seen from the other side).
         #
         # The `Hidden: true` allowlist of canonical conventions section 7 was listed here until
         # PR 4 and has moved to internal/api/arch_test.go, where it is implementable: Huma never

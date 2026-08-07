@@ -428,6 +428,87 @@ func TestSpecGate_MoneyViolations_AreRejected(t *testing.T) {
 	}
 }
 
+// TestSpecGate_MoneyViolationInAParameter_IsRejected covers the parameter half of SPEC006.
+//
+// A query, header or path parameter is a different JSON shape from a body field —
+// {"name": ..., "in": ..., "schema": {...}} rather than an entry under a `properties` map — and the
+// first version of this gate walked only `properties`, so it never saw one. A review caught it
+// before any parameter existed to slip through; this fixture is what stops it regressing.
+//
+// The case is not hypothetical: the first collection endpoint with a `?min_value_centipoints=`
+// filter is exactly the shape canonical §1 exists to protect, and a float there corrupts a ledger
+// the same way a float in a body does.
+func TestSpecGate_MoneyViolationInAParameter_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		param string
+		typ   string
+	}{
+		{name: "money parameter as float", param: "min_value_centipoints", typ: "number"},
+		{name: "money parameter as string", param: "min_value_centipoints", typ: "string"},
+		{name: "SQL suffix on a parameter", param: "min_value_cp", typ: "integer"},
+		{name: "float parameter that is not money", param: "weight", typ: "number"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			doc := conformingSpec()
+			op := conformingOperation()
+			op["parameters"] = []any{
+				map[string]any{
+					"name":   tc.param,
+					"in":     "query",
+					"schema": map[string]any{"type": tc.typ},
+				},
+			}
+			doc["paths"] = map[string]any{"/api/v1/things": map[string]any{"get": op}}
+
+			tree := t.TempDir()
+			writeSpec(t, tree, doc)
+
+			out, code := runSpecGate(t, tree)
+
+			require.NotZero(t, code,
+				"the gate accepted parameter %s: %s\n%s", tc.param, tc.typ, out)
+			require.Contains(t, firedRules(out), "SPEC006", "%s", out)
+			require.Contains(t, out, tc.param,
+				"the failure must name the offending parameter\n%s", out)
+		})
+	}
+}
+
+// TestSpecGate_LegitimateParameter_IsAccepted is the counterweight.
+//
+// Without it, the parameter check could be implemented as "any parameter fails" and every case above
+// would still pass — blocking the first endpoint that takes a query parameter at all.
+func TestSpecGate_LegitimateParameter_IsAccepted(t *testing.T) {
+	t.Parallel()
+
+	doc := conformingSpec()
+	op := conformingOperation()
+	op["parameters"] = []any{
+		map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer"}},
+		map[string]any{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string"}},
+		map[string]any{
+			"name": "min_value_centipoints", "in": "query",
+			"schema": map[string]any{"type": "integer"},
+		},
+	}
+	doc["paths"] = map[string]any{"/api/v1/things": map[string]any{"get": op}}
+
+	tree := t.TempDir()
+	writeSpec(t, tree, doc)
+
+	out, code := runSpecGate(t, tree)
+
+	require.Zero(t, code,
+		"an integer money parameter and the shared pagination parameters must all be accepted\n%s", out)
+}
+
 // TestSpecGate_UnversionedPath_IsRejected covers SPEC007.
 //
 // Canonical §7 puts every operation under /api/v1 and puts /healthz, /readyz, /metrics, the OAuth

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -102,24 +103,45 @@ func registeredOperations(t *testing.T) []registeredOp {
 func TestArch_OperationIDs_AreExplicitUniqueAndLowerCamelCase(t *testing.T) {
 	t.Parallel()
 
+	require.Empty(t, operationIDViolations(registeredOperations(t)))
+}
+
+// operationIDViolations returns one message per operationId defect in ops.
+//
+// Extracted from the test above rather than inlined, so that
+// TestArch_MissingOperationID_FailsBuild can drive THIS function against a deliberately broken
+// fixture. That is the difference between a fixture that proves the gate fires and one that merely
+// re-states a library's behaviour: an audit of the first version of this file neutered the real
+// assertion and the fixture still passed, because the two shared no code. They do now — the same
+// arrangement scanRegisterCalls already had for the law-1 and Hidden gates.
+func operationIDViolations(ops []registeredOp) []string {
+	var problems []string
+
 	seen := make(map[string]registeredOp)
 
-	for _, op := range registeredOperations(t) {
-		require.NotEmpty(t, op.Op.OperationID,
-			"%s declares no OperationID. It must be explicit — never auto-derived, never renamed.", op)
+	for _, op := range ops {
+		switch {
+		case op.Op.OperationID == "":
+			problems = append(problems, fmt.Sprintf(
+				"%s declares no OperationID. It must be explicit — never auto-derived, never renamed.", op))
 
-		require.True(t, lowerCamelCase(op.Op.OperationID),
-			"%s has OperationID %q, which is not lowerCamelCase (canonical §16: verb + resource, "+
-				"e.g. createRaidTick)", op, op.Op.OperationID)
+			continue
+		case !lowerCamelCase(op.Op.OperationID):
+			problems = append(problems, fmt.Sprintf(
+				"%s has OperationID %q, which is not lowerCamelCase (canonical §16: verb + resource, "+
+					"e.g. createRaidTick)", op, op.Op.OperationID))
+		}
 
 		if prior, dup := seen[op.Op.OperationID]; dup {
-			require.Failf(t, "duplicate OperationID",
+			problems = append(problems, fmt.Sprintf(
 				"%q is declared by both %s and %s; the SDK generators would emit two methods with "+
-					"one name", op.Op.OperationID, prior, op)
+					"one name", op.Op.OperationID, prior, op))
 		}
 
 		seen[op.Op.OperationID] = op
 	}
+
+	return problems
 }
 
 // TestArch_Operations_DeclareSecurityAndPermission is the "no exceptions" half of AGENTS.md's API
@@ -173,24 +195,45 @@ func TestArch_Operations_DeclareSecurityAndPermission(t *testing.T) {
 // top support burden" (AGENTS.md) is a lesson this project would otherwise learn from a guild's
 // ledger rather than from CI.
 //
-// The prefix list is canonical §7's, cross-checked against .claude/rules/api-endpoints.md:140. Note
-// that internal/api/EXAMPLE_ENDPOINT.md:231 writes `/bid-sessions` where the rule file writes
-// `/bids`; both are listed here rather than picking one, because a fence that is too wide costs an
-// author one explicit header and a fence that is too narrow costs a guild its points.
+// It is paired with TestArch_MutatingPostWithoutIdempotencyKey_FailsBuild, which drives the same
+// function against a fixture POST. Without that pairing this test would pass forever even if the
+// header check were wrong — not only until PR 9, but after it, because a check matching the wrong
+// parameter location would keep passing with real operations registered.
 func TestArch_MutatingPost_RequiresIdempotencyKey(t *testing.T) {
 	t.Parallel()
 
-	fenced := []string{
+	require.Empty(t, idempotencyViolations(registeredOperations(t)))
+}
+
+// idempotencyFencedPrefixes are the paths under which a POST creates domain state.
+//
+// Canonical §7's list, cross-checked against .claude/rules/api-endpoints.md:140. Note that
+// internal/api/EXAMPLE_ENDPOINT.md:231 writes `/bid-sessions` where the rule file writes `/bids`;
+// both are listed rather than picking one, because a fence that is too wide costs an author one
+// explicit header and a fence that is too narrow costs a guild its points.
+func idempotencyFencedPrefixes() []string {
+	return []string{
 		"/api/v1/raids", "/api/v1/awards", "/api/v1/adjustments",
 		"/api/v1/bids", "/api/v1/bid-sessions", "/api/v1/raid-submissions", "/api/v1/ledger",
 	}
+}
 
-	for _, op := range registeredOperations(t) {
+// idempotencyViolations returns one message per fenced POST that does not require an
+// Idempotency-Key header.
+//
+// Extracted so the vacuous real-registry gate and the fixture test share it — see
+// operationIDViolations for why that sharing is the point rather than tidiness.
+func idempotencyViolations(ops []registeredOp) []string {
+	var problems []string
+
+	for _, op := range ops {
 		if op.Method != http.MethodPost {
 			continue
 		}
 
-		if !slices.ContainsFunc(fenced, func(p string) bool { return strings.HasPrefix(op.Path, p) }) {
+		fenced := slices.ContainsFunc(idempotencyFencedPrefixes(),
+			func(p string) bool { return strings.HasPrefix(op.Path, p) })
+		if !fenced {
 			continue
 		}
 
@@ -202,11 +245,15 @@ func TestArch_MutatingPost_RequiresIdempotencyKey(t *testing.T) {
 			}
 		}
 
-		require.Truef(t, found,
-			"%s creates domain state under a fenced prefix but does not require an Idempotency-Key "+
-				"header. Add an IdempotencyKey field to its input struct, tagged as a required "+
-				"Idempotency-Key header.", op)
+		if !found {
+			problems = append(problems, fmt.Sprintf(
+				"%s creates domain state under a fenced prefix but does not require an "+
+					"Idempotency-Key header. Add an IdempotencyKey field to its input struct, tagged "+
+					"as a required Idempotency-Key header.", op))
+		}
 	}
+
+	return problems
 }
 
 // routeDecl is one huma.Register call as it is written in the source.
@@ -456,36 +503,179 @@ func registerHidden(api huma.API) {
 		"the fixture path must not be allowlisted or this test proves nothing")
 }
 
-// TestArch_MissingOperationID_FailsBuild proves the operationId assertion fires.
+// fixtureRegistry registers ops into a throwaway Huma API and returns them in the shape the
+// assertion helpers consume.
 //
-// Named by docs/development/first-ten-prs.md PR 4 as "deleting OperationID from getMeta fails CI".
-// It is done against a throwaway registry rather than by mutating getMeta, for the reason every
-// negative fixture in test/repo is: making the real tree fail to prove a gate works leaves the repo
-// broken for everyone, and a test that passes only because somebody remembered to undo the damage is
-// not a test.
-func TestArch_MissingOperationID_FailsBuild(t *testing.T) {
-	t.Parallel()
+// A throwaway registry rather than mutating the real one, for the reason every negative fixture in
+// test/repo exists: making the real tree fail to prove a gate works leaves the repo broken for
+// everyone, and a test that passes only because somebody remembered to undo the damage is not a test.
+func fixtureRegistry(t *testing.T, ops ...huma.Operation) []registeredOp {
+	t.Helper()
 
 	api := humago.New(http.NewServeMux(), humaConfig())
 
-	huma.Register(api, huma.Operation{
-		// OperationID deliberately absent — this is the fixture.
-		Method:     http.MethodGet,
-		Path:       "/api/v1/nameless",
-		Summary:    "An operation whose author forgot the one field that is public API",
-		Security:   []map[string][]string{},
-		Extensions: map[string]any{ExtensionPermission: PermissionPublic},
-	}, func(_ context.Context, _ *struct{}) (*MetaOutput, error) { return &MetaOutput{}, nil })
+	for _, op := range ops {
+		huma.Register(api, op,
+			func(_ context.Context, _ *struct{}) (*MetaOutput, error) { return &MetaOutput{}, nil })
+	}
 
-	op := api.OpenAPI().Paths["/api/v1/nameless"]
-	require.NotNil(t, op, "the fixture operation did not register")
-	require.NotNil(t, op.Get)
+	var out []registeredOp
 
-	require.Empty(t, op.Get.OperationID,
-		"Huma auto-derived an OperationID for an operation that declared none. If that is now the "+
-			"library's behaviour, the assertion in "+
-			"TestArch_OperationIDs_AreExplicitUniqueAndLowerCamelCase can no longer catch a missing "+
-			"id and must be replaced with a source-level check.")
+	for path, item := range api.OpenAPI().Paths {
+		for method, op := range map[string]*huma.Operation{
+			http.MethodGet: item.Get, http.MethodPut: item.Put, http.MethodPost: item.Post,
+			http.MethodDelete: item.Delete, http.MethodPatch: item.Patch, http.MethodHead: item.Head,
+		} {
+			if op != nil {
+				out = append(out, registeredOp{Path: path, Method: method, Op: op})
+			}
+		}
+	}
+
+	require.NotEmpty(t, out, "the fixture operations did not register")
+
+	return out
+}
+
+// TestArch_MissingOperationID_FailsBuild proves the operationId assertion fires.
+//
+// Named by docs/development/first-ten-prs.md PR 4 as "deleting OperationID from getMeta fails CI".
+//
+// It drives operationIDViolations — the SAME function
+// TestArch_OperationIDs_AreExplicitUniqueAndLowerCamelCase requires to be empty. The first version of
+// this test did not: it registered a nameless operation and asserted Huma had not auto-filled the
+// id, which proves a fact about the library and nothing about this repository's gate. An audit
+// demonstrated the gap by neutering the real assertion, after which this test still passed. Sharing
+// the function is what makes it a proof.
+func TestArch_MissingOperationID_FailsBuild(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		op   huma.Operation
+		want string
+	}{
+		{
+			name: "no OperationID at all",
+			op: huma.Operation{
+				// Deliberately absent — this is the fixture.
+				Method: http.MethodGet, Path: "/api/v1/nameless",
+				Summary:  "An operation whose author forgot the one field that is public API",
+				Security: []map[string][]string{},
+			},
+			want: "declares no OperationID",
+		},
+		{
+			name: "PascalCase OperationID",
+			op: huma.Operation{
+				OperationID: "GetNameless",
+				Method:      http.MethodGet, Path: "/api/v1/pascal",
+				Summary: "An operation whose id would generate the wrong SDK method name",
+			},
+			want: "not lowerCamelCase",
+		},
+		{
+			name: "snake_case OperationID",
+			op: huma.Operation{
+				OperationID: "get_nameless",
+				Method:      http.MethodGet, Path: "/api/v1/snake",
+				Summary: "Another shape canonical §16 rejects",
+			},
+			want: "not lowerCamelCase",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			problems := operationIDViolations(fixtureRegistry(t, tc.op))
+
+			require.NotEmpty(t, problems,
+				"operationIDViolations accepted %q, so the gate over the real registry would too",
+				tc.name)
+			require.Contains(t, strings.Join(problems, "\n"), tc.want)
+		})
+	}
+}
+
+// TestArch_DuplicateOperationID_PanicsAtRegistration pins a library guarantee this repo leans on.
+//
+// Writing a fixture for the duplicate branch of operationIDViolations turned up something better
+// than the fixture: a duplicate operationId cannot reach the registry AT ALL, because
+// huma.OpenAPI.AddOperation panics on one (huma/v2@v2.39.1 openapi.go:1525). The branch is therefore
+// unreachable from the registry today, and is kept only as defence in depth.
+//
+// That makes this test the thing actually worth asserting. A panic at registration is a boot
+// failure, which is the strongest possible enforcement — better than a red test — and it is a
+// property of a dependency rather than of this repository, so nothing here would notice it going
+// away. If Huma ever downgrades it to last-write-wins, this test goes red and points at the two
+// places that then have to carry the weight: operationIDViolations' duplicate branch, and
+// scripts/verify-spec.py's SPEC002.
+//
+// SPEC002 is not redundant with this. It reads the committed JSON, where a path operation and a
+// webhook CAN share an id — Huma registers webhooks through a different route that AddOperation
+// never sees — and both generators derive names from the same namespace.
+func TestArch_DuplicateOperationID_PanicsAtRegistration(t *testing.T) {
+	t.Parallel()
+
+	require.Panics(t, func() {
+		_ = fixtureRegistry(t,
+			huma.Operation{
+				OperationID: "getThing", Method: http.MethodGet, Path: "/api/v1/things",
+				Summary: "One of two operations sharing an id",
+			},
+			huma.Operation{
+				OperationID: "getThing", Method: http.MethodGet, Path: "/api/v1/others",
+				Summary: "The other of two operations sharing an id",
+			},
+		)
+	}, "Huma accepted two operations with the same OperationID. The SDK generators would emit two "+
+		"methods with one name, and nothing in this repository would catch it before they did.")
+}
+
+// TestArch_MutatingPostWithoutIdempotencyKey_FailsBuild proves the idempotency tripwire fires.
+//
+// TestArch_MutatingPost_RequiresIdempotencyKey runs over an empty set today — the registry holds one
+// GET — so on its own it would pass forever even if the header check were wrong. That is not only a
+// gap until PR 9 lands the first mutating POST; it is a gap AFTER it lands, because a subtly wrong
+// check (matching the wrong parameter location, or a fenced prefix that never matches) would keep
+// passing with real operations registered.
+//
+// The positive case is here too, and is the half that stops the rule being "fixed" into something
+// that always fires.
+func TestArch_MutatingPostWithoutIdempotencyKey_FailsBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a fenced POST without the header is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		problems := idempotencyViolations(fixtureRegistry(t, huma.Operation{
+			OperationID: "createRaidTick", Method: http.MethodPost, Path: "/api/v1/raids/ticks",
+			Summary: "A mutating POST under a fenced prefix, with no Idempotency-Key",
+		}))
+
+		require.NotEmpty(t, problems,
+			"a POST under /api/v1/raids requires no Idempotency-Key and the gate accepted it")
+	})
+
+	t.Run("an unfenced POST is not required to carry one", func(t *testing.T) {
+		t.Parallel()
+
+		require.Empty(t, idempotencyViolations(fixtureRegistry(t, huma.Operation{
+			OperationID: "createSomethingElse", Method: http.MethodPost, Path: "/api/v1/elsewhere",
+			Summary: "A POST outside every fenced prefix",
+		})), "the fence matched a prefix it should not have")
+	})
+
+	t.Run("a GET under a fenced prefix is not required to carry one", func(t *testing.T) {
+		t.Parallel()
+
+		require.Empty(t, idempotencyViolations(fixtureRegistry(t, huma.Operation{
+			OperationID: "listRaids", Method: http.MethodGet, Path: "/api/v1/raids",
+			Summary: "A read under a fenced prefix",
+		})), "the fence applied to a GET, which creates no domain state")
+	})
 }
 
 // repoRoot returns the repository root, located by walking up to the directory holding go.mod.
