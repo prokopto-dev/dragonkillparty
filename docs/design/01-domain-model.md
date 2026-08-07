@@ -447,7 +447,7 @@ reads, committing an import — are **session + step-up only** and carry no scop
 | `raider` | user | `= member`. A distinct assignable name for guilds that want the rank distinction. |
 | `raid_leader` | user | `member` + `raid.create` `raid.update` `raid.finalize` `raid.tick.create` `raid.tick.delete` `item.award` `signup.manage`. Commonly assigned **scoped to a raid group**. |
 | `officer` | user | `raid_leader` + `roster.write` `person.merge` `character.claim.approve` `dkp.adjust` `bid.manage` `bid.reveal_early` `item.alias.manage` `calendar.write` `cms.write` `audit.read` |
-| `admin` | user | `officer` + `dkp.decay.run` `ledger.reverse` `cms.moderate` `import.run` `import.commit` `webhook.manage` `token.mint` `token.revoke` `admin.settings` `admin.roles.manage` `admin.backup` `person.pii.read` `ops.read` |
+| `admin` | user | `officer` + `dkp.decay.run` `ledger.reverse` `cms.moderate` `import.run` `import.commit` `webhook.manage` `token.mint` `token.revoke` `admin.settings` `admin.security.manage` `admin.roles.manage` `admin.backup` `person.pii.read` `ops.read` |
 | `owner` | user | `admin` + `admin.owner` |
 | `bot_readonly` | service_account | the `*.read` keys only |
 | `bot_raid` | service_account | `bot_readonly` + `raid.create` `raid.update` `raid.tick.create` `item.award`. **No `dkp.adjust`.** |

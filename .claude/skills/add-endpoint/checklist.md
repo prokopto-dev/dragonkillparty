@@ -16,7 +16,7 @@ meant to.
 | `operationId` stable | A rename of an id that exists in `origin/main`'s `openapi.json` |
 | Security coverage | Any operation with no `Security` block |
 | Permission coverage | Any operation with no `Metadata["x-dkp-permission"]` |
-| Scope coverage | Any operation with an empty `x-dkp-scopes` |
+| Scope coverage | An operation whose `Security` offers a `pat` alternative but whose `x-dkp-scopes` is empty or absent — or the reverse, scopes declared on a session-only operation |
 | Permission key is real | A key not present in `internal/authz/catalogue.go` |
 | Idempotency coverage | A mutating `POST` under `/raids`, `/awards`, `/adjustments`, `/bids`, `/raid-submissions`, `/ledger` without a required `Idempotency-Key` |
 | `If-Match` coverage | A state-transition `POST` or a `PATCH` of a mutable resource without required `If-Match` |

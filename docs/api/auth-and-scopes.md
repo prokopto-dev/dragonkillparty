@@ -77,7 +77,7 @@ calendar.read calendar.write signup.manage
 cms.read cms.write cms.moderate
 import.run import.commit
 webhook.manage token.mint token.revoke
-admin.settings admin.roles.manage admin.backup admin.owner
+admin.settings admin.security.manage admin.roles.manage admin.backup admin.owner
 person.pii.read audit.read ops.read
 ```
 
@@ -130,8 +130,22 @@ scope at all** and require a browser session with step-up (re-authentication wit
 
 **Enforced by** `x-dkp-pat-forbidden: true` at the single authorization choke point, plus an
 architectural test that iterates the operation registry and asserts every operation whose permission
-is `token.*`, `admin.roles.manage`, `admin.backup`, `import.*`, `audit.read` or `person.pii.read`
-is PAT-forbidden. The rule cannot rot because the test enumerates the registry rather than a list.
+is in canonical §6's capability-floor enumeration is PAT-forbidden:
+
+```
+token.mint  token.revoke  admin.security.manage  admin.roles.manage
+admin.backup  admin.owner  person.pii.read  audit.read  import.commit
+```
+
+The rule cannot rot because the test enumerates the registry rather than a list, and derives the
+flagged set from canonical §6 rather than from a copy of it kept here.
+
+> **Corrected in Phase 0 PR 5.** This page, `docs/design/03-security.md` and
+> `.claude/agents/api-contract-guardian.md` each carried a different set. This one omitted
+> `admin.owner` and `token.revoke` — so a test written from it would have let a PAT revoke tokens
+> and would have exempted the owner role. `admin.settings` is deliberately absent: the
+> security-affecting half of it is now `admin.security.manage`, and the rest (renaming the guild,
+> adding a server, recomputing a pool) is session-only *without* step-up.
 
 There is no "a PAT may not self-deal" rule. `dkp:adjust` exists precisely to create adjustments.
 Self-dealing is controlled by the `actor_is_beneficiary` audit flag, which is visible to members —

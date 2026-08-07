@@ -129,6 +129,7 @@ not by which feature they concern.
 | [Architecture overview](development/architecture-overview.md) | Where code goes and which law governs it |
 | [The first ten PRs](development/first-ten-prs.md) | Phase 0, in order |
 | [Verify before Phase 0](development/verify-before-phase-0.md) | Assumptions to test before writing code |
+| [Phase 0 PR 5 decisions](development/phase-0-pr5-decisions.md) | The authz catalogue, the first integration test, and why PR 5 split |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | DCO, the AGPL firewall, review expectations |
 | [AGENTS.md](../AGENTS.md) | The contract every agent loads before writing code |
 

@@ -461,7 +461,37 @@ prescribes replacing it with `pb33f/libopenapi-validator` on the grounds that ki
 OpenAPI 3.1 support, but current sources indicate it supports 3.0, 3.1 and 3.2. The committed
 dependency choice is downstream of a claim that appears to be stale.
 
-**Cost:** it falls out of PR 1 and PR 4.
+**The validator half now has a test article, and it was measured (Phase 0 PR 5 research,
+2026-08-07).** `docs/design/04-testing.md:83-85` asks for "the real spec from a handful of Huma
+operations including one webhook and one nullable field". The committed document at `be1aa0a`:
+
+```
+openapi: 3.1.0 · 8,818 bytes · top-level keys: components, info, openapi, paths, webhooks
+3.1-only constructs found:  3 ×  "type": ["array","null"]
+no const, no $defs, no prefixItems, no numeric exclusiveMinimum/Maximum
+paths: /api/v1/meta   webhooks: ping   schemas: ErrorDetail, MetaBody, MetaServer, ProblemDetail
+```
+
+So the article has the `webhooks` block and the union type but **no nullable field yet** — PR 5a's
+`*string` / `*int` PATCH body is what first emits `["string","null"]`. Run the bake-off after 5a
+merges, not before.
+
+**The experiment, in full:** two ~30-line Go programs in a throwaway module *outside* this
+repository, each loading `openapi/openapi.json` and validating one known-good and one
+deliberately-wrong response body — one under `getkin/kin-openapi`, one under
+`pb33f/libopenapi-validator`. Half a day including the licence check. It needs no change to this
+repository to produce the answer; the answer is an ADR plus an update here, and then
+`docs/design/04-testing.md` §"Open item" is deleted.
+
+**Not PR 5's job to install.** ROADMAP Phase 2 deliverable 5 puts the validating middleware in the
+middleware stack, and adding the dependency to PR 5 would mean a dependency proposal, a licence-gate
+delta, an ADR and middleware inside an already-oversized PR. PR 5's obligation is narrower and has
+been discharged: `.claude/rules/api-endpoints.md` no longer asserts `kin-openapi`, and PR 5b removes
+the claim from `internal/api/EXAMPLE_ENDPOINT.md`. See
+[`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md) §Q2.
+
+**Cost:** it falls out of PR 1 and PR 4, except the validator bake-off above, which is its own half
+day and is now the only part of this item still blocking anything.
 
 **The general form of this item, which matters more than the specific versions:** the design labels
 several claims "verified" that are not. Treat every "verified" annotation in

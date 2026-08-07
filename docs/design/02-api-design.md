@@ -135,7 +135,8 @@ be inferred:
 | Portal blocks, menu, theme, team page, shoutbox | `cms.read` / `cms.write` | All are site content |
 | Jobs, doctor, ledger verify | `ops.read` | Operational read surface |
 | Service accounts, token list and rotation | `token.mint` | Same power, same gate |
-| Pool recompute, feed tokens, custom field definitions | `admin.settings` | Instance configuration |
+| Pool recompute, custom field definitions | `admin.settings` | Instance configuration |
+| Identity-provider credentials, MFA and session policy, the outbound-request allowlist, feed tokens | `admin.security.manage` | Anything whose compromise degrades the instance's security posture — canonical §6 |
 
 Two sentinel values appear in the permission column and nowhere else. Both are allowlisted in
 `TestOperations_PermissionSentinels_Allowlisted`, the same shape as the `Hidden: true` allowlist in
@@ -193,16 +194,54 @@ backups; reading PII in bulk; running and committing an import; and exporting th
 
 | Method | Path | Purpose | Permission | Scope |
 |---|---|---|---|---|
-| GET · PATCH | `/guild` | Name, tag, timezone, week start, point label, rounding on/off and precision, `inactive_period`, `auto_set_active`, `hide_inactive`, away-mode toggle | `roster.read` · `admin.settings` | `roster:read` · — |
+| GET · PATCH | `/guild` | Name, tag, timezone, week start, point label, display precision, `inactive_after_days`, `auto_set_inactive`, `hide_inactive` | `roster.read` · `admin.settings` | `roster:read` · — |
 | GET · POST | `/servers` | EQ servers (Blue, Green, Red) with era | `roster.read` · `admin.settings` | `roster:read` · — |
 | GET · PATCH · DELETE | `/servers/{server_id}` | | `roster.read` · `admin.settings` | `roster:read` · — |
-| GET · PATCH | `/admin/settings` | Typed settings document; mirrors `DKP_*` where runtime-overridable | `admin.settings` | — |
+| GET · PATCH | `/admin/settings` | Typed settings document; mirrors `DKP_*` where runtime-overridable. Secret-valued settings render as `***` when set and `null` when unset — the secret type from [`../operations/configuration.md`](../operations/configuration.md), not a redaction this endpoint invents. **`GET` is as gated as `PATCH` anyway**: redaction hides the values, not the shape, and the response still names the configured identity provider, the MFA policy and the outbound CIDR allowlist | `admin.security.manage` | — **step-up** |
 | GET | `/admin/doctor` | The checks `dkp doctor` runs, as JSON | `ops.read` | — |
 | GET | `/admin/jobs` · `/admin/jobs/{job_id}` | River queue visibility | `ops.read` | — |
 | POST | `/admin/jobs/{job_id}/cancel` · `/retry` | | `admin.settings` | — |
 | GET · POST | `/admin/roles` · `/admin/roles/{role_id}` · `/admin/role-assignments` | Roles, `role_permission`, scoped assignments | `admin.roles.manage` | — **step-up** |
 | GET | `/admin/permissions` | The generated catalogue, as served to the SPA | `admin.roles.manage` | — |
-| GET · POST · DELETE | `/feed-tokens` · `/feed-tokens/{token_id}` | Single-purpose read-only feed tokens | `admin.settings` | — |
+| GET · POST · DELETE | `/feed-tokens` · `/feed-tokens/{token_id}` | Single-purpose read-only feed tokens. A feed token is a bearer credential that outlives the session which minted it, so canonical §6's "minting/rotating/revoking tokens" covers it | `admin.security.manage` | — **step-up** |
+
+> **Corrected in Phase 0 PR 5, on three counts.**
+>
+> **`/admin/settings` and `/feed-tokens` moved to `admin.security.manage`,** a key canonical §6 gained
+> in the same change. `admin.settings` guarded nineteen operations from renaming a guild to editing
+> OIDC credentials, and [`03-security.md`](03-security.md) leans on that surface being step-up and
+> PAT-forbidden so a leaked token cannot relax the SSRF allowlist and pivot — a guarantee one key
+> with nineteen blast radii cannot make. Everything else in this table keeps `admin.settings` and is
+> session-only *without* step-up, including `PUT /pools/{pool_id}/strategy`: it is the
+> highest-consequence configuration change in the product, and it is deliberately not a security key,
+> because it leaks nothing, enables no pivot, and is already governed by an audit event,
+> `?dry_run=true` and an append-only ledger.
+>
+> **The `/guild` row lost "away-mode toggle".** Away mode is three columns on `person`
+> ([`01-domain-model.md`](01-domain-model.md) §6.1: `away_from_at`, `away_until_at`, `away_note`) and
+> has no `guild` column anywhere. The domain model is the schema authority, so this row was the bug.
+> `ROADMAP.md` carried the same error and is corrected with it.
+>
+> **The `/guild` row said "rounding on/off and precision"; there is one setting, not two.**
+> `guild.points_precision` is `0..2` and already expresses it — a separate boolean would be a second
+> source of truth for the same display decision. Storage is always `_cp` regardless (canonical §1).
+>
+> **The `/guild` row was transcribed from EQdkp's config table, and two keys were never renamed.**
+> It said `inactive_period` and `auto_set_active`; the columns are `inactive_after_days` and
+> `auto_set_inactive`. The second is a **polarity flip** — "auto set active" is the opposite control
+> from "auto set inactive" — so a bot written from this row would have set the wrong value, and
+> nothing in the contract would have said so.
+>
+> Both names come straight from [`05-migration.md`](05-migration.md)'s list of EQdkp `<prefix>config`
+> keys, which is also where "rounding on/off and precision" came from: EQdkp carries
+> `round_activate` **and** `round_precision`, DKP carries one `points_precision`. Other keys in that
+> list *were* correctly renamed on the way in — `dkp_name` → `points_label`, `guildtag` → `tag` —
+> which is what made the two survivors hard to see.
+>
+> The rule this violates is ordinary, not exotic: **`05-migration.md` names EQdkp's keys because the
+> importer must read them; this document defines DKP's own contract and must use DKP's own names.**
+> A source-system identifier reaching the public API is a wrong contract first and a licence-firewall
+> question second (canonical §15).
 
 ### 4.3 Persons, accounts, characters
 

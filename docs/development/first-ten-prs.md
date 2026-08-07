@@ -22,7 +22,7 @@ Take one PR. Do not take two. Do not do part of the next one "while you're in th
 | Rule | Mechanism |
 |---|---|
 | `make check` green | `ci-required` aggregate job |
-| ≤ 2,500 lines of hand-written diff (generated files excluded) | reviewer, at their discretion |
+| ≤ 3,500 lines of hand-written diff (generated files excluded) | reviewer, at their discretion |
 | Conventional-commit title, exactly as printed below | `commitlint` in `lint/repo` |
 | DCO sign-off on every commit | the DCO GitHub App |
 | No new dependency without a separate proposal issue | `AGENTS.md` "Do not"; the licence gate, landed in PR 12 |
@@ -30,6 +30,19 @@ Take one PR. Do not take two. Do not do part of the next one "while you're in th
 
 An acceptance criterion phrased as "an agent could tell" is not an acceptance criterion. Every bullet
 below either names a test file, a CI job, or a command whose exit code decides.
+
+**On the line budget.** It was 2,500, and PRs 3, 4 and 5 came in at 4,095, 4,974 and ~3,600 measured
+hand-written lines. Three consecutive overruns of 60–100% is a budget that does not describe this
+codebase, not three undisciplined PRs. Two mandated properties account for most of it, and both are
+measured in [`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md): house comment density runs 30–74%
+of a file (`internal/api/permissions.go` 74%, `meta.go` 50%, `server.go` 44%, `errors.go` 30%), and
+"every acceptance criterion is a test or gate **in this PR**" put 1,009 lines of gate-tests in PR 3
+and 1,373 in PR 4 — about a quarter of each. AGENTS.md requires both, so a budget that forbids them
+is asking for a contract violation.
+
+3,500 is the observed midpoint less what splitting a two-artefact PR saves. **Exceeding it is a
+signal to split, not to report and continue** — which is what the number is for, and what it stopped
+being.
 
 ## Order and dependencies
 
@@ -39,7 +52,8 @@ below either names a test file, a CI job, or a command whose exit code decides.
 | 2 | `feat(store): SQLite pools, Tx helper, statement counter, template-DB harness` | 1 | Law 2 gets its lint rule at zero call sites |
 | 3 | `feat(db): Atlas schema, goose runner, migrate-on-boot with snapshot and auto-restore` | 2 | **Deliberately third — prove the upgrade path before there is any data to lose** |
 | 4 | `feat(api): Huma mount, problem+json, /api/v1/meta, spec drift gate, arch tests` | 3 | Law 1 and the spec gate get installed at route #1, not route #40 |
-| 5 | `docs(api): EXAMPLE_ENDPOINT.md and RECIPES.md — one worked end-to-end resource` | 4 | **The highest-leverage documentation in the project** |
+| 5a | `feat(api): guild settings resource, ETag/If-Match, and the permission catalogue` | 4 | The code the worked example is written from — and the first real `x-dkp-permission` |
+| 5b | `docs(api): EXAMPLE_ENDPOINT.md and RECIPES.md, written from PR 5a's code` | **5a** | **The highest-leverage documentation in the project** |
 | 6 | `feat(web): SPA scaffold, generated client, go:embed, client-purity gates` | 4 | Law 4 gets its lint rule at zero components |
 | 7 | `build: scratch image, goreleaser, release train, smoke gate` | 1 | Every later phase then produces a pullable image |
 | 8 | `feat(core): Micros, Centipoints, ULID, cursor codec, arithmetic lint bans` | 1 | The float ban must predate the first arithmetic |
@@ -47,6 +61,14 @@ below either names a test file, a CI job, or a command whose exit code decides.
 | 10 | `feat(ledger): batch service, invariant engine, first strategy, flagship properties` | 9 | — |
 
 PRs 6, 7 and 8 have no ordering relationship to each other and can run as three parallel agents.
+
+**PR 5 is two PRs, and the order is load-bearing.** It was one until
+[`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md) priced it at ~3,600 hand-written lines across
+a resource, two documents, a snippet compiler and a nightly agent eval. 5a ships the code; 5b writes
+the documents *from that merged code*, which is what this file has always required of them
+("from the actual code in this PR — never from memory"). Writing them in the other order is what
+produced today's `internal/api/EXAMPLE_ENDPOINT.md`, which describes `humachi.New`, `problem.From()`
+and `store.Q()` — none of which exist. Each half is independently mergeable and green.
 
 ---
 
@@ -270,55 +292,207 @@ entry and confirm the document still parses. The three-generator confirmation co
 
 ---
 
-## PR 5 — `docs(api): EXAMPLE_ENDPOINT.md and RECIPES.md — one worked end-to-end resource`
+## PR 5a — `feat(api): guild settings resource, ETag/If-Match, and the permission catalogue`
+
+**Scope.** Implement `GET /api/v1/guild` and `PATCH /api/v1/guild` (the singleton `guild` row, strong
+`ETag`, `If-Match` on PATCH), and create the permission catalogue that PR 4's SPEC005 tripwire
+requires. This is the code half of what was one PR; the two documents are PR 5b, written from this
+code once it has merged. Every decision below is evidenced in
+[`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md).
+
+**`internal/authz` at this PR: the Go catalogue only.** `internal/authz/catalogue.go` holds the whole
+canonical §6 list — every permission key and every PAT scope — carrying `Key`, `Category`, `Label`
+and `Description` per permission and nothing else. **No policy fields**: `RequiresStepUp`,
+`IsDangerous` and `SortOrder` wait for Phase 2, which builds the middleware that can test them
+against a real consumer. The "declare it whole now" argument applies to *keys*, which both SDKs and
+the Phase 2 table seed derive from; nothing derives from a policy flag, and PR 5a's two operations
+exercise neither step-up nor PAT-forbidden. **No `permission` table, no `role_permission`, no
+seed, no boot reconciliation**: those are ROADMAP Phase 2 deliverable 3, they arrive with the `role`
+table that makes the FK meaningful, and a migration cannot be un-shipped. The whole list ships now
+for the reason `internal/api/errors.go:145-148` gives about the error enum — the catalogue is what
+the PAT scope enum and the Phase 2 table seed derive from, and growing it one key per PR makes every
+later endpoint PR trip "adding a permission key is a schema change — stop and ask" for a key already
+published in canonical §6.
+
+`scripts/verify-spec.py:269-279` does a **quoted exact-substring match against the file text**, so
+every key must appear as a whole quoted literal (`"roster.read"`). A composed key
+(`Resource + "." + Action`) fails the gate — measured, both directions. Say so in the file's header
+comment. Note also that `test/repo/spec_gate_test.go:383` writes `var Keys = []string{…}` as a
+throwaway fixture; that is not the catalogue's shape, because `.claude/rules/go-idioms.md` bans
+package-level mutable state. Use a function returning a fresh literal, as
+`api.HiddenOperationAllowlist()` does and for the same reason.
+
+**The `guild` table ships twelve columns**, and only twelve: `id`, `name`, `tag`, `timezone`,
+`week_start`, `points_label`, `points_precision`, `inactive_after_days`, `auto_set_inactive`,
+`hide_inactive`, `created_at`, `updated_at` — everything `docs/design/02-api-design.md` §4.2 already
+promises in the public resource map. `locale`, `public_standings`, `artifact_retention_days`,
+`redact_tells` and `settings_json` are in the domain model and are **not** shipped: each has no
+reader until Phase 2 or Phase 4. The freeze rule cuts this way, not the other — `ALTER TABLE ADD
+COLUMN` is a cheap forward migration, while *removing* or retyping a column is SQLite's 12-step
+rebuild, so over-shipping is the expensive mistake.
+
+**`x-dkp-scopes` is declared on every operation**, alongside `Security` and `x-dkp-permission`.
+Four documents have required it since before PR 4 and no code emitted it. Three cases, and the arch
+test distinguishes them: an operation whose `Security` offers a `pat` alternative carries non-empty
+`x-dkp-scopes`, every member resolving in the catalogue (`getGuild` → `["roster:read"]`); an
+operation in canonical §6's capability floor carries `x-dkp-pat-forbidden: true` and no scopes; an
+operation that is session-only merely because no scope family covers it declares neither
+(`updateGuild` — `admin.settings` is **not** in the floor, and marking it PAT-forbidden is a false
+positive). Declaring the extension also retires an unverified claim: `02-api-design.md` flags scope
+arrays on non-`oauth2` `Security` as of uncertain legality in OpenAPI 3.1, and if `x-dkp-scopes` is
+always present that question stops mattering.
+
+**Known and deliberate gap.** There is no auth middleware and no `authz.Check` — authentication is
+ROADMAP Phase 2 deliverable 1, and no PR in this file adds it. Both operations are therefore
+**served with no credential required**, while the spec declares `security: [{pat:…},{session:{}}]`.
+PATCH is the product's first mutating endpoint. This ships that way, with the gap named in
+`SECURITY.md` and pinned by `TestGuild_Unauthenticated_IsAKnownPhase0Gap` — a tripwire that goes red
+the day auth lands, so closing it is a deliberate deletion rather than a silent discovery.
+`make test-authz` and `test / authz-matrix` stay Phase 2 stubs: a matrix over zero principals is not
+a weaker test, it is not a test.
+
+**Files touched.**
+
+```
+db/schema.hcl                                  # guild singleton
+db/migrations-sqlite/000002_guild.sql          # GENERATED
+db/queries/guild.sql
+internal/store/sqlitegen/**                    # GENERATED
+internal/store/{store.go,tx.go}                # Queries growth; Tx -> func(ctx, Queries) error
+internal/authz/{doc.go,catalogue.go,catalogue_test.go}
+internal/guild/{doc.go,service.go,service_test.go}
+internal/api/{guild.go,guild_test.go,etag.go}
+internal/api/arch_test.go                      # If-Match / precondition coverage + negative fixture
+test/integration/{main_test.go,guild_test.go}
+openapi/openapi.json                           # GENERATED
+docs/api-changelog.md                          # created; EXAMPLE_ENDPOINT.md step 8 requires it
+```
+
+**Acceptance criteria.**
+
+- `GET /api/v1/guild` returns the singleton with a strong `ETag`, at a statement budget of **1**
+  (`store.Counted(t).Budget(t, 1)`, declared after the server is constructed). The harness is
+  `store.NewDB(t)` + `httptest.NewServer(api.New(...))` over a `TestMain` calling
+  `store.InitTemplate(ctx, store.ApplySchema(fsys))` — there is no `testenv` package and no
+  `ClientAs`, because there is no auth package and therefore no such thing as an officer.
+- `PATCH` without `If-Match` returns **428** `precondition_required`. **`If-Match` must NOT carry
+  `required:"true"`**: Huma v2.39.1 raises a missing required parameter as `422`
+  (`huma.go:899,980`), so the check is in the handler and the 428 is explicit. A test asserts the
+  status *and* the code, because a 422 would otherwise look like a passing negative test.
+- `PATCH` with a stale `If-Match` returns **412** with the current representation in `meta.current`
+  and the current ETag in `meta.current_etag` (canonical §7), so a bot merges in one round trip.
+- `PATCH` with the current `If-Match` succeeds and returns a **different** `ETag` — the positive
+  control, without which all three tests above pass against an endpoint that always fails.
+- `TestArch_StateChangingOperation_RequiresIfMatch` enumerates the registry and requires an
+  `If-Match` header parameter on every `PATCH` and every transition, paired with a negative fixture
+  that proves it fires. `.claude/rules/api-endpoints.md` and `EXAMPLE_ENDPOINT.md:227-237` have both
+  claimed this test exists since PR 4; this is where it becomes true.
+- `TestCatalogue_Permissions_MatchCanonicalConventions` extracts the fenced key list from
+  `docs/design/00-canonical-conventions.md` §6 and compares it to `authz.Catalogue()` element by
+  element, in both directions — the same mechanism as `TestErrors_Enum_MatchesPublishedCatalogue`
+  (`internal/api/errors_test.go:90`). Without it the catalogue is a second hand-maintained list,
+  which canonical §6 forbids.
+- `make verify-spec` passes with two real `x-dkp-permission` values (`roster.read`,
+  `admin.settings`), exercising SPEC005's resolving path against the real repository for the first
+  time.
+- `store.Tx` takes `func(context.Context, store.Queries) error`. `internal/store/tx.go:18-21`
+  assigns this change to PR 5 because PR 5 is the first caller that justifies it.
+
+- `TestArch_ScopeCoverage_MatchesSecurity` enumerates the registry and asserts the three-case rule
+  above in both directions, with a negative fixture per case. Adopting an extension without the gate
+  that proves it is how the previous four documents ended up describing one that did not exist.
+- `internal/authz/catalogue.go` carries `admin.security.manage`, the key canonical §6 gained in the
+  documentation change that preceded this PR. Nothing in PR 5a uses it — it guards `/admin/settings`
+  and `/feed-tokens`, both Phase 2 — and it ships with the rest of the list for the same reason.
+
+**Prerequisite, not a parallel task.** Run the snippet-compile spike (U3) **before** starting 5a: two
+hours, extracting the four Go fences from today's `EXAMPLE_ENDPOINT.md` to find out whether a Go
+fragment in that document can reach `go build` without restructuring it. It needs no code from this
+PR, and it is what tells you whether 5b is a 900-line PR or a 2,000-line one — which is worth knowing
+before 5a fixes the shape the document will transcribe.
+
+---
+
+## PR 5b — `docs(api): EXAMPLE_ENDPOINT.md and RECIPES.md, written from PR 5a's code`
 
 **This is the highest-leverage documentation in the project.** Every subsequent endpoint task becomes
 "copy the example, change the nouns". If this PR is mediocre, the next two hundred PRs are mediocre.
 
-**Scope.** Implement `GET /api/v1/guild` and `PATCH /api/v1/guild` (the singleton `guild` row, `ETag`
-+ `If-Match` on PATCH) and then write the two documents *from the actual code in this PR* — never
-from memory, never from a library's README.
+**Depends on 5a being merged.** The whole value of these documents is that they are transcribed from
+code that exists and is under test. Writing them first is what produced today's version, which
+describes `humachi.New`, `problem.From()` and `store.Q()` — none of which exist.
 
-`internal/api/EXAMPLE_ENDPOINT.md` walks seven steps with real, copyable excerpts:
+**Scope.** Rewrite the two documents *from the actual code PR 5a merged* — never from memory, never
+from a library's README — and install the gate that stops them rotting.
+
+`internal/api/EXAMPLE_ENDPOINT.md` walks the resource end to end with real, copyable excerpts, one
+step per artifact:
 
 | Step | Artifact |
 |---|---|
 | 1 | `db/schema.hcl` entry |
 | 2 | `db/queries/guild.sql` |
-| 3 | the sqlc output it produces |
-| 4 | handler struct + `huma.Register` with `Security`, `x-dkp-permission`, `OperationID` |
-| 5 | the resulting `openapi/openapi.json` fragment |
-| 6 | the generated TypeScript client call — **marked `PENDING PR 6`; PR 6 fills it in** |
-| 7 | the integration test |
+| 3 | `make gen` — the sqlc output and the `Queries` interface method |
+| 4 | the service in `internal/guild/` |
+| 5 | handler struct + `huma.Register` with `Security`, `x-dkp-permission`, `OperationID` |
+| 6 | `make gen` again — the resulting `openapi/openapi.json` fragment |
+| 7 | the tests, handler-level and integration |
+| 8 | docs and `docs/api-changelog.md` |
+| 9 | verify |
 
-`db/RECIPES.md` is seeded with the first three query shapes: singleton fetch, upsert, and
-`sum()`-with-`COALESCE` — the last carrying a bold note that `total()` is banned repo-wide because it
-returns a float and silently defeats the centipoint invariant (canonical §1).
+> **Corrected in PR 5b.** This file said "seven steps" against a seven-row table while
+> `EXAMPLE_ENDPOINT.md:18-32` said nine against a *different* nine-row table — the two were not the
+> same list with a different count. The document's nine-step version wins because it is the artefact
+> an agent actually follows, and because it names the service step and the changelog step, which the
+> seven-row version silently dropped. The generated TypeScript client call is **`PENDING PR 6`**
+> inside step 6 rather than a step of its own; `TestDocs_NoPendingMarkers` in PR 6 removes it.
+
+`db/RECIPES.md` keeps the recipes whose tables exist — the `GetGuild` singleton fetch and the
+`dkp_meta` upsert — and **fences or cuts the nine that query `ledger_entry`, `balance_snapshot`,
+`person`, `raid`, `item_fts` and friends.** The compile gate below cannot check a query against a
+table that does not exist, and a recipe file whose recipes do not run is the same failure as a
+document promising code. The `total()` ban stays and keeps its bold note: it returns a float and
+silently defeats the centipoint invariant (canonical §1). The three dialect divergences stay and are
+explicitly marked forward-looking.
+
+**Corrections `EXAMPLE_ENDPOINT.md` needs, because PR 5a's code makes them false.** Each is
+evidenced in [`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md):
+
+- `humachi.New` → `humago.New`, and the reader never calls the adapter — `api.New(api.Config{…})`
+  builds the tree (`internal/api/server.go:76`).
+- `problem.From(err)` → `api.NewProblem(status, code, detail)` (`internal/api/errors.go:279`).
+  There is no such function as `problem.From`, and `problem` is `internal/api/middleware`.
+- `s.store.Q()` and `Tx(func(q store.Queries) error)` → the real signatures 5a ships.
+- `If-Match required:"true"` → an optional tag plus an explicit 428, with the Huma 422 behaviour
+  explained so the next reader does not "simplify" it back.
+- Step 7 loses `testenv.New(t)` and `env.ClientAs(t, testenv.RoleOfficer)` entirely. There is no
+  auth package and no such thing as an officer until ROADMAP Phase 2 deliverable 1. The honest shape
+  is `store.NewDB(t)` + `httptest.NewServer(api.New(...))`, and the document shows the
+  statement-budget call because that is the N+1 tripwire and it already works.
+- Step 7 stops claiming a response-validation middleware runs. The validator choice is an **open
+  Phase 0 item** (`docs/design/04-testing.md` §"Open item"), and `.claude/rules/api-endpoints.md`'s
+  `kin-openapi` assertion was deleted for violating it.
+- Step 7's PAT-parity bullet is marked Phase 2 rather than described as current practice.
 
 **Files touched.**
 
 ```
-db/schema.hcl                        # guild singleton
-db/migrations-sqlite/000002_guild.sql          # GENERATED
-db/queries/guild.sql
-internal/store/sqlitegen/**                    # GENERATED
-internal/api/{guild.go,guild_test.go}
 internal/api/EXAMPLE_ENDPOINT.md
 db/RECIPES.md
-openapi/openapi.json                           # GENERATED
+internal/api/docs_snippets_test.go             # TestDocs_ExampleEndpointSnippets_Compile
 scripts/eval-example-endpoint.sh
-.github/workflows/nightly.yml
+.github/workflows/nightly-verify.yml
+Makefile  .github/workflows/ci.yml
 ```
 
 **Acceptance criteria.**
 
-- `GET /api/v1/guild` returns the singleton with a strong `ETag`. `PATCH` without `If-Match` returns
-  `428`; with a stale `If-Match` returns `412` with the current representation in `meta.current`
-  (canonical §7). Three tests, one per case, against a real migrated SQLite file in `t.TempDir()`.
+- Every code block in both documents is extracted and checked by
+  `TestDocs_ExampleEndpointSnippets_Compile`: Go blocks compile, SQL blocks pass `sqlc` against the
+  migration set, HCL blocks pass `atlas schema inspect`. A snippet that drifts from the code it
+  documents fails CI — this is the mechanism that stops the example rotting, and without it the PR
+  is worthless.
 - `TestRecipes_TotalIsBanned`: a fixture query containing `total(` fails `scripts/repo-gates.sh`.
-- Every code block in both documents is extracted and compiled by
-  `TestDocs_ExampleEndpointSnippets_Compile`. A snippet that drifts from the code it documents fails
-  CI — this is the mechanism that stops the example rotting, and without it the PR is worthless.
 - **The eval gate.** `scripts/eval-example-endpoint.sh` starts a fresh agent session whose entire
   context is the repository plus `internal/api/EXAMPLE_ENDPOINT.md` and `db/RECIPES.md`, and hands it
   one instruction: *add `GET /api/v1/guild/settings` over a new `guild_setting(key, value_json)`
@@ -326,6 +500,11 @@ scripts/eval-example-endpoint.sh
   handler declaring `Security` and `x-dkp-permission` — **with no further guidance given at any
   point**. It runs nightly, not per-PR, because agent evals are slow and non-deterministic; a failure
   files an issue against the two documents, never against the code.
+
+  **Settle before starting (U5 in [`phase-0-pr5-decisions.md`](phase-0-pr5-decisions.md)):** which
+  runner, whose API key, what budget. If that is unsettled, ship the script as a local-only target
+  and land the nightly lane with the release train in PR 7 — do not write a workflow that needs a
+  secret nobody has agreed to. This is the single line item most likely to blow the estimate.
 
 ---
 
@@ -449,7 +628,7 @@ testdata/lintfixtures/{float_in_ledger.go,timenow_outside_clock.go,total_in_quer
   same code, not silently honoured.
 - ULIDs are 26-character Crockford base32, generated in Go, and monotonic within a millisecond.
   `TestULID_SameMillisecond_IsMonotonic` asserts it over 10⁵ generations.
-- `guild.updated_at` from PR 5 now round-trips through `core.Micros` end to end — the smallest
+- `guild.updated_at` from PR 5a now round-trips through `core.Micros` end to end — the smallest
   possible proof that the type is adoptable rather than merely defined.
 
 ---
@@ -513,7 +692,7 @@ internal/ledger/{commit_test.go,allocate_test.go,property_test.go}
 internal/strategy/{strategy.go,fixed_price.go}
 internal/strategy/{fixed_price_test.go,arch_test.go}
 test/golden/strategy/fixed_price/*.json
-.github/workflows/{ci.yml,nightly.yml}         # coverage floors, 20k nightly checks
+.github/workflows/{ci.yml,nightly-verify.yml}  # coverage floors, 20k nightly checks
 ```
 
 **Acceptance criteria.**

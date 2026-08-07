@@ -101,9 +101,34 @@ calendar.read calendar.write signup.manage
 cms.read cms.write cms.moderate
 import.run import.commit
 webhook.manage token.mint token.revoke
-admin.settings admin.roles.manage admin.backup admin.owner
+admin.settings admin.security.manage admin.roles.manage admin.backup admin.owner
 person.pii.read audit.read ops.read
 ```
+
+> **`admin.security.manage` was added in Phase 0 PR 5** (Courtney, 2026-08-07), by the "stop and ask"
+> path this section defines. `admin.settings` guarded nineteen operations spanning the whole risk
+> range — from `PATCH /guild` (rename the guild) to `GET · PATCH /admin/settings`, which
+> [`02-api-design.md`](02-api-design.md) describes as mirroring `DKP_*` and therefore reaches
+> `DKP_OIDC_CLIENT_SECRET`, `DKP_DISCORD_CLIENT_SECRET` and `DKP_OUTBOUND_ALLOW_CIDRS`.
+> [`03-security.md`](03-security.md) relies on that surface being step-up and PAT-forbidden so a
+> leaked token cannot relax the SSRF policy and pivot — a guarantee that cannot hold for one key and
+> nineteen blast radii.
+>
+> The split is by **what a compromise costs**, not by what feels dangerous.
+> `admin.security.manage` covers exactly the operations that can degrade the instance's security
+> posture: `/admin/settings` (both methods — read access to a document mirroring `DKP_*` is
+> exfiltration unless every secret is redacted) and `/feed-tokens` (a feed token is a bearer
+> credential that outlives the session which minted it, so the floor's "minting/rotating/revoking
+> tokens" already covered it).
+>
+> Everything else stays `admin.settings`, including `PUT /pools/{pool_id}/strategy`. That is the
+> highest-consequence *configuration* change in the product, and it is deliberately not here: it
+> leaks nothing and enables no pivot, and it is governed by an audit event, `?dry_run=true` and an
+> append-only ledger. A key that grows to mean "scary" rather than "can compromise the security
+> posture" recreates the overload this split exists to remove.
+>
+> See [`../development/phase-0-pr5-decisions.md`](../development/phase-0-pr5-decisions.md) for the
+> evidence and the full boundary.
 
 **PAT scopes** are `<family>:<verb>`, colon-separated. Scopes are coarser than permissions on
 purpose — a scope narrows a token, a permission narrows a role:
@@ -133,8 +158,24 @@ service account's role already grants.
 over EQdkp Plus, whose `api_key` impersonates the first superadmin.
 
 Operations that alter **authentication, authorization, or bulk-export state** are **session +
-step-up only** and have no scope at all: minting/rotating/revoking tokens, editing roles and role
-assignments, downloading backups, reading PII in bulk, and committing an import.
+step-up only** and have no scope at all: minting/rotating/revoking tokens (including feed tokens),
+editing roles and role assignments, downloading backups, reading PII in bulk, committing an import,
+and changing security-affecting instance configuration — identity-provider credentials, MFA and
+session policy, and the outbound-request allowlist.
+
+**As permission keys, that set is exactly:** `token.mint`, `token.revoke`,
+`admin.security.manage`, `admin.roles.manage`, `admin.backup`, `admin.owner`, `person.pii.read`,
+`audit.read`, `import.commit`. This enumeration is normative and supersedes the three different
+lists that [`03-security.md`](03-security.md), [`../api/auth-and-scopes.md`](../api/auth-and-scopes.md)
+and `.claude/agents/api-contract-guardian.md` each carried before Phase 0 PR 5; all three are
+corrected to match. The architectural test derives the `x-dkp-pat-forbidden` set from this list
+rather than from a hand-maintained copy.
+
+**`admin.settings` is deliberately NOT in it.** Renaming a guild, adding a server or recomputing a
+pool is session-only because no PAT scope family covers instance configuration — not because it
+alters authentication state. Session-only and session-plus-step-up are different controls, and
+conflating them puts a re-authentication prompt in front of an officer changing the guild's point
+label.
 
 > Supersedes: `admin:*`, `admin:tokens` and `admin:backup` as token scopes. Also deletes the
 > incoherent "a PAT may not self-deal" rule — `dkp:adjust` exists precisely to create adjustments;
