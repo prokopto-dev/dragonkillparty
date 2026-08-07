@@ -671,3 +671,117 @@ func TestMakefile_VerifySpec_StripsBaseRefEnv(t *testing.T) {
 		"the gate neither completed nor reported a missing base ref, so it is unclear whether the "+
 			"rename check ran at all\n%s", out)
 }
+
+// TestSpecGate_EQdkpConfigKeyAsFieldName_IsRejected covers SPEC008.
+//
+// This rule exists because the defect already shipped. docs/design/02-api-design.md's `/guild` row
+// was written from docs/design/05-migration.md's list of EQdkp `<prefix>config` keys instead of from
+// DKP's schema, and two survived unrenamed. The dangerous one is `auto_set_active`: it is the
+// OPPOSITE control from DKP's `auto_set_inactive`, so a bot written from the published contract sets
+// the wrong value and the contract agrees with it.
+//
+// It is a spec rule rather than a grep over the design documents ON PURPOSE, and the reason is worth
+// keeping next to the test. A markdown gate cannot distinguish a leak from a lesson:
+// docs/design/01-domain-model.md names `show_twinks` at :572 and :2870 to explain why DKP rejects
+// that design, and the correction notes in 02-api-design.md quote both banned names in order to
+// document them. All of that is correct writing a grep would reject. The generated spec has no
+// prose — a name in it is a field a client binds to — so here a hit is unambiguous.
+func TestSpecGate_EQdkpConfigKeyAsFieldName_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		field string
+	}{
+		{name: "polarity flip", field: "auto_set_active"},
+		{name: "renamed concept", field: "inactive_period"},
+		{name: "point label", field: "dkp_name"},
+		{name: "rounding pair DKP does not have", field: "round_activate"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			doc := conformingSpec()
+			doc["components"] = map[string]any{
+				"schemas": map[string]any{
+					"Guild": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{tc.field: map[string]any{"type": "string"}},
+					},
+				},
+			}
+
+			tree := t.TempDir()
+			writeSpec(t, tree, doc)
+
+			out, code := runSpecGate(t, tree)
+
+			require.NotZero(t, code, "the gate accepted %q as a field name\n%s", tc.field, out)
+			require.Contains(t, firedRules(out), "SPEC008", "%s", out)
+		})
+	}
+}
+
+// TestSpecGate_DKPOwnFieldNames_AreAccepted is the half that stops SPEC008 being widened into
+// something unusable.
+//
+// `hide_inactive` and `timezone` are in EQdkp's config list AND are DKP's own names — the concepts
+// coincide and the words are ordinary English. A pattern built from "every key in the migration
+// doc" would reject the real `/guild` response and satisfy every assertion above.
+func TestSpecGate_DKPOwnFieldNames_AreAccepted(t *testing.T) {
+	t.Parallel()
+
+	doc := conformingSpec()
+	doc["components"] = map[string]any{
+		"schemas": map[string]any{
+			"Guild": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"timezone":            map[string]any{"type": "string"},
+					"hide_inactive":       map[string]any{"type": "boolean"},
+					"inactive_after_days": map[string]any{"type": []any{"integer", "null"}},
+					"auto_set_inactive":   map[string]any{"type": "boolean"},
+					"points_label":        map[string]any{"type": "string"},
+					"points_precision":    map[string]any{"type": "integer"},
+				},
+			},
+		},
+	}
+
+	tree := t.TempDir()
+	writeSpec(t, tree, doc)
+
+	out, code := runSpecGate(t, tree)
+
+	require.Zero(t, code, "the gate rejected DKP's own field names\n%s", out)
+}
+
+// TestSpecGate_EQdkpConfigKeyAsParameter_IsRejected closes the shape trap SPEC006 documents.
+//
+// A query, header or path parameter carries its name in a `name` field rather than as a key under
+// `properties`, so a walker that only visits properties never sees one. `?show_twinks=` on a future
+// roster filter is exactly this rule's case, and it would have passed.
+func TestSpecGate_EQdkpConfigKeyAsParameter_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	doc := conformingSpec()
+	op := conformingOperation()
+	op["parameters"] = []any{
+		map[string]any{
+			"name":   "show_twinks",
+			"in":     "query",
+			"schema": map[string]any{"type": "boolean"},
+		},
+	}
+	doc["paths"] = map[string]any{"/api/v1/things": map[string]any{"get": op}}
+
+	tree := t.TempDir()
+	writeSpec(t, tree, doc)
+
+	out, code := runSpecGate(t, tree)
+
+	require.NotZero(t, code, "the gate accepted an EQdkp config key as a query parameter\n%s", out)
+	require.Contains(t, firedRules(out), "SPEC008", "%s", out)
+}

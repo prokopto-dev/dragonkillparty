@@ -206,8 +206,21 @@ large enough for exceptions to hide in.
 10. `character_field_def` + `character_field_value` — typed, queryable custom fields. EQdkp's
     `__member_profilefields` is one of its most-used features and has no home in `profile_json`,
     which is validated on write and never queried into.
-11. Guild settings with real columns, not a settings blob: point label, rounding on/off + precision,
-    `inactive_period` / `auto_set_active` / `hide_inactive`, away-mode toggle.
+11. Guild settings with real columns, not a settings blob: point label, display precision,
+    `inactive_after_days` / `auto_set_inactive` / `hide_inactive`. Phase 0 PR 5a lands the first twelve
+    columns and `GET · PATCH /api/v1/guild`; this deliverable is the rest — `locale`,
+    `public_standings`, `artifact_retention_days`, `redact_tells`, `settings_json` — each arriving
+    with the code that reads it.
+
+    > **Corrected in Phase 0 PR 5, on four counts, all with one cause.** This line said
+    > "rounding on/off + precision", "away-mode toggle", `inactive_period` and `auto_set_active`.
+    > All four were transcribed from EQdkp's `<prefix>config` key list
+    > (`docs/design/05-migration.md`) rather than from DKP's own schema: EQdkp carries
+    > `round_activate` *and* `round_precision` where DKP carries one `points_precision`; away mode is
+    > three columns on `person` (`docs/design/01-domain-model.md` §6.1), not a guild setting; and the
+    > two key names are EQdkp's, with `auto_set_active` being the **opposite** control from DKP's
+    > `auto_set_inactive`. `docs/design/02-api-design.md` carried the same four and is corrected with
+    > this.
 12. `audit_log` with a gapless `seq` and `prev_hash`/`hash`.
 13. **The gates**: no-hidden-operations (four-item allowlist); spec drift; `Security` +
     `x-dkp-permission` + `x-dkp-scopes` on every route; idempotency-required on mutating POST

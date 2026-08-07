@@ -178,10 +178,19 @@ with `meta.current` and `meta.current_etag` so a bot merges in one round trip),
 | A bespoke list envelope or error shape | envelope shape |
 | A route declared outside `internal/api` | package scan vs registry |
 
-Beyond the arch tests, four CI gates apply: the committed `openapi/openapi.json` is regenerated and
-diff-gated; `oasdiff breaking` runs against `origin/main`; a `kin-openapi` middleware validates
-**every response in the whole integration suite** against its declared schema; and the PAT-parity
-suite replays SPA request sequences with a scoped PAT and asserts identical responses.
+Beyond the arch tests, two CI gates apply today: the committed `openapi/openapi.json` is regenerated
+and diff-gated, and `oasdiff breaking` runs against `origin/main`.
+
+Two more are designed and **do not exist yet**, so do not write a test that assumes them.
+
+- **Response validation across the integration suite.** The *library* is an open Phase 0 decision —
+  `docs/design/04-testing.md` §"Open item: which OpenAPI response validator" says in terms: "Do not
+  assert either answer in code or docs until Phase 0 settles it." This file named `kin-openapi`
+  until Phase 0 PR 5, which is the assertion that section forbids, and the claim is removed rather
+  than swapped for the other candidate. The middleware itself is ROADMAP Phase 2. Until it lands,
+  assert the response body explicitly in the test.
+- **PAT parity.** Replaying an SPA request sequence with a scoped PAT needs tokens, and tokens are
+  ROADMAP Phase 2 deliverable 1. There is no auth package.
 
 ## Stop and ask if
 

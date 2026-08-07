@@ -165,6 +165,38 @@ for tree in internal web cmd db; do
     [ -n "$hits" ] && violation AGPL001 "EQdkp Plus identifier outside the allowlisted files" "$hits"
 done
 
+# --- AGPL002: EQdkp config keys are not DKP column names --------------------------------------
+# A narrower rule than AGPL001, and a different failure. AGPL001 catches distinctive EQdkp
+# identifiers (`pdh_`, `gen_class`) that could only arrive by transcription. These are ordinary
+# names that arrive by a subtler route: someone reads docs/design/05-migration.md's list of EQdkp
+# `<prefix>config` keys — which is there because the importer must read them — and writes one into
+# DKP's own schema instead of DKP's name for the same concept.
+#
+# That is not hypothetical. docs/design/02-api-design.md's `/guild` row shipped `inactive_period`
+# and `auto_set_active` for exactly this reason, and `auto_set_active` is the OPPOSITE control from
+# DKP's `auto_set_inactive` — a bot written from the published contract would have set the wrong
+# value. Some keys in that same row had been correctly renamed (`dkp_name` -> `points_label`,
+# `guildtag` -> `tag`), which is what made the survivors invisible.
+#
+# SCOPE IS db/ ONLY, AND THE DOCUMENTATION HALF IS DELIBERATELY NOT GATED. A grep over the design
+# documents cannot tell a leak from a lesson: docs/design/01-domain-model.md names `show_twinks` at
+# :572 and :2870 to explain why DKP rejects that design, and the correction notes accompanying this
+# rule quote the banned names in order to document them. Both are correct writing a grep would
+# reject, and a gate that is usually wrong is a gate people route around. The wire half is covered
+# where it is unambiguous — SPEC008 in scripts/verify-spec.py reads the generated OpenAPI document,
+# which contains field names and no prose.
+#
+# `hide_inactive` and `timezone` are in EQdkp's list too and are ALSO DKP's own column names: the
+# concepts coincide and the words are ordinary English. They are not banned. Every name below is one
+# DKP does not use, so a hit is always a transcription and never a collision.
+if has db; then
+    hits=$(grep -rnE '\b(inactive_period|auto_set_active|round_activate|round_precision|dkp_name|guildtag|servername|show_twinks|detail_twink|special_members|default_game|enable_leaderboard)\b' db 2>/dev/null \
+        | strip_comments | strip_go_comments || true)
+    [ -n "$hits" ] && violation AGPL002 \
+        "EQdkp Plus config key used as a DKP schema name — use DKP's own name (canonical §15, §16)" \
+        "$hits"
+fi
+
 if [ "$fail" -ne 0 ]; then
     printf '\n\033[31mrepo gates failed\033[0m — see the rule ids above.\n'
     printf 'These are structural rules, not style. Do not disable one to land a change (AGENTS.md).\n'

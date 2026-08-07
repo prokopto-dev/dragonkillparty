@@ -32,7 +32,7 @@ Keys are `resource.action`, lowercase, dot-separated.
 | Portal | `cms.read` `cms.write` `cms.moderate` |
 | Import | `import.run` `import.commit` |
 | Integrations | `webhook.manage` `token.mint` `token.revoke` |
-| Administration | `admin.settings` `admin.roles.manage` `admin.backup` `admin.owner` |
+| Administration | `admin.settings` `admin.security.manage` `admin.roles.manage` `admin.backup` `admin.owner` |
 | Sensitive reads | `person.pii.read` `audit.read` `ops.read` |
 
 `role_permission` is foreign-keyed to `permission(key)`, so a role referring to a key that does not
@@ -86,7 +86,7 @@ Each row **adds to the row above it**. This is a copy of the built-in seed in
 | `raider` | Nothing — identical to `member`. A distinct assignable name for guilds that want the rank distinction | Guilds that track a Raider rank |
 | `raid_leader` | `raid.create` `raid.update` `raid.finalize` `raid.tick.create` `raid.tick.delete` `item.award` `signup.manage` | Whoever calls the raid. Commonly assigned scoped to one raid group. |
 | `officer` | `roster.write` `person.merge` `character.claim.approve` `dkp.adjust` `bid.manage` `bid.reveal_early` `item.alias.manage` `calendar.write` `cms.write` `audit.read` | Your officer corps |
-| `admin` | `dkp.decay.run` `ledger.reverse` `cms.moderate` `import.run` `import.commit` `webhook.manage` `token.mint` `token.revoke` `admin.settings` `admin.roles.manage` `admin.backup` `person.pii.read` `ops.read` | One or two people |
+| `admin` | `dkp.decay.run` `ledger.reverse` `cms.moderate` `import.run` `import.commit` `webhook.manage` `token.mint` `token.revoke` `admin.settings` `admin.security.manage` `admin.roles.manage` `admin.backup` `person.pii.read` `ops.read` | One or two people |
 | `owner` | `admin.owner` | Exactly one person |
 | `bot_readonly` | The `*.read` keys only | A `!dkp` bot |
 | `bot_raid` | `raid.create` `raid.update` `raid.tick.create` `item.award`. **Never `dkp.adjust`.** | A log-tailing bot |

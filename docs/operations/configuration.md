@@ -44,8 +44,27 @@ Use it with Docker, Podman or Kubernetes secrets. A value in the environment lea
 `docker inspect`, crash dumps and child processes; a value in a file does not.
 
 Secret-valued settings are a *type*, not a convention: they render as `***` in logs, in `/ops`, in
-`dkp doctor --json` and in any serialisation of the configuration. A test marshals the whole
-configuration and asserts no known secret value appears in the output.
+`dkp doctor --json`, in `GET /api/v1/admin/settings` and in any serialisation of the configuration.
+A test marshals the whole configuration and asserts no known secret value appears in the output.
+
+**`***` means set; `null` means unset.** The distinction is load-bearing and is part of the type, not
+a per-caller choice: an operator has to be able to answer "is Discord login configured?" without
+being told the secret, and a settings screen cannot render "not configured" from `***` alone. The two
+render identically in logs, where the question never arises, and differently in any structured
+output, where it always does.
+
+```json
+{ "discord_client_id":     "1234567890",
+  "discord_client_secret": "***",
+  "oidc_issuer":           null,
+  "oidc_client_secret":    null }
+```
+
+Redaction hides the value, not the shape — which is why `GET /api/v1/admin/settings` is gated at
+`admin.security.manage` rather than `admin.settings` even though it returns no secrets. The response
+still says which identity provider is configured, whether MFA is enforced, and what
+`DKP_OUTBOUND_ALLOW_CIDRS` contains; that last one is not a secret and names a reachable internal
+range, which is reconnaissance. See [`../design/02-api-design.md`](../design/02-api-design.md) §4.2.
 
 The session key, the token pepper and the webhook signing key are **not** configuration. They are
 generated on first boot and persisted to `<data-dir>/secrets.json`. There is never a default

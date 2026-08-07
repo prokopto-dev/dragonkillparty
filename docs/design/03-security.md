@@ -556,8 +556,26 @@ dkp_feed_<8>_<43>       # single-purpose read-only feeds (iCal / RSS)
 
 All of these are **session + step-up only and carry no scope at all** (canonical §6). *Mechanism:*
 `x-dkp-pat-forbidden: true` on those operations, plus an architectural test asserting the flagged set
-equals exactly the set whose permission is in `{token.*, admin.roles.*, admin.settings, admin.backup,
-admin.owner, person.pii.read, audit.read, import.commit}`.
+equals exactly the set canonical §6 "The capability floor" enumerates:
+
+```
+token.mint  token.revoke  admin.security.manage  admin.roles.manage
+admin.backup  admin.owner  person.pii.read  audit.read  import.commit
+```
+
+> **Corrected in Phase 0 PR 5.** This paragraph, `docs/api/auth-and-scopes.md` and
+> `.claude/agents/api-contract-guardian.md` each carried a *different* set, and none matched
+> canonical §6's prose. The differences were not cosmetic: this one included `admin.settings` and
+> `admin.owner`, the other two omitted both. Canonical §6 now enumerates the set as permission keys
+> rather than leaving it to be inferred from prose, all three copies point at that enumeration, and
+> the test derives from it rather than from a hand-maintained list — so the three cannot drift apart
+> again.
+>
+> `admin.settings` is **not** in the set. The half of it that belongs here — identity-provider
+> credentials, MFA and session policy, and the outbound-request allowlist — became
+> `admin.security.manage` in the same change, which is what the SSRF paragraph below actually needs.
+> Leaving the whole key in would have put a re-authentication prompt in front of an officer renaming
+> the guild.
 
 **What a leaked `raids:write dkp:adjust loot:award` token *can* do:** create raids, ticks, awards and
 adjustments — i.e. move points around. That is real damage, and it is exactly the damage the ledger is
@@ -793,8 +811,9 @@ forbids.
 
 `DKP_OUTBOUND_ALLOW_PRIVATE=false` by default. A deployment that genuinely needs an internal endpoint
 sets a narrow CIDR allowlist (`DKP_OUTBOUND_ALLOW_CIDRS=10.0.5.0/24`), surfaced at `/ops`. Changing
-it requires `admin.settings` + step-up, is audited, and is PAT-forbidden — so a leaked token cannot
-relax the SSRF policy and then pivot.
+it requires `admin.security.manage` + step-up, is audited, and is PAT-forbidden — so a leaked token
+cannot relax the SSRF policy and then pivot. That key exists **because of this paragraph**: the
+guarantee cannot hold under `admin.settings`, which also gates renaming the guild (canonical §6).
 
 **Webhooks specifically:** HTTPS required unless the host is allowlisted; HMAC-SHA256 signature
 (`t=<unix>,v1=<hex>` over `t.body`) with a 5-minute replay window so the *receiver* can authenticate
