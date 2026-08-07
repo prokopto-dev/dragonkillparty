@@ -667,9 +667,20 @@ only a convention is not redaction.
 
 **Health endpoints** follow canonical conventions §13 exactly: `/healthz` never touches the database
 and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, worker
-heartbeat, free disk and outbox lag, returns 503 with a JSON body naming the failing check *and its
-fix*, and discloses detail only to loopback and RFC-1918 callers. A `/readyz` that tells the public
-internet your schema version and disk state is a reconnaissance endpoint.
+heartbeat, free disk and outbox lag, and returns 503 with a JSON body naming the failing check *and
+its fix*.
+
+Detail is disclosed only to loopback and RFC-1918 callers, **with one deliberate exception**: the
+migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public.
+It tells an unauthenticated caller only that the instance is mid-upgrade — which the 503 already
+tells them — and the command it names is in the published documentation. The SPA renders it as a
+banner for an operator who may not have shell access at that moment, and gating it behind a source
+address would mean the banner is blank for exactly the person who needs it. A `/readyz` that tells
+the public internet your schema version, disk state or worker lag is a reconnaissance endpoint, and
+those checks are the ones the redaction is for.
+
+> Landed in Phase 0 PR 3: the migrations check and its public body. The remaining checks and the
+> caller-based redaction land with the code that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

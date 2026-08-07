@@ -46,10 +46,19 @@ naming which case it is:
 Anything else — renaming a column by hand, "just fixing" a generated `ALTER`, adding a table
 directly — is wrong. Change `db/schema.hcl` and regenerate.
 
-> **Empirical assumption, verify before relying on it:** that Atlas *preserves* hand-added triggers,
-> partial indexes and CHECKs across a subsequent `migrate diff`. Phase 0 has a one-hour spike (add a
-> trigger, change an unrelated column, diff). If Atlas drops them, the append-only guarantee is at
-> risk on every schema change and this flow needs a preservation step.
+> **Verified in Phase 0 PR 3 (2026-08-06), and the answer changes how you use this table.** See item
+> V6 of `docs/development/verify-before-phase-0.md` for the experiment and the evidence.
+>
+> - **Partial indexes and CHECKs are NOT special cases.** Atlas expresses both in `schema.hcl`
+>   (`index "x" { where = … }`, `check { expr = … }`) and re-creates them across a 12-step rebuild.
+>   Put them in `schema.hcl`; cases 2 and 3 above are for the residue Atlas genuinely cannot express,
+>   which so far is nothing.
+> - **Triggers are the real case, and they are fragile.** The community edition cannot express a
+>   trigger at all. A trigger it cannot see does not provoke a `DROP TRIGGER` on an ordinary diff —
+>   but a table rebuild emits `DROP TABLE` and re-creates **nothing**, silently. Any migration that
+>   rebuilds a table carrying a trigger MUST re-create it after the rename, in the same file.
+> - The backstop is `TestMigrate_FreshInstall_MatchesFingerprint`, which fingerprints every
+>   `sqlite_schema` row including `type='trigger'`.
 
 ### Backfills: two hard rules
 

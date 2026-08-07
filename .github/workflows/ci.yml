@@ -108,7 +108,18 @@ jobs:
             db:
               - *build
               - 'db/**'
+              - 'atlas.hcl'
+              - 'sqlc.yaml'
               - 'internal/store/**'
+              # The migrator and its suite. Without these three lines a change confined to
+              # internal/migrate/ or to a migration fixture selects only the `go` filter, and
+              # `test / migrations` is SKIPPED — which ci-required counts as success. A gate that
+              # silently stops running on the changes it exists to police is the exact
+              # self-concealing omission the header above warns about.
+              - 'internal/migrate/**'
+              - 'test/migrations/**'
+              - 'test/fixtures/migrations/**'
+              - 'test/golden/migrations/**'
             api:
               - *build
               - 'internal/api/**'
@@ -242,11 +253,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+          tools: "atlas sqlc"
       - name: Regenerate everything and fail on a dirty tree
         run: make verify-generated
-        # atlas migrate diff -> sqlc -> huma -> openapi.json -> openapi-typescript +
-        # openapi-python-client -> the generated docs reference pages. On failure this prints
-        # exactly one line: "Generated files are stale. Run 'make gen' and commit."
+        # Today: atlas.sum, the schema/migration sync assertion, and sqlc. huma -> openapi.json
+        # lands in Phase 0 PR 4; openapi-typescript, openapi-python-client and the generated docs
+        # reference pages land in Phase 0 PR 6. On failure this prints exactly one line:
+        # "generated files are stale — run 'make gen' and commit".
 
   spec-drift:
     name: gen / spec-drift
@@ -350,7 +365,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make test-migrations
+        # Landed in Phase 0 PR 3: 1, 6 and 7 below, plus STRICT-on-every-table and no-guild_id.
+        # Still owed, and by whom: 2 and 3 need a published reference database (`release-refdb`,
+        # Phase 8); 4 and 5 need the ledger tables and their triggers (Phase 0 PR 9). The list is
+        # kept whole rather than trimmed to what runs, because it is the specification.
         # 1. fresh install: empty -> HEAD, PRAGMA integrity_check after every step
         # 2. N-1: pull $REFDB:$(cat .support/oldest-tested) -> HEAD
         # 3. the schema fingerprint of (1) equals the fingerprint of (2)

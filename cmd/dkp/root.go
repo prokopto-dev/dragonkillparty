@@ -26,6 +26,7 @@ func newRootCmd() *cobra.Command {
 		newVersionCmd(),
 		// nil: no readiness hook in production. Tests pass one to learn an ephemeral port.
 		newServeCmd(nil),
+		newMigrateCmd(),
 	)
 
 	return cmd

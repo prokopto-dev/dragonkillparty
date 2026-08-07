@@ -150,14 +150,23 @@ internal/api/ready.go
 cmd/dkp/migrate.go
 Makefile                                     # gen, migration targets
 .github/workflows/ci.yml                     # gen/verify-generated job
-test/migrations/{fixture_broken/,golden/fresh_install_fingerprint.txt}
+test/migrations/*_test.go                   # SQL-only; imports no domain package
+test/fixtures/migrations/{broken,future}/    # deliberately broken + a valid "next release"
+test/golden/migrations/fresh_install_fingerprint.txt
 ```
 
 **Acceptance criteria.**
 
 - `TestMigrate_FreshInstall_MatchesFingerprint`: a fresh migrate produces a `sqlite_schema` dump whose
-  normalised SHA-256 equals `test/golden/…/fresh_install_fingerprint.txt`. Changing `schema.hcl`
-  without `make gen` fails this test **and** the drift gate.
+  normalised SHA-256 equals `test/golden/migrations/fresh_install_fingerprint.txt`. Changing
+  `schema.hcl` without `make gen` fails this test **and** the drift gate.
+
+  > **Corrected in PR 3.** The files-touched block above said `test/migrations/golden/…` while this
+  > criterion said `test/golden/…`. Per AGENTS.md the conflict is a bug, so it is recorded rather
+  > than quietly picked: `test/golden/` wins, because it is CODEOWNERS-protected
+  > (`.github/CODEOWNERS:65`) and hook-gated, and a fingerprint parked somewhere an agent can rewrite
+  > unnoticed defeats the only thing a fingerprint does. `docs/design/04-testing.md:531` names a
+  > third path, `db/schema.fingerprint`, which is now also wrong and is that document's to fix.
 - `TestMigrate_BrokenMigration_RestoresByteIdentical`: a fixture migration that fails
   `PRAGMA integrity_check` causes exit code 1, stderr naming the failing migration file and the
   restore command, and the on-disk database SHA-256 is byte-identical to the pre-migration snapshot.

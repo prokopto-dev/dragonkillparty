@@ -42,6 +42,8 @@ resolves to a real target, not that every target appears here.)
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
 - `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations.
+- `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach
+  upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.
   Never hand-edit. Change the source, run `make gen`, commit the diff.
 - `test/golden/`, `test/fixtures/` — expected outputs. CODEOWNERS-protected.

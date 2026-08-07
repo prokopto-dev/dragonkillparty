@@ -64,6 +64,17 @@ GOIMPORTS_VERSION      ?= v0.48.0
 GOLANGCI_LINT_VERSION  ?= v2.12.2
 # renovate: datasource=go depName=golang.org/x/vuln
 GOVULNCHECK_VERSION    ?= v1.6.0
+# renovate: datasource=go depName=github.com/sqlc-dev/sqlc
+SQLC_VERSION           ?= v1.31.1
+# Atlas is the one pinned tool that is NOT `go install`able: ariga.io/atlas/cmd/atlas carries a
+# `replace` directive in its own go.mod, which `go install <pkg>@<version>` refuses, and the last
+# version ever published to the module proxy for that path is v0.13.1 from 2023. It is fetched as a
+# checksum-verified binary instead — see scripts/install-atlas.sh and scripts/atlas.sha256.
+#
+# The `NAME ?= value` shape is load-bearing for BOTH consumers: setup-toolchain/action.yml parses
+# every pin with `$1==k { print $3 }`, and install-atlas.sh reads this line the same way.
+# renovate: datasource=github-releases depName=ariga/atlas
+ATLAS_VERSION          ?= v1.3.0
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -74,6 +85,7 @@ endef
 .PHONY: help setup dev gen test-unit test test-importer lint vet migration seed docker check \
         build clean fmt verify-generated verify-commands \
         lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
+        install-atlas generated-digest \
         docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
         test-property test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
@@ -111,24 +123,35 @@ setup:
 	@$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	@printf '  installing govulncheck $(GOVULNCHECK_VERSION)\n'
 	@$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@printf '  installing sqlc $(SQLC_VERSION)\n'
+	@$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	@$(MAKE) --no-print-directory install-atlas
 	@printf '\033[32m  toolchain installed\033[0m into %s\n' '$(GOTOOLS_BIN)'
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		printf '\033[31m  installed but not on PATH\033[0m — every make target adds %s itself, so\n' '$(GOTOOLS_BIN)'; \
 		printf '  `make check` will work. To run the tools directly, add this to your shell profile:\n'; \
 		printf '    export PATH="$$PATH:%s"\n' '$(GOTOOLS_BIN)'; }
 	@printf '  not installed yet, and deliberately so — nothing needs them at this phase:\n'
-	@printf '    sqlc, atlas, goose   lands in: Phase 0 PR 3 (schema, migrations, generated queries)\n'
 	@printf '    oasdiff              lands in: Phase 2 (spec breaking-change gate)\n'
 	@printf '    vale, lychee         lands in: Phase 0 PR 11 (the docs site and its gates)\n'
 	@printf '    pnpm + web deps      lands in: Phase 0 PR 6 (the SPA)\n'
+	@printf '  the goose CLI is deliberately absent: Atlas authors the migrations and the goose\n'
+	@printf '  LIBRARY applies them from inside the binary, so nothing ever invokes `goose` on PATH.\n'
 
 ## dev: run the dev servers — Go on :8080, Vite on :5173
 dev:
 	@$(call notyet,Phase 0 PR 6,needs cmd/dkp and web/ to exist)
 
 ## gen: regenerate ALL generated code — migrations, sqlc, openapi, clients
+# Today: atlas.sum, the schema/migration sync assertion, and sqlc. `dkp openapi ->
+# openapi/openapi.json` lands in Phase 0 PR 4; openapi-typescript and openapi-python-client land
+# with the SPA and the SDKs in Phase 0 PR 6. Each arrives as another line here.
+#
+# `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
+# its negative fixtures can run against a tree in t.TempDir(), and a value leaking in from a
+# developer's shell would regenerate somebody else's tree while reporting success here.
 gen:
-	@$(call notyet,Phase 0 PR 3-6,atlas migrate diff -> sqlc generate -> dkp openapi -> openapi-typescript + openapi-python-client)
+	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
 
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
@@ -158,11 +181,13 @@ fmt:
 	else printf '\033[33m  gofumpt not installed — run make setup\033[0m\n'; fi
 
 ## migration: create a migration — make migration NAME=add_bid_hold
+# The `ifndef` stays even though the script also checks NAME: it makes `make migration` with no
+# argument fail at parse time with the usage line, before any tool runs.
 migration:
 ifndef NAME
 	$(error NAME is required: make migration NAME=add_bid_hold)
 endif
-	@$(call notyet,Phase 0 PR 3,atlas migrate diff $(NAME) --dev-url "sqlite://file?mode=memory")
+	@env -u DKP_REPO_ROOT NAME='$(NAME)' bash scripts/new-migration.sh
 
 ## seed: seed a dev guild — make seed PROFILE=demo (or small, perf)
 seed:
@@ -186,8 +211,39 @@ verify-commands:
 	@env -u DKP_REPO_ROOT bash scripts/verify-commands.sh
 
 ## verify-generated: fail if generated files drift from their sources
+# Content in, content out: hash the generated trees, regenerate, hash again, compare.
+#
+# NOT `git diff --exit-code`, which is the obvious implementation and is wrong in both directions.
+# It reports a laptop's work in progress as drift, which is noise; and it reports a file that is
+# staged-but-uncommitted as drift, which means the gate cannot be run at all in the change that
+# first creates a generated tree. Hashing answers the question actually being asked — "does
+# regenerating change anything?" — and answers it identically on a laptop mid-change and in a clean
+# CI checkout.
+#
+# `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
+GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api
 verify-generated:
-	@$(call notyet,Phase 0 PR 3,make gen then git diff --exit-code)
+	@before=$$($(MAKE) --no-print-directory generated-digest); \
+	$(MAKE) --no-print-directory gen; \
+	after=$$($(MAKE) --no-print-directory generated-digest); \
+	if [ "$$before" != "$$after" ]; then \
+		printf '\033[31m  generated files are stale — run '"'"'make gen'"'"' and commit\033[0m\n'; \
+		git --no-pager diff --stat -- $(GENERATED_PATHS) 2>/dev/null || true; \
+		exit 1; \
+	fi; \
+	printf '  \033[32mgenerated files match their sources\033[0m\n'
+
+# A stable digest of every generated file's path and contents. Sorted, so it does not depend on
+# directory iteration order.
+#
+# sha256sum on Ubuntu, shasum on macOS. CI is Ubuntu and the laptops are macOS, so picking either
+# one would make this target work in exactly half the places it runs — and the half that broke would
+# break `verify-generated`, which is a required CI job.
+generated-digest:
+	@sum=$$(command -v sha256sum || echo 'shasum -a 256'); \
+	for p in $(GENERATED_PATHS); do \
+		[ -e "$$p" ] && find "$$p" -type f -print0 | sort -z | xargs -0 $$sum 2>/dev/null; \
+	done | $$sum | awk '{ print $$1 }'
 
 ## check: everything CI runs (budget ~60s)
 check: verify-commands lint vet test
@@ -222,6 +278,18 @@ clean:
 # do and what a CI job has no reason to do.
 lint-repo:
 	@env -u DKP_REPO_ROOT bash scripts/repo-gates.sh
+
+# Atlas, the one pinned tool that cannot be `go install`ed. Called by `make setup` above AND by
+# .github/actions/setup-toolchain — through this target rather than the script directly, so that
+# GOTOOLS_BIN is computed in exactly one place. The action re-deriving an install directory is the
+# drift this indirection removes: CI would install to one path and put a different one on PATH.
+#
+# `env -u DKP_REPO_ROOT` for the same reason as lint-repo: the script honours that variable so a
+# test can point it at a fabricated Makefile/atlas.sha256 pair in t.TempDir() and assert that a pin
+# with no checksum row fails before the network is touched. A value leaking in from a developer's
+# shell would otherwise make `make setup` read a version out of some other tree.
+install-atlas:
+	@env -u DKP_REPO_ROOT bash scripts/install-atlas.sh '$(GOTOOLS_BIN)'
 
 # The dependency licence gate. Same `env -u` reasoning as lint-repo above: its negative fixtures
 # point DKP_REPO_ROOT at a fabricated module tree in t.TempDir(), and a value leaking in from a
@@ -334,14 +402,27 @@ test-property:
 test-authz:
 	@$(call notyet,Phase 2,the authorization matrix)
 
+# The migration suite: fresh-install fingerprint, STRICT and no-guild_id assertions, the
+# snapshot/auto-restore path and the downgrade refusal. Not -short: every one of these applies real
+# migrations to a real database, which is the only way any of them mean anything.
 test-migrations:
-	@$(call notyet,Phase 0 PR 3,fresh-install and upgrade fingerprints)
+	@$(GO) test -count=1 ./test/migrations/...
 
 test-e2e:
 	@$(call notyet,Phase 3,Playwright against the built binary)
 
+# Phase 8, not Phase 0 PR 3, and the correction is deliberate.
+#
+# This target upgrades the PREVIOUS RELEASE's reference database to HEAD. No reference database
+# exists: `release-refdb` below is what publishes ghcr.io/<org>/dkp-refdb:<version>, and it is a
+# Phase 8 stub. Phase 0 PR 3 built the migrator, the snapshot and the auto-restore — it could not
+# build an upgrade test against an artefact no release has ever produced, and saying otherwise here
+# would be the same defect that #5 and #6 were cleanups of.
+#
+# What PR 3 DID land is `test-migrations` above, which proves the forward path and the restore path
+# against a real database. The N-1 ladder is a different guarantee and needs a published refdb.
 test-upgrade:
-	@$(call notyet,Phase 0 PR 3,N-1 to N upgrade against the reference database)
+	@$(call notyet,Phase 8,needs release-refdb to publish a reference database first)
 
 test-upgrade-ladder:
 	@$(call notyet,Phase 8,every published minor upgraded to HEAD)

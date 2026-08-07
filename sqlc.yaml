@@ -1,0 +1,33 @@
+# sqlc — db/queries/*.sql becomes typed Go in internal/store/sqlitegen/.
+#
+# The schema sqlc type-checks against is the MIGRATION DIRECTORY, not db/schema.hcl: sqlc cannot
+# read HCL, and pointing it at the migrations has the better property anyway — the types are
+# derived from the DDL that will actually run on an officer's database, so a migration that says
+# something different from the schema file produces a compile error rather than a runtime surprise.
+#
+# internal/store/sqlitegen/ is GENERATED. Never hand-edit it; change the query or the schema and
+# run `make gen`.
+
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "db/migrations-sqlite"
+    queries: "db/queries"
+    gen:
+      go:
+        package: "sqlitegen"
+        out: "internal/store/sqlitegen"
+
+        # database/sql, matching internal/store. The DBTX interface sqlc emits is deliberately the
+        # same shape as store.DBTX, so store.Tx can hand its *sql.Tx straight to
+        # sqlitegen.New(tx) without an adapter — see internal/store/tx.go.
+        sql_package: "database/sql"
+
+        # Interfaces, so internal/store can assert the generated Queries satisfies the shape the
+        # rest of the codebase depends on, and so the Postgres port (post-1.0) has something to
+        # implement rather than a second set of concrete types.
+        emit_interface: true
+
+        # A nullable column becomes *T rather than sql.NullT. There are no nullable columns yet;
+        # setting it now means the first one does not silently change every existing signature.
+        emit_pointers_for_null_types: true
