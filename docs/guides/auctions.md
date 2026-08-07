@@ -59,6 +59,55 @@ The `closing` freeze exists so "did my bid land?" has a deterministic answer. A 
 gets `409 session_closed` with the server's `closed_at` and the request's arrival sequence — a
 documented outcome, not a race.
 
+## Tier outranks amount
+
+This is the most consequential rule in the system, and it inverts what every other DKP tool assumes.
+
+| # | Tier | Who is in it |
+|---|---|---|
+| 1 | `main` | the bidder's main, bidding for its primary spec |
+| 2 | `main_offspec` | the bidder's main, bidding for anything else |
+| 3 | `alt` | a character the bidder owns that is not their main |
+| 4 | `anyone` | recruits, guests, second accounts |
+
+**Resolution is two-phase.** Find the highest tier holding any accepted bid — that tier wins the
+item. *Only then* compare amounts, and only within it. **A 10-point main bid beats a 350-point alt
+bid**, and the alt's number is never compared against the main's.
+
+The tier is derived server-side from the bidding character at bid time and is never accepted from a
+client. It is recorded permanently on the award, and never re-derived from the character's *current*
+main flag — mains change, and a bid was made under the ladder in force at the time.
+
+Three consequences worth stating plainly:
+
+- **Prices in the winning tier are small.** When mains only compete with mains, bids land in single
+  or low double digits. The minimum is 5.00 and the increment 1.00. Any screen or fixture showing a
+  three-figure main-tier price is modelling the old scheme.
+- **Second price is within tier.** The winner pays the runner-up *in their own tier* plus one
+  increment, or their own bid if they are alone in it. Never the 350.00 sitting below them.
+- **A lower-tier bidder is told they cannot win, and why, without seeing the number.** The board
+  says "cannot win — Main bids exist" and shows how many bids sit above their tier, never their
+  values.
+
+The tie-break chain therefore grows a step at the top: **tier, then amount**, then raid attendance,
+then balance before the bid, then timestamp, then a seeded roll whose seed is stored on the batch.
+The whole trace is written onto the resolution, so an officer can explain an outcome months later
+without re-deriving it.
+
+## Blind mode discloses exactly one thing
+
+Under `blind` — the default — the API withholds, from everyone but an officer, until close: the top
+bid, any bid amount, and **the count of bids in the caller's own tier**.
+
+It discloses one thing: whether a **higher** tier holds bids, and how many. That exists so a bidder
+who cannot win does not spend points finding out — and the count is safe precisely because it is
+*above* them: knowing three mains are bidding tells an alt nothing they can act on, while knowing
+their own tier is empty would tell a main they win at the floor.
+
+The withheld in-tier count is not fussiness. "No bids in Main yet" tells a main they win at the
+floor, which is precisely what sealed second-price bidding exists to prevent. It is a leak that gets
+reintroduced by accident, so it is a test.
+
 ## Holds: why you cannot spend the same points twice
 
 When a bid is accepted, a **hold** is placed for its amount inside the same transaction that validated
@@ -93,15 +142,21 @@ Bounding the extension count matters: without `max_extensions`, two stubborn bid
 An ordered, configurable chain, evaluated deterministically and **written onto the resolution** so you
 can paste the reason into chat:
 
-1. Highest bid
-2. Earliest bid sequence
-3. Highest attendance percentage in the window
-4. Highest remaining balance after the purchase
+1. **Highest tier holding any accepted bid** — see *Tier outranks amount* above. Every step below
+   is evaluated only among bids in that tier.
+2. Highest bid
+3. Highest raid attendance percentage in the window
+4. Highest remaining balance before the bid
 5. Fewest items won in the window
-6. Seeded random — the seed is persisted, so the result is reproducible
-7. Officer decision, reason mandatory
+6. Earliest bid sequence
+7. Seeded random — the seed is persisted, so the result is reproducible
+8. Officer decision, reason mandatory
 
-Steps 1–6 are automatic. Step 7 exists so the chain always terminates.
+Steps 1–7 are automatic. Step 8 exists so the chain always terminates.
+
+> Step 1 is new with tiered bidding and inverts the old chain: amount used to be first. Steps 3 and 6
+> also swapped — attendance now outranks bid sequence, so a tie between two mains is settled by who
+> shows up rather than by who clicked first.
 
 ## Running one
 

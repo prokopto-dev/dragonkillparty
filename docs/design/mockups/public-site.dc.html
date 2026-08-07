@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-34122850-aa6c-4ae6-86bc-b8df835d717b/styles.css">
+<script src="_ds/nocturne-34122850-aa6c-4ae6-86bc-b8df835d717b/_ds_bundle.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<style>
+body{margin:0;background:#161826}
+a{color:var(--color-accent);text-decoration:none}
+a:hover{color:var(--color-accent-300)}
+@keyframes psPulse{0%,100%{opacity:1}50%{opacity:.35}}
+::-webkit-scrollbar{width:10px}
+::-webkit-scrollbar-thumb{background:#3f424d;border-radius:8px;border:3px solid #161826}
+</style>
+</helmet>
+<div style="min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:14px">
+
+  <header style="position:sticky;top:0;z-index:9;background:color-mix(in srgb, var(--color-bg) 88%, transparent);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--color-divider)">
+    <div style="max-width:1160px;margin:0 auto;display:flex;align-items:center;gap:20px;height:62px;padding:0 24px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:10px;flex:none">
+        <div style="width:30px;height:30px;border-radius:9px;border:1px solid var(--color-accent);display:grid;place-items:center;color:var(--color-accent)"><i class="ph ph-sword" style="font-size:16px"></i></div>
+        <div style="line-height:1.1;white-space:nowrap">
+          <div style="font-family:var(--font-heading);font-size:15px;letter-spacing:-0.01em">{{ guildName }}</div>
+          <div style="font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:color-mix(in srgb, var(--color-text) 42%, transparent)">P99 Green · Velious</div>
+        </div>
+      </div>
+      <nav style="display:flex;align-items:center;gap:1px;min-width:0;overflow:auto">
+        <sc-for list="{{ views }}" as="v" hint-placeholder-count="2">
+          <button onClick="{{ v.go }}" style="padding:7px 12px;border:0;border-radius:8px;background:{{ v.bg }};color:{{ v.fg }};font:inherit;font-size:13.5px;cursor:pointer;white-space:nowrap">{{ v.label }}</button>
+        </sc-for>
+      </nav>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:2px;flex:none;padding:3px;border-radius:9px;border:1px solid var(--color-divider)">
+        <sc-for list="{{ previewModes }}" as="m" hint-placeholder-count="2">
+          <button onClick="{{ m.pick }}" style="padding:5px 10px;border-radius:7px;border:1px solid {{ m.border }};background:{{ m.bg }};color:{{ m.fg }};font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap">{{ m.label }}</button>
+        </sc-for>
+      </div>
+      <sc-if value="{{ signedOut }}" hint-placeholder-val="{{ true }}">
+        <button onClick="{{ goGuest }}" class="btn btn-secondary" style="white-space:nowrap;flex:none"><i class="ph ph-discord-logo"></i>Sign in with Discord</button>
+        <button onClick="{{ goApply }}" class="btn btn-primary" style="white-space:nowrap;flex:none">Apply to raid</button>
+      </sc-if>
+      <sc-if value="{{ signedIn }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;align-items:center;gap:9px;padding:4px 11px 4px 4px;border-radius:999px;border:1px solid var(--color-divider);flex:none;white-space:nowrap">
+          <span style="width:26px;height:26px;border-radius:50%;background:var(--color-accent-800);color:var(--color-accent-200);display:grid;place-items:center;font-size:10px">KA</span>
+          <div style="line-height:1.15">
+            <div style="font-size:12.5px">kaelor</div>
+            <div style="font-size:10.5px;color:color-mix(in srgb, var(--color-text) 45%, transparent)">Discord · no character</div>
+          </div>
+          <span class="tag tag-neutral" style="font-size:9.5px">Guest</span>
+        </div>
+      </sc-if>
+    </div>
+  </header>
+
+  <!-- ══ PUBLIC LANDING ══ -->
+  <sc-if value="{{ isLanding }}" hint-placeholder-val="{{ true }}">
+    <sc-if value="{{ guestMode }}" hint-placeholder-val="{{ false }}">
+      <div style="background:var(--color-surface);box-shadow:inset 0 -1px 0 var(--color-divider)">
+        <div style="max-width:1160px;margin:0 auto;padding:13px 24px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;border-left:3px solid var(--color-accent)">
+          <span style="width:30px;height:30px;flex:none;border-radius:50%;background:var(--color-accent-800);color:var(--color-accent-200);display:grid;place-items:center;font-size:11px">KA</span>
+          <div style="flex:1;min-width:240px">
+            <div style="font-family:var(--font-heading);font-size:15px;letter-spacing:-0.01em">Signed in as kaelor — no character linked yet.</div>
+            <div style="font-size:12.5px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Until one is claimed you see exactly what any visitor sees. Claim a character, or apply to raid.</div>
+          </div>
+          <div style="display:flex;gap:8px;flex:none">
+            <button onClick="{{ focusClaim }}" class="btn btn-primary" style="white-space:nowrap;flex:none"><i class="ph ph-link"></i>Claim a character</button>
+            <button onClick="{{ goApply }}" class="btn btn-secondary" style="white-space:nowrap;flex:none">Apply to raid</button>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <section style="max-width:1160px;margin:0 auto;padding:64px 24px 46px;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:52px;align-items:start">
+      <div>
+        <div style="display:flex;align-items:center;gap:9px;margin-bottom:16px">
+          <span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);animation:psPulse 1.9s ease-in-out infinite"></span>
+          <span style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-accent)">Raiding now · North Temple of Veeshan</span>
+        </div>
+        <h1 style="margin:0 0 18px;font-size:56px;line-height:1.02;letter-spacing:-0.032em;max-width:15ch">We raid three nights a week and we publish every number.</h1>
+        <p style="margin:0 0 26px;font-size:16.5px;line-height:1.6;max-width:56ch;color:color-mix(in srgb, var(--color-text) 62%, transparent);text-wrap:pretty">Zero-sum DKP on an append-only ledger. Every point you earn, every point you spend, and the raid dump behind every tick are public — to members and to anyone deciding whether to apply. No spreadsheet, no officer&rsquo;s memory, no arguments that cannot be settled.</p>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button onClick="{{ goApply }}" class="btn btn-primary" style="white-space:nowrap;flex:none;font-size:15px;padding:10px 18px"><i class="ph ph-paper-plane-tilt"></i>Apply to raid</button>
+          <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:15px;padding:10px 18px">Read the DKP policy</button>
+          <button class="btn btn-ghost" style="white-space:nowrap;flex:none;font-size:15px">Browse standings<i class="ph ph-arrow-right"></i></button>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="card elev-sm" style="padding:16px;gap:12px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--color-accent);animation:psPulse 1.9s ease-in-out infinite"></span>
+            <span style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-accent)">Live</span>
+            <div style="flex:1"></div>
+            <span style="font-size:12px;opacity:.45;font-variant-numeric:tabular-nums">3h 12m · 47 raiders</span>
+          </div>
+          <div style="font-family:var(--font-heading);font-size:20px;letter-spacing:-0.015em">Tue NToV</div>
+          <div style="display:flex;gap:3px">
+            <sc-for list="{{ ticks }}" as="t" hint-placeholder-count="13">
+              <div style="flex:1;height:20px;border-radius:4px;background:{{ t.bg }};border:1px solid {{ t.border }}"></div>
+            </sc-for>
+          </div>
+          <div style="font-size:12.5px;opacity:.5">Aaryonar and Lord Vyemm down. Twelve ticks taken.</div>
+        </div>
+        <div class="card elev-sm" style="padding:16px;gap:11px">
+          <span style="font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-accent)">Recruiting</span>
+          <div style="display:flex;align-items:flex-start;gap:9px;padding:10px;border-radius:9px;border:1px solid var(--color-accent-800);background:color-mix(in srgb, var(--color-accent) 6%, transparent)">
+            <i class="ph ph-hand-coins" style="font-size:16px;color:var(--color-accent);flex:none;margin-top:1px"></i>
+            <div style="font-size:12px;line-height:1.5;opacity:.78">Members earn <span style="color:var(--color-accent-300)">250 points</span> for vouching for a recruit who makes it through trial — name yours on the application.</div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:7px">
+            <sc-for list="{{ openClasses }}" as="c" hint-placeholder-count="6">
+              <span class="tag" style="background:{{ c.bg }};color:{{ c.fg }};font-size:11px">{{ c.label }}</span>
+            </sc-for>
+          </div>
+          <div style="font-size:12.5px;line-height:1.55;color:color-mix(in srgb, var(--color-text) 58%, transparent)">Velious-geared, 60+ preferred, 60% attendance expected over a rolling thirty days. Recruits start with 100 points so you can bid in your first week.</div>
+        </div>
+      </div>
+    </section>
+
+  <!-- ══ SIGNED IN, NO CHARACTER ══ -->
+  <sc-if value="{{ guestMode }}" hint-placeholder-val="{{ false }}">
+    <section style="max-width:1160px;margin:0 auto;padding:0 24px 52px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:18px">
+        <div>
+          <h3 style="margin:0 0 5px">Two ways in</h3>
+          <div style="font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">A Discord login proves who you are on Discord. It does not prove which character here is yours.</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-bottom:14px">
+        <div class="card elev-sm" style="padding:18px;gap:12px">
+          <div style="display:flex;align-items:center;gap:10px"><i class="ph ph-user-focus" style="font-size:19px;color:var(--color-accent)"></i><h4 style="margin:0">I already play here</h4></div>
+          <p style="margin:0;font-size:13.5px;line-height:1.6;color:color-mix(in srgb, var(--color-text) 64%, transparent)">Claim a character the roster already knows about. Once an officer confirms it, your balance, statement and attendance appear and the rest of the site unlocks.</p>
+          <button onClick="{{ focusClaim }}" class="btn btn-primary btn-block" style="white-space:nowrap"><i class="ph ph-link"></i>Claim a character</button>
+        </div>
+        <div class="card elev-sm" style="padding:18px;gap:12px">
+          <div style="display:flex;align-items:center;gap:10px"><i class="ph ph-paper-plane-tilt" style="font-size:19px;color:var(--color-accent)"></i><h4 style="margin:0">I&rsquo;m new here</h4></div>
+          <p style="margin:0;font-size:13.5px;line-height:1.6;color:color-mix(in srgb, var(--color-text) 64%, transparent)">Apply to raid. Your Discord account carries over, so when an officer accepts you the character you listed as main is linked automatically.</p>
+          <button onClick="{{ goApply }}" class="btn btn-secondary btn-block" style="white-space:nowrap"><i class="ph ph-arrow-right"></i>Open the application</button>
+        </div>
+      </div>
+
+      <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden;margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider);flex-wrap:wrap">
+          <i class="ph ph-magnifying-glass" style="font-size:17px;color:var(--color-accent)"></i>
+          <h5 style="margin:0">Unclaimed characters</h5>
+          <span class="tag tag-neutral" style="font-size:10px">{{ unclaimedCount }}</span>
+          <div style="flex:1"></div>
+          <span style="font-size:12px;opacity:.45">characters the roster knows about with no account attached</span>
+        </div>
+        <div style="padding:13px 16px 4px">
+          <div style="display:flex;align-items:center;gap:9px;padding:0 12px;height:40px;border-radius:10px;border:1px solid var(--color-accent-700);background:color-mix(in srgb, var(--color-accent) 6%, transparent)">
+            <i class="ph ph-magnifying-glass" style="font-size:16px;color:var(--color-accent)"></i>
+            <span style="font-size:14px">{{ claimQuery }}</span>
+            <span style="width:1px;height:17px;background:var(--color-accent);animation:psPulse 1.1s steps(1) infinite"></span>
+            <div style="flex:1"></div>
+            <span style="font-size:11.5px;opacity:.45">{{ claimMatches }}</span>
+          </div>
+        </div>
+        <div style="padding:8px 8px 10px;overflow:auto">
+          <table class="table">
+            <thead><tr><th>Character</th><th>Class</th><th style="text-align:right">Level</th><th style="text-align:right">Raids seen</th><th>Last seen</th><th style="text-align:right">Claim</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ unclaimed }}" as="u" hint-placeholder-count="5">
+                <tr>
+                  <td style="color:{{ u.nameColor }}">{{ u.name }}</td>
+                  <td style="opacity:.6;font-size:12.5px">{{ u.cls }}</td>
+                  <td style="text-align:right;font-variant-numeric:tabular-nums">{{ u.level }}</td>
+                  <td style="text-align:right;font-variant-numeric:tabular-nums;opacity:.55">{{ u.raids }}</td>
+                  <td style="opacity:.5;font-size:12px;font-variant-numeric:tabular-nums">{{ u.last }}</td>
+                  <td style="text-align:right"><button onClick="{{ u.claim }}" class="btn {{ u.btnClass }}" style="white-space:nowrap;flex:none;font-size:12.5px">{{ u.btnLabel }}</button></td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:12px 16px;display:flex;align-items:center;gap:11px;box-shadow:inset 0 1px 0 var(--color-divider)">
+          <i class="ph ph-info" style="font-size:16px;color:var(--color-accent)"></i>
+          <span style="font-size:12.5px;opacity:.65;flex:1">Not listed? A character only appears here once it has shown up in a raid dump or an import. Ask an officer, or apply.</span>
+        </div>
+      </div>
+
+      <sc-if value="{{ hasPendingClaim }}" hint-placeholder-val="{{ false }}">
+        <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden;margin-bottom:14px;border:1px solid var(--color-accent-800)">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider)">
+            <i class="ph ph-hourglass-medium" style="font-size:17px;color:var(--color-accent)"></i>
+            <h5 style="margin:0">Claim pending — {{ pendingName }}</h5>
+            <div style="flex:1"></div>
+            <span style="font-size:12px;opacity:.45;font-variant-numeric:tabular-nums">expires in 46h</span>
+          </div>
+          <div style="padding:15px 16px;display:flex;flex-direction:column;gap:13px">
+            <div style="font-size:13px;opacity:.7;line-height:1.6">Prove the character is yours by any one of these. The first one that lands wins; you do not need all three.</div>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px">
+              <sc-for list="{{ claimProofs }}" as="p" hint-placeholder-count="3">
+                <div style="display:flex;flex-direction:column;gap:7px;padding:13px;border-radius:11px;border:1px solid {{ p.border }};background:{{ p.bg }}">
+                  <div style="display:flex;align-items:center;gap:8px"><i class="{{ p.iconClass }}" style="font-size:16px;color:{{ p.iconColor }}"></i><span style="font-size:13px;flex:1">{{ p.title }}</span></div>
+                  <div style="font-size:11.5px;line-height:1.5;opacity:.55">{{ p.body }}</div>
+                  <div style="font-size:11.5px;color:{{ p.stateColor }}">{{ p.state }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:11px;padding:12px 13px;border-radius:10px;background:color-mix(in srgb, var(--color-text) 4%, transparent);flex-wrap:wrap">
+              <span style="font-size:12px;opacity:.5">Say this in /guild while an officer is online</span>
+              <span style="font-family:ui-monospace,Menlo,monospace;font-size:15px;color:var(--color-accent-300);letter-spacing:.02em">bloodmoon-amber-71</span>
+              <div style="flex:1"></div>
+              <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px"><i class="ph ph-copy"></i>Copy</button>
+              <button onClick="{{ cancelClaim }}" class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px">Cancel claim</button>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider)">
+          <i class="ph ph-eye" style="font-size:17px;color:var(--color-accent)"></i>
+          <h5 style="margin:0">What you can see right now</h5>
+          <div style="flex:1"></div>
+          <span style="font-size:12px;opacity:.45">guest · roster.read only</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--color-divider)">
+          <sc-for list="{{ visibility }}" as="v" hint-placeholder-count="8">
+            <div style="background:var(--color-surface);padding:11px 16px;display:flex;align-items:center;gap:10px">
+              <i class="{{ v.iconClass }}" style="font-size:16px;color:{{ v.color }}"></i>
+              <span style="flex:1;font-size:13px;color:{{ v.fg }}">{{ v.label }}</span>
+              <span style="font-size:11.5px;opacity:.4;white-space:nowrap">{{ v.note }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="padding:12px 16px;font-size:11.5px;line-height:1.55;opacity:.5;box-shadow:inset 0 1px 0 var(--color-divider)">Balances and statements are public here by design — secrecy about points causes more arguments than it prevents. What a claim unlocks is the ability to <em>act</em>: sign up, bid, request from the bank, comment on recruits.</div>
+      </div>
+    </section>
+  </sc-if>
+
+    <section style="background:var(--color-section);padding:34px 0;margin-bottom:52px">
+      <div style="max-width:1160px;margin:0 auto;padding:0 24px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px">
+        <sc-for list="{{ bandStats }}" as="s" hint-placeholder-count="4">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <span style="font-family:var(--font-heading);font-size:38px;line-height:1;letter-spacing:-0.03em;font-variant-numeric:tabular-nums;white-space:nowrap">{{ s.v }}</span>
+            <span style="font-size:12.5px;color:color-mix(in srgb, #e9e9ed 62%, transparent)">{{ s.k }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section style="max-width:1160px;margin:0 auto;padding:0 24px 52px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:44px;align-items:start">
+      <div>
+        <h3 style="margin:0 0 8px">Progression</h3>
+        <p style="margin:0 0 20px;font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">First kills, newest first. Every one links to the raid, the roster and the loot.</p>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ progression }}" as="p" hint-placeholder-count="7">
+            <div style="display:flex;align-items:center;gap:13px;padding:11px 0;box-shadow:inset 0 -1px 0 var(--color-divider)">
+              <i class="ph ph-skull" style="font-size:17px;color:{{ p.color }}"></i>
+              <div style="flex:1;min-width:0"><div style="font-size:14px">{{ p.name }}</div><div style="font-size:11.5px;opacity:.42">{{ p.zone }}</div></div>
+              <span style="font-size:12.5px;opacity:.5;font-variant-numeric:tabular-nums;white-space:nowrap">{{ p.when }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin:0 0 8px">How loot works here</h3>
+        <p style="margin:0 0 20px;font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Three sentences, because you should be able to judge us before you apply.</p>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <sc-for list="{{ pillars }}" as="p" hint-placeholder-count="3">
+            <div class="card elev-sm" style="padding:15px;gap:7px">
+              <div style="display:flex;align-items:center;gap:9px"><i class="{{ p.iconClass }}" style="font-size:17px;color:var(--color-accent)"></i><span class="card-title">{{ p.title }}</span></div>
+              <p style="margin:0;font-size:13px;line-height:1.55;color:color-mix(in srgb, var(--color-text) 62%, transparent)">{{ p.body }}</p>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </section>
+
+    <section style="max-width:1160px;margin:0 auto;padding:0 24px 64px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:16px">
+        <div><h3 style="margin:0 0 5px">Standings, in public</h3><div style="font-size:14px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">Secrecy about balances generates more drama than it prevents.</div></div>
+        <button class="btn btn-secondary" style="white-space:nowrap;flex:none">All 82 members<i class="ph ph-arrow-right"></i></button>
+      </div>
+      <div class="card elev-sm" style="padding:2px 10px 10px">
+        <table class="table">
+          <thead><tr><th style="width:34px">#</th><th>Member</th><th>Class</th><th style="text-align:right">Balance</th><th style="width:130px">Attendance 30d</th></tr></thead>
+          <tbody>
+            <sc-for list="{{ topFive }}" as="r" hint-placeholder-count="5">
+              <tr>
+                <td style="opacity:.4;font-variant-numeric:tabular-nums">{{ r.rank }}</td>
+                <td>{{ r.name }}</td>
+                <td style="opacity:.55;font-size:12.5px">{{ r.cls }}</td>
+                <td style="text-align:right;font-variant-numeric:tabular-nums">{{ r.balance }}</td>
+                <td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:5px;border-radius:3px;background:color-mix(in srgb, var(--color-text) 8%, transparent)"><div style="height:100%;width:{{ r.att }};background:{{ r.attColor }};border-radius:3px"></div></div><span style="font-size:11.5px;opacity:.55;width:34px;text-align:right;font-variant-numeric:tabular-nums">{{ r.att }}</span></div></td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </sc-if>
+
+  <!-- ══ APPLICATION ══ -->
+  <sc-if value="{{ isApply }}" hint-placeholder-val="{{ false }}">
+    <section style="max-width:860px;margin:0 auto;padding:44px 24px 70px">
+      <div style="margin-bottom:26px">
+        <div style="font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--color-accent);margin-bottom:9px">Recruitment</div>
+        <h1 style="margin:0 0 10px;font-size:40px;letter-spacing:-0.028em">Apply to {{ guildName }}</h1>
+        <p style="margin:0;font-size:15.5px;line-height:1.6;max-width:60ch;color:color-mix(in srgb, var(--color-text) 60%, transparent)">Officers read every application. Expect a reply within a week — and if we say no, we will tell you why.</p>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:10px;border:1px solid var(--color-divider);margin-bottom:22px">
+        <i class="ph ph-floppy-disk" style="font-size:16px;color:var(--color-accent)"></i>
+        <span style="font-size:12.5px;flex:1;opacity:.65">Answers save as you type. You can finish this later from the same browser.</span>
+        <span style="font-size:12px;opacity:.4;font-variant-numeric:tabular-nums">{{ answered }} answered</span>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <sc-for list="{{ questions }}" as="q" hint-placeholder-count="10">
+          <div class="card elev-sm" style="padding:17px;gap:11px">
+            <div style="display:flex;align-items:flex-start;gap:11px">
+              <span style="width:24px;height:24px;flex:none;border-radius:7px;border:1px solid var(--color-divider);display:grid;place-items:center;font-size:11px;opacity:.5;font-variant-numeric:tabular-nums">{{ q.n }}</span>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                  <span style="font-family:var(--font-heading);font-size:15.5px">{{ q.label }}</span>
+                  <span class="tag" style="background:{{ q.reqBg }};color:{{ q.reqFg }};font-size:9.5px">{{ q.reqLabel }}</span>
+                  <span style="font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;opacity:.32">{{ q.typeLabel }}</span>
+                </div>
+                <div style="font-size:12.5px;opacity:.5;margin-top:3px">{{ q.help }}</div>
+              </div>
+            </div>
+
+            <sc-if value="{{ q.isText }}" hint-placeholder-val="{{ false }}">
+              <div class="input" style="color:{{ q.valueColor }}">{{ q.value }}</div>
+            </sc-if>
+            <sc-if value="{{ q.isLong }}" hint-placeholder-val="{{ false }}">
+              <div class="input" style="min-height:104px;padding:11px;line-height:1.6;white-space:pre-wrap;color:{{ q.valueColor }}">{{ q.value }}</div>
+            </sc-if>
+            <sc-if value="{{ q.isSelect }}" hint-placeholder-val="{{ false }}">
+              <div class="input" style="display:flex;align-items:center;gap:8px;color:{{ q.valueColor }}">{{ q.value }}<div style="flex:1"></div><i class="ph ph-caret-down" style="font-size:12px;opacity:.45"></i></div>
+            </sc-if>
+            <sc-if value="{{ q.isChoice }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-wrap:wrap;gap:8px">
+                <sc-for list="{{ q.options }}" as="o" hint-placeholder-count="4">
+                  <button onClick="{{ o.pick }}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;border:1px solid {{ o.border }};background:{{ o.bg }};color:{{ o.fg }};font:inherit;font-size:13px;cursor:pointer;white-space:nowrap">
+                    <i class="{{ o.iconClass }}" style="font-size:15px"></i>{{ o.label }}
+                  </button>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ q.isRoster }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <sc-for list="{{ rosterRows }}" as="r" hint-placeholder-count="3">
+                  <div style="display:grid;grid-template-columns:1.3fr 1fr .6fr auto auto;gap:9px;align-items:center;padding:9px;border-radius:10px;border:1px solid {{ r.border }};background:{{ r.bg }}">
+                    <div class="input" style="min-height:32px">{{ r.name }}</div>
+                    <div class="input" style="min-height:32px;display:flex;align-items:center;gap:7px">{{ r.cls }}<div style="flex:1"></div><i class="ph ph-caret-down" style="font-size:11px;opacity:.45"></i></div>
+                    <div class="input" style="min-height:32px;text-align:center;font-variant-numeric:tabular-nums">{{ r.level }}</div>
+                    <button onClick="{{ r.setMain }}" style="display:flex;align-items:center;gap:7px;padding:7px 11px;border-radius:9px;border:1px solid transparent;background:transparent;color:{{ r.mainFg }};font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap"><i class="{{ r.mainIcon }}" style="font-size:15px;color:{{ r.mainColor }}"></i>{{ r.mainLabel }}</button>
+                    <i class="ph ph-x" style="font-size:15px;opacity:.3;cursor:pointer"></i>
+                  </div>
+                </sc-for>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px"><i class="ph ph-plus"></i>Add a character</button>
+                  <span style="font-size:11.5px;opacity:.45">Points attach to <span style="color:var(--color-accent-300)">{{ mainName }}</span>. Alts earn nothing on their own.</span>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ q.isRules }}" hint-placeholder-val="{{ false }}">
+              <div onScroll="{{ onRulesScroll }}" style="max-height:260px;overflow:auto;border:1px solid var(--color-divider);border-radius:11px;padding:15px;display:flex;flex-direction:column;gap:14px;background:color-mix(in srgb, var(--color-text) 3%, transparent)">
+                <sc-for list="{{ rules }}" as="r" hint-placeholder-count="7">
+                  <div style="display:flex;flex-direction:column;gap:5px">
+                    <div style="font-size:11px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-accent)">{{ r.heading }}</div>
+                    <p style="margin:0;font-size:13.5px;line-height:1.62;color:color-mix(in srgb, var(--color-text) 74%, transparent);text-wrap:pretty">{{ r.body }}</p>
+                  </div>
+                </sc-for>
+                <div style="font-size:12px;opacity:.4;padding-top:4px;border-top:1px solid var(--color-divider)">That is all of it. Seven sections, and none of them exist because someone thought they sounded good — each one is here because it went wrong once.</div>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <button onClick="{{ acceptRules }}" style="display:flex;align-items:center;gap:9px;padding:9px 13px;border-radius:10px;border:1px solid {{ acceptBorder }};background:{{ acceptBg }};color:{{ acceptFg }};font:inherit;font-size:13px;cursor:{{ acceptCursor }};white-space:nowrap"><i class="{{ acceptIcon }}" style="font-size:16px"></i>{{ acceptLabel }}</button>
+                <span style="font-size:11.5px;color:{{ scrollHintColor }}">{{ scrollHint }}</span>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ q.isFile }}" hint-placeholder-val="{{ false }}">
+              <div style="border:1px dashed var(--color-neutral-700);border-radius:11px;padding:20px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;background:color-mix(in srgb, var(--color-accent) 4%, transparent)">
+                <i class="ph ph-image" style="font-size:26px;color:var(--color-accent)"></i>
+                <div style="font-size:13.5px">Drop a screenshot, or choose a file</div>
+                <div style="font-size:11.5px;opacity:.45">PNG or JPG · up to 8 MB · {{ q.help2 }}</div>
+              </div>
+              <sc-if value="{{ q.hasFile }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:9px;background:color-mix(in srgb, var(--color-text) 4%, transparent)">
+                  <i class="ph ph-file-image" style="font-size:16px;color:var(--color-accent)"></i>
+                  <span style="flex:1;font-size:12.5px;font-family:ui-monospace,Menlo,monospace;opacity:.75">{{ q.fileName }}</span>
+                  <span style="font-size:11.5px;opacity:.4">{{ q.fileSize }}</span>
+                  <i class="ph ph-x" style="font-size:14px;opacity:.45;cursor:pointer"></i>
+                </div>
+              </sc-if>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-top:20px;flex-wrap:wrap">
+        <span style="font-size:12px;opacity:.45;flex:1;min-width:200px">{{ submitNote }}</span>
+        <button class="btn btn-secondary" style="white-space:nowrap;flex:none">Save and finish later</button>
+        <button class="btn {{ submitClass }}" style="white-space:nowrap;flex:none;font-size:15px;padding:10px 18px" disabled="{{ submitDisabled }}"><i class="ph ph-paper-plane-tilt"></i>Submit application</button>
+      </div>
+    </section>
+  </sc-if>
+
+  <footer style="max-width:1160px;margin:0 auto;padding:0 24px 40px;display:flex;align-items:center;gap:16px;font-size:12px;flex-wrap:wrap;color:color-mix(in srgb, var(--color-text) 38%, transparent);flex-wrap:wrap;white-space:nowrap">
+    <span style="white-space:nowrap">{{ guildName }} · Project 1999 Green</span><span style="white-space:nowrap">·</span><a href="#" style="white-space:nowrap">DKP policy</a><span style="white-space:nowrap">·</span><a href="#" style="white-space:nowrap">Standings</a><span style="white-space:nowrap">·</span><a href="#" style="white-space:nowrap">Discord</a>
+    <div style="flex:1"></div>
+    <span style="white-space:nowrap">Running Dragon Kill Party · Made by <a href="#" style="white-space:nowrap">Prokopton</a> · P99 Green · member of Legacy of Fire</span>
+    <span style="white-space:nowrap;opacity:.6">·</span>
+    <span style="white-space:nowrap">not affiliated with Daybreak or Project 1999</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;guildName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Castle Bloodmoon&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const A = {
+  ac: 'var(--color-accent)', a3: 'var(--color-accent-300)', a4: 'var(--color-accent-400)',
+  txt: 'var(--color-text)',
+  soft: (p) => `color-mix(in srgb, var(--color-text) ${p}%, transparent)`,
+  tint: (p) => `color-mix(in srgb, var(--color-accent) ${p}%, transparent)`,
+};
+
+const QUESTIONS = [
+  { id: 'roster', type: 'roster', label: 'Your characters', help: 'List everything you would bring. Mark one as your main — that is the character your points attach to.', required: true },
+  { id: 'role', type: 'radio', label: 'Primary raid role', help: 'Pick one. Off-spec goes in the long answer below.', required: true,
+    options: ['Main heal', 'Tank', 'Melee dps', 'Caster dps', 'Utility'], value: 'Main heal' },
+  { id: 'nights', type: 'checkbox', label: 'Which nights can you raid?', help: 'Invites go out at 22:45 server time. Tick every fifteen minutes.', required: true,
+    options: ['Tuesday', 'Thursday', 'Sunday', 'Off-night pickups'], value: ['Tuesday', 'Sunday'] },
+  { id: 'keys', type: 'checkbox', label: 'Which keys and flags do you already have?', help: 'Missing keys are fine — it changes which raids you can join in week one.', required: false,
+    options: ['Veeshan\u2019s Peak', 'Plane of Sky', 'Sleeper\u2019s Tomb', 'Wakening Lands', 'Kromrif faction'], value: ['Wakening Lands'] },
+  { id: 'mq', type: 'boolean', label: 'I understand MacroQuest and third-party automation are bannable on P99.', help: 'Every tool we run is read-only and out of process.', required: true, value: true },
+  { id: 'policy', type: 'boolean', label: 'I have read the DKP policy and understand corrections are reversals, not edits.', help: 'It is two pages. Please actually read it.', required: true, value: true },
+  { id: 'history', type: 'textarea', label: 'Raid history and why you are leaving', help: 'Guilds, roughly when, and what went wrong. Honesty here counts for more than a clean record.', required: true,
+    value: 'Raided NToV with Sanctuary for about eight months as a main-spec cleric, then Kael and Sleeper\u2019s with Riot until the guild split in June. Leaving because the split left us without a healing core and I would rather join something already stable than rebuild one.' },
+  { id: 'gear', type: 'file', label: 'Screenshot of your gear or a Magelo link', help: 'Inventory window is fine — we are looking at resists, not flexing.', help2: 'inventory window, resists visible', required: true, hasFile: true, fileName: 'kaelor-inventory-2026-08-04.png', fileSize: '1.4 MB' },
+  { id: 'ref', type: 'text', label: 'Anyone in the guild who can vouch for you?', help: 'Optional, but it matters — a voucher earns 250 points when you are promoted, so naming one puts someone on the hook for you in a good way.', required: false, value: 'Sylvenna' },
+  { id: 'rules', type: 'rules', label: 'Guild rules', help: 'Read to the end. The accept button unlocks when you reach the bottom.', required: true },
+];
+
+const ROSTER_ROWS = [
+  { name: 'Kaelor', cls: 'Cleric', level: '60', main: true },
+  { name: 'Kaelen', cls: 'Rogue', level: '54', main: false },
+  { name: 'Kaelora', cls: 'Druid', level: '51', main: false },
+];
+
+const RULES = [
+  ['Attendance', 'Sixty per cent over a rolling thirty days, counted in ticks rather than nights. Miss a raid and say nothing and it costs you nothing but the points; miss six weeks without a word and you are moved to inactive.'],
+  ['Loot', 'Zero-sum DKP. What a winner pays is split among everyone credited on that tick, so the guild total never inflates. Bids are yours to make — no officer will tell you an item is too expensive for you.'],
+  ['Corrections', 'Mistakes are fixed by posting a reversal, never by editing history. The wrong row stays visible with the refund beside it. If you think a number is wrong, open a dispute and an officer answers it with a sequence number you can check yourself.'],
+  ['Alts and mains', 'Points belong to a person, not a character. Bring whatever you like; one character is your main and that is the one attendance is judged on. Main swaps cost points outside an open swap window.'],
+  ['Third-party software', 'MacroQuest and anything else that plays the game for you is bannable on Project 1999 and will get you removed from here first. Every tool this guild runs is read-only and out of process.'],
+  ['Conduct', 'Do not kill-steal after an FTE, do not train other guilds, do not argue about loot in guild chat when the statement can settle it. Racist or abusive behaviour ends membership on the spot, with no appeal and no refund of points.'],
+  ['Leaving', 'Tell an officer. Your balance is frozen, not deleted — people come back. Loaned bank items are expected to be returned; nobody has ever been chased for a haste clickie, but nobody has ever needed to be.'],
+];
+
+const TYPE_LABEL = { text: 'Short answer', textarea: 'Long answer', select: 'Dropdown', radio: 'Multiple choice', checkbox: 'Check all that apply', boolean: 'True / false', file: 'File upload', roster: 'Character roster', rules: 'Rules to accept' };
+
+class Component extends DCLogic {
+  state = { view: 'landing', guest: false, answers: {}, mainIdx: 0, rulesRead: false, rulesAccepted: false, claim: 'Kaelith' };
+
+  valueOf(q) {
+    const v = this.state.answers[q.id];
+    return v === undefined ? q.value : v;
+  }
+
+  renderVals() {
+    const view = this.state.view;
+
+    const questions = QUESTIONS.map((q, i) => {
+      const val = this.valueOf(q);
+      const base = {
+        n: i + 1, label: q.label, help: q.help, help2: q.help2 || '',
+        typeLabel: TYPE_LABEL[q.type],
+        reqLabel: q.required ? 'Required' : 'Optional',
+        reqBg: q.required ? 'var(--color-accent-800)' : 'transparent',
+        reqFg: q.required ? 'var(--color-accent-100)' : A.soft(40),
+        isText: q.type === 'text', isLong: q.type === 'textarea', isSelect: q.type === 'select',
+        isChoice: q.type === 'radio' || q.type === 'checkbox' || q.type === 'boolean',
+        isFile: q.type === 'file', isRoster: q.type === 'roster', isRules: q.type === 'rules',
+        hasFile: !!q.hasFile, fileName: q.fileName || '', fileSize: q.fileSize || '',
+        value: q.type === 'file' ? '' : val,
+        valueColor: val ? A.txt : A.soft(38),
+        options: [],
+      };
+      if (base.isChoice) {
+        const opts = q.type === 'boolean' ? ['True', 'False'] : q.options;
+        const multi = q.type === 'checkbox';
+        base.options = opts.map(label => {
+          const on = multi ? (val || []).indexOf(label) > -1
+            : q.type === 'boolean' ? (label === 'True') === !!val
+            : val === label;
+          return {
+            label,
+            iconClass: 'ph ' + (on ? (multi ? 'ph-check-square' : 'ph-radio-button') : (multi ? 'ph-square' : 'ph-circle')),
+            border: on ? 'var(--color-accent-700)' : A.soft(12),
+            bg: on ? A.tint(12) : 'transparent',
+            fg: on ? A.a3 : A.soft(58),
+            pick: () => this.setState(s => {
+              const cur = s.answers[q.id] === undefined ? q.value : s.answers[q.id];
+              let next;
+              if (multi) {
+                const arr = cur || [];
+                next = arr.indexOf(label) > -1 ? arr.filter(x => x !== label) : arr.concat([label]);
+              } else if (q.type === 'boolean') {
+                next = label === 'True';
+              } else next = label;
+              return { answers: { ...s.answers, [q.id]: next } };
+            }),
+          };
+        });
+      }
+      return base;
+    });
+
+    const answered = QUESTIONS.filter(q => {
+      if (q.type === 'roster') return ROSTER_ROWS.length > 0;
+      if (q.type === 'rules') return this.state.rulesAccepted;
+      if (q.type === 'file') return !!q.hasFile;
+      const v = this.valueOf(q);
+      return Array.isArray(v) ? v.length > 0 : v !== '' && v !== undefined;
+    }).length;
+
+    return {
+      guildName: this.props.guildName ?? 'Castle Bloodmoon',
+      views: [['landing', 'The guild'], ['apply', 'Recruitment']].map(([id, label]) => ({
+        label, bg: view === id ? A.tint(14) : 'transparent', fg: view === id ? A.a3 : A.soft(66),
+        go: () => this.setState({ view: id }),
+      })),
+      isLanding: view === 'landing', isApply: view === 'apply',
+      guestMode: this.state.guest,
+      signedIn: this.state.guest, signedOut: !this.state.guest,
+      previewModes: [['Visitor', false], ['Signed in', true]].map(([label, g]) => {
+        const on = this.state.guest === g;
+        return {
+          label,
+          border: on ? 'var(--color-accent-700)' : 'transparent',
+          bg: on ? A.tint(14) : 'transparent',
+          fg: on ? A.a3 : A.soft(45),
+          pick: () => this.setState({ guest: g, view: 'landing' }),
+        };
+      }),
+      goApply: () => this.setState({ view: 'apply' }),
+      goGuest: () => this.setState({ guest: true, view: 'landing' }),
+      focusClaim: () => this.setState({ guest: true, view: 'landing' }),
+
+      claimQuery: 'kae',
+      claimMatches: '2 of 47 unclaimed',
+      unclaimedCount: '47 unclaimed',
+      unclaimed: [
+        ['Kaelith', 'Templar · Cleric', '59', '61', '2 Aug'],
+        ['Kaelen', 'Rake · Rogue', '54', '8', '19 Jun'],
+        ['Borrikk', 'Oracle · Shaman', '60', '104', '4 Aug'],
+        ['Nyxie', 'Evoker · Wizard', '58', '77', '4 Aug'],
+        ['Thessa', 'Beguiler · Enchanter', '57', '43', '31 Jul'],
+      ].map(u => {
+        const pending = this.state.claim === u[0];
+        return {
+          name: u[0], cls: u[1], level: u[2], raids: u[3], last: u[4],
+          nameColor: pending ? A.a3 : A.txt,
+          btnLabel: pending ? 'Claim pending' : 'Request claim',
+          btnClass: pending ? 'btn-secondary' : 'btn-primary',
+          claim: () => this.setState({ claim: u[0] }),
+        };
+      }),
+      hasPendingClaim: !!this.state.claim,
+      pendingName: this.state.claim,
+      cancelClaim: () => this.setState({ claim: null }),
+      claimProofs: [
+        { title: 'An officer confirms it', body: 'Any officer who knows you can approve the claim from the admin console.', state: 'Waiting on an officer', iconClass: 'ph ph-shield-check', iconColor: A.ac, border: 'var(--color-accent-700)', bg: A.tint(8), stateColor: A.a3 },
+        { title: 'A raid dump names you', body: 'Zone in on the character during a raid; the next dump ties it to your session.', state: 'No dump since you signed in', iconClass: 'ph ph-file-text', iconColor: A.soft(38), border: A.soft(10), bg: 'transparent', stateColor: A.soft(42) },
+        { title: 'A one-time phrase in game', body: 'Say the phrase below in guild chat on that character. The parser sees it and links you.', state: 'Phrase issued · not yet seen', iconClass: 'ph ph-chat-teardrop-text', iconColor: A.a4, border: A.soft(10), bg: 'transparent', stateColor: A.a4 },
+      ],
+      visibility: [
+        ['Standings and balances', true, 'public to everyone'],
+        ['Sign up for a raid', false, 'needs a character'],
+        ['Raid history and rosters', true, 'public to everyone'],
+        ['Bid in a bank auction', false, 'needs a character'],
+        ['Loot log and item search', true, 'public to everyone'],
+        ['Request from the guild bank', false, 'needs a character'],
+        ['Guild news marked public', true, 'public to everyone'],
+        ['Read and comment on recruits', false, 'full members only'],
+      ].map(v => ({
+        label: v[0], note: v[2],
+        iconClass: v[1] ? 'ph ph-eye' : 'ph ph-lock-simple',
+        color: v[1] ? A.ac : A.soft(28),
+        fg: v[1] ? A.txt : A.soft(45),
+      })),
+
+      ticks: Array.from({ length: 13 }, (_, i) => ({
+        bg: i < 12 ? A.tint(20) : A.soft(3),
+        border: i < 12 ? 'var(--color-accent-700)' : A.soft(10),
+      })),
+      openClasses: [
+        ['Cleric', true], ['Enchanter', true], ['Warrior', true], ['Shaman', false], ['Wizard', false], ['Everything else', false],
+      ].map(([label, open]) => ({
+        label: open ? label + ' — open' : label + ' — exceptional only',
+        bg: open ? 'var(--color-accent-800)' : 'var(--color-neutral-800)',
+        fg: open ? 'var(--color-accent-100)' : 'var(--color-neutral-200)',
+      })),
+      bandStats: [
+        { v: '82', k: 'raiders on the roster' },
+        { v: '1,204', k: 'raid sessions recorded' },
+        { v: '3,915', k: 'items in the catalogue' },
+        { v: '100%', k: 'of balances auditable to a row' },
+      ],
+      progression: [
+        ['Vulak`Aerr', 'North Temple of Veeshan', '31 Jul 2026'],
+        ['Lord Vyemm', 'North Temple of Veeshan', '14 Jul 2026'],
+        ['Avatar of War', 'Kael Drakkel', '2 Jun 2026'],
+        ['Sleeper\u2019s warders', 'Sleeper\u2019s Tomb', '19 May 2026'],
+        ['Aaryonar', 'Temple of Veeshan', '3 May 2026'],
+        ['Trakanon', 'Old Sebilis', '11 Feb 2026'],
+        ['Lord Nagafen', 'Nagafen\u2019s Lair', '20 Nov 2025'],
+      ].map((p, i) => ({ name: p[0], zone: p[1], when: p[2], color: i < 2 ? A.ac : A.soft(35) })),
+      pillars: [
+        { title: 'Zero-sum, so points do not inflate', iconClass: 'ph ph-scales', body: 'What a winner pays is split among everyone credited on that tick. The guild total never grows, so a two-year veteran cannot sit on a balance nobody can compete with.' },
+        { title: 'A balance is a sum, not a stored number', iconClass: 'ph ph-receipt', body: 'There is no field an officer can edit. To change a balance you post a row, and the row is visible forever with your name on it.' },
+        { title: 'The dump behind every tick is downloadable', iconClass: 'ph ph-file-text', body: 'If you think you were on a raid and the site disagrees, you can open the raid dump the officer uploaded and check.' },
+      ],
+      topFive: [
+        ['Grimwald', 'Warrior', '5,225.00', 92], ['Sylvenna', 'Cleric', '4,980.50', 88],
+        ['Thessaly', 'Enchanter', '4,612.00', 96], ['Borrik', 'Shaman', '4,390.25', 81],
+        ['Nyx', 'Wizard', '4,118.00', 74],
+      ].map((r, i) => ({
+        rank: i + 1, name: r[0], cls: r[1], balance: r[2], att: r[3] + '%',
+        attColor: r[3] >= 85 ? A.ac : r[3] >= 65 ? 'var(--color-accent-700)' : 'var(--color-neutral-700)',
+      })),
+
+      questions, answered: `${answered} of ${QUESTIONS.length}`,
+
+      rosterRows: ROSTER_ROWS.map((r, i) => {
+        const on = this.state.mainIdx === i;
+        return {
+          name: r.name, cls: r.cls, level: r.level,
+          border: on ? 'var(--color-accent-700)' : A.soft(10),
+          bg: on ? A.tint(9) : 'transparent',
+          mainIcon: 'ph ' + (on ? 'ph-star-fill' : 'ph-star'),
+          mainColor: on ? A.ac : A.soft(28),
+          mainLabel: on ? 'Main' : 'Set as main',
+          mainFg: on ? A.a3 : A.soft(45),
+          setMain: () => this.setState({ mainIdx: i }),
+        };
+      }),
+      mainName: ROSTER_ROWS[this.state.mainIdx].name,
+
+      rules: RULES.map(r => ({ heading: r[0], body: r[1] })),
+      onRulesScroll: (e) => {
+        const el = e.currentTarget;
+        if (!this.state.rulesRead && el.scrollTop + el.clientHeight >= el.scrollHeight - 8) {
+          this.setState({ rulesRead: true });
+        }
+      },
+      rulesRead: this.state.rulesRead,
+      rulesAccepted: this.state.rulesAccepted,
+      acceptRules: () => { if (this.state.rulesRead) this.setState(s => ({ rulesAccepted: !s.rulesAccepted })); },
+      acceptIcon: this.state.rulesAccepted ? 'ph ph-check-square' : this.state.rulesRead ? 'ph ph-square' : 'ph ph-lock-simple',
+      acceptLabel: this.state.rulesAccepted ? 'Accepted — I have read the rules in full'
+        : this.state.rulesRead ? 'I have read the rules in full and accept them'
+        : 'Scroll to the end of the rules to unlock',
+      acceptBorder: this.state.rulesAccepted ? 'var(--color-accent-700)' : A.soft(12),
+      acceptBg: this.state.rulesAccepted ? A.tint(12) : 'transparent',
+      acceptFg: this.state.rulesAccepted ? A.a3 : this.state.rulesRead ? A.txt : A.soft(38),
+      acceptCursor: this.state.rulesRead ? 'pointer' : 'not-allowed',
+      scrollHintColor: this.state.rulesRead ? A.a3 : A.a4,
+      scrollHint: this.state.rulesRead ? 'Read to the end' : 'Keep scrolling — 7 sections',
+      submitClass: this.state.rulesAccepted ? 'btn-primary' : 'btn-secondary',
+      submitDisabled: !this.state.rulesAccepted,
+      submitNote: this.state.rulesAccepted
+        ? 'Submitting creates a public recruit thread that full members can comment on. Your contact details stay visible to officers only.'
+        : 'You cannot submit until the guild rules are read and accepted.',
+    };
+  }
+}
+</script>
+</body>
+</html>

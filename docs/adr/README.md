@@ -26,7 +26,8 @@ and one link is cheaper than one argument.
 | [0011](0011-opaque-pats-no-superadmin-token.md) | Opaque PATs, no superadmin token | accepted | Capability = role permissions ∩ token scopes; there is no `admin:*` |
 | [0012](0012-english-only-at-1-0.md) | English only at 1.0 | accepted | A parity regression for German guilds, stated plainly, scaffolded from Phase 3 |
 | [0013](0013-eqdkp-compat-shim.md) | EQdkp compatibility shim | accepted | ~700 lines so every existing P99 bot works on cutover day; deprecated at birth |
-| [0014](0014-full-portal-parity-in-scope.md) | Full portal parity in scope | accepted | The owner overruled the recommendation to drop the CMS; Phase 7 can slip to 1.1 |
+| [0014](0014-full-portal-parity-in-scope.md) | Full portal parity in scope | accepted | The owner overruled the recommendation to drop the CMS; Phase 8 can slip to 1.1 |
+| [0015](0015-nocturne-dark-only-design-tokens.md) | Nocturne, dark-only, plain CSS and design tokens | accepted | Plain CSS with custom properties; one dark palette themed by overriding token values; status colours added |
 
 ## When an ADR is required
 

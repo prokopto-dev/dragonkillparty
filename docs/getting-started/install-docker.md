@@ -2,7 +2,7 @@
 
 **Status:** no image is published yet. This page is the specification the container must satisfy; the
 commands below are what will work at 1.0, not a transcript of a working system. Image publication
-lands in Phase 8.
+lands in Phase 9.
 
 Docker is the recommended install for anything that is not a desktop PC. If you want to double-click
 an executable instead, read [Install a binary](install-binary.md).

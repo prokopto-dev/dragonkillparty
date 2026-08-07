@@ -46,6 +46,9 @@ resolves to a real target, not that every target appears here.)
   upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.
   Never hand-edit. Change the source, run `make gen`, commit the diff.
+- `docs/design/mockups/` — five HTML surfaces, ~55 screens, plus the Nocturne stylesheet. The design
+  reference, vendored byte-exact. Read the screen before building it; `make mockup-site` publishes
+  them.
 - `test/golden/`, `test/fixtures/` — expected outputs. CODEOWNERS-protected.
 - `test/repo/` — tests about the repository itself, not the product: they assert the gates in this
   file actually fire. Add one when you add a gate, not when you add a feature.

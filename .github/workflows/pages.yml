@@ -1,0 +1,59 @@
+# Publish the UI mockups to GitHub Pages.
+#
+# The mockups are a design reference, not the product — every page carries a "MOCKUP — not a live
+# instance" banner injected by scripts/dc-publish.py, and the site is noindex. See
+# docs/design/mockups/README.md.
+#
+# This deploys a static site built from files already in the repository. It runs no product code,
+# needs no secrets beyond the Pages OIDC token, and cannot touch a release artifact.
+#
+# Pages must be enabled once by hand: Settings → Pages → Build and deployment → Source: GitHub
+# Actions. Until then actions/configure-pages fails the build job, and nothing else is affected.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/design/mockups/**'
+      - 'scripts/build-mockup-site.sh'
+      - 'scripts/dc-publish.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # actions/configure-pages reads the Pages settings through the API. Without this the step
+      # 403s and the workflow dies before it ever reaches deploy.
+      pages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v5.0.0
+      - name: Build the mockup site
+        run: make mockup-site
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

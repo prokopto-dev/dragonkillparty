@@ -196,7 +196,7 @@ Four properties follow, and they are the entire justification for the boundary:
    test that keeps `*sql.DB` inside `internal/store`.
 
 Staging is dropped on finalise unless `--keep-staging`. **The CMS load (§5.11) requires
-`--keep-staging`,** because content rows are staged in Phase 5 and loaded when the Phase 7 tables
+`--keep-staging`,** because content rows are staged in Phase 5 and loaded when the Phase 8 tables
 exist; see §13.
 
 **Write fairness.** Phase 2 commits in chunks of **≤ 2,000 rows** with an explicit yield between
@@ -383,7 +383,7 @@ Pools with zero events and zero item pools import with `active = 0`.
 ### 5.11 Content, calendar, audit, config
 
 Articles, comments and categories **are** imported and **do** get an editor — full portal parity is
-in scope (Phase 7). The source design imported them into tables it never defined; §13 lists the
+in scope (Phase 8). The source design imported them into tables it never defined; §13 lists the
 tables this now requires.
 
 | Source | Target | Notes |
@@ -781,7 +781,7 @@ note that displays a literal `[color=#f00]` is a cosmetic bug; a raid note that 
 Editor item tags convert to links to our item pages when resolvable, plain text otherwise. oEmbed
 URLs are **not** fetched at import — they become plain links.
 
-Storing `body_source` as well as `body_html` is what makes the Phase 7 article editor able to open an
+Storing `body_source` as well as `body_html` is what makes the Phase 8 article editor able to open an
 imported article without a lossy HTML→BBCode round trip.
 
 *Enforced by:* an XSS corpus driven through the pipeline, asserting no `on*` attribute, no `script`,
@@ -1089,13 +1089,13 @@ corresponding phase lands.
 | `character_claim.method` gains `legacy_import` (§5.3) | enum catalogue | Phase 5 |
 | `ledger_batch.kind = 'import'` is the residual; `re_attribution` is lowercase (§6.1, §6.3) | enum catalogue | Phase 5 |
 | `cap` and `start_points` strategies exist, so the APA remediation message points at a UI that can express what the guild had (§6.2) | `internal/strategy` | Phase 5 |
-| `internal/net/safehttp` exists before HTTP asset fetch (§6.8) | platform | Phase 4, not Phase 7 |
-| `internal/richtext` exists before imported BBCode is rendered (§6.8) | platform | Phase 4, not Phase 7 |
-| `article`, `article_category`, `article_comment`, media-library tables — content is staged in Phase 5 and **loaded** when these exist (§5.11) | schema, Phase 7 | Phase 7 |
+| `internal/net/safehttp` exists before HTTP asset fetch (§6.8) | platform | Phase 4, not Phase 8 |
+| `internal/richtext` exists before imported BBCode is rendered (§6.8) | platform | Phase 4, not Phase 8 |
+| `article`, `article_category`, `article_comment`, media-library tables — content is staged in Phase 5 and **loaded** when these exist (§5.11) | schema, Phase 8 | Phase 8 |
 | `/search` covering characters, items and articles — imported unresolved items are unfindable without it | `internal/api` | Phase 6 |
 
 The content dependency is why `--keep-staging` is not optional for a guild that imports before Phase
-7 ships: the staged article, comment and category rows are what the Phase 7 loader replays, so nobody
+7 ships: the staged article, comment and category rows are what the Phase 8 loader replays, so nobody
 has to re-import to get their news archive.
 
 ---

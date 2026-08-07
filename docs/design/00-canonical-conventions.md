@@ -62,6 +62,24 @@ This is the contradiction most likely to break a bot author, because both were c
 uses the opaque ULID cursor. (`raid` and `item_award` have no `seq`; adjustments project over
 per-pool batches, so a global `since_seq` across pools is meaningless.)
 
+**`?as_of_seq=` is a different parameter and a different allowlist.** `since_seq` asks "what changed
+after this point" and is a sync cursor; `as_of_seq` asks "what was true at this point" and is a
+time-travel read. It is valid on `/accounts/{id}`, `/accounts/{id}/balance`,
+`/accounts/{id}/spendable` and **`/standings`**. Standings is on the list because reproducing the
+table at any past `seq` is the visible proof that balances are a `SUM` over an append-only log; an
+approximation there is worse than no feature. Both parameters stay closed lists — adding an endpoint
+to either is a spec change.
+
+**A `seq` is only meaningful inside a pool.** Because `seq` is allocated per pool, a UI that prints
+one "as of seq N" marker across a multi-pool view is stating something false. Any screen showing an
+as-of marker must be scoped to a pool, and any screen spanning pools shows the marker per pool or not
+at all. `event_seq` is the only sequence that orders the whole instance, and it orders *deliveries*,
+not balances.
+
+> The mockups in [`mockups/`](mockups/) print an instance-wide `seq` on the officer dashboard and in
+> several portal footers. That is a known mockup error, recorded in
+> [`11-ui-backend-contract.md`](11-ui-backend-contract.md) §1b; the screens change, not this rule.
+
 ## 5. Enums
 
 **The wire value is the database value.** Lowercase `snake_case`, everywhere, with no translation
@@ -70,11 +88,27 @@ layer. Both the SQL `CHECK` constraint and the OpenAPI `enum` are generated from
 ```
 bid_session.state:  draft open extended closing resolved settled reversed rot resolution_failed
 bid_session.mode:   auction_open auction_sealed_first auction_sealed_second
+bid_session.visibility:       blind open
+bid.tier:                     main main_offspec alt anyone
 reconciliation_item.status:   open mapped created ignored merged
+character_key.state:          have partial missing
+character_key.provenance:     self_reported officer_verified parsed
+bank_request.state:           requested approved pulled delivered cancelled
+main_swap_request.state:      quoted pending approved applied denied expired
+vouch.state:                  pending paid void
+policy_acceptance.state:      accepted stale
 ```
 
 > Supersedes: every UPPERCASE state diagram, `sealed_second` vs `sealed_second_price`, and the
 > `resolution`/`state`/`status` field-name drift in the reconciliation API.
+
+**`bid.tier` is ordered, and the order is the rule.** The four values form a ladder — `main`
+outranks `main_offspec` outranks `alt` outranks `anyone` — and resolution compares tier *before*
+amount. It is therefore the one enum in the system whose declaration order is semantic, so it is
+stored as the `TEXT` value with an `ORDER BY CASE` in the resolver rather than as an integer:
+the wire value stays readable and the ordering stays in one place. The tier is **derived
+server-side** from the bidding character at bid time and never accepted from a client.
+See [`../guides/auctions.md`](../guides/auctions.md) for the ladder and the two-phase resolution.
 
 Column holding an enum is named for the concept (`state`, `status`, `kind`) and is consistent between
 the DDL and the JSON. A resource has **one** of `state` or `status`, never both.
@@ -92,18 +126,46 @@ FK-constrained to `permission(key)`, so a divergent list is a **boot failure**, 
 **Permission keys** are `<resource>.<action>`, dot-separated, lowercase:
 
 ```
-roster.read roster.write person.merge character.claim.approve
+roster.read roster.write person.merge character.claim.approve character.key.verify
 raid.read raid.create raid.update raid.finalize raid.tick.create raid.tick.delete
-item.read item.award item.alias.manage
+raid.custody.manage
+item.read item.award item.alias.manage item.priority.manage
 dkp.read dkp.adjust dkp.decay.run ledger.reverse
 bid.read bid.manage bid.reveal_early
+bank.read bank.request bank.fulfil bank.manage
 calendar.read calendar.write signup.manage
+draft.read draft.vote draft.manage
+swap.request swap.approve swap.policy.manage
+recruit.read recruit.comment recruit.decide vouch.manage
+policy.read policy.write
 cms.read cms.write cms.moderate
 import.run import.commit
 webhook.manage token.mint token.revoke
 admin.settings admin.security.manage admin.roles.manage admin.backup admin.owner
 person.pii.read audit.read ops.read
 ```
+
+> **Twenty keys were added when the UI mockups were reconciled** (see
+> [`11-ui-backend-contract.md`](11-ui-backend-contract.md)). Four points about the shape they took,
+> because each was a choice and the alternative is the obvious one:
+>
+> - **`bank.*` splits `request` from `fulfil`.** Asking the bank for an item and handing one over are
+>   different populations — every member does the first, an officer does the second — and the
+>   delivery handshake is two-sided precisely so neither party can close it alone.
+> - **`swap.request` is a member capability.** A main swap is priced and approved, but *asking* is
+>   ordinary member behaviour; gating the request behind an officer key would make the quote screen
+>   unreachable by the person it is for.
+> - **`recruit.comment` is separate from `recruit.decide`.** Members read applications and leave
+>   signed feedback; officers decide. That is the whole design of the recruitment surface, and one
+>   key for both would collapse it.
+> - **`character.key.verify` is not `roster.write`.** A member self-reports a zone key; only an
+>   officer can move it to *verified*, because verified keys gate raid eligibility. Self-report and
+>   verification are the same column with different authority, which is exactly when a separate key
+>   earns its place.
+>
+> `quake.publish` was deliberately **not** created: publishing a quake is `draft.manage`. A quake and
+> the draft week it triggers are one officer workflow, and a key nobody can hold separately is a key
+> that only adds a row to the matrix.
 
 > **`admin.security.manage` was added in Phase 0 PR 5** (Courtney, 2026-08-07), by the "stop and ask"
 > path this section defines. `admin.settings` guarded nineteen operations spanning the whole risk
@@ -137,17 +199,37 @@ purpose — a scope narrows a token, a permission narrows a role:
 roster:read roster:write   raids:read raids:write   dkp:read dkp:adjust
 loot:read loot:award       bids:read bids:place bids:manage           logs:ingest
 calendar:read calendar:write   cms:read cms:write   events:subscribe   webhooks:manage
+bank:read bank:request bank:manage    draft:read draft:vote
+recruit:read recruit:manage           swap:read swap:manage
 ```
 
-`bids:place` is the **only self-scoped capability** in the catalogue: it authorises placing and
-retracting bids *for the authenticated member's own accounts only*, in an already-open session. It
-cannot open, extend, close, resolve or settle — that is `bids:manage`, which is an officer scope.
-Because a scope check alone cannot express "own accounts only", the authorization matrix carries an
-explicit case asserting that a `bids:place` principal is denied on another member's account.
+### Self-scoped capabilities
 
-It exists for desktop overlay clients (see
-[`08-nparse-plus-integration.md`](08-nparse-plus-integration.md)), which need to bid without holding
-officer capability.
+Three scopes authorise acting **for the authenticated member's own accounts only**:
+`bids:place`, `bank:request` and `draft:vote`. A scope check alone cannot express "own accounts
+only", so each carries an explicit authorization-matrix case asserting it is **denied on another
+member's account**.
+
+> `bids:place` was the only one until the UI mockups were reconciled, and several documents still say
+> so. `bank:request` (asking the guild bank for an item) and `draft:vote` (submitting a ranked
+> ballot) are the same shape: ordinary member actions a bot may perform on its owner's behalf and on
+> nobody else's. Adding them to the set is what makes the member-facing bank and draft surfaces
+> reachable by anything other than a browser session.
+
+`bids:place` authorises placing and retracting bids in an already-open session. It cannot open,
+extend, close, resolve or settle — that is `bids:manage`, an officer scope. It exists for desktop
+overlay clients (see [`08-nparse-plus-integration.md`](08-nparse-plus-integration.md)), which need to
+bid without holding officer capability.
+
+`swap:read` exists without a `swap:request` sibling because requesting a swap moves points and
+changes a main — a bot should be able to quote one and never commit one.
+
+`policy:*` is deliberately absent. Policies are read through `cms:read` and written through
+`cms:write`: they are versioned documents in the same library as articles, and a third content scope
+would have to be explained to every bot author for no capability they lack.
+
+**Enforced by:** the authorization matrix, which must carry a denied-on-another-member case for each
+of the three. A self-scoped capability with no such case is a hole, not an omission.
 
 ### The capability floor
 
@@ -322,3 +404,31 @@ bundled in core; `dkp-p99-seed` is a separate, optional, user-run repository.
 | Error code | snake_case, closed enum | `insufficient_balance` |
 | Webhook event | `resource.past_tense_verb` | `bid_session.settled` |
 | Migration file | `NNNNNN_snake_case.sql`, append-only | `000007_add_bid_hold.sql` |
+| Design token | `--<role>-<variant>[-<step>]`, kebab-case | `--color-accent-700`, `--space-3` |
+
+## 17. Design tokens
+
+The shipped look is **Nocturne**, and it is normative:
+[`09-frontend-and-design-system.md`](09-frontend-and-design-system.md) is the document you
+implement against, `mockups/nocturne/styles.css` is the artefact it was transcribed from.
+
+| Concern | Rule |
+|---|---|
+| Source of truth | One token sheet in `web/src/styles/tokens.css`. Every colour, space, radius, shadow and font comes from a `var(--…)`. |
+| Palette count | **One. Nocturne is dark-only at 1.0.** There is no light theme and no `prefers-color-scheme` branch. Light mode is on the deferred table for 1.1. |
+| Theming | A guild themes by **overriding token values**, never by adding CSS. No free-form stylesheet, no per-file template override, no LESS — that engine is why nobody could upgrade EQdkp. |
+| Contrast floor | Every guild-supplied colour passes a validator at **≥ 3:1 against `--color-bg`** before it is stored. The validator is server-side, so a bot setting a theme is held to it too. |
+| Status colours | `--color-success`, `--color-warning`, `--color-danger` are **ours, not Nocturne's** — the system ships none. Derived in OKLCH at the ramps' own lightness steps so they read as one family. |
+| Density | `comfortable` / `compact` retunes **spacing only**. The type scale is fixed; a density mode that changes font sizes changes what a table means. |
+
+**Two helpers carry most of the colour surface** and belong in the token layer, not in components:
+
+```
+soft(p)  →  color-mix(in srgb, var(--color-text)   <p>%, transparent)
+tint(p)  →  color-mix(in srgb, var(--color-accent) <p>%, transparent)
+```
+
+**Enforced by:** an ESLint rule banning raw hex and raw `px` in `web/src` outside the token layer
+(the design system ships its own `_adherence.oxlintrc.json` expressing the same two rules); a unit
+test on the contrast validator; and a test asserting the shipped token names match
+`09-frontend-and-design-system.md`, so a token cannot be renamed without the document moving with it.

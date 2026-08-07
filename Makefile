@@ -379,6 +379,12 @@ docs-build:
 docs-links:
 	@python3 scripts/check-links.py
 
+# mockup-site: build the publishable UI-mockup site into _site/ (.github/workflows/pages.yml).
+# Deliberately absent from the AGENTS.md canonical table — it is a docs artefact, not part of the
+# inner loop. See docs/design/mockups/README.md.
+mockup-site:
+	@bash scripts/build-mockup-site.sh
+
 # verify-spec: assert the properties of openapi/openapi.json that regenerating it cannot establish.
 #
 # This stub used to say "vacuum lint". It is not vacuum, and the reason is worth recording rather

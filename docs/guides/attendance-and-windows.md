@@ -7,14 +7,38 @@ obviously-correct Go loop and the production SQL — on 50 random member/window 
 This page exists to settle arguments. When a member says "the site says 62% and I only missed one
 raid", the answer is on this page and it is the same answer for everybody.
 
-## The formula
+## Two numbers, and which one is the headline
+
+**The headline is raids.**
 
 ```
-attendance % = ticks you attended ÷ qualifying ticks held × 100
+attendance % = raids you attended ÷ raids held × 100
 ```
 
-Both sides count **ticks**, not raids, unless you deliberately ask for a raid-based or day-based
-metric. Everything below is about what "qualifying" means on each side.
+A raid counts as attended if you were credited on **any** qualifying tick in it. That is the number
+on standings, on the member profile, in the raid-forming filters and in every threshold the guild
+sets — 50% to request a main swap, 60% to stay a raider, and so on.
+
+**The tick ratio is served alongside it, never instead:**
+
+```
+tick % = ticks you attended ÷ qualifying ticks held × 100
+```
+
+Both are computed over the same window from the same `qualifying` rules, and both are returned by
+the same endpoint. The UI shows them in adjacent columns.
+
+The headline is raids because **a late arrival should not be scored like an absence**. Someone who
+shows up an hour into a five-hour raid attended that raid; scoring them at 60% of it, while someone
+who never logged in scores 0%, is arithmetically true and socially wrong — and it is the argument
+that made this the guild lead's decision
+([`../design/10-ui-decisions.md`](../design/10-ui-decisions.md) §12). The tick ratio stays because it
+is the honest measure of *how much* of the raid week someone was actually present for, and an officer
+deciding who to bench needs it.
+
+Everything below is about what "qualifying" means on each side. It applies to both numbers: a tick
+that is disqualified — voided, wrong pool, `no_attendance` — is removed from the tick ratio, and a
+raid whose every tick is disqualified is removed from the raid denominator.
 
 ## The denominator: qualifying ticks held
 
@@ -61,8 +85,8 @@ The deduplication rule is precise, and it is where most confusion starts:
 
 | Metric | Effect of connecting raids |
 |---|---|
-| **Tick-based** (`metric=ticks`, the default) | **None.** Every qualifying tick counts individually on both sides. Twelve ticks are twelve ticks whether the raid rows are connected or not. |
-| **Raid-based** (`metric=raids`) | Connected raids collapse to **one**. The dedupe key is the group ID when a raid has one, and the raid's own ID when it does not. |
+| **Tick-based** (`metric=ticks`) | **None.** Every qualifying tick counts individually on both sides. Twelve ticks are twelve ticks whether the raid rows are connected or not. |
+| **Raid-based** (`metric=raids`, **the headline**) | Connected raids collapse to **one**. The dedupe key is the group ID when a raid has one, and the raid's own ID when it does not. |
 | **Day-based** (`metric=days`) | Ticks collapse to distinct guild-local raid days. |
 
 So connecting raids does not change a tick percentage at all. It changes the raid percentage, and it
@@ -115,8 +139,10 @@ tick attendance   = 36 / 45 = 80.00%
 raid attendance   =  3 /  4 = 75.00%
 ```
 
-Both are correct. They answer different questions, and you should publish which one your gates and
-tie-breaks use.
+Both are correct, and both are returned by the same call — you do not choose one. **The raid figure
+is the headline**, on standings, on the profile and in every threshold the guild sets; the tick
+figure sits beside it. That is settled, so a guild does not have to publish which one its gates use:
+they use raids.
 
 ## New members: the `_real` percentage
 
@@ -166,12 +192,18 @@ officer-initiated on purpose.
 ## Reading it from the API
 
 ```bash
-curl -s "$DKP_URL/api/v1/persons/$PERSON/attendance?window=30d&pool=$POOL&metric=ticks" \
+curl -s "$DKP_URL/api/v1/persons/$PERSON/attendance?window=30d&pool=$POOL" \
   -H "Authorization: Bearer $DKP_TOKEN"
 ```
 
-The response exposes the numerator and the denominator, not just the percentage, so a bot can show
-"36 of 45 ticks" in Discord instead of a number nobody can check. Requires the `dkp:read` scope.
+**Both metrics come back together** — there is no `metric=` selector on the default call, because a
+client that has to choose will choose differently from the next client and the guild ends up with two
+numbers in circulation. The response exposes the numerator and the denominator for each, not just the
+percentage, so a bot can show "3 of 4 raids · 36 of 45 ticks" in Discord instead of a number nobody
+can check. The raid pair is the headline; render the tick pair beside it, never instead.
+
+`metric=` is still accepted for the day-based view (`metric=days`), which nothing renders by default.
+Requires the `dkp:read` scope.
 
 ## Settling the four arguments you will actually have
 

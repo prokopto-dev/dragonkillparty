@@ -1,7 +1,7 @@
 # Install a binary
 
 **Status:** no binaries are published yet. This page is the specification the release must satisfy.
-Binary and package publication lands in Phase 8.
+Binary and package publication lands in Phase 9.
 
 A single executable with no runtime dependencies. Use this if you run your guild's site on the same
 Windows PC you raid on, or if you would rather not learn Docker. It is a supported deployment, not a

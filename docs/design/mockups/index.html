@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragon Kill Party — UI mockups</title>
+<meta name="description" content="Design mockups for Dragon Kill Party, DKP and guild management for Project 1999 EverQuest raiding guilds. Not a live instance.">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="./nocturne/styles.css">
+<style>
+  body { padding-bottom: 38px; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 64px 24px 72px; }
+  .kicker { font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+            color: var(--color-accent); margin-bottom: 10px; }
+  h1 { font-size: 46px; letter-spacing: -0.03em; margin: 0 0 14px; max-width: 18ch; }
+  .lead { font-size: 16.5px; line-height: 1.6; max-width: 62ch;
+          color: color-mix(in srgb, var(--color-text) 62%, transparent); }
+  .warn { display: flex; gap: 12px; align-items: flex-start; margin: 30px 0 44px;
+          padding: 14px 16px; border-radius: 11px;
+          border: 1px solid var(--color-accent-700);
+          background: color-mix(in srgb, var(--color-accent) 7%, transparent); }
+  .warn strong { font-size: 10px; letter-spacing: .14em; color: var(--color-bg);
+                 background: var(--color-accent-400); border-radius: 4px;
+                 padding: 4px 8px; flex: none; margin-top: 1px; }
+  .warn p { margin: 0; font-size: 13.5px; line-height: 1.6;
+            color: color-mix(in srgb, var(--color-text) 78%, transparent); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+          gap: 14px; margin: 0 0 52px; }
+  a.surface { display: flex; flex-direction: column; gap: 7px; text-decoration: none;
+              color: inherit; padding: 17px; border-radius: 12px;
+              background: var(--color-surface); box-shadow: var(--shadow-sm); }
+  a.surface:hover { box-shadow: 0 0 0 1px var(--color-accent-700); }
+  a.surface .name { font-family: var(--font-heading); font-weight: 500; font-size: 17px;
+                    color: var(--color-accent-300); }
+  a.surface .desc { font-size: 13px; line-height: 1.55;
+                    color: color-mix(in srgb, var(--color-text) 66%, transparent); }
+  a.surface .meta { font-size: 11px; letter-spacing: .04em;
+                    color: color-mix(in srgb, var(--color-text) 42%, transparent); }
+  h2 { font-size: 22px; margin: 0 0 12px; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 34px; }
+  .cols p { font-size: 13.5px; line-height: 1.65;
+            color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+  .cols li { font-size: 13.5px; line-height: 1.7;
+             color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+  ul { margin: 0; padding-left: 18px; }
+  footer { margin-top: 56px; padding-top: 22px; font-size: 12px;
+           border-top: 1px solid var(--color-divider);
+           color: color-mix(in srgb, var(--color-text) 42%, transparent); }
+  #dkp-mockup-banner { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 16px; font: 500 12px/1.3 Inter, system-ui, sans-serif;
+    color: #e9e9ed; background: #2b2741; border-top: 1px solid #5d5294;
+    box-shadow: 0 -6px 18px rgba(0,0,0,.45); }
+  #dkp-mockup-banner strong { letter-spacing: .14em; font-size: 10px; color: #161826;
+    background: #b5abfc; border-radius: 4px; padding: 3px 7px; }
+  #dkp-mockup-banner span { opacity: .72; }
+  #dkp-mockup-banner a { color: #d2cefd; text-decoration: none;
+    border-bottom: 1px solid rgba(210,206,253,.35); margin-left: auto; }
+</style>
+</head>
+<body>
+<div id="dkp-mockup-banner">
+  <strong>MOCKUP</strong>
+  <span>— not a live instance. Static design reference; nothing here is wired to a server.</span>
+  <a href="https://github.com/prokopto-dev/dragonkillparty">Repository</a>
+</div>
+
+<div class="wrap">
+  <div class="kicker">Dragon Kill Party · design reference</div>
+  <h1>Five surfaces, fifty-five screens.</h1>
+  <p class="lead">
+    DKP and guild management for Project 1999 EverQuest raiding guilds — one Go binary, one SQLite
+    file, an embedded React SPA, run by volunteer officers. These pages are the design target the
+    implementation is being built against.
+  </p>
+
+  <div class="warn">
+    <strong>MOCKUP</strong>
+    <p>
+      Every number, name and date on these pages is a fixture. Nothing is connected to a server,
+      almost nothing is clickable, and the product is not finished — the repository is still in its
+      foundation phase. Treat these as a specification of intent, not a demo.
+    </p>
+  </div>
+
+  <div class="grid">
+    <a class="surface" href="./admin-console.dc.html">
+      <span class="name">Admin console</span>
+      <span class="desc">The officer surface. Dashboard, raid sessions and detail, log ingest,
+        reconciliation, disputes, bidding, the guild bank, roster and ranks, portal admin,
+        the EQdkp import, diagnostics.</span>
+      <span class="meta">37 screens · 3 modals · three nav layouts</span>
+    </a>
+    <a class="surface" href="./guild-portal.dc.html">
+      <span class="name">Guild portal</span>
+      <span class="desc">What a member sees. A customisable widget grid, standings with an as-of
+        cursor, their own statement, raids, loot, bids, draft week, the bank, calendar, news,
+        recruits, policies — and two phone views.</span>
+      <span class="meta">15 screens · includes mobile</span>
+    </a>
+    <a class="surface" href="./my-characters.dc.html">
+      <span class="name">My characters</span>
+      <span class="desc">Characters, zone keys as a three-way state with provenance, computed raid
+        eligibility, the main-swap quote with its discount stack, and per-character change
+        history.</span>
+      <span class="meta">1 screen, densely</span>
+    </a>
+    <a class="surface" href="./public-site.dc.html">
+      <span class="name">Public site</span>
+      <span class="desc">The guest-facing landing page in both visitor and signed-in states, the
+        character claim flow with its three proofs, and the application form with a scroll-gated
+        rules panel.</span>
+      <span class="meta">3 screens · 10 question types</span>
+    </a>
+    <a class="surface" href="./first-run.dc.html">
+      <span class="name">First run</span>
+      <span class="desc">The setup wizard, served by the binary itself before the SPA exists and
+        reachable only with the one-time token printed to the console. Mandatory TOTP, and a
+        preflight <code>doctor</code> run.</span>
+      <span class="meta">Server-rendered · pre-SPA</span>
+    </a>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>What these settle</h2>
+      <p>
+        They exist to answer interaction and vocabulary questions before implementation, so an
+        officer's workflow is designed once rather than re-derived per screen. Where the project's
+        documents were explicit the mockups follow them; where the documents were silent the mockups
+        invented something, and every invention is catalogued with a verdict.
+      </p>
+    </div>
+    <div>
+      <h2>Known to be wrong</h2>
+      <ul>
+        <li>A single instance-wide <code>seq</code> is printed across pools. A sequence is allocated
+          per pool; an as-of marker is only meaningful inside one.</li>
+        <li>Any three-figure main-tier bid predates tiered bidding. Mains only compete with mains,
+          so those bids land in single or low double digits.</li>
+        <li>Money is formatted three different ways. The product formats it once.</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>
+    Made by <strong>Prokopton</strong> · P99 Green · member of <strong>Legacy of Fire</strong> —
+    Apache-2.0 · not affiliated with Daybreak Game Company or Project 1999.
+  </footer>
+</div>
+</body>
+</html>
