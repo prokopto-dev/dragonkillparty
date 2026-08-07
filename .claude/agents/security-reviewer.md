@@ -132,8 +132,32 @@ This is a product guarantee. Trace it, do not assume it.
 
 - Any new dependency: name it, name its licence, name why. A human decides — this review does not
   approve dependencies, it surfaces them.
-- No GPL or AGPL runtime dependency, direct or transitive. The `go-licenses` gate plus the denylist
-  is the mechanism; confirm it ran.
+- No copyleft or source-available runtime dependency, direct or transitive. The mechanism is
+  `scripts/licence-gate.sh`, run by `make licence-gate` (inside `make check`) and by the required
+  `security / licences` CI job. To confirm it ran and what it concluded, run `make licence-gate` —
+  it prints a count per licence and exits non-zero on a violation. Its three rule ids:
+  - `LIC001` — a runtime dependency is under a denied licence.
+  - `LIC002` — a licence could not be identified, or is recognised but not on the allowlist. The
+    gate fails closed, so this is a stop, not a warning.
+  - `LIC003` — the module's own licence is fine, but its `LICENSE-3RD-PARTY`/`NOTICE` file declares
+    embedded third-party code under a denied licence.
+- **Denied:** GPL, AGPL, LGPL, EPL, CDDL, CC BY-SA, CC BY-NC, CC BY-ND, and the source-available
+  family (BUSL, SSPL, Elastic, FSL, PolyForm), plus restriction riders layered on a permissive
+  grant — the Commons Clause, the JSON licence's "Good, not Evil", BSD-4's advertising clause.
+- **The allowlist is closed:** Apache-2.0, MIT, ISC, BSD (2/3-clause), MPL-2.0, CC0-1.0, Unlicense,
+  Zlib. Anything else stops the build. Adding to it is a licence decision and needs a human — it is
+  not something this review approves.
+- **Scope, when reviewing a `go.mod`/`go.sum` diff.** The gate reads `go list -deps ./...` *without*
+  `-test`: the code that ships, not the test-only graph. A module that appears in `go list -m all`
+  but not in the gate's output is reachable only from a dependency's own test binary and is not
+  linked into `dkp` — `github.com/hashicorp/golang-lru/v2` (MPL-2.0) is the standing example. Do not
+  report such a module as a licence finding; do check `go mod why -m <module>` before deciding it is
+  test-only.
+- The module set is unioned across the release platforms, because `go list` resolves build
+  constraints one `GOOS/GOARCH` at a time — a linux-only query misses three modules that ship in the
+  darwin and windows binaries. A dependency imported behind `//go:build windows` is in scope.
+- The gate covers the **Go** graph only. When `web/` exists, a `pnpm` dependency is not covered by
+  anything — say so rather than assuming it was checked.
 - **No EQdkp-derived source text.** EQdkp Plus core is AGPL-3.0 and its game modules are
   CC BY-NC-SA (non-commercial); this project is Apache-2.0. Reading a user's database at runtime is
   fine; transcribing their PHP, DDL text, language strings or icons is a licence violation. This is

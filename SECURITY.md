@@ -124,16 +124,34 @@ without their written permission is not good faith and is not covered.
 
 ## What we do continuously
 
-| Control | Cadence |
-|---|---|
-| `govulncheck` — reachable Go vulnerabilities only, so the signal stays high enough to act on | Every PR, plus nightly on `main` |
-| `osv-scanner`, `pnpm audit` | Every PR |
-| CodeQL (Go + JS), `security-extended` | Every PR, plus weekly |
-| gitleaks secret scanning | Every PR, full history on a schedule |
-| Trivy image CVEs | Advisory on PRs; nightly against `:latest`, filing an issue on new High/Critical |
-| Dependency licence gate — fails on any GPL/AGPL runtime dependency | Every PR |
-| The authorization matrix — every principal × every operation, asserted | Every PR |
-| SBOM, cosign signatures, SLSA build provenance on every release artifact | Every release |
+A control listed as **planned** is not running. This table states what is wired up today, because a
+security document that describes intentions in the present tense is worse than one that says
+nothing — it stops anyone from noticing the gap.
+
+| Control | Cadence | Status |
+|---|---|---|
+| `govulncheck` — reachable Go vulnerabilities only, so the signal stays high enough to act on | Every PR | **live** — `security / govulncheck`, required, not `continue-on-error` |
+| Dependency licence gate — copyleft (GPL/AGPL/LGPL/EPL/CDDL/CC BY-SA), non-commercial (CC BY-NC/ND) and source-available (BUSL/SSPL/Elastic/FSL/PolyForm/Commons Clause) are all denied in the runtime graph | Every PR | **live** — `security / licences`, required. Allowlist-based, so an unrecognised licence stops the build rather than passing |
+| The AGPL firewall — EQdkp Plus identifiers outside the two allowlisted paths | Every PR | **live** — AGPL001 in `lint / repo` |
+| GitHub Actions pinned to a full commit SHA | Every PR | **live** — PIN001 in `lint / repo` |
+| gitleaks secret scanning | Every PR, full history on a schedule | **planned** — a local pre-commit hook runs today; there is no CI job yet |
+| `osv-scanner`, `pnpm audit` | Every PR | **planned** |
+| CodeQL (Go + JS), `security-extended` | Every PR, plus weekly | **planned** |
+| Trivy image CVEs | Nightly against `:latest`, filing an issue on new High/Critical | **planned** — needs the release image (Phase 0 PR 7) |
+| Nightly `govulncheck` on `main` | Nightly | **planned** — needs `nightly-verify.yml` filled in |
+| The authorization matrix — every principal × every operation, asserted | Every PR | **planned** — needs `internal/authz` (Phase 2) |
+| SBOM, cosign signatures, SLSA build provenance on every release artifact | Every release | **planned** — Phase 0 PR 7 |
+
+To run the two live dependency controls locally:
+
+```bash
+make licence-gate && make govulncheck
+```
+
+`make check` runs the licence gate as part of `make lint`. `govulncheck` is not in `make check` —
+not because it is slow (it takes about four seconds) but because it fetches the vulnerability
+database from `vuln.go.dev`, and `make check` is expected to work without connectivity. CI runs it
+as its own required job.
 
 The runtime image is `FROM scratch`: no shell, no package manager, no interpreter, and therefore no
 base-image CVE feed. A `:1-debug` tag exists for people who need to exec in, and its larger attack

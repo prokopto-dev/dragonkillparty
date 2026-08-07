@@ -19,7 +19,7 @@ Take one PR. Do not take two. Do not do part of the next one "while you're in th
 | ≤ 2,500 lines of hand-written diff (generated files excluded) | reviewer, at their discretion |
 | Conventional-commit title, exactly as printed below | `commitlint` in `lint/repo` |
 | DCO sign-off on every commit | the DCO GitHub App |
-| No new dependency without a separate proposal issue | `AGENTS.md` "Do not"; licence gate in PR 7 |
+| No new dependency without a separate proposal issue | `AGENTS.md` "Do not"; the licence gate, landed in PR 12 |
 | Every acceptance criterion below is a *test or gate in this PR*, not a promise | reviewer |
 
 An acceptance criterion phrased as "an agent could tell" is not an acceptance criterion. Every bullet
@@ -35,7 +35,7 @@ below either names a test file, a CI job, or a command whose exit code decides.
 | 4 | `feat(api): Huma mount, problem+json, /api/v1/meta, spec drift gate, arch tests` | 3 | Law 1 and the spec gate get installed at route #1, not route #40 |
 | 5 | `docs(api): EXAMPLE_ENDPOINT.md and RECIPES.md — one worked end-to-end resource` | 4 | **The highest-leverage documentation in the project** |
 | 6 | `feat(web): SPA scaffold, generated client, go:embed, client-purity gates` | 4 | Law 4 gets its lint rule at zero components |
-| 7 | `build: scratch image, goreleaser, release train, smoke gate, licence gate` | 1 | Every later phase then produces a pullable image |
+| 7 | `build: scratch image, goreleaser, release train, smoke gate` | 1 | Every later phase then produces a pullable image |
 | 8 | `feat(core): Micros, Centipoints, ULID, cursor codec, arithmetic lint bans` | 1 | The float ban must predate the first arithmetic |
 | 9 | `feat(ledger): schema, append-only triggers, seq allocation, balance queries` | 3, 8 | — |
 | 10 | `feat(ledger): batch service, invariant engine, first strategy, flagship properties` | 9 | — |
@@ -321,10 +321,14 @@ over the committed document including its `webhooks` block, and record in
 
 ---
 
-## PR 7 — `build: scratch image, goreleaser, release train, smoke gate, and the licence gate`
+## PR 7 — `build: scratch image, goreleaser, release train, and the smoke gate`
 
-**Scope.** Distribution ships in Phase 0 so every later phase produces something pullable. Also the
-supply-chain and licence controls, which cost nothing at zero dependencies and a week at two hundred.
+**Scope.** Distribution ships in Phase 0 so every later phase produces something pullable.
+
+The supply-chain and licence controls were originally bundled here and have been **extracted into
+PR 12** (below), which has landed. They shared nothing with the release train but a phase number,
+and PR 7 is already at the 2,500-line budget without them. Renovate's high-risk allowlist stays with
+PR 7, because it is release policy rather than a gate.
 
 **Files touched.**
 
@@ -332,8 +336,7 @@ supply-chain and licence controls, which cost nothing at zero dependencies and a
 Dockerfile  .dockerignore  .goreleaser.yaml
 cmd/dkp/healthcheck.go
 .github/workflows/{release.yml,edge.yml,ci.yml}
-.github/renovate.json
-scripts/{licence-gate.sh,eqdkp-identifier-gate.sh}
+.github/renovate.json5
 deploy/systemd/dkp.service
 ```
 
@@ -353,14 +356,11 @@ deploy/systemd/dkp.service
   tag's resolved digest before and after.
 - `cosign verify-attestation` succeeds for the SBOM and the `mode=max` provenance on the published
   digest, run in CI against the artifact CI just published.
-- `scripts/licence-gate.sh` fails on any dependency under GPL, AGPL or a CC BY-NC variant. A fixture
-  `go.mod` entry proves it fires.
-- `scripts/eqdkp-identifier-gate.sh` fails on `pdh_`, `gen_class`, `plus_exchange` or
-  `__multidkp2event` outside `internal/importer/legacy_names.go` and `internal/api/compat/`
-  (canonical §15). Both allowlisted paths are empty today; the gate ships before the temptation does.
-- `govulncheck` is wired into `ci-required` and is not `continue-on-error`.
 - Renovate is configured with an explicit high-risk allowlist that never automerges `huma`, `goose`,
   `river`, the SQLite driver, or anything under `internal/auth`'s dependency set.
+- `THIRD_PARTY_NOTICES.txt` is generated from the runtime dependency graph and attached to every
+  release artifact, as `NOTICE` promises. Moved here from PR 12: it is a release artifact, and there
+  was no release train to attach it to before this PR.
 
 ---
 
@@ -487,6 +487,66 @@ test/golden/strategy/fixed_price/*.json
   batch at commit time. A replay from `rng_seed` reproduces the batch byte for byte.
 - Coverage floors enforced as a CI job, not a report: `internal/ledger` ≥ 95%,
   `internal/strategy` ≥ 95%.
+
+---
+
+## PR 12 — `build(ci): dependency licence gate and govulncheck, wired into ci-required`
+
+Out of numerical order, and landed early: extracted from PR 7 and taken on its own once
+`modernc.org/sqlite` took the runtime graph from one dependency to twelve. That audit was done by
+hand in PR 2 and would not have survived the next Renovate bump.
+
+**On the number.** `ROADMAP.md` deliverable 12 and four workflow headers already called this work
+"Phase 0 PR 12"; this file called it part of PR 7. Two schemes, same three items. Keeping 12 makes
+`ROADMAP.md:73-74` and every workflow header correct as already written, and confines the change to
+this file. The PR-level plan here is authoritative for PR *content*; ROADMAP numbers deliverables.
+
+**Files touched.**
+
+```
+scripts/licence-gate.sh
+Makefile  .github/actions/setup-toolchain/action.yml
+.github/workflows/ci.yml
+test/repo/{licence_gate_test.go,ci_required_test.go}
+```
+
+**Acceptance criteria.**
+
+- `scripts/licence-gate.sh` fails on any copyleft (GPL, AGPL, LGPL, EPL, CDDL, CC BY-SA),
+  non-commercial (CC BY-NC/ND) or source-available (BUSL, SSPL, Elastic, FSL, PolyForm) licence, and
+  on a restriction rider layered over a permissive grant (Commons Clause, the JSON licence, BSD-4's
+  advertising clause). Fixture modules in `t.TempDir()` prove each fires, wired in by a filesystem
+  `replace` so they resolve offline.
+- **Every pattern is evaluated; there is no first-match short-circuit.** A classifier that stops at
+  the first licence it recognises cannot see a rider on a permissive base, and lets a GPL module
+  through if its preamble names a permissive licence. MPL-2.0's §1.12 cross-reference to the GNU
+  licences is handled by removing that one sentence, not by reordering the classifier.
+- The verdict is an **allowlist**: Apache-2.0, MIT, ISC, BSD, MPL-2.0, CC0-1.0, Unlicense, Zlib.
+  Recognised-but-unlisted is `LIC002`, not a pass — the default is stop.
+- It scopes to the **runtime** graph (`go list -deps ./...`, no `-test`), unioned across the release
+  platforms. A denied licence reachable only from a `_test.go` import must pass:
+  `github.com/hashicorp/golang-lru/v2` (MPL-2.0) is in `go list -m all` today solely because
+  `modernc.org/libc`'s tests import it. A linux-only query would miss three modules that ship in the
+  darwin and windows binaries.
+- `LIC003` catches a permissively-licensed module whose `LICENSE-3RD-PARTY`/`NOTICE` declares
+  embedded copyleft — the `modernc.org/libc` shape.
+- The allowlist is asserted, not just the ban. A gate that fires on everything would satisfy every
+  negative test and get bypassed the first time it ran.
+- No vacuous pass. `go list ./...` exits zero when nothing matches, so stderr is captured separately
+  and a "matched no packages" result is an error.
+- `govulncheck ./...` runs as a required job, is not `continue-on-error`, and hard-fails rather than
+  exiting 0 when the binary is missing.
+- Both jobs are unconditional and asserted in `ci-required`'s always-on list —
+  `test/repo/ci_required_test.go` fails if either is dropped from `needs:` or acquires an `if:`.
+- `scripts/eqdkp-identifier-gate.sh` is **not** created. That criterion, formerly PR 7's, is already
+  met by rule `AGPL001` in `scripts/repo-gates.sh`, with the allowlist it specifies. A second gate
+  for the same rule is duplication, not coverage.
+
+**Deferred, deliberately.** CI secret scanning (gitleaks), `THIRD_PARTY_NOTICES` (moved to PR 7 with
+the release train), and a `verify-action-pins` that resolves each action's trailing-comment tag
+against upstream — that one needs authenticated GitHub API calls from a lint job and is its own
+design question. `ci.yml`'s header now says what that target does and does not do, rather than
+promising the version that does not exist.
 
 ---
 
