@@ -603,12 +603,31 @@ func TestSpecGate_RealSpec_Passes(t *testing.T) {
 
 	cmd := exec.Command("python3", scriptPath(t, "verify-spec.py"))
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+root)
+
+	// Compare against HEAD rather than origin/main, and NOT because the rename check is
+	// inconvenient — the base ref is pointed at a revision this test can guarantee exists.
+	//
+	// CI's `test / integration` job checks out at the default fetch-depth of 1, so origin/main is
+	// genuinely absent there and the gate correctly refuses to pass: a rename check with nothing to
+	// compare against is a rule that silently stopped running, which is the failure mode this whole
+	// file exists to prevent. That is the gate behaving properly, not a bug to work around, and
+	// `gen / spec-drift` — the job that actually blocks a merge on it — sets `fetch-depth: 0` for
+	// exactly this reason.
+	//
+	// What THIS test is for is the other six rules against the real spec. HEAD:openapi/openapi.json
+	// always exists once the file is committed, so the git path is still exercised end to end
+	// (cat-file, show, parse, compare) rather than disabled; comparing the spec against itself is
+	// trivially rename-free. Actual rename DETECTION is covered by
+	// TestSpecGate_RenamedOperationID_IsRejected, which builds a repository with real history.
+	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+root, "DKP_SPEC_BASE_REF=HEAD")
 
 	out, err := cmd.CombinedOutput()
 
 	require.NoError(t, err, "this repository's own spec must pass the gate\n%s", out)
 	require.Empty(t, firedRules(string(out)), "%s", out)
+	require.NotContains(t, string(out), "rename check is disabled",
+		"the rename check was disabled rather than pointed at HEAD, so this test no longer "+
+			"exercises the git comparison path at all\n%s", out)
 }
 
 // TestMakefile_VerifySpec_StripsBaseRefEnv fences the one switch that can weaken this gate.
@@ -632,10 +651,23 @@ func TestMakefile_VerifySpec_StripsBaseRefEnv(t *testing.T) {
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), "DKP_SPEC_BASE_REF=")
 
-	out, err := cmd.CombinedOutput()
+	out, _ := cmd.CombinedOutput()
 
-	require.NoError(t, err, "make verify-spec must pass on the real tree:\n%s", out)
+	// The assertion is on the discriminating OUTPUT, not on the exit code, and that is deliberate
+	// rather than a softening. The property under test is one thing: did the hostile empty value
+	// reach the script and switch the rename check off? The recipe's overall success depends on
+	// something unrelated — whether origin/main happens to be fetched, which it is not in CI's
+	// `test / integration` job (fetch-depth 1). Requiring exit 0 would couple this test to that
+	// and make it fail in CI for a reason that has nothing to do with what it checks.
+	//
+	// Both surviving outcomes prove the strip worked: the gate either compared against origin/main
+	// and passed, or reported origin/main unavailable. Either way it TRIED, which it would not have
+	// done had the empty value got through.
 	require.NotContains(t, string(out), "rename check is disabled",
 		"the rename check was disabled by an environment variable — is `env -u DKP_SPEC_BASE_REF` "+
 			"still on the verify-spec recipe in the Makefile?\n%s", out)
+
+	require.Regexp(t, `operation\(s\), all conforming|origin/main is not available`, string(out),
+		"the gate neither completed nor reported a missing base ref, so it is unclear whether the "+
+			"rename check ran at all\n%s", out)
 }
