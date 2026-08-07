@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-34122850-aa6c-4ae6-86bc-b8df835d717b/styles.css">
+<script src="_ds/nocturne-34122850-aa6c-4ae6-86bc-b8df835d717b/_ds_bundle.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<style>
+body{margin:0;background:#161826}
+a{color:var(--color-accent);text-decoration:none}
+a:hover{color:var(--color-accent-300)}
+@keyframes mcPulse{0%,100%{opacity:1}50%{opacity:.35}}
+::-webkit-scrollbar{width:10px}
+::-webkit-scrollbar-thumb{background:#3f424d;border-radius:8px;border:3px solid #161826}
+</style>
+</helmet>
+<div style="min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:14px">
+
+  <header style="position:sticky;top:0;z-index:9;background:color-mix(in srgb, var(--color-bg) 88%, transparent);backdrop-filter:blur(14px);box-shadow:0 1px 0 var(--color-divider)">
+    <div style="max-width:1220px;margin:0 auto;display:flex;align-items:center;gap:22px 22px;min-height:60px;flex-wrap:wrap;padding:0 24px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:30px;height:30px;border-radius:9px;border:1px solid var(--color-accent);display:grid;place-items:center;color:var(--color-accent)"><i class="ph ph-sword" style="font-size:16px"></i></div>
+        <div style="line-height:1.1">
+          <div style="font-family:var(--font-heading);font-size:15px;letter-spacing:-0.01em;white-space:nowrap">{{ guildName }}</div>
+          <div style="font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;white-space:nowrap;color:color-mix(in srgb, var(--color-text) 42%, transparent)">P99 Green · Velious</div>
+        </div>
+      </div>
+      <nav style="display:flex;align-items:center;gap:2px;order:2;flex:1 0 100%;flex-wrap:wrap;overflow:visible;padding-bottom:9px;margin-top:-6px">
+        <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="8">
+          <span style="padding:7px 12px;border-radius:8px;background:{{ t.bg }};color:{{ t.fg }};font-size:13.5px;cursor:pointer;white-space:nowrap">{{ t.label }}</span>
+        </sc-for>
+      </nav>
+      <div style="flex:1"></div>
+      <div style="display:flex;align-items:center;gap:9px;padding:4px 10px 4px 4px;border-radius:999px;border:1px solid var(--color-divider)">
+        <span style="width:26px;height:26px;border-radius:50%;background:var(--color-accent-800);color:var(--color-accent-200);display:grid;place-items:center;font-size:10px">GR</span>
+        <div style="line-height:1.15;white-space:nowrap"><div style="font-size:12.5px">Grimwald</div><div style="font-size:10.5px;color:var(--color-accent-300);font-variant-numeric:tabular-nums">5,225.00 dkp</div></div>
+        <i class="ph ph-caret-down" style="font-size:11px;opacity:.4"></i>
+      </div>
+    </div>
+  </header>
+
+  <main style="max-width:1220px;margin:0 auto;padding:26px 24px 70px">
+
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:22px">
+      <div>
+        <div style="font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--color-accent);margin-bottom:7px">Your roster</div>
+        <h1 style="margin:0 0 6px;font-size:40px;letter-spacing:-0.025em">Characters &amp; keys</h1>
+        <p style="margin:0;font-size:15px;max-width:560px;color:color-mix(in srgb, var(--color-text) 58%, transparent)">Level and class come from raid dumps automatically. Keys and flags you keep yourself — that is what lets an officer form a level- or key-restricted raid without asking in guild chat.</p>
+      </div>
+      <button class="btn btn-primary" style="white-space:nowrap;flex:none"><i class="ph ph-plus"></i>Claim a character</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:250px minmax(0,1fr);gap:16px;align-items:start">
+
+      <aside style="display:flex;flex-direction:column;gap:9px;position:sticky;top:76px">
+        <sc-for list="{{ charList }}" as="c" hint-placeholder-count="3">
+          <button onClick="{{ c.select }}" style="display:flex;align-items:center;gap:11px;text-align:left;padding:11px;border-radius:11px;border:1px solid {{ c.border }};background:{{ c.bg }};color:inherit;font:inherit;cursor:pointer">
+            <i class="{{ c.iconClass }}" style="font-size:17px;color:{{ c.iconColor }}"></i>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;color:{{ c.nameColor }}">{{ c.name }}</div>
+              <div style="font-size:11.5px;opacity:.45">{{ c.sub }}</div>
+            </div>
+            <span style="font-size:15px;font-variant-numeric:tabular-nums;opacity:.6">{{ c.level }}</span>
+          </button>
+        </sc-for>
+        <button style="display:flex;align-items:center;justify-content:center;gap:8px;padding:11px;border-radius:11px;border:1px dashed var(--color-neutral-700);background:transparent;color:color-mix(in srgb, var(--color-text) 50%, transparent);font:inherit;font-size:13px;cursor:pointer"><i class="ph ph-plus"></i>Add character</button>
+
+        <div class="card elev-sm" style="padding:13px;gap:9px;margin-top:5px">
+          <div style="font-size:10px;letter-spacing:.11em;text-transform:uppercase;color:var(--color-accent)">Signup default</div>
+          <div style="font-size:12.5px;line-height:1.5;color:color-mix(in srgb, var(--color-text) 60%, transparent)">Signups are per character. This one is preselected when you sign up.</div>
+          <div style="display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:9px;background:color-mix(in srgb, var(--color-text) 4%, transparent)">
+            <i class="ph ph-star" style="font-size:15px;color:var(--color-accent)"></i>
+            <span style="flex:1;font-size:13px">Grimwald</span>
+            <i class="ph ph-caret-down" style="font-size:11px;opacity:.4"></i>
+          </div>
+        </div>
+      </aside>
+
+      <div style="display:flex;flex-direction:column;gap:14px">
+
+        <div class="card elev-sm" style="padding:18px;gap:16px">
+          <div style="display:flex;align-items:flex-start;gap:14px">
+            <div style="width:54px;height:54px;border-radius:15px;background:var(--color-accent-800);color:var(--color-accent-100);display:grid;place-items:center;font-family:var(--font-heading);font-size:19px">{{ sel.initials }}</div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:9px;margin-bottom:4px">
+                <h3 style="margin:0">{{ sel.name }}</h3>
+                <span class="tag" style="background:{{ sel.roleBg }};color:{{ sel.roleFg }};font-size:10px">{{ sel.role }}</span>
+                <sc-if value="{{ sel.shared }}" hint-placeholder-val="{{ false }}"><span class="tag tag-outline" style="font-size:10px">Guild-shared</span></sc-if>
+              </div>
+              <div style="font-size:13px;color:color-mix(in srgb, var(--color-text) 55%, transparent)">{{ sel.line }}</div>
+            </div>
+            <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:13px"><i class="ph ph-dots-three"></i></button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+            <div class="field">
+              <label>Level</label>
+              <div style="display:flex;align-items:center;gap:7px">
+                <button onClick="{{ decLevel }}" class="btn btn-secondary btn-icon" style="width:32px;height:34px"><i class="ph ph-minus"></i></button>
+                <div class="input" style="text-align:center;font-variant-numeric:tabular-nums;font-size:16px">{{ sel.level }}</div>
+                <button onClick="{{ incLevel }}" class="btn btn-secondary btn-icon" style="width:32px;height:34px"><i class="ph ph-plus"></i></button>
+              </div>
+            </div>
+            <div class="field"><label>Class</label><div class="input" style="display:flex;align-items:center;gap:7px;color:color-mix(in srgb, var(--color-text) 62%, transparent)"><i class="ph ph-lock-simple" style="font-size:13px"></i>{{ sel.cls }}</div></div>
+            <div class="field"><label>Race</label><div class="input">{{ sel.race }}</div></div>
+            <div class="field"><label>Server</label><div class="input">P99 Green</div></div>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:color-mix(in srgb, var(--color-accent) 6%, transparent);border:1px solid var(--color-accent-800)">
+            <i class="ph ph-seal-check" style="font-size:17px;color:var(--color-accent)"></i>
+            <span style="font-size:12.5px;flex:1;opacity:.8">{{ sel.verify }}</span>
+            <span style="font-size:11.5px;opacity:.45;font-family:ui-monospace,Menlo,monospace">{{ sel.verifySrc }}</span>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:9px">
+            <sc-for list="{{ flags }}" as="f" hint-placeholder-count="5">
+              <button onClick="{{ f.toggle }}" style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:9px;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.fg }};font:inherit;font-size:12.5px;cursor:pointer">
+                <i class="{{ f.iconClass }}" style="font-size:14px"></i>{{ f.label }}
+              </button>
+            </sc-for>
+          </div>
+        </div>
+
+        <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider)">
+            <i class="ph ph-key" style="font-size:17px;color:var(--color-accent)"></i>
+            <h5 style="margin:0">Zone access &amp; keys</h5>
+            <span class="tag tag-neutral" style="font-size:10px">{{ keyCount }}</span>
+            <div style="flex:1"></div>
+            <span style="font-size:11.5px;opacity:.45">click a card to cycle · have → working on it → missing</span>
+          </div>
+          <div style="padding:14px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:11px">
+            <sc-for list="{{ keys }}" as="k" hint-placeholder-count="9">
+              <button onClick="{{ k.cycle }}" style="text-align:left;display:flex;flex-direction:column;gap:7px;padding:12px;border-radius:11px;border:1px solid {{ k.border }};background:{{ k.bg }};color:inherit;font:inherit;cursor:pointer">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <i class="{{ k.iconClass }}" style="font-size:16px;color:{{ k.iconColor }}"></i>
+                  <span style="flex:1;font-size:13.5px;color:{{ k.titleColor }}">{{ k.zone }}</span>
+                  <span class="tag" style="background:{{ k.tagBg }};color:{{ k.tagFg }};font-size:9.5px">{{ k.stateLabel }}</span>
+                </div>
+                <div style="font-size:11.5px;opacity:.5;line-height:1.4">{{ k.item }}</div>
+                <div style="font-size:11px;opacity:.4;font-family:ui-monospace,Menlo,monospace">{{ k.meta }}</div>
+              </button>
+            </sc-for>
+          </div>
+          <div style="padding:11px 16px;display:flex;align-items:center;gap:10px;box-shadow:inset 0 1px 0 var(--color-divider)">
+            <i class="ph ph-info" style="font-size:15px;color:var(--color-accent)"></i>
+            <span style="font-size:12.5px;opacity:.62;flex:1">Self-reported by default. An officer can mark a key <span style="color:var(--color-accent-300)">verified</span> after seeing you zone in, and the flag then counts for restricted raid forming.</span>
+            <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px"><i class="ph ph-paper-plane-tilt"></i>Request verification</button>
+          </div>
+        </div>
+
+        <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider)">
+            <i class="ph ph-list-checks" style="font-size:17px;color:var(--color-accent)"></i>
+            <h5 style="margin:0">Raid eligibility</h5>
+            <div style="flex:1"></div>
+            <span style="font-size:12px;opacity:.45">{{ eligSummary }}</span>
+          </div>
+          <div style="padding:2px 8px 10px;overflow:auto">
+            <table class="table">
+              <thead><tr><th>Upcoming raid</th><th>When</th><th style="text-align:right">Min level</th><th>Requires</th><th>Your status</th><th style="text-align:right">Signed up as</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ eligibility }}" as="row" hint-placeholder-count="6">
+                  <tr>
+                    <td>{{ row.raid }}</td>
+                    <td style="opacity:.55;font-size:12.5px">{{ row.when }}</td>
+                    <td style="text-align:right;font-variant-numeric:tabular-nums;color:{{ row.lvlColor }}">{{ row.minLevel }}</td>
+                    <td style="opacity:.65;font-size:12.5px">{{ row.requires }}</td>
+                    <td><div style="display:flex;align-items:center;gap:7px"><i class="{{ row.iconClass }}" style="font-size:15px;color:{{ row.color }}"></i><span style="font-size:12.5px;color:{{ row.color }}">{{ row.status }}</span></div></td>
+                    <td style="text-align:right;font-size:12.5px;color:{{ row.signupColor }}">{{ row.signup }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card elev-sm" style="padding:0;gap:0;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:10px;padding:14px 16px;box-shadow:0 1px 0 var(--color-divider)">
+            <i class="ph ph-arrows-left-right" style="font-size:17px;color:var(--color-accent)"></i>
+            <h5 style="margin:0">Main swap</h5>
+            <div style="flex:1"></div>
+            <span style="font-size:12px;opacity:.45">Your main is <span style="color:var(--color-accent-300)">{{ currentMain }}</span></span>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--color-divider)">
+            <sc-for list="{{ swapStatus }}" as="s" hint-placeholder-count="4">
+              <div style="background:var(--color-surface);padding:13px 14px;display:flex;flex-direction:column;gap:3px">
+                <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;opacity:.45">{{ s.k }}</span>
+                <span style="font-size:16px;font-variant-numeric:tabular-nums;color:{{ s.color }}">{{ s.v }}</span>
+                <span style="font-size:11px;opacity:.42">{{ s.sub }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="padding:2px 8px 8px;overflow:auto">
+            <table class="table">
+              <thead><tr><th>Swap to</th><th>Class · level</th><th>Discounts applied</th><th style="text-align:right">Cost</th><th style="text-align:right">After swap</th><th style="text-align:right">Request</th></tr></thead>
+              <tbody>
+                <sc-for list="{{ swapOptions }}" as="o" hint-placeholder-count="3">
+                  <tr>
+                    <td style="color:{{ o.nameColor }}">{{ o.name }}</td>
+                    <td style="opacity:.6;font-size:12.5px">{{ o.cls }}</td>
+                    <td style="font-size:12px;color:{{ o.discountColor }}">{{ o.discounts }}</td>
+                    <td style="text-align:right;font-variant-numeric:tabular-nums;color:{{ o.costColor }}">{{ o.cost }}</td>
+                    <td style="text-align:right;font-variant-numeric:tabular-nums;font-size:12.5px;color:{{ o.afterColor }}">{{ o.after }}</td>
+                    <td style="text-align:right"><button class="btn {{ o.btnClass }}" style="white-space:nowrap;flex:none;font-size:12.5px" disabled="{{ o.disabled }}">{{ o.action }}</button></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+
+          <div style="padding:12px 16px;display:flex;align-items:center;gap:11px;box-shadow:inset 0 1px 0 var(--color-divider);background:color-mix(in srgb, var(--color-accent) 5%, transparent)">
+            <i class="ph ph-calendar-check" style="font-size:17px;color:var(--color-accent)"></i>
+            <span style="font-size:12.5px;flex:1;opacity:.8">{{ swapWindowNote }}</span>
+            <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px"><i class="ph ph-bell"></i>Notify me</button>
+            <button class="btn btn-secondary" style="white-space:nowrap;flex:none;font-size:12.5px">Read the policy</button>
+          </div>
+        </div>
+
+        <div class="card elev-sm" style="padding:16px;gap:12px">
+          <div style="display:flex;align-items:center;gap:9px"><i class="ph ph-clock-counter-clockwise" style="font-size:16px;color:var(--color-accent)"></i><h6 style="margin:0">Change history</h6><div style="flex:1"></div><span style="font-size:11.5px;opacity:.45">visible to officers</span></div>
+          <sc-for list="{{ history }}" as="h" hint-placeholder-count="5">
+            <div style="display:flex;align-items:baseline;gap:11px;font-size:12.5px;padding-bottom:9px;box-shadow:inset 0 -1px 0 var(--color-divider)">
+              <span style="width:64px;opacity:.4;font-variant-numeric:tabular-nums;flex:none">{{ h.when }}</span>
+              <span style="flex:1;opacity:.78">{{ h.what }}</span>
+              <span style="opacity:.4;font-size:11.5px">{{ h.by }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer style="max-width:1220px;margin:0 auto;padding:0 24px 40px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12px;color:color-mix(in srgb, var(--color-text) 38%, transparent);flex-wrap:wrap;white-space:nowrap">
+    <span style="white-space:nowrap">Dragon Kill Party 1.0-rc2</span><span style="white-space:nowrap">·</span><a href="#" style="white-space:nowrap">Policies</a><span style="white-space:nowrap">·</span><a href="#" style="white-space:nowrap">API docs</a>
+    <div style="flex:1"></div>
+    <span style="white-space:nowrap">Made by <a href="#" style="white-space:nowrap">Prokopton</a> · P99 Green · member of Legacy of Fire</span>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;guildName&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Castle Bloodmoon&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const A = {
+  ac: 'var(--color-accent)', a3: 'var(--color-accent-300)', a4: 'var(--color-accent-400)',
+  txt: 'var(--color-text)',
+  soft: (p) => `color-mix(in srgb, var(--color-text) ${p}%, transparent)`,
+  tint: (p) => `color-mix(in srgb, var(--color-accent) ${p}%, transparent)`,
+};
+
+const TABS = ['Home', 'Standings', 'Raids', 'Loot', 'Calendar', 'News', 'Items', 'Characters'];
+
+const CHARS = [
+  { name: 'Grimwald', cls: 'Warrior', title: 'Warlord', race: 'Barbarian', level: 60, role: 'Main', shared: false,
+    verify: 'Level 60 and class Warlord confirmed from a raid dump.',
+    verifySrc: 'RaidRoster-20260804-233000.txt' },
+  { name: 'Grimlet', cls: 'Rogue', title: 'Rake', race: 'Halfling', level: 54, role: 'Alt', shared: false,
+    verify: 'Level 54 self-reported — no raid dump since 12 Jun.',
+    verifySrc: 'self-reported' },
+  { name: 'Corvane', cls: 'Cleric', title: 'High Priest', race: 'Erudite', level: 60, role: 'Alt', shared: false,
+    verify: 'Level 60 and class High Priest confirmed from a raid dump.',
+    verifySrc: 'RaidRoster-20260802-231500.txt' },
+  { name: 'Bankmule', cls: 'Warrior', title: 'Warrior', race: 'Human', level: 1, role: 'Hidden', shared: true,
+    verify: 'Guild-owned. Custody and log source are assigned per raid night.',
+    verifySrc: 'custody log' },
+];
+
+const KEYS = [
+  ['Veeshan\u2019s Peak', 'Trakanon Tooth · full key set', 'have', 'verified by Thessaly · 12 Jul'],
+  ['Plane of Sky', 'Gate keys, quadrants 1–7', 'partial', '4 of 7 · self-reported'],
+  ['Sleeper\u2019s Tomb', 'Ancient Key', 'have', 'verified by Grimwald · 1 Aug'],
+  ['Skyshrine', 'Claws of Veeshan faction', 'have', 'Kindly · parsed from /con line'],
+  ['Kael Drakkel', 'Kromrif / Kromzek faction', 'missing', 'Dubious — cannot enter safely'],
+  ['Howling Stones', 'Stone key set, all wings', 'have', 'self-reported · 3 Jun'],
+  ['Velketor\u2019s Labyrinth', 'Cobalt Key', 'missing', 'no record'],
+  ['Plane of Mischief', 'Tree entrance, Great Divide', 'have', 'self-reported · 18 May'],
+  ['Temple of Veeshan', 'Wakening Lands access', 'have', 'verified by Thessaly · 12 Jul'],
+];
+
+const STATES = ['have', 'partial', 'missing'];
+
+const HISTORY = [
+  [
+    { when: '5 Aug', what: 'Level confirmed 60 from RaidRoster-20260804-233000.txt', by: 'ingest' },
+    { when: '1 Aug', what: 'Sleeper\u2019s Tomb — Ancient Key marked verified', by: 'Grimwald' },
+    { when: '28 Jul', what: 'Flag added: can main tank', by: 'you' },
+    { when: '12 Jul', what: 'Veeshan\u2019s Peak key set verified', by: 'Thessaly' },
+    { when: '3 Jun', what: 'Howling Stones keys self-reported', by: 'you' },
+  ],
+  [
+    { when: '2 Aug', what: 'Set as signup alternate for off-nights', by: 'you' },
+    { when: '19 Jul', what: 'Level 54 self-reported — no dump to confirm against', by: 'you' },
+    { when: '12 Jun', what: 'Last raid dump seen · level 52', by: 'ingest' },
+    { when: '4 Jun', what: 'Plane of Mischief access self-reported', by: 'you' },
+    { when: '2 Apr', what: 'Claimed as an alt of Grimwald Ashvane', by: 'Thessaly' },
+  ],
+  [
+    { when: '3 Aug', what: 'Level confirmed 60 from RaidRoster-20260802-231500.txt', by: 'ingest' },
+    { when: '3 Aug', what: 'Flag added: available as a raid alt', by: 'you' },
+    { when: '27 Jul', what: 'Temple of Veeshan access verified', by: 'Thessaly' },
+    { when: '14 Jul', what: 'Reached level 60 — eligible as a main-swap target', by: 'ingest' },
+    { when: '9 Feb', what: 'Claimed as an alt of Grimwald Ashvane', by: 'Grimwald' },
+  ],
+  [
+    { when: '5 Aug', what: 'Custody handed to Thessaly at 02:10', by: 'custody log' },
+    { when: '5 Aug', what: 'Custody gap 01:45–02:10 — 2 loot lines unattributed', by: 'ingest' },
+    { when: '4 Aug', what: 'Custody claimed by Grimwald at 23:00', by: 'custody log' },
+    { when: '28 Jul', what: 'Added to the shared-character list', by: 'Grimwald' },
+    { when: '28 Jul', what: 'Hidden from public standings', by: 'Grimwald' },
+  ],
+];
+
+class Component extends DCLogic {
+  state = { sel: 0, levels: CHARS.map(c => c.level), keyState: {}, flags: { alt: true, box: false, track: true, tank: true, bench: false } };
+
+  keyStateFor(ci, zone) {
+    const k = this.state.keyState[ci + ':' + zone];
+    if (k) return k;
+    return (KEYS.find(x => x[0] === zone) || [])[2];
+  }
+
+  renderVals() {
+    const ci = this.state.sel;
+    const c = CHARS[ci];
+    const level = this.state.levels[ci];
+
+    const roleTag = (r) => r === 'Main'
+      ? { roleBg: 'var(--color-accent-800)', roleFg: 'var(--color-accent-100)' }
+      : r === 'Hidden'
+      ? { roleBg: 'transparent', roleFg: A.soft(45) }
+      : { roleBg: 'var(--color-neutral-800)', roleFg: 'var(--color-neutral-200)' };
+
+    const stateStyle = {
+      have: { border: 'var(--color-accent-700)', bg: A.tint(9), iconClass: 'ph ph-key', iconColor: A.ac, tagBg: 'var(--color-accent-800)', tagFg: 'var(--color-accent-100)', stateLabel: 'Have', titleColor: A.txt },
+      partial: { border: 'var(--color-neutral-700)', bg: A.soft(3), iconClass: 'ph ph-key-return', iconColor: A.a4, tagBg: 'var(--color-neutral-800)', tagFg: 'var(--color-neutral-200)', stateLabel: 'Working on it', titleColor: A.txt },
+      missing: { border: A.soft(9), bg: 'transparent', iconClass: 'ph ph-lock-simple-open', iconColor: A.soft(30), tagBg: 'transparent', tagFg: A.soft(40), stateLabel: 'Missing', titleColor: A.soft(60) },
+    };
+
+    const metaFor = (zone, st) => {
+      if (!this.state.keyState[ci + ':' + zone]) return (KEYS.find(x => x[0] === zone) || [])[3];
+      return st === 'have' ? 'self-reported just now · awaiting verification'
+        : st === 'partial' ? 'in progress · self-reported just now'
+        : 'cleared just now · no record';
+    };
+    const keys = KEYS.map(k => {
+      const st = this.keyStateFor(ci, k[0]);
+      return {
+        zone: k[0], item: k[1], meta: metaFor(k[0], st), ...stateStyle[st],
+        cycle: () => this.setState(s => ({
+          keyState: { ...s.keyState, [ci + ':' + k[0]]: STATES[(STATES.indexOf(st) + 1) % 3] },
+        })),
+      };
+    });
+    const haveCount = keys.filter(k => k.stateLabel === 'Have').length;
+
+    const flagDefs = [
+      ['alt', 'Available as a raid alt', 'ph-swap'],
+      ['track', 'Can track', 'ph-crosshair'],
+      ['tank', 'Can main tank', 'ph-shield'],
+      ['bench', 'Bench me by default', 'ph-armchair'],
+    ];
+    const flags = flagDefs.map(([id, label, icon]) => {
+      const on = this.state.flags[id];
+      return {
+        label, iconClass: 'ph ' + (on ? 'ph-check-circle' : icon),
+        border: on ? 'var(--color-accent-700)' : A.soft(12),
+        bg: on ? A.tint(11) : 'transparent',
+        fg: on ? A.a3 : A.soft(55),
+        toggle: () => this.setState(s => ({ flags: { ...s.flags, [id]: !s.flags[id] } })),
+      };
+    });
+
+    const ELIG = [
+      ['Kael Drakkel + AoW', 'Thu 6 Aug', 55, 'Kromrif faction', 'Kael Drakkel'],
+      ['Plane of Sky', 'Sun 9 Aug', 46, 'Gate keys 1–7', 'Plane of Sky'],
+      ['Tue NToV', 'Tue 11 Aug', 55, 'Wakening Lands access', 'Temple of Veeshan'],
+      ['Sleeper\u2019s Tomb warders', 'Sun 16 Aug', 55, 'Ancient Key', 'Sleeper\u2019s Tomb'],
+      ['Veeshan\u2019s Peak', 'Thu 20 Aug', 55, 'Full VP key', 'Veeshan\u2019s Peak'],
+      ['Velketor\u2019s clear', 'Sat 22 Aug', 50, 'Cobalt Key', 'Velketor\u2019s Labyrinth'],
+    ];
+    const eligibility = ELIG.map(([raid, when, minLevel, requires, zone]) => {
+      const ks = this.keyStateFor(ci, zone);
+      const lvlOk = level >= minLevel;
+      const ok = lvlOk && ks === 'have';
+      const status = !lvlOk ? `Level ${minLevel} required` : ks === 'have' ? 'Eligible' : ks === 'partial' ? 'Key incomplete' : 'Key missing';
+      return {
+        raid, when, minLevel: String(minLevel), requires, status,
+        lvlColor: lvlOk ? A.soft(70) : A.a4,
+        color: ok ? A.ac : ks === 'partial' && lvlOk ? A.a4 : A.soft(42),
+        iconClass: ok ? 'ph ph-check-circle' : ks === 'partial' && lvlOk ? 'ph ph-warning-circle' : 'ph ph-x-circle',
+        signup: ok && raid.indexOf('Kael') === 0 ? c.name : ok ? '—' : 'not offered',
+        signupColor: ok && raid.indexOf('Kael') === 0 ? A.a3 : A.soft(38),
+      };
+    });
+    const eligCount = eligibility.filter(e => e.status === 'Eligible').length;
+
+    return {
+      guildName: this.props.guildName ?? 'Castle Bloodmoon',
+      tabs: TABS.map(label => ({
+        label,
+        bg: label === 'Characters' ? A.tint(14) : 'transparent',
+        fg: label === 'Characters' ? A.a3 : A.soft(66),
+      })),
+      charList: CHARS.map((x, i) => {
+        const on = i === ci;
+        return {
+          name: x.name, level: this.state.levels[i],
+          sub: x.shared ? 'Guild-shared · ' + x.cls : x.title + ' · ' + x.cls,
+          iconClass: 'ph ' + (x.role === 'Main' ? 'ph-star' : x.shared ? 'ph-users-three' : 'ph-user'),
+          iconColor: on ? A.ac : A.soft(38),
+          border: on ? 'var(--color-accent-700)' : A.soft(9),
+          bg: on ? A.tint(11) : 'transparent',
+          nameColor: on ? A.a3 : A.txt,
+          select: () => this.setState({ sel: i }),
+        };
+      }),
+      sel: {
+        name: c.name, initials: c.name.slice(0, 2).toUpperCase(), cls: c.cls, race: c.race,
+        level, role: c.role, shared: c.shared, ...roleTag(c.role),
+        line: `${c.title} · ${c.cls} · ${c.race} · P99 Green · claimed 12 Mar 2024`,
+        verify: c.verify, verifySrc: c.verifySrc,
+      },
+      incLevel: () => this.setState(s => ({ levels: s.levels.map((v, i) => i === ci ? Math.min(60, v + 1) : v) })),
+      decLevel: () => this.setState(s => ({ levels: s.levels.map((v, i) => i === ci ? Math.max(1, v - 1) : v) })),
+      currentMain: 'Grimwald',
+      swapStatus: [
+        { k: 'Your balance', v: '5,225.00', sub: 'spendable now', color: A.a3 },
+        { k: 'Base cost', v: '750.00', sub: 'before discounts', color: A.txt },
+        { k: 'Free swaps left', v: '1 of 2', sub: 'resets 1 Jan 2027', color: A.txt },
+        { k: 'Next open window', v: '26–30 Sep', sub: 'free, no allowance used', color: A.a3 },
+      ],
+      swapOptions: CHARS.map((x, i) => {
+        if (i === 0) return null;
+        const lvl = this.state.levels[i];
+        if (x.shared) return {
+          name: x.name, cls: `${x.cls} ${lvl}`, discounts: 'guild-shared characters cannot be a main',
+          discountColor: A.soft(38), cost: '—', costColor: A.soft(30), after: '—', afterColor: A.soft(30),
+          nameColor: A.soft(50), action: 'Not eligible', btnClass: 'btn-secondary', disabled: true,
+        };
+        const parts = [];
+        let cost = 750;
+        if (lvl >= 60) { cost -= 250; parts.push('level 60 −250'); }
+        if (['Cleric', 'Enchanter'].indexOf(x.cls) > -1) { cost -= 300; parts.push(`needed class −300`); }
+        const enough = 5225 >= cost;
+        return {
+          name: x.name, cls: `${x.cls} ${lvl}`,
+          discounts: parts.length ? parts.join(' · ') : 'none apply',
+          discountColor: parts.length ? A.a3 : A.soft(38),
+          cost: cost.toFixed(2), costColor: enough ? A.txt : A.a4,
+          after: enough ? (5225 - cost).toFixed(2) : `short ${(cost - 5225).toFixed(2)}`,
+          afterColor: enough ? A.soft(55) : A.a4,
+          nameColor: A.txt,
+          action: enough ? 'Request swap' : 'Not enough DKP',
+          btnClass: enough ? 'btn-primary' : 'btn-secondary', disabled: !enough,
+        };
+      }).filter(Boolean),
+      swapWindowNote: 'The next open swap period runs 26–30 September — a swap made inside it is free and does not use one of your two annual allowances. Outside a window you can spend points, or spend one allowance. Either way an officer approves it before your main changes.',
+
+      flags, keys, keyCount: `${haveCount} of ${KEYS.length}`,
+      eligibility, eligSummary: `${eligCount} of ${ELIG.length} upcoming raids`,
+      history: HISTORY[ci],
+    };
+  }
+}
+</script>
+</body>
+</html>
