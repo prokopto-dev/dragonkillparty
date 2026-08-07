@@ -371,6 +371,92 @@ def check_paths_are_versioned(ops: list[tuple[str, str, str, dict]]) -> None:
             )
 
 
+def check_no_eqdkp_config_keys(doc: dict) -> None:
+    """SPEC008: no EQdkp Plus config key is a field name in DKP's own contract.
+
+    This rule exists because it already happened. docs/design/02-api-design.md's `/guild` row was
+    written from docs/design/05-migration.md's list of EQdkp `<prefix>config` keys rather than from
+    DKP's schema, and two of them survived unrenamed: `inactive_period` (DKP: `inactive_after_days`)
+    and `auto_set_active` — which is the OPPOSITE control from DKP's `auto_set_inactive`, so a bot
+    written from the published contract would have set the wrong value with nothing to say so. The
+    same transcription produced "rounding on/off and precision", because EQdkp carries
+    `round_activate` AND `round_precision` where DKP carries one `points_precision`. Other keys in
+    that list were correctly renamed on the way in (`dkp_name` -> `points_label`, `guildtag` ->
+    `tag`), which is exactly what made the survivors hard to see.
+
+    WHY THIS IS A SPEC RULE AND NOT A GREP OVER THE DESIGN DOCUMENTS, which is where the defect
+    actually lived. A markdown gate cannot tell a leak from a lesson. `docs/design/01-domain-model.md`
+    names `show_twinks` twice — at :572 and :2870 — precisely to explain why DKP rejects the design,
+    and the correction notes added alongside this rule quote `inactive_period` and `auto_set_active`
+    in order to document them. Every one of those is correct writing that a grep would reject, and a
+    gate whose failures are usually false is a gate people learn to route around.
+
+    The spec has no prose. A name here is a field a client will bind to, in a document generated
+    from Go types rather than written by hand, so a hit is unambiguous and is caught at the moment
+    the name becomes real. The documentation half is left to review, deliberately and on the record.
+
+    NOT EVERY EQdkp KEY IS BANNED. `hide_inactive` and `timezone` appear in that same EQdkp list and
+    are also DKP's own column names — the concepts coincide and the names are ordinary English. This
+    list is exactly the keys DKP does NOT use, so a hit is always a transcription and never a
+    collision.
+    """
+    # From docs/design/05-migration.md's `<prefix>config` carry-list, minus the two DKP also uses.
+    banned = {
+        "inactive_period": "inactive_after_days",
+        "auto_set_active": "auto_set_inactive (note: the OPPOSITE control)",
+        "round_activate": "points_precision (DKP has one rounding setting, not two)",
+        "round_precision": "points_precision",
+        "dkp_name": "points_label",
+        "guildtag": "tag",
+        "servername": "the `server` table's `name`",
+        "show_twinks": "no equivalent — points live on `account`, per canonical §9",
+        "detail_twink": "no equivalent — see above",
+        "special_members": "no equivalent — use a role",
+        "default_game": "no equivalent — this is a P99 EverQuest product",
+        "enable_leaderboard": "no equivalent — portal blocks are CMS configuration",
+    }
+
+    def check_name(name: str, at: str) -> None:
+        replacement = banned.get(name)
+        if replacement is None:
+            return
+
+        violation(
+            "SPEC008",
+            f"{at} is named {name!r}, which is an EQdkp Plus config key, not a DKP field name. "
+            f"Use {replacement}. docs/design/05-migration.md names EQdkp's keys because the "
+            f"importer must read them; this document defines DKP's own contract and uses DKP's own "
+            f"names (canonical conventions §15, §16).",
+        )
+
+    def walk(node, trail: str) -> None:
+        if isinstance(node, list):
+            for i, item in enumerate(node):
+                walk(item, f"{trail}[{i}]")
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        for name, prop in (node.get("properties") or {}).items():
+            if isinstance(prop, dict):
+                check_name(name, f"{trail}.{name}")
+
+        # Parameters carry their name in a field rather than as a map key — the same shape trap
+        # SPEC006 documents. A `?show_twinks=` filter is exactly this rule's case.
+        for i, param in enumerate(node.get("parameters") or []):
+            if isinstance(param, dict) and isinstance(param.get("name"), str):
+                check_name(param["name"], f"{trail}.parameters[{i}]")
+
+        for key, value in node.items():
+            if key != "properties":
+                walk(value, f"{trail}.{key}" if trail else key)
+
+    walk(doc.get("components") or {}, "components")
+    walk(doc.get("paths") or {}, "paths")
+    walk(doc.get("webhooks") or {}, "webhooks")
+
+
 def main() -> int:
     # Same DKP_REPO_ROOT contract as the gate scripts, so the negative fixtures in test/repo can run
     # against a tree in t.TempDir(). `make verify-spec` strips it with `env -u`.
@@ -405,6 +491,7 @@ def main() -> int:
     check_permissions_resolve(check_security_and_permission(ops))
     check_money_and_floats(doc)
     check_paths_are_versioned(ops)
+    check_no_eqdkp_config_keys(doc)
 
     if violations:
         print(f"\n{RED}  openapi/openapi.json failed {len(violations)} check(s){RESET}\n", file=sys.stderr)

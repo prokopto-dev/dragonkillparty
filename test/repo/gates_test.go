@@ -408,3 +408,85 @@ func TestLintRepo_HostileRepoRootEnv_StillScansTheRealTree(t *testing.T) {
 		"lint-repo skipped SQL001, which means it scanned %s instead of the repo — is "+
 			"`env -u DKP_REPO_ROOT` still on the lint-repo recipe in the Makefile?", empty)
 }
+
+// writeRepoFile writes an arbitrary file into tree at the given repo-relative path.
+//
+// writeGo above is the same three calls with a name that promises Go. The gates are greps, so the
+// content type never matters to them — but a fixture named `schema.hcl` written by `writeGo` reads
+// as a mistake, and the next person would spend a minute deciding whether it was one.
+func writeRepoFile(t *testing.T, tree, rel, body string) {
+	t.Helper()
+
+	path := filepath.Join(tree, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
+// TestRepoGates_EQdkpConfigKeyInSchema_FailsGate covers AGPL002.
+//
+// The defect this rule exists for is not hypothetical and was not caught by review: the `/guild`
+// row in docs/design/02-api-design.md shipped `inactive_period` and `auto_set_active`, transcribed
+// from docs/design/05-migration.md's list of EQdkp `<prefix>config` keys rather than from DKP's own
+// schema. `auto_set_active` is the OPPOSITE control from DKP's `auto_set_inactive`, so a client
+// written from the published contract would have set the wrong value and nothing would have said
+// so. Other keys in the same row had been renamed correctly (`dkp_name` -> `points_label`,
+// `guildtag` -> `tag`), which is precisely what made the two survivors invisible.
+//
+// The fixture asserts both directions in one run, because a ban-only test would pass just as
+// happily against a gate that fired on every schema file — and the first person to hit that would
+// reach for --no-verify rather than for the rule id.
+func TestRepoGates_EQdkpConfigKeyInSchema_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "db/schema.hcl", `table "guild" {
+  # EQdkp's inactive_period is carried by the importer, not by this schema.
+  column "inactive_after_days" { type = integer }
+  column "auto_set_active"     { type = integer }
+  column "dkp_name"            { type = text }
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "the gate accepted EQdkp config keys as column names\n%s", out)
+	require.Contains(t, out, "[AGPL002]", "%s", out)
+
+	// The violation is the two column names, NOT the comment above them. strip_comments exists so a
+	// gate never fires on the prose documenting it, and AGPL002 relies on that: db/schema.hcl's real
+	// header comments discuss the conventions at length.
+	require.Contains(t, out, "auto_set_active", "%s", out)
+	require.Contains(t, out, "dkp_name", "%s", out)
+	require.NotContains(t, out, "EQdkp's inactive_period is carried",
+		"AGPL002 fired on a comment explaining the rule; strip_comments should have dropped it\n%s", out)
+}
+
+// TestRepoGates_DKPOwnColumnNames_PassGate is the allowlist half, and it is the half that matters.
+//
+// `hide_inactive` and `timezone` appear in EQdkp's config list AND are DKP's own column names: the
+// concepts coincide and the words are ordinary English. Banning them would make db/schema.hcl
+// unbuildable against its own conventions. Without this test, widening AGPL002's pattern to "every
+// key in the migration doc" would satisfy every assertion above.
+func TestRepoGates_DKPOwnColumnNames_PassGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "db/schema.hcl", `table "guild" {
+  column "timezone"            { type = text }
+  column "hide_inactive"       { type = integer }
+  column "inactive_after_days" { type = integer }
+  column "auto_set_inactive"   { type = integer }
+  column "points_label"        { type = text }
+  column "points_precision"    { type = integer }
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.Zero(t, code, "the gate rejected DKP's own column names\n%s", out)
+	require.NotContains(t, out, "[AGPL002]", "%s", out)
+}
