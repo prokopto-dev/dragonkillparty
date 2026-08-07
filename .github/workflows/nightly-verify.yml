@@ -1,7 +1,7 @@
 # SKELETON. Every step shells out to a `make` target; most of those targets are `notyet` stubs.
 # The schedule, the fork guard, the job graph and the issue-filing behaviour are real and final.
 #
-# Filled in by: Phase 0 PR 10 (the workflow itself + link checking), Phase 1 (River soak),
+# Filled in by: Phase 0 PR 1 (the workflow itself + link checking), Phase 1 (River soak),
 # Phase 5 (importer matrix), Phase 8 (upgrade ladder, Postgres convergence). See ROADMAP.md and
 # docs/design/06-cicd-and-release.md sections 3 and 8.
 #
@@ -19,8 +19,8 @@
 # Failures file an issue rather than emailing a maintainer, because an issue is triageable by
 # whoever has time on Saturday and an email is not.
 #
-# ACTION PINS — see the note at the top of ci.yml. Digests below are unverified placeholders in the
-# correct shape until `make verify-action-pins` lands in Phase 0 PR 12.
+# ACTION PINS — see the note at the top of ci.yml. PIN001 in `lint / repo` asserts the SHAPE of every
+# pin below, not that a digest is the commit its trailing comment claims. Treat them as unverified.
 
 name: nightly-verify
 

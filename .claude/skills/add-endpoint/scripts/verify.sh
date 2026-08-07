@@ -74,10 +74,10 @@ step 'Gate 1/5  architectural tests (security · permission · operationId · id
 if ! have_tool go; then
     cannot 'architectural tests' 'go is not on PATH. Run: make setup'
 elif ! have_path internal/api; then
-    cannot 'architectural tests' 'internal/api does not exist yet (Phase 0 PR 7 mounts Huma).'
+    cannot 'architectural tests' 'internal/api does not exist yet (Phase 0 PR 4 mounts Huma).'
 elif ! compgen -G 'internal/api/*_test.go' >/dev/null; then
     cannot 'architectural tests' \
-        'no test files in internal/api. arch_test.go lands in Phase 0 PR 7; until it does, check
+        'no test files in internal/api. arch_test.go lands in Phase 0 PR 4; until it does, check
          internal/api/EXAMPLE_ENDPOINT.md "What the architectural tests will reject" by hand.'
 elif go test -count=1 -run 'TestArch' ./internal/api/... ; then
     pass 'architectural tests'
@@ -98,7 +98,7 @@ elif ! have_path "$SPEC"; then
     # Without a committed spec the target is a stub that exits 0, which would read as a pass.
     cannot 'generated-artefact drift' \
         "$SPEC does not exist yet, so make verify-generated is a no-op stub. This gate is real from
-         Phase 0 PR 7."
+         Phase 0 PR 4."
 elif make verify-generated; then
     if git diff --quiet -- "$SPEC" internal/store/sqlitegen clients web/src/api 2>/dev/null; then
         pass 'generated artefacts are in sync'
@@ -117,7 +117,7 @@ step "Gate 3/5  oasdiff breaking-change check vs ${BASE_REF}"
 if ! have_tool oasdiff; then
     cannot 'oasdiff' 'oasdiff is not on PATH. Run: make setup'
 elif ! have_path "$SPEC"; then
-    cannot 'oasdiff' "$SPEC does not exist yet (Phase 0 PR 7 commits the first spec)."
+    cannot 'oasdiff' "$SPEC does not exist yet (Phase 0 PR 4 commits the first spec)."
 elif ! git rev-parse --verify --quiet "${BASE_REF}" >/dev/null; then
     cannot 'oasdiff' "base ref ${BASE_REF} not found. Run: git fetch origin main"
 elif ! git show "${BASE_REF}:${SPEC}" > "${TMPDIR_V}/base.json" 2>/dev/null; then

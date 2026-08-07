@@ -44,7 +44,9 @@ Phase 0 for the same reason: cheap at zero dependencies, expensive at two hundre
 **Goal.** A repository in which an agent handed any later task finds the toolchain, the gates, the
 worked example and the release pipeline already answering every "how do I…" question.
 
-**Deliverables, in order.**
+**Deliverables, in order.** Deliverables, not pull requests:
+[`docs/development/first-ten-prs.md`](docs/development/first-ten-prs.md) numbers the PRs, and
+deliverable N is generally not PR N — 10 below is its PR 7. Cite these as "deliverable N".
 
 1. Repo skeleton. `LICENSE` (Apache-2.0), `NOTICE`, `TRADEMARK.md`, DCO app, `CONTRIBUTING.md`, PR
    template with the licence-firewall checkbox, `CODEOWNERS`, issue templates (`parser-bug`,

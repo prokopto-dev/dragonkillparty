@@ -3,7 +3,7 @@
 # `ci-required` gate are real and final; some of the work inside them is not. `make status` lists
 # what remains, derived from the `notyet` call sites rather than from a hand-maintained list here.
 #
-# Landed so far: Phase 0 PR 10 (workflows, GHCR publish, ci-required) and Phase 0 PR 12 (supply
+# Landed so far: Phase 0 PR 1 (the workflows themselves and `ci-required`) and Phase 0 PR 12 (supply
 # chain), whose three controls are now all real — action pinning as PIN001 in scripts/repo-gates.sh,
 # `security / licences` over scripts/licence-gate.sh, and `security / govulncheck`. All three are
 # required jobs and none is `continue-on-error`. See ROADMAP.md and
