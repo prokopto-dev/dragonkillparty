@@ -2,7 +2,7 @@
 # The job graph, the trigger, the permission split and the smoke-before-promote ordering are real
 # and final.
 #
-# Filled in by: Phase 0 PR 10 (GHCR publish, cosign, SBOM, provenance) and Phase 8 (goreleaser
+# Filled in by: Phase 0 PR 7 (GHCR publish, cosign, SBOM, provenance) and Phase 8 (goreleaser
 # desktop binaries, deb/rpm, the reference-database ladder). See ROADMAP.md and
 # docs/design/06-cicd-and-release.md sections 6-8.
 #

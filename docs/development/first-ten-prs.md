@@ -7,6 +7,12 @@ disagree, that one wins and this file has a bug.
 Each PR below is written to be handed to an agent verbatim. Together they are Phase 0 of
 [`ROADMAP.md`](../../ROADMAP.md) plus the first two Phase 1 items.
 
+**"Phase 0 PR N" means this file's PR N — everywhere in the repository.** `ROADMAP.md` numbers
+*deliverables*, and the two sequences do not line up: its deliverable 10 (the release pipeline) is
+PR 7 here, and PR 10 here is the ledger batch service. Cite a ROADMAP item as "deliverable N", never
+as a PR. PR 12 is the one place the numbers coincide, and it coincides on purpose — see **On the
+number** under PR 12.
+
 ## How to use this file
 
 Take one PR. Do not take two. Do not do part of the next one "while you're in there".

@@ -152,7 +152,7 @@ compromise, and an agent asked to "make this work on fork PRs" will reach for it
 
 `AGENTS.md` says a command CI needs must exist as a Makefile target. The workflow skeletons
 deliberately name targets that do not exist yet. **That is a debt with a due date, not an
-exception:** Phase 0 PR 10 adds every target below to the Makefile, and `make verify-commands` —
+exception:** Phase 0 PR 1 adds every target below to the Makefile, and `make verify-commands` —
 which already exists — is what makes the debt impossible to forget.
 
 The `AGENTS.md` canonical-commands table stays at its current size. It lists the commands a
@@ -160,7 +160,7 @@ The `AGENTS.md` canonical-commands table stays at its current size. It lists the
 one does not add a row. A target that a contributor is expected to type does need both, in the same
 change.
 
-| Existing | New in Phase 0 PR 10 |
+| Existing | New in Phase 0 PR 1 |
 |---|---|
 | `vet` `test-unit` `test` `test-importer` `build` `docker` `verify-generated` | `lint-repo` `lint-go` `lint-web` `verify-spec` `test-property` `test-golden` `test-migrations` `test-authz` `test-e2e` `api-breaking` `api-changelog-comment` `budget-bundle` `docs-build` `docs-links` `smoke-local` `test-upgrade` `verify-action-pins` |
 | | Release: `release-version` `release-image` `release-manifest` `release-sign` `release-sbom` `release-refdb` `release-smoke` `release-promote` `release-promote-rc` `release-notes` `release-failure-issue` |
