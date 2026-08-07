@@ -8,6 +8,15 @@ description: The SPA is an API client — generated types only, TanStack Query p
 React 19 + Vite 7 + TanStack Router v1 + TanStack Query v5, built to `web/dist` and embedded in the
 binary via `go:embed`. No SSR, no meta-framework, no server components, no BFF.
 
+**Styling is plain CSS with custom properties** — one token sheet plus co-located component CSS, no
+Tailwind and no CSS-in-JS. The design system is Nocturne, dark-only; see
+[`design-system.md`](design-system.md) and
+[`docs/design/09-frontend-and-design-system.md`](../../docs/design/09-frontend-and-design-system.md).
+
+**Before you write a screen, read it.** `docs/design/mockups/` holds five HTML surfaces covering ~55
+screens — search for the screen's `isX` guard and read the block. Re-deriving a layout from prose
+when the drawn version is on disk is how two screens end up disagreeing.
+
 ## The generated client is the only client
 
 ```
@@ -97,7 +106,10 @@ because a volunteer's Raspberry Pi is the deployment target.
 - `API_BASE` comes from a runtime `/config.json`, not from build-time env, so the SPA can be pointed
   at a remote instance. That capability is the proof it is a client.
 - Guild-configurable class colours go through the contrast validator — an officer will otherwise
-  pick an unreadable one, and there is a unit test.
+  pick an unreadable one, and there is a unit test. The floor is 3:1 against `--color-bg`, and the
+  validator is server-side so a bot setting a theme is held to it too.
+- **No raw hex and no raw `px` outside `web/src/styles/`.** Lint fails on both. A value the scale
+  does not carry gets a named rung in the token sheet, not an inline literal.
 - No React component snapshot tests. They are brittle and low-value; the Playwright journeys and the
   integration suite carry the weight.
 - `web/src/dev/` (the "copy as curl" request inspector) is dev-only and must be tree-shaken out of

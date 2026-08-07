@@ -68,12 +68,18 @@ hand-written list that drifts is a **boot failure**, not a style problem.
 **Permissions** are `<resource>.<action>` and narrow a *role*:
 
 ```
-roster.read roster.write person.merge character.claim.approve
+roster.read roster.write person.merge character.claim.approve character.key.verify
 raid.read raid.create raid.update raid.finalize raid.tick.create raid.tick.delete
-item.read item.award item.alias.manage
+raid.custody.manage
+item.read item.award item.alias.manage item.priority.manage
 dkp.read dkp.adjust dkp.decay.run ledger.reverse
 bid.read bid.manage bid.reveal_early
+bank.read bank.request bank.fulfil bank.manage
 calendar.read calendar.write signup.manage
+draft.read draft.vote draft.manage
+swap.request swap.approve swap.policy.manage
+recruit.read recruit.comment recruit.decide vouch.manage
+policy.read policy.write
 cms.read cms.write cms.moderate
 import.run import.commit
 webhook.manage token.mint token.revoke
@@ -91,15 +97,32 @@ person.pii.read audit.read ops.read
 | `raids:write` | Raid and tick CRUD, finalize, connected raids, kill credits, reconciliation resolve, raid submissions |
 | `dkp:read` | Balances, standings, ledger, attendance statistics, pools, strategies |
 | `dkp:adjust` | Adjustments and their reversals, decay and cap runs |
-| `loot:read` | Items, aliases, priority lists, awards, item history, guild bank |
-| `loot:award` | Create and reverse awards, create items, aliases and priority lists, issue from the bank |
+| `loot:read` | Items, aliases, priority lists, awards, item history |
+| `loot:award` | Create and reverse awards, create items, aliases and priority lists |
 | `bids:read` | Bid sessions, boards, non-sealed bid lists, spendable balances |
-| `bids:manage` | Open, close, resolve, override and cancel sessions; place and retract bids |
+| `bids:place` | Place and retract bids **for the caller's own accounts**, in an already-open session |
+| `bids:manage` | Open, close, resolve, override and cancel sessions |
+| `bank:read` | Bank inventory, categories, auctions, the caller's own requests |
+| `bank:request` | Request an item **for the caller's own account**, and confirm receipt |
+| `bank:manage` | Categories, stock, approvals, deliveries, auction schedules |
+| `draft:read` | Draft weeks, targets, the live tally and the projection |
+| `draft:vote` | Submit and edit **the caller's own** availability and ranked ballot |
+| `recruit:read` | Applications, member feedback, openings |
+| `recruit:manage` | Form schema, decisions, officer notes, vouch administration |
+| `swap:read` | Main-swap policy, windows and a price quote |
+| `swap:manage` | Approve, deny and apply main swaps; edit the rule stack |
 | `logs:ingest` | Artifact upload, parse preview, the parser catalogue |
 | `calendar:read` · `calendar:write` | Calendar events and signups |
-| `cms:read` · `cms:write` | Articles, comments, media, shoutbox, portal blocks, menu, theme, team |
+| `cms:read` · `cms:write` | Articles, comments, media, shoutbox, portal blocks, menu, theme, team, policies |
 | `events:subscribe` | The SSE stream and the replay endpoint. Per-topic authorization still applies |
 | `webhooks:manage` | Webhook CRUD, deliveries, redelivery, secret rotation |
+
+The guild bank moved out of `loot:*` into its own family when it became a subsystem with categories,
+a delivery handshake and its own auctions. A token holding `loot:read` to look up item history should
+not thereby see who is holding what.
+
+**Three scopes are self-scoped** — `bids:place`, `bank:request` and `draft:vote` — and each carries an
+authorization-matrix case asserting it is denied on another member's account (canonical §6).
 
 Two deliberate couplings, both because they move points:
 

@@ -79,7 +79,8 @@ bids:place    place and retract your OWN bids; cannot open, close, resolve or se
 bids:manage   officer: open, extend, close, resolve, settle, override  (unchanged)
 ```
 
-`bids:place` is the only scope in the catalogue that is *self-scoped* — it authorizes an action only
+`bids:place` is one of three *self-scoped* scopes in the catalogue (with `bank:request` and
+`draft:vote`, canonical §6) — it authorizes an action only
 against the authenticated member's own accounts. That asymmetry needs an explicit test in the authz
 matrix, because it is the one place a scope check is not sufficient on its own.
 

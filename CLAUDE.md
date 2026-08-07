@@ -10,4 +10,5 @@ Path-scoped rules live in `.claude/rules/` and load when you read a matching fil
 procedures live in `.claude/skills/`. Read them; don't re-derive them.
 
 Before writing a new endpoint, read `internal/api/EXAMPLE_ENDPOINT.md`. Before writing a query, read
-`db/RECIPES.md`. Copying an in-repo worked example is more reliable than recalling a library API.
+`db/RECIPES.md`. Before building a screen, read it in `docs/design/mockups/`. Copying an in-repo
+worked example is more reliable than recalling a library API — or an intent.
