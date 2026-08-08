@@ -1,0 +1,60 @@
+/*
+ * Nocturne token sheet — the one place a raw hex or a raw px is allowed (.claude/rules/design-system.md).
+ *
+ * Values are transcribed verbatim from docs/design/09-frontend-and-design-system.md §2, which is
+ * itself transcribed from mockups/nocturne/styles.css. Those values are the contract. This scaffold
+ * ships the role tokens, the two helpers and the type/space/radius/elevation scale; the ramps and
+ * status colours land with the first screen that uses them, not with the scaffold.
+ *
+ * Dark only at 1.0. No prefers-color-scheme, no light override, no second accent voice. There are
+ * no motion tokens and no `transition` anywhere in Nocturne — hover states snap.
+ */
+
+:root {
+  /* Roles */
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-text: #e9e9ed;
+  --color-accent: #9184d9;
+  --color-accent-2: #a7a1db;
+  /* --color-divider hard-codes the text hex rather than referencing --color-text on purpose:
+     re-deriving it would change the value when a guild themes the text colour. */
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+
+  /* Type */
+  --font-heading: "Inter", system-ui, sans-serif;
+  --font-heading-weight: 500;
+  --font-body: "Inter", system-ui, sans-serif;
+
+  /* Space — base unit 4px x 0.70; the gaps at 5 and 7 are in the source, not an omission. */
+  --space-1: 2.8px;
+  --space-2: 5.6px;
+  --space-3: 8.4px;
+  --space-4: 11.2px;
+  --space-6: 16.8px;
+  --space-8: 22.4px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+
+  /* Elevation — a hairline ring plus ambient darkness. --shadow-sm has no blur; it IS a ring. */
+  --shadow-sm: 0 0 0 1px #3f424d;
+  --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
+}
+
+/*
+ * The two helpers, as real custom properties. Components reference --soft-* / --tint-* rather than
+ * inlining the color-mix, which is what keeps 325 uses across the design consistent.
+ *
+ * Only the rungs the scaffold needs are declared; a screen that needs soft(42) adds --soft-42 here,
+ * never an inline color-mix in a component.
+ */
+:root {
+  --soft-8: color-mix(in srgb, var(--color-text) 8%, transparent);
+  --soft-16: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --soft-60: color-mix(in srgb, var(--color-text) 60%, transparent);
+  --tint-12: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}

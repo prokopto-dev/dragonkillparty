@@ -198,7 +198,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
-      - run: make lint-web # eslint, prettier --check
+        with:
+          # `make lint-web` runs `pnpm run lint` (eslint) and, since PR 6 landed web/, the negative
+          # fixtures via `pnpm run lint:fixtures`. Both need Node + pnpm on PATH; without node:"true"
+          # the job fails "pnpm: command not found".
+          node: "true"
+      # eslint is a devDependency, and `make lint-web` does not install — do it here, with the same
+      # frozen/no-scripts posture CI and the build use, so the linter and the workspace agree.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: web
+      - run: make lint-web # eslint over src/**, plus eslint --no-ignore over the negative fixtures
 
   # ---------------------------------------------------------------------------------------------
   # security — the supply-chain gates.
@@ -220,14 +229,20 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # `make licence-gate` covers BOTH the Go runtime module graph and, since PR 6 scaffolded
+          # web/, the JS production dependency graph via `pnpm licenses list` — so Node + pnpm must be
+          # present. The JS half installs web deps itself when node_modules is absent.
+          node: "true"
       - name: Dependency licence gate
         run: make licence-gate
-        # Fails on any GPL, AGPL, LGPL or CC BY-NC licence in the RUNTIME module graph
-        # (`go list -deps ./...`, without -test), with a named rule id and the module at fault:
-        #   LIC001  a runtime dependency is under a denied licence
-        #   LIC002  a runtime dependency's licence could not be identified — the gate fails closed
-        # Modules reachable only from a dependency's own test binary are out of scope: they are not
-        # linked into dkp. This project is Apache-2.0 and must not take a copyleft runtime dep.
+        # Fails on any GPL, AGPL, LGPL or CC BY-NC licence, with a named rule id and the dependency at
+        # fault, across TWO graphs:
+        #   * Go: the RUNTIME module graph (`go list -deps ./...`, without -test). Modules reachable
+        #     only from a dependency's own test binary are out of scope — they are not linked into dkp.
+        #   * JS: the web/ dependency graph via `pnpm licenses list --json`, checked against the same
+        #     closed allowlist plus two reviewed permissive extras (Python-2.0, CC-BY-4.0).
+        # Rule ids: LIC001 a denied licence; LIC002 a licence that could not be identified (fails
+        # closed). This project is Apache-2.0 and must not take a copyleft dependency in either graph.
 
   security-govulncheck:
     name: security / govulncheck
@@ -254,6 +269,10 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # `make vet` runs `tsc --noEmit` over web/ once the SPA is scaffolded (PR 6). tsc is a
+          # pnpm-installed devDependency, so Node + pnpm must be present; the target installs web deps
+          # itself when node_modules is absent.
+          node: "true"
       - run: make vet # go build + go vet + staticcheck + tsc --noEmit
 
   # ---------------------------------------------------------------------------------------------
@@ -268,12 +287,16 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # `make verify-generated` runs `make gen`, whose client half (scripts/gen-client.sh) invokes
+          # openapi-typescript through pnpm once web/ is scaffolded (PR 6). Node + pnpm must be present
+          # or the regen fails "pnpm: command not found"; the script installs web deps itself.
+          node: "true"
           tools: "atlas sqlc"
       - name: Regenerate everything and fail on a dirty tree
         run: make verify-generated
-        # Today: atlas.sum, the schema/migration sync assertion, sqlc, and huma -> openapi.json.
-        # openapi-typescript, openapi-python-client and the generated docs reference pages land in
-        # Phase 0 PR 6. On failure this prints exactly one line:
+        # Today: atlas.sum, the schema/migration sync assertion, sqlc, huma -> openapi.json, and
+        # openapi-typescript -> web/src/api/schema.d.ts. openapi-python-client and the generated docs
+        # reference pages land in a later phase. On failure this prints exactly one line:
         # "generated files are stale — run 'make gen' and commit".
 
   spec-drift:
@@ -494,6 +517,10 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # `make build` runs scripts/build-web.sh (Vite build via pnpm) before `go build`, so the
+          # binary embeds the real SPA rather than the placeholder. Node + pnpm must be present or the
+          # build fails "pnpm: command not found"; the script installs web deps itself.
+          node: "true"
       - run: make build # pnpm build -> go:embed -> go build, CGO_ENABLED=0
       - name: Detect binary
         id: built
@@ -609,8 +636,9 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - run: make budget-bundle
         # SPA initial route <= 250 KB gzipped, and <= +5% versus the last release. Breaching it
-        # legitimately is a one-line edit to .github/size-budget.json — reviewed, in the diff, by a
-        # human. That turns a size regression into a decision instead of a drift.
+        # legitimately is a one-line edit to web/bundle-budget.json — reviewed, in the diff, by a
+        # human (the file is CODEOWNERS-protected). That turns a size regression into a decision
+        # instead of a drift.
 
   # ---------------------------------------------------------------------------------------------
   # docs — internal links only. External link checking is a nightly job: an external 404 appears on

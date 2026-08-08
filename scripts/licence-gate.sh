@@ -397,20 +397,160 @@ while IFS='|' read -r main path version dir; do
     summary="$summary$verdict"$'\n'
 done <<<"$modules"
 
-if [ "$fail" -ne 0 ]; then
-    printf '\n\033[31mlicence gate failed\033[0m — see the rule ids above.\n'
-    printf 'This project is Apache-2.0. A copyleft or source-available runtime dependency contaminates\n'
-    printf 'the tree and breaks its relationship with EQdkp Plus. Do not disable this gate (AGENTS.md);\n'
-    printf 'drop the dependency, or take it to a human with the licence named.\n'
-    exit 1
-fi
-
 # count == 0 is NOT an error. A module whose only external dependencies are test-only has an empty
 # runtime graph, which is a true statement about it — and was this repository's own state until
 # modernc.org/sqlite landed. The vacuous-pass path this gate has to avoid is `go list` resolving
 # nothing, which is caught above by the "matched no packages" and empty-module-list checks.
 
-printf '%s' "$summary" | sort | uniq -c | while read -r n id; do
-    printf '  %-12s %s\n' "$id" "$n"
-done
-printf '  \033[32m%d runtime dependencies, all under allowed licences\033[0m\n' "$count"
+if [ "$fail" -eq 0 ]; then
+    printf '%s' "$summary" | sort | uniq -c | while read -r n id; do
+        printf '  %-12s %s\n' "$id" "$n"
+    done
+    printf '  \033[32m%d runtime dependencies, all under allowed licences\033[0m\n' "$count"
+fi
+
+# --- The JavaScript dependency set ------------------------------------------------------------
+#
+# The SPA (web/) landed in Phase 0 PR 6 and dragged in ~200 npm packages. The Go gate above cannot
+# see them — a different package manager, a different licence-declaration convention — so a copyleft
+# or source-available JS dependency would contaminate the tree unnoticed. This section closes that,
+# using the SAME closed allowlist the Go half uses, PLUS two extra permissive licences that appear
+# in the current lock and were reviewed: Python-2.0 (argparse) and CC-BY-4.0 (caniuse-lite's data).
+#
+# Scope: the WHOLE dependency graph, not just `--prod`. The Go gate scopes to the runtime graph
+# because a Go test-only import is genuinely not linked into dkp. npm has no such boundary that
+# `pnpm licenses list` exposes reliably per-package, and a devDependency's licence still ships in the
+# lockfile and runs on every contributor's machine and in CI. Failing closed over all ~200 is the
+# safe direction; a narrower scope would be a hole nobody could see. `--prod` alone reports only the
+# 15 runtime packages (all MIT today), which would leave the other ~190 exactly as unchecked as
+# before this section existed.
+#
+# `pnpm licenses list --json` emits an object keyed by SPDX id, each value an array of packages. An
+# SPDX EXPRESSION (a compound key like "(MIT OR CC0-1.0)") is its own key and is allowed only when
+# EVERY token in it is on the allowlist. For an AND that is exactly right — both grants bind. For an
+# OR the recipient could pick just one branch, so requiring all is STRICTER than SPDX demands; that is
+# a deliberate fail-closed choice, not a correctness claim. It can only over-deny (forcing a human to
+# review, e.g. an "(MIT OR GPL-3.0)" dep), never admit a copyleft branch — a GPL inside an OR is
+# denied, which is the security-critical direction. "(MIT OR CC0-1.0)" passes because BOTH branches
+# are permissive, so the strict rule and the lenient rule agree on the one such key in the lock today.
+
+# js_allowed <spdx-id> — the JS allowlist. The Go set, plus the two reviewed additions. As in the Go
+# half, the default is DENY: an id not named here is a human decision, never a silent pass.
+js_allowed() {
+    case "$1" in
+        Apache-2.0 | MIT | ISC | MPL-2.0 | CC0-1.0 | Unlicense | Zlib) return 0 ;;
+        BSD-2-Clause | BSD-3-Clause | 0BSD | BSD) return 0 ;;
+        Python-2.0 | CC-BY-4.0) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# js_expr_allowed <spdx-expression> — true iff every alternative in an OR-expression is allowed.
+# Only the OR form is handled: an AND ("A AND B") requires BOTH, so it is allowed iff both are, which
+# is the same all-must-pass loop. Parentheses and the words are stripped and each token checked; a
+# WITH exception (e.g. "GPL-2.0 WITH Classpath-exception") collapses to its base, which is denied —
+# the safe direction, since no such licence is expected here.
+js_expr_allowed() {
+    local expr tok
+    expr=$(printf '%s' "$1" | tr '()' '  ')
+    for tok in $expr; do
+        case "$tok" in
+            OR | AND | WITH) continue ;;
+        esac
+        js_allowed "$tok" || return 1
+    done
+
+    return 0
+}
+
+# Whether this section can run at all. It needs BOTH pnpm (to resolve the graph) and node (to
+# classify the JSON), and it must DEGRADE — not die — when they are absent.
+#
+# The Go check above is toolchain-mandatory: `go` is required for the whole build, so a missing Go
+# is a real error. Node/pnpm are not. They are installed for the web-facing CI jobs (`node: "true"`)
+# but NOT for `test / unit` or `test / integration`, whose runners have only Go. Those two jobs run
+# test/repo/licence_gate_test.go, which shells out to this script against the real tree — so a hard
+# `die` here fails a job that was never meant to resolve the JS graph, on a box that cannot.
+#
+# So when the JS toolchain is absent this section prints a `note:` and is skipped with the Go check's
+# verdict preserved; the Go half ALWAYS runs. The authoritative JS enforcement lives in the
+# `security / licences` CI job, which installs node+pnpm (see .github/workflows/ci.yml) — that job is
+# where a bad JS licence fails the build, and `scripts/**` is in its path filter so this gate cannot
+# skip it. When the toolchain IS present (dev boxes, that job) the full JS graph is enumerated and
+# the gate fails closed exactly as before.
+if [ -f web/package.json ] && ! { command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; }; then
+    echo
+    echo "licence gate — JavaScript (web/)"
+    echo "  note: skipping JS dependency licences — pnpm not installed (enforced by the security/licences CI job)"
+elif [ -f web/package.json ]; then
+    echo
+    echo "licence gate — JavaScript (web/)"
+
+    # The generator is not needed, but the graph must be resolved on disk for `pnpm licenses list` to
+    # read each package's licence. Same frozen/no-scripts posture as the build and CI.
+    [ -d web/node_modules ] || (cd web && pnpm install --frozen-lockfile --ignore-scripts >/dev/null)
+
+    # `pnpm licenses list --json` over the whole graph. `|| true` because pnpm exits non-zero when it
+    # finds licences it considers problematic, and we do our own classification below rather than
+    # trusting its verdict — but an EMPTY result must still be caught as a failure, not a vacuous pass.
+    js_json=$(cd web && pnpm licenses list --json 2>/dev/null || true)
+    [ -n "$js_json" ] || die "pnpm licenses list produced no output — the JS dependency set could not be read"
+
+    # Classify with node (present whenever pnpm is). Emit one `id|count|names` line per licence key,
+    # and a leading `TOTAL|<n>` line so an empty graph is distinguishable from a read failure.
+    js_report=$(cd web && printf '%s' "$js_json" | node -e '
+        let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+            const o = JSON.parse(s);
+            let total = 0;
+            const lines = [];
+            for (const id of Object.keys(o)) {
+                const pkgs = o[id] || [];
+                total += pkgs.length;
+                const names = pkgs.map(p => p.name + "@" + (p.versions || []).join("/")).join(" ");
+                lines.push(id + "|" + pkgs.length + "|" + names);
+            }
+            console.log("TOTAL|" + total);
+            for (const l of lines) console.log(l);
+        });
+    ') || die "could not parse pnpm licenses output"
+
+    js_total=$(printf '%s\n' "$js_report" | awk -F'|' '$1=="TOTAL"{print $2; exit}')
+    [ -n "$js_total" ] && [ "$js_total" -gt 0 ] 2>/dev/null || die "the JS dependency graph resolved to nothing — the gate examined no packages"
+
+    js_summary=""
+    while IFS='|' read -r id cnt names; do
+        [ "$id" = "TOTAL" ] && continue
+        # Skip only a wholly blank line (the here-string's trailing newline). A row with an empty id
+        # but a package list is a package pnpm could not classify, and it must reach the LIC002 guard
+        # below rather than be skipped — failing closed, not silently passing.
+        [ -z "$id" ] && [ -z "$cnt" ] && [ -z "$names" ] && continue
+
+        # An empty, "Unknown" or "UNLICENSED" id is a package pnpm could not classify — deny, as
+        # LIC002 does for Go. Fail closed: an unidentifiable licence is never a silent pass.
+        if [ -z "$id" ] || [ "$id" = "Unknown" ] || [ "$id" = "UNLICENSED" ]; then
+            violation LIC002 "JS dependency with no identifiable licence" "$names"
+            continue
+        fi
+
+        if js_expr_allowed "$id"; then
+            js_summary="$js_summary$id|$cnt"$'\n'
+        else
+            violation LIC001 "JS dependency under a licence not on the allowlist ($id) — a human decides" "$names"
+        fi
+    done <<<"$js_report"
+
+    if [ "$fail" -eq 0 ]; then
+        printf '%s' "$js_summary" | grep -v '^$' | sort | while IFS='|' read -r id cnt; do
+            printf '  %-16s %s\n' "$id" "$cnt"
+        done
+        printf '  \033[32m%d JS dependencies, all under allowed licences\033[0m\n' "$js_total"
+    fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+    printf '\n\033[31mlicence gate failed\033[0m — see the rule ids above.\n'
+    printf 'This project is Apache-2.0. A copyleft or source-available dependency contaminates the tree\n'
+    printf 'and breaks its relationship with EQdkp Plus. Do not disable this gate (AGENTS.md); drop the\n'
+    printf 'dependency, or take it to a human with the licence named.\n'
+    exit 1
+fi

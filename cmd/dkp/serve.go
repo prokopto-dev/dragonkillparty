@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
+	"github.com/prokopto-dev/dragonkillparty/internal/ui"
 )
 
 const (
@@ -31,6 +32,11 @@ const (
 
 	// defaultAddr is the documented default listen address for the single binary.
 	defaultAddr = ":8080"
+
+	// apiBaseEnv names the value GET /config.json reports as API_BASE. Empty (the default) is
+	// same-origin. It exists so a reverse-proxied or split deploy can point the SPA at the API's
+	// real base without rebuilding the bundle — the capability that proves the SPA is a client.
+	apiBaseEnv = "DKP_API_BASE"
 
 	// readHeaderTimeout bounds how long a client may take to send its request headers. Required:
 	// an http.Server without it is a Slowloris target and a gosec G112 failure.
@@ -226,6 +232,18 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		return fmt.Errorf("listen on %s: %w", cfg.addr, err)
 	}
 
+	// Build the embedded SPA handler. A failure here is DKP_WEB_DIR pointing somewhere unusable;
+	// like a failed migrator build, it is logged and the server still boots serving the API and the
+	// docs, because a working API with no UI beats refusing to start. api.New treats a nil WebUI as
+	// "no SPA mounted".
+	webUI, err := ui.Handler()
+	if err != nil {
+		slog.ErrorContext(ctx, "could not build the web UI handler; serving the API without a SPA",
+			"error", err, "web_dir", os.Getenv(ui.WebDirEnv))
+
+		webUI = nil
+	}
+
 	srv := &http.Server{
 		Handler: api.New(api.Config{
 			// The link-time stamps, so GET /api/v1/meta can report which build this is to a bot
@@ -237,7 +255,11 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			BuildDate: date,
 			Clock:     clock.System{},
 			Readiness: readiness{runner: runner},
-			Store:     st,
+			// DKP_API_BASE is reported by GET /config.json as API_BASE. Empty (the default) means
+			// same-origin, which is what a co-hosted binary serves.
+			APIBase: os.Getenv(apiBaseEnv),
+			WebUI:   webUI,
+			Store:   st,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,

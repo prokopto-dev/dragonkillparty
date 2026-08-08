@@ -564,9 +564,70 @@ any difference (`make verify-generated`, `make verify-spec`). The `getGuild` fra
 }
 ```
 
-<!-- PENDING PR 6: this step also regenerates the TypeScript client (`clients/ts`) via
-openapi-typescript. That call lands with the SPA and the SDKs in Phase 0 PR 6, which removes this
-marker. Until then `make gen` writes only the migrations, sqlc output and openapi.json. -->
+This same `make gen` regenerates the TypeScript client the SPA consumes: `scripts/gen-client.sh`
+runs `openapi-typescript` over the fresh `openapi/openapi.json` into `web/src/api/schema.d.ts`, the
+one generated type surface the SPA is allowed to import (`.claude/rules/web.md`). `web/src/api/client.ts`
+wraps those types with `openapi-fetch`, so a caller reaches `getGuild`/`updateGuild` through the typed
+path — never a hand-written URL, request type or response type. Regenerating the client is a
+`make verify-generated` gate too: a stale `schema.d.ts` fails CI exactly like a stale `openapi.json`.
+
+Here is how the SPA invokes both operations. The path string, the response DTO and the partial-update
+body are all resolved from `schema.d.ts`; mistype the path or a field and this stops compiling:
+
+```ts
+import { api } from "@/api/client";
+
+import type { components } from "@/api/schema";
+
+// The DTO and the partial-update body come from the generated schema — never hand-written. If a
+// field you need is absent here, the spec does not have it and the answer is an API change.
+type GuildDTO = components["schemas"]["GuildDTO"];
+type UpdateGuildInput = components["schemas"]["UpdateGuildInputBody"];
+
+// A GET (guild + its ETag). `data` is typed as GuildDTO; `error` is the problem+json body,
+// discriminated on error.code. The ETag comes off the raw Response; a caller stores it to send back
+// as If-Match on the next PATCH.
+export async function getGuild(
+  signal?: AbortSignal,
+): Promise<{ guild: GuildDTO; etag: string | null }> {
+  const { data, error, response } = await api.GET("/api/v1/guild", { signal });
+  if (error) {
+    throw error;
+  }
+
+  return { guild: data, etag: response.headers.get("ETag") };
+}
+
+// A PATCH under an If-Match precondition. `body` is the partial UpdateGuildInput — only the changed
+// fields. A missing If-Match is 428; a stale one is 412 with meta.current (merge and retry). The
+// Idempotency-Key is generated once per user intent, not per attempt.
+export async function updateGuild(
+  body: UpdateGuildInput,
+  ifMatch: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<GuildDTO> {
+  const { data, error } = await api.PATCH("/api/v1/guild", {
+    params: { header: { "If-Match": ifMatch } },
+    headers: { "Idempotency-Key": idempotencyKey },
+    body,
+    signal,
+  });
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+```
+
+That snippet is not checked in place: the snippet-compile gate builds only `go`/`sql`/`hcl` fences, so
+a ` ```ts ` fence is prose to it. It is a transcription of
+[`web/src/examples/guild-endpoint.ts`](../../web/src/examples/guild-endpoint.ts), which is the file
+actually held to the spec — `make vet` and CI's `typecheck` job run `tsc --noEmit` over `web/src`, so
+if the generated types change shape that file (and thus this example) stops compiling in a Node-having
+job. In a real screen these functions become TanStack Query `queryOptions`/`useMutation` wrappers; see
+`.claude/rules/web.md` and `web/src/routes/`.
 
 If a future `oasdiff` reports a breaking change, you need the `!breaking-api` label and a line in
 `docs/api-changelog.md` — and a human decision.

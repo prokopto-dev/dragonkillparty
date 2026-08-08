@@ -1,0 +1,9 @@
+{
+  "name": "postinstall-guard-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A fixture whose postinstall script MUST NOT run. See test/repo/web_lint_test.go — CI installs with `pnpm install --frozen-lockfile --ignore-scripts`, and this proves the flag holds. If postinstall ran, it would create the sentinel file the test asserts is absent.",
+  "scripts": {
+    "postinstall": "node -e \"require('fs').writeFileSync('postinstall-ran.sentinel','a lifecycle script executed during install\\n')\""
+  }
+}

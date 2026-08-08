@@ -15,6 +15,16 @@ coverage.html
 node_modules/
 .pnpm-store/
 
+# The go:embed target for internal/ui. `make build` copies web/dist here; that real, hashed output
+# is build output and must not be committed. Two committed placeholders are the exception: they are
+# the compile-time fallback that keeps internal/ui buildable and TestEmbed_* runnable with no JS
+# toolchain. Everything else under the directory is ignored.
+/internal/ui/dist/*
+/internal/ui/dist/assets/*
+!/internal/ui/dist/index.html
+!/internal/ui/dist/assets/
+!/internal/ui/dist/assets/app-placeholder.js
+
 # Runtime data. Never commit a guild's database.
 /data/
 /dkp-data/
