@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/api/v1/guild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get guild settings
+         * @description Returns the single guild's identity and officer-editable settings, with a strong ETag a client stores and sends back as If-Match on a PATCH.
+         */
+        get: operations["getGuild"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update guild settings
+         * @description Applies a partial update to the guild under an If-Match precondition. A missing If-Match is 428; a stale one is 412 with the current representation in meta.current.
+         */
+        patch: operations["updateGuild"];
+        trace?: never;
+    };
     "/api/v1/meta": {
         parameters: {
             query?: never;
@@ -59,6 +83,45 @@ export interface components {
             /** @description Legal values or a corrected form, when they can be named */
             suggestions?: string[] | null;
         };
+        GuildDTO: {
+            /** @description Whether the sweep sets members inactive or merely reports them */
+            auto_set_inactive: boolean;
+            /**
+             * Format: date-time
+             * @description When the guild was created
+             */
+            created_at: string;
+            /** @description Whether inactive members are hidden from standings */
+            hide_inactive: boolean;
+            /**
+             * Format: int64
+             * @description Days of inactivity before the sweep flags a member, or null to never auto-flag
+             */
+            inactive_after_days: number | null;
+            /** @description The guild's display name */
+            name: string;
+            /** @description What this guild calls its points, e.g. DKP */
+            points_label: string;
+            /**
+             * Format: int64
+             * @description Display rounding depth, 0 through 2; storage is always centipoints
+             */
+            points_precision: number;
+            /** @description The <Guild Tag> as it appears in /who */
+            tag: string;
+            /** @description IANA timezone; renders all UI and buckets every day-scoped value */
+            timezone: string;
+            /**
+             * Format: date-time
+             * @description When the guild was last updated
+             */
+            updated_at: string;
+            /**
+             * Format: int64
+             * @description First day of the guild's week, 0 (Sunday) through 6 (Saturday)
+             */
+            week_start: number;
+        };
         MetaBody: {
             /** @description Versioned API prefixes this instance serves */
             api_versions: string[] | null;
@@ -106,6 +169,35 @@ export interface components {
              */
             type: string;
         };
+        UpdateGuildInputBody: {
+            /** @description Whether the sweep sets members inactive */
+            auto_set_inactive?: boolean;
+            /** @description Whether inactive members are hidden from standings */
+            hide_inactive?: boolean;
+            /**
+             * Format: int64
+             * @description Days before the sweep flags a member; a value sets it, omitting it leaves it unchanged
+             */
+            inactive_after_days?: number;
+            /** @description The guild's display name */
+            name?: string;
+            /** @description What this guild calls its points */
+            points_label?: string;
+            /**
+             * Format: int64
+             * @description Display rounding depth, 0..2
+             */
+            points_precision?: number;
+            /** @description The <Guild Tag> */
+            tag?: string;
+            /** @description IANA timezone */
+            timezone?: string;
+            /**
+             * Format: int64
+             * @description First day of the week, 0..6
+             */
+            week_start?: number;
+        };
     };
     responses: never;
     parameters: never;
@@ -115,6 +207,181 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getGuild: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuildDTO"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
+    updateGuild: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The ETag from a prior GET. Required; its absence is a 428. */
+                "If-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGuildInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuildDTO"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Precondition Failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Precondition Required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetail"];
+                };
+            };
+        };
+    };
     getMeta: {
         parameters: {
             query?: never;

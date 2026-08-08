@@ -42,6 +42,17 @@ printf '  building the SPA (vite)\n'
 [ -d web/dist ] || die "vite produced no web/dist — the build did not emit anything"
 [ -f web/dist/index.html ] || die "web/dist has no index.html — the SPA entry point is missing"
 
+# No source map ships (security F3). A .map hands an attacker the unminified source and comments, and
+# the embed's `all:` directive would carry it into the binary. Vite's default is sourcemap: false, so
+# a .map here means someone turned it on — fail before staging rather than embedding it. The runtime
+# lock is internal/ui's TestEmbed_NoSourceMapShips, which walks the embedded tree.
+maps=$(find web/dist -type f -name '*.map' 2>/dev/null || true)
+if [ -n "$maps" ]; then
+	die "vite emitted source maps — a .map leaks the unminified SPA source and must not ship:
+$(printf '%s\n' "$maps" | sed 's/^/  /')
+Set build.sourcemap: false in web/vite.config.ts."
+fi
+
 # Stage into the embed directory. Clear the previous real output first so a renamed hashed asset
 # does not leave a stale copy behind, but KEEP the tree so the committed placeholders' directory
 # structure is not disturbed on a partial failure.

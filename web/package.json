@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "lint:fixtures": "bash ../scripts/lint-web-fixtures.sh",
     "generate:client": "openapi-typescript ../openapi/openapi.json --output src/api/schema.d.ts"
   },
   "dependencies": {

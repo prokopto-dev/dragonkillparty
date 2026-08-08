@@ -20,27 +20,32 @@ var pendingPR6Marker = "PENDING" + " PR " + "6"
 // TestDocs_NoPendingMarkers is DEFERRED, and the deferral is deliberate — see coupling #2 in the
 // PR 6 brief and docs/development/first-ten-prs.md §PR 5b.
 //
-// The marker it polices does not exist on this branch. PR 5b rewrites EXAMPLE_ENDPOINT.md from PR 5a's
-// merged code and is what INSERTS the `PENDING PR 6` placeholder into step 6 (first-ten-prs.md:447).
-// PR 5b is being built in parallel and is not on PR 6's base, so writing an active assertion now would
-// either (a) pass vacuously because the marker was never inserted — a green test that proves nothing —
-// or (b) require faking the marker into a document PR 6 is told not to rewrite. Both are the failure
-// mode this project's test doctrine exists to prevent: a test that is green for the wrong reason.
+// The LIVE placeholder it polices — the `PENDING PR 6` token in step 6 of EXAMPLE_ENDPOINT.md, where
+// the generated TypeScript client call belongs — does not exist on this branch. PR 5b rewrites
+// EXAMPLE_ENDPOINT.md from PR 5a's merged code and is what INSERTS that placeholder. PR 5b is being
+// built in parallel and is not on PR 6's base, so removing the Skip now would pass vacuously against a
+// document that has no live placeholder to remove — a green test that proves nothing, which is the
+// failure mode this project's test doctrine exists to prevent.
 //
-// So the test ships SKIPPED with the reason attached, and its body is written and ready. The scan is
+// The token is NOT absent from the tree, though: docs/development/first-ten-prs.md carries it in
+// planning prose (it describes the marker and this very test). That is why the scan below excludes the
+// docs/development/** tree and this test's own repo/ package — both DESCRIBE the marker rather than
+// carrying it as a live placeholder, and a scan that flagged them would go red the instant the Skip is
+// removed, on prose nobody is expected to edit. The exclusions are in place NOW so that removing the
+// Skip later is a one-line change with a body that already does the right thing.
+//
+// So the test ships SKIPPED with the reason attached, and its body is written and correct. The scan is
 // real; only the t.Skip guard defers it. When PR 5b has merged and EXAMPLE_ENDPOINT.md carries the
-// placeholder, the follow-up that removes the placeholder deletes the Skip line below in the same
+// live placeholder, the follow-up that removes the placeholder deletes the Skip line below in the same
 // change — at which point this test does its job. The second half of the criterion (step 6's snippet
 // type-checks under `tsc --noEmit`) lands with that follow-up too, because the snippet it checks is
 // the one PR 5b writes.
-//
-// This is option (a) from the brief: the test is present and visible, skipped with a clear reason,
-// rather than faked against a document that does not have the marker yet.
 func TestDocs_NoPendingMarkers(t *testing.T) {
 	t.Parallel()
 
 	t.Skip("deferred until PR 5b inserts the `PENDING PR 6` placeholder into internal/api/EXAMPLE_ENDPOINT.md; " +
-		"see coupling #2 in the PR 6 brief. Removing this Skip is the follow-up that removes the placeholder.")
+		"see coupling #2 in the PR 6 brief. The body and its exclusions are correct now, so removing this " +
+		"Skip is the one-line follow-up that lands with the change removing the placeholder.")
 
 	root := repoRoot(t)
 
@@ -49,6 +54,15 @@ func TestDocs_NoPendingMarkers(t *testing.T) {
 	roots := []string{
 		filepath.Join(root, "docs"),
 		filepath.Join(root, "internal", "api"),
+	}
+
+	// Files that DESCRIBE the marker rather than carrying it as a live placeholder. The planning tree
+	// documents the whole PR sequence, including this marker and this test; excluding it keeps the scan
+	// pointed at live placeholders, not prose about them. Paths are relative to root, slash-separated.
+	excluded := func(rel string) bool {
+		rel = filepath.ToSlash(rel)
+
+		return strings.HasPrefix(rel, "docs/development/")
 	}
 
 	var offenders []string
@@ -61,15 +75,18 @@ func TestDocs_NoPendingMarkers(t *testing.T) {
 			if !strings.HasSuffix(path, ".md") {
 				return nil
 			}
-			// Skip this test's own package and the plan document, which describe the marker rather
-			// than carrying it as a live placeholder.
+
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil || excluded(rel) {
+				return nil //nolint:nilerr
+			}
+
 			body, readErr := os.ReadFile(path)
 			if readErr != nil {
 				return nil //nolint:nilerr
 			}
 			if strings.Contains(string(body), pendingPR6Marker) {
-				rel, _ := filepath.Rel(root, path)
-				offenders = append(offenders, rel)
+				offenders = append(offenders, filepath.ToSlash(rel))
 			}
 
 			return nil

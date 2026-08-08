@@ -15,15 +15,21 @@ import (
 // Law 4 has two mechanisms and TestLintRepo_HostileRepoRootEnv already proves the grep half fires.
 // This file proves the AST-aware half: eslint must reject a bare fetch outside src/api
 // (no-restricted-globals) AND a useEffect containing a fetch (no-restricted-syntax), the second of
-// which the grep cannot see. The fixtures live under web/test-fixtures/lint/, outside every tree the
-// project's own gates scan, so this is the only place they are ever linted.
+// which the grep cannot see. The fixtures live under web/test-fixtures/lint/, in eslint.config.js's
+// `ignores` so a bare `eslint .` (pnpm run lint) never flags them.
+//
+// This test is the LAPTOP-side check: it needs `make test` with a Node toolchain, which no CI job
+// runs. The CI-side lock is scripts/lint-web-fixtures.sh, invoked as `pnpm run lint:fixtures` from
+// `make lint-web` in the `lint / web` job — it runs eslint --no-ignore over the same fixtures and
+// fails if a deliberate violation is NOT caught. So the negative fixtures are proven to trip their
+// rule in two places: here on a developer's machine, and there on every PR. Both assert the same
+// thing; neither is redundant, because they run in different environments.
 //
 // It runs eslint through the workspace's own binary (web/node_modules/.bin/eslint) with --no-ignore,
 // because eslint.config.js lists test-fixtures/** in `ignores` so a bare `eslint .` stays green.
 //
 // Toolchain gating mirrors new_migration_test.go and licence_gate_test.go: skipped under -short, and
-// skipped with a clear reason when web dependencies are not installed. On CI's `lint / web` job they
-// are, so the gate runs there.
+// skipped with a clear reason when web dependencies are not installed.
 
 // webRoot returns the absolute path of the web/ directory.
 func webRoot(t *testing.T) string {

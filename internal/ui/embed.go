@@ -51,6 +51,27 @@ const indexHTML = "index.html"
 // would pin a client to an old asset graph forever.
 const cacheImmutable = "public, max-age=31536000, immutable"
 
+// indexCSP is the Content-Security-Policy for the SPA entry document.
+//
+// It mirrors internal/api/docs.go's docsCSP pattern — a self-only allowlist so a compromised or
+// mistaken dependency cannot exfiltrate to, or pull code from, a foreign origin. It is TIGHTER than
+// docsCSP because the SPA needs neither of Scalar's two escapes: Vite emits hashed <script> and
+// <link> tags, no inline <script> and no runtime style injection, so there is no 'unsafe-inline' and
+// no 'unsafe-eval' here. TestEmbed_Index_SetsCSP asserts the header, and the absence of the two
+// unsafe directives is the property that keeps the bundle honest — a build that started emitting an
+// inline script would break in the browser under this policy rather than shipping a hole.
+//
+//	default-src 'self'    scripts, styles, fonts, images, XHR/fetch — all same-origin only
+//	base-uri 'none'       no <base> can retarget every relative URL on the page
+//	form-action 'self'    a form can only post back to this origin
+//	frame-ancestors 'none' the SPA cannot be framed — clickjacking defence
+//	object-src 'none'     no <object>/<embed>/<applet>
+const indexCSP = "default-src 'self'; " +
+	"base-uri 'none'; " +
+	"form-action 'self'; " +
+	"frame-ancestors 'none'; " +
+	"object-src 'none'"
+
 // Handler serves the SPA. Assets resolve to their bytes; everything else that is not under /api
 // falls back to index.html so the client-side router can take the route.
 //
@@ -160,8 +181,17 @@ func (h *spaHandler) readFile(name string) ([]byte, bool) {
 // serveAsset writes a hashed asset with the immutable cache header and a content type inferred from
 // its extension.
 func (h *spaHandler) serveAsset(w http.ResponseWriter, r *http.Request, name string, data []byte) {
-	if ct := contentType(name); ct != "" {
+	ct := contentType(name)
+	if ct != "" {
 		w.Header().Set("Content-Type", ct)
+	}
+
+	// Any HTML document — not only index.html — carries the self-only CSP. A single-page Vite build
+	// emits one HTML file (index, served by serveIndex), so this branch is dormant today; it exists so
+	// a future multi-entry build that emits a second .html cannot ship an un-CSP'd HTML page as a
+	// hashed asset. See indexCSP.
+	if strings.HasPrefix(ct, "text/html") {
+		w.Header().Set("Content-Security-Policy", indexCSP)
 	}
 
 	w.Header().Set("Cache-Control", cacheImmutable)
@@ -191,5 +221,8 @@ func (h *spaHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
 	// graph is picked up on the next navigation.
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// Self-only CSP so the entry document — the one file every session loads — cannot be turned into
+	// an exfiltration or code-injection vector by a compromised dependency. See indexCSP.
+	w.Header().Set("Content-Security-Policy", indexCSP)
 	http.ServeContent(w, r, indexHTML, zeroTime, newReadSeeker(data))
 }

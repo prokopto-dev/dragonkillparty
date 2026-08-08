@@ -17,8 +17,8 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
-	"github.com/prokopto-dev/dragonkillparty/internal/ui"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
+	"github.com/prokopto-dev/dragonkillparty/internal/ui"
 )
 
 const (
@@ -259,7 +259,7 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			// same-origin, which is what a co-hosted binary serves.
 			APIBase: os.Getenv(apiBaseEnv),
 			WebUI:   webUI,
-			Store:     st,
+			Store:   st,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,6 +70,19 @@ func TestServer_WebUI_APIPathNotDelegatedToSPA(t *testing.T) {
 		"an unmatched /api path must never return the SPA's HTML")
 	// The stub sets served on any hit; it must remain empty for an /api path.
 	require.Empty(t, spa.served, "the SPA must never be handed an /api path")
+
+	// A mistyped /api endpoint is a 404, and it is problem+json — not net/http's text/plain
+	// `404 page not found`, which a bot's error parser cannot read (canonical §7: every error is
+	// RFC 9457, and never a 200 with an error body).
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"an unmatched /api path must return 404")
+	require.Contains(t, res.Header.Get("Content-Type"), "application/problem+json",
+		"an unmatched /api path must render RFC 9457 problem+json")
+
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"code":"not_found"`,
+		"the problem body must carry the not_found machine code")
 }
 
 // TestServer_NilWebUI_NoSPAMount asserts a server built without a WebUI serves no SPA — the shape

@@ -169,6 +169,61 @@ func TestEmbed_PathTraversal_CannotEscapeDist(t *testing.T) {
 	}
 }
 
+// TestEmbed_Index_SetsSelfOnlyCSP pins security F2: the SPA entry document carries a self-only
+// Content-Security-Policy so a compromised dependency cannot exfiltrate to, or pull code from, a
+// foreign origin. The two 'unsafe-' directives are ASSERTED ABSENT — the Vite bundle uses external
+// hashed <script>/<link>, no inline script and no runtime style injection, so a build that regressed
+// into needing either would break in the browser under this policy rather than shipping a hole.
+func TestEmbed_Index_SetsSelfOnlyCSP(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler(t)
+
+	// The fallback index and a bare "/" both go through serveIndex; check both entry points.
+	for _, target := range []string{"/", "/standings"} {
+		rec := get(t, h, target)
+
+		csp := rec.Header().Get("Content-Security-Policy")
+		require.Equal(t,
+			"default-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'",
+			csp, "%s must carry the self-only SPA CSP", target)
+		require.NotContains(t, csp, "unsafe-inline",
+			"the SPA needs no inline script or style — 'unsafe-inline' would defeat the policy")
+		require.NotContains(t, csp, "unsafe-eval",
+			"the SPA needs no eval — 'unsafe-eval' would defeat the policy")
+	}
+}
+
+// TestEmbed_NoSourceMapShips pins security F3: no *.map ships in the embedded SPA. A source map hands
+// an attacker the unminified source and comments; scripts/build-web.sh refuses to stage one, and this
+// is the runtime-side lock — every embedded file is walked and none may end in .map.
+//
+// It walks the embedded fs.FS through the handler rather than the on-disk dist, because the embed is
+// what the binary actually serves; a .map present on disk but absent from the embed would still be a
+// leak if the embed picked it up via `all:`.
+func TestEmbed_NoSourceMapShips(t *testing.T) {
+	t.Parallel()
+
+	// Walk the committed dist tree that internal/ui embeds. The placeholder tree has no .map; the real
+	// build must not add one, and build-web.sh fails before staging if it would.
+	root := filepath.Join("dist")
+
+	var maps []string
+
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Ext(path) == ".map" {
+			maps = append(maps, path)
+		}
+
+		return nil
+	})
+	require.NoError(t, err, "walk the embedded dist tree")
+	require.Empty(t, maps, "no source map may ship in the embedded SPA — it leaks the unminified source")
+}
+
 // TestEmbed_NonGetMethod_MethodNotAllowed pins the verb guard: the SPA serves GET and HEAD only.
 func TestEmbed_NonGetMethod_MethodNotAllowed(t *testing.T) {
 	t.Parallel()

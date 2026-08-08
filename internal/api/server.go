@@ -137,11 +137,14 @@ func New(cfg Config) http.Handler {
 	// return 200 with an HTML page — the exact "200 with an error page" failure every bot author
 	// suffered from EQdkp. The SPA handler in internal/ui 404s /api too, as defence in depth, but the
 	// routing guarantee belongs here where the mount order is visible. TestServer_WebUI_* pins both.
+	//
+	// The guard renders problem+json rather than net/http's text/plain `404 page not found`: a bot
+	// hitting a mistyped endpoint must get the same RFC 9457 body it gets everywhere else, not a
+	// content type its error parser cannot read. This is a routed pattern, so the Problem middleware
+	// hands it through untouched — the handler owns its own error shape (handleAPINotFound).
 	if cfg.WebUI != nil {
 		mux.Handle("/", cfg.WebUI)
-		mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
-		})
+		mux.HandleFunc("/api/", handleAPINotFound)
 	}
 
 	// Both arguments are the same mux: Problem asks it which pattern would match, then delegates to
@@ -150,6 +153,18 @@ func New(cfg Config) http.Handler {
 	handler := middleware.Problem(mux, problemRenderer{}, mux)
 
 	return middleware.RequestID(clk, handler)
+}
+
+// handleAPINotFound answers an unmatched /api path with an RFC 9457 problem+json 404.
+//
+// It is the handler behind the "/api/" catch-all mounted alongside the SPA. Because "/api/" is a
+// routed pattern, the Problem middleware delegates to it untouched (see middleware.Problem), so this
+// handler — not the middleware's unrouted-path branch — owns the response. Reusing problemRenderer
+// keeps the body byte-identical to every other unrouted-path 404 the server produces; the bare
+// http.NotFound it replaces returned text/plain, which a bot's error parser cannot read.
+func handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	problemRenderer{}.RenderProblem(w, r, http.StatusNotFound, string(CodeNotFound),
+		"No operation is registered for this path.")
 }
 
 // NewHumaAPI builds the Huma API alone, with no server around it.

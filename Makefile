@@ -335,8 +335,13 @@ lint-go:
 		printf '\033[31m  golangci-lint not installed — run make setup\033[0m\n'; exit 1; }; \
 	"$$bin" run
 
+# `lint` scopes eslint to src/** (the negative fixtures are in eslint.config.js's `ignores`, so a
+# bare `eslint .` stays green). `lint:fixtures` is the negative gate: it runs eslint --no-ignore over
+# web/test-fixtures/lint/ and FAILS if a deliberate law-4 violation is NOT caught — the property that
+# keeps the AST-aware half of law 4 from silently going blind. Both run in CI's `lint / web` job.
 lint-web:
-	@if [ -f web/package.json ]; then cd web && pnpm run lint; \
+	@if [ -f web/package.json ]; then \
+		cd web && pnpm run lint && pnpm run lint:fixtures; \
 	else $(call notyet,Phase 0 PR 6,web/ is not scaffolded yet); fi
 
 # Reachable-vulnerability analysis. Same one-shell-block idiom and the same hard-fail-when-missing
