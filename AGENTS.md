@@ -86,7 +86,13 @@ resolves to a real target, not that every target appears here.)
 
 ## Code style and naming
 
-- `gofumpt` + `goimports`; a PostToolUse hook formats on save — don't format by hand.
+- `gofumpt` + `goimports`; a PostToolUse hook formats on save — don't format by hand. Tracked git
+  hooks (installed by `make setup`) also auto-format staged files on `git commit` and block a `git
+  push` that would land anything unformatted, so nothing unformatted reaches CI.
+- Update a PR branch **locally** — `git merge origin/main && make fmt && git push` — not with
+  GitHub's "Update branch" button. A server-side merge bypasses the commit hook, so a merge that
+  stitches two edits of the same file together can land it gofumpt-dirty and fail CI; merging
+  locally runs the hooks and `make fmt` before the push.
 - Errors wrap with `%w` and context: `fmt.Errorf("load pool %s: %w", id, err)`. Sentinel errors in
   the owning package as `ErrNotFound`, `ErrConflict`.
 - Handlers return Huma error types; they never write to `http.ResponseWriter`.

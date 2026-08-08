@@ -102,6 +102,10 @@ jobs:
               # lazy way to get that, and would also drag in the web, api, docs and importer jobs,
               # none of which can be affected by a shell gate.
               - 'scripts/**'
+              # The tracked git hooks, for the same reason as scripts/** above: test/repo's
+              # githooks_test runs .githooks/pre-commit and pre-push under `make test`, so a
+              # hooks-only change must reach `test / integration` to exercise that gate.
+              - '.githooks/**'
             web:
               - *build
               - 'web/**'
@@ -388,7 +392,13 @@ jobs:
           # testdata/lintfixtures/* to prove each arithmetic ban actually fires. They are gated out
           # of the -short unit run and execute in this full suite, so this job needs the linter on
           # PATH — without it they fail-loud with "golangci-lint not on PATH".
-          tools: "golangci-lint"
+          #
+          # gofumpt is here for test/repo's githooks_test: it runs .githooks/pre-commit and
+          # .githooks/pre-push against a real staged, mis-formatted Go file in t.TempDir() and
+          # asserts the hooks format and block. Without gofumpt on PATH that functional test skips,
+          # and the gate would go unexercised in CI — the exact "green build that ran nothing" this
+          # repo's test-the-gate ethos exists to prevent.
+          tools: "golangci-lint gofumpt"
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
