@@ -6,19 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 )
 
-// DBTX is the handle a transaction body runs against.
+// DBTX is the handle the low-level transaction primitive runs against.
 //
-// It is deliberately the shape sqlc generates against, so that a later PR can construct
-// `sqlitegen.New(tx)` inside Tx and change the callback to `func(store.Queries) error` — the form
-// .claude/rules/store-and-sql.md documents — without touching this file's locking, rollback or
-// panic handling.
-//
-// That change belongs to PR 5. This comment named PR 3 until PR 4 corrected it: PR 3 did not make
-// the change, because there were no callers and it would have churned tests for no gain, and PR 4
-// did not either, because its one endpoint (GET /api/v1/meta) reads no database. PR 5 writes the
-// first query-backed endpoint, which is the moment the new signature has a caller to justify it.
+// It is deliberately the shape sqlc generates against, so that Tx can construct `sqlitegen.New(tx)`
+// and hand the callback a store.Queries — the form .claude/rules/store-and-sql.md documents —
+// without the callback ever seeing a *sql.Tx.
 //
 // It is an interface rather than *sql.Tx because "never pass a *sql.Tx into a domain package"
 // (.claude/rules/store-and-sql.md) — but note that DBTX is not a licence either. Its four methods
@@ -33,9 +29,16 @@ type DBTX interface {
 
 var _ DBTX = (*sql.Tx)(nil)
 
-// Tx runs fn inside a single write transaction and commits it, or rolls back and returns the
-// error fn returned. Every mutation in the product goes through here; there are no exceptions and
-// no second way to open a transaction.
+// Tx runs fn inside a single write transaction and commits it, or rolls back and returns the error
+// fn returned. Every mutation in the product goes through here; there are no exceptions and no
+// second way to open a transaction.
+//
+// The callback receives a store.Queries, not a raw handle. That is the signature change tx.go had
+// reserved for PR 5 (the reservation is in git history): PR 5 writes the first query-backed
+// mutation — PATCH /api/v1/guild — which is the first caller that has a typed query to run inside a
+// transaction. A domain package therefore never touches DBTX or *sql.Tx; it sees the same Queries
+// interface inside a transaction that Q() gives it outside one, and the two dialects' generated
+// implementations both satisfy it.
 //
 // The transaction is always on the WRITE pool, which is capped at one connection. Two callers
 // therefore queue rather than race, and because the pool's DSN carries _txlock=immediate the write
@@ -43,12 +46,27 @@ var _ DBTX = (*sql.Tx)(nil)
 // rather than a half-finished transaction that has to be unwound.
 //
 // Reads that are not part of a mutation must NOT come through here: a read inside a write
-// transaction holds the single writer for the duration of the read.
+// transaction holds the single writer for the duration of the read. Use Q() for those.
 //
 // On panic, the transaction is rolled back and the panic is re-raised unchanged. Swallowing it
 // would convert a programming error into a silently-empty database, which is the failure mode this
 // product can least afford.
-func (s *Store) Tx(ctx context.Context, fn func(context.Context, DBTX) error) error {
+func (s *Store) Tx(ctx context.Context, fn func(context.Context, Queries) error) error {
+	return s.txRaw(ctx, func(ctx context.Context, tx DBTX) error {
+		return fn(ctx, sqlitegen.New(tx))
+	})
+}
+
+// txRaw is the transaction primitive: it owns the locking, the rollback, the panic handling and the
+// commit, and it runs fn against the raw transaction handle.
+//
+// It is unexported because a raw DBTX must never leave this package — Tx is the only public door,
+// and it constructs a Queries before handing control out. txRaw exists as a separate function for
+// two reasons: SetMetaValue runs an upsert through the generated Queries but the store's own
+// machinery tests need statements no Queries method covers (a scratch table), and keeping the
+// mechanics in one place means the commit/rollback/panic guarantees are written and tested once
+// rather than once per caller.
+func (s *Store) txRaw(ctx context.Context, fn func(context.Context, DBTX) error) error {
 	tx, err := s.write.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin write transaction: %w", err)
