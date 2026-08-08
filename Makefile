@@ -37,6 +37,14 @@ LDFLAGS        := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X m
 # Kept as a single variable so the `docker` and (Phase 0 PR 7) release-image recipes cannot drift.
 DOCKER_BUILD_ARGS ?= --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE)
 
+# Export the image identity so the shell scripts that boot/measure the built image
+# (scripts/smoke-local.sh, scripts/image-size.sh) see the SAME IMAGE:VERSION that `make docker`
+# tagged. Without this, those scripts fall back to their `:dev` default and, in CI's `build / image`
+# job, look for an image that was never built — Docker then tries to pull `:dev` from ghcr and is
+# denied (make smoke-local Error 125). The script comments already promise these "mirror the
+# Makefile"; exporting makes that true instead of aspirational.
+export IMAGE VERSION COMMIT DATE
+
 # The `go` directive in go.mod is the single source of the minimum toolchain. `make setup` asserts
 # the installed Go satisfies it; it cannot install Go itself.
 GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
