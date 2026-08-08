@@ -14,6 +14,15 @@ import re
 import sys
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+# A fenced code block opens and closes on a line whose first non-space characters are ``` (or ~~~).
+# Everything between an opening fence and its closing fence is CODE, not prose, and must not be
+# scanned for links: a Go generic instantiation — a call whose type argument sits in square brackets
+# immediately before the parenthesised argument list, e.g. `Budget[int64](t, 1)` — is
+# indistinguishable from a markdown link `[int64](t, 1)` to this regex. Before this skip,
+# `make docs-links` went red on Go samples inside code fences in the two most valuable documents in
+# the repo (EXAMPLE_ENDPOINT.md, RECIPES.md), which is a merge-blocking gate mis-firing on correct
+# content. Backticks around the token do not help; only skipping the fenced region does.
+FENCE = re.compile(r"^\s*(```+|~~~+)")
 SKIP_DIRS = {".git", "node_modules", "dist", ".astro", "bin"}
 
 
@@ -31,7 +40,15 @@ def main() -> int:
                 continue
             path = os.path.relpath(os.path.join(dirpath, fn), ".")
             with open(path, encoding="utf-8", errors="replace") as fh:
+                in_fence = False
                 for lineno, line in enumerate(fh, 1):
+                    if FENCE.match(line):
+                        # A fence line toggles the code region on and off. The fence line itself is
+                        # never prose, so it is skipped in both directions.
+                        in_fence = not in_fence
+                        continue
+                    if in_fence:
+                        continue
                     for m in LINK.finditer(line):
                         target = m.group(1).strip()
                         # Strip a title: [text](path "Title")

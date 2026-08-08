@@ -107,7 +107,7 @@ endef
         fixture-publish fixture-gate release-version release-notes release-image \
         release-manifest release-sign release-sbom release-smoke release-promote \
         release-promote-rc release-refdb release-failure-issue \
-        third-party-notices image-size
+        eval-example-endpoint third-party-notices image-size
 
 ## help: list every target with its description
 help:
@@ -444,6 +444,24 @@ mockup-site:
 # leaking in from a developer's shell would turn a merge-blocking gate green.
 verify-spec:
 	@env -u DKP_REPO_ROOT -u DKP_SPEC_BASE_REF python3 scripts/verify-spec.py
+
+## eval-example-endpoint: LOCAL agent-eval of the two worked-example documents
+# Hands a fresh agent session nothing but the repo plus internal/api/EXAMPLE_ENDPOINT.md and
+# db/RECIPES.md, and one instruction (add GET /api/v1/guild/settings). Passes when the resulting tree
+# has `make check` and the spec-drift gate green.
+#
+# LOCAL-ONLY, ON PURPOSE (decision record §U5). There is deliberately NO nightly workflow and NO CI
+# secret: which runner, whose API key and what budget are unsettled, and the nightly lane lands with
+# the release train in Phase 0 PR 7 rather than shipping a workflow that needs a key nobody agreed to.
+# It needs an agent CLI on PATH; set DKP_EVAL_RUNNER to yours. See the script header for the contract.
+eval-example-endpoint:
+	@env -u DKP_REPO_ROOT bash scripts/eval-example-endpoint.sh
+
+# The documentation snippet-compile gate runs inside `make test` — it is
+# TestDocs_ExampleEndpointSnippets_Compile in internal/api, which extracts every fenced block from the
+# two worked-example documents and rebuilds it (Go blocks `go build`, SQL blocks pass sqlc, HCL blocks
+# pass `atlas schema inspect`). It has no target of its own because it is an ordinary Go test that
+# `make test` already runs; it skips under -short so `make test-unit` does not pay it.
 
 api-breaking:
 	@$(call notyet,Phase 2,oasdiff against main's openapi.json)
