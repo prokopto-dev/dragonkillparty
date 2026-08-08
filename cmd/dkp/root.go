@@ -28,6 +28,9 @@ func newRootCmd() *cobra.Command {
 		newServeCmd(nil),
 		newMigrateCmd(),
 		newOpenAPICmd(),
+		// The container HEALTHCHECK. A loopback GET /healthz that touches no database — canonical
+		// §13 — so it stays green through a migration while /readyz reports not-ready.
+		newHealthcheckCmd(),
 	)
 
 	return cmd
