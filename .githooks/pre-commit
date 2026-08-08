@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# pre-commit — auto-format STAGED files, then re-stage them.
+#
+# The point is that nothing unformatted ever reaches CI's `lint / go` (gofumpt) or `lint / web`
+# (prettier). This hook formats only what you are about to commit, re-adds it, and gets out of the
+# way. It is not a gate: a commit is never blocked here, not even for a missing formatter — a
+# formatter you have not installed yet is a laptop-setup problem, and the pre-push backstop plus CI
+# still catch drift. Blocking a commit for a missing tool just teaches people to `--no-verify`.
+#
+# It runs the SAME gofumpt + goimports the Makefile's `fmt` target runs, resolved the same way
+# (command -v, else $GOTOOLS_BIN), so a laptop and CI format byte-identically. Web uses the repo's
+# own pinned prettier under web/node_modules/.bin.
+#
+# Installed by `make setup` (git config core.hooksPath .githooks). Never touches unstaged changes:
+# it only formats and re-adds paths that are already staged.
+#
+set -euo pipefail
+
+# Honour the same off-switch the PostToolUse formatter uses, so a hostile-terminal or CI checkout
+# can disable it without editing the file.
+if [[ "${DKP_HOOKS:-on}" == "off" ]]; then
+	exit 0
+fi
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+# Where `make setup` installs the Go dev tools: GOBIN if set, else GOPATH/bin. Resolved the same
+# way the Makefile resolves GOTOOLS_BIN so the hook and `make fmt` invoke the same binaries.
+gotools_bin="$(go env GOBIN 2>/dev/null || true)"
+if [[ -z "$gotools_bin" ]]; then
+	gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
+fi
+
+# tool <name> — echo an executable path for the named formatter, or nothing if it is not installed.
+# command -v first (a deliberately chosen system tool wins), then the GOTOOLS_BIN install path.
+tool() {
+	local bin
+	bin="$(command -v "$1" 2>/dev/null || true)"
+	if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
+		bin="$gotools_bin/$1"
+	fi
+	printf '%s' "$bin"
+}
+
+# --- Go ---------------------------------------------------------------------------------------
+# Staged, added/copied/modified, *.go only. NUL-delimited so paths with spaces or newlines survive;
+# a while-read loop rather than `mapfile`, which macOS's stock bash 3.2 does not have.
+go_files=()
+while IFS= read -r -d '' f; do go_files+=("$f"); done \
+	< <(git diff --cached --name-only --diff-filter=ACM -z -- '*.go')
+
+if [[ ${#go_files[@]} -gt 0 ]]; then
+	goimports="$(tool goimports)"
+	gofumpt="$(tool gofumpt)"
+
+	if [[ -n "$goimports" ]]; then
+		# -local groups this module's imports last, matching the PostToolUse hook.
+		module="$(awk '$1 == "module" { print $2; exit }' go.mod 2>/dev/null || true)"
+		if [[ -n "$module" ]]; then
+			"$goimports" -w -local "$module" -- "${go_files[@]}"
+		else
+			"$goimports" -w -- "${go_files[@]}"
+		fi
+	else
+		printf 'pre-commit: goimports not installed — skipping Go import formatting. Run `make setup`.\n' >&2
+	fi
+
+	if [[ -n "$gofumpt" ]]; then
+		"$gofumpt" -w -- "${go_files[@]}"
+	else
+		printf 'pre-commit: gofumpt not installed — skipping Go formatting. Run `make setup`.\n' >&2
+	fi
+
+	# Re-stage whatever the formatters rewrote. A file the user deleted between staging and now is
+	# skipped rather than resurrected.
+	for f in "${go_files[@]}"; do
+		[[ -f "$f" ]] && git add -- "$f"
+	done
+fi
+
+# --- Web --------------------------------------------------------------------------------------
+# The repo's own pinned prettier, never a global one — a global prettier of a different version
+# reformats differently from CI and creates the exact drift this hook exists to prevent.
+prettier="web/node_modules/.bin/prettier"
+web_files=()
+while IFS= read -r -d '' f; do web_files+=("$f"); done \
+	< <(git diff --cached --name-only --diff-filter=ACM -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
+
+if [[ ${#web_files[@]} -gt 0 ]]; then
+	if [[ -x "$prettier" ]]; then
+		"$prettier" --write --log-level warn -- "${web_files[@]}"
+		for f in "${web_files[@]}"; do
+			[[ -f "$f" ]] && git add -- "$f"
+		done
+	else
+		printf 'pre-commit: web/node_modules/.bin/prettier not installed — skipping web formatting.\n' >&2
+	fi
+fi
+
+exit 0
