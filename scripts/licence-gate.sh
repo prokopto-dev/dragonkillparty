@@ -463,11 +463,28 @@ js_expr_allowed() {
     return 0
 }
 
-if [ -f web/package.json ]; then
+# Whether this section can run at all. It needs BOTH pnpm (to resolve the graph) and node (to
+# classify the JSON), and it must DEGRADE — not die — when they are absent.
+#
+# The Go check above is toolchain-mandatory: `go` is required for the whole build, so a missing Go
+# is a real error. Node/pnpm are not. They are installed for the web-facing CI jobs (`node: "true"`)
+# but NOT for `test / unit` or `test / integration`, whose runners have only Go. Those two jobs run
+# test/repo/licence_gate_test.go, which shells out to this script against the real tree — so a hard
+# `die` here fails a job that was never meant to resolve the JS graph, on a box that cannot.
+#
+# So when the JS toolchain is absent this section prints a `note:` and is skipped with the Go check's
+# verdict preserved; the Go half ALWAYS runs. The authoritative JS enforcement lives in the
+# `security / licences` CI job, which installs node+pnpm (see .github/workflows/ci.yml) — that job is
+# where a bad JS licence fails the build, and `scripts/**` is in its path filter so this gate cannot
+# skip it. When the toolchain IS present (dev boxes, that job) the full JS graph is enumerated and
+# the gate fails closed exactly as before.
+if [ -f web/package.json ] && ! { command -v pnpm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; }; then
     echo
     echo "licence gate — JavaScript (web/)"
-
-    command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed — the JS dependency set cannot be resolved (run make setup)"
+    echo "  note: skipping JS dependency licences — pnpm not installed (enforced by the security/licences CI job)"
+elif [ -f web/package.json ]; then
+    echo
+    echo "licence gate — JavaScript (web/)"
 
     # The generator is not needed, but the graph must be resolved on disk for `pnpm licenses list` to
     # read each package's licence. Same frozen/no-scripts posture as the build and CI.
