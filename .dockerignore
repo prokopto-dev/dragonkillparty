@@ -1,0 +1,42 @@
+# Keep the build context small and hermetic. The build stage needs the Go module graph and the Go
+# sources; nothing else belongs in the context, and a fat context slows every `docker build` and
+# every layer-cache miss.
+#
+# This is an allowlist-by-exclusion: everything below is either already-built output (which the
+# multi-stage build regenerates), tooling that never reaches the binary, or local cruft that would
+# invalidate the cache on every commit.
+
+# Version control and CI.
+.git
+.github
+.gitignore
+.dockerignore
+
+# Agent and editor local state — never part of a build.
+.claude
+.vscode
+.idea
+
+# Build output. The image builds the binary itself; a stale ./bin from a laptop must not leak in.
+/bin
+/dist
+web/dist
+web/node_modules
+node_modules
+coverage.out
+
+# Docs and design. Served from embed.FS by the binary when they are embedded; the source tree here
+# is not needed to compile, and the mockups are large.
+docs/design/mockups
+
+# The container definition and deploy assets do not go into their own build context.
+deploy
+Dockerfile
+
+# Test fixtures and golden data are large and never linked into the binary.
+test/fixtures
+test/golden
+
+# OS junk.
+.DS_Store
+*.swp
