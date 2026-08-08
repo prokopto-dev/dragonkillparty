@@ -28,6 +28,19 @@ sql:
         # implement rather than a second set of concrete types.
         emit_interface: true
 
-        # A nullable column becomes *T rather than sql.NullT. There are no nullable columns yet;
-        # setting it now means the first one does not silently change every existing signature.
+        # A nullable column becomes *T rather than sql.NullT. setting it means the first nullable
+        # column arrives as a pointer rather than silently changing every existing signature.
         emit_pointers_for_null_types: true
+
+        # Type overrides. sqlc's SQLite engine (v1.31.1) types a nullable INTEGER column read
+        # through a bare `SELECT col` as `interface{}` rather than honouring
+        # emit_pointers_for_null_types — it loses the affinity of a NULL column that is not
+        # projected through a join or an aggregate. guild.inactive_after_days is the repo's first
+        # nullable column and the first to hit it. Pinning it to *int64 is what the pointer option
+        # would have produced, and it keeps `interface{}` out of the store contract and the domain
+        # signatures (.claude/rules/go-idioms.md bans `any` in the middle of the typed boundaries).
+        overrides:
+          - column: "guild.inactive_after_days"
+            go_type:
+              type: "int64"
+              pointer: true

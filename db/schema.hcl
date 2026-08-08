@@ -69,3 +69,143 @@ table "dkp_meta" {
   without_rowid = true
   strict        = true
 }
+
+// guild — the single-row instance identity and its officer-editable settings.
+//
+// There is exactly ONE guild per instance (canonical §9, ADR-0004) and no `guild_id` column
+// anywhere in the schema. This table holds the identity of that guild — its name, tag and timezone
+// — and the handful of settings a job or a query reads rather than an SPA renders once.
+//
+// The singleton is enforced in the schema, not by convention: `id INTEGER PRIMARY KEY CHECK
+// (id = 1)` (docs/design/01-domain-model.md:42-43). This is the ONE table whose id is an integer
+// rather than a ULID, and deliberately so — a ULID keys a row that is one of many, and there is
+// only ever one guild. A second INSERT fails the CHECK rather than silently creating a second
+// guild that every scope-free query would then have to disambiguate.
+//
+// TWELVE COLUMNS, exactly (docs/development/phase-0-pr5-decisions.md §U2). The domain model
+// (01-domain-model.md:42-60) carries seventeen; five are deliberately NOT shipped here because
+// nothing reads them until Phase 2 or Phase 4: `locale` (ADR-0012 is English-only at 1.0),
+// `public_standings` (needs auth to mean anything), `artifact_retention_days` and `redact_tells`
+// (parser and retention, Phase 4), and `settings_json` (no schema yet). The freeze rule cuts this
+// way: `ALTER TABLE ADD COLUMN` is a cheap forward migration, while removing or retyping a column
+// is SQLite's 12-step rebuild — so over-shipping is the expensive mistake, not under-shipping.
+table "guild" {
+  schema = schema.main
+
+  // The singleton key. INTEGER, not a ULID: see the table comment. The CHECK is what makes this a
+  // singleton — the second row cannot be inserted.
+  column "id" {
+    null = false
+    type = integer
+  }
+
+  // The guild's display name. NOT NULL and carries no default: a guild with no name is a boot that
+  // was never configured, and defaulting it to '' would hide that.
+  column "name" {
+    null = false
+    type = text
+  }
+
+  // The <Guild Tag> as it appears in P99's /who output. Defaults to '' — a guild may not have set
+  // one yet, and '' is "unset" rather than a name that happens to be blank.
+  column "tag" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // IANA timezone. Renders all UI and buckets every *_day column, so it is a real column and not a
+  // settings_json key. 'UTC' is the safe default: it is the one zone that is always valid.
+  column "timezone" {
+    null    = false
+    type    = text
+    default = "UTC"
+  }
+
+  // The first day of the guild's week, 0 (Sunday) through 6 (Saturday), driving weekly attendance
+  // and decay buckets. Default 1 (Monday).
+  column "week_start" {
+    null    = false
+    type    = integer
+    default = 1
+  }
+
+  // What this guild calls its points — 'DKP', 'EP', 'GP', whatever the guild uses. Display only;
+  // storage is always centipoints.
+  column "points_label" {
+    null    = false
+    type    = text
+    default = "DKP"
+  }
+
+  // DISPLAY rounding only, 0 through 2 decimal places. Storage is always _cp (centipoints); this
+  // never touches the ledger, which is why it is a guild setting rather than a ledger property.
+  column "points_precision" {
+    null    = false
+    type    = integer
+    default = 2
+  }
+
+  // Days of no attendance before the inactivity sweep flags a member, or NULL to never auto-flag.
+  // NULL is meaningful here — it is the "off" state of the sweep — which is why this column is
+  // nullable where the two booleans below are not.
+  column "inactive_after_days" {
+    null = true
+    type = integer
+  }
+
+  // Whether the sweep job actually sets members inactive, or merely reports them. Boolean stored as
+  // 0/1 (canonical §8: SQLite has no BOOLEAN under STRICT).
+  column "auto_set_inactive" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // Whether inactive members are hidden from standings. A query reads this, so it is a column.
+  column "hide_inactive" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // The singleton constraint. A second guild row fails this at INSERT.
+  check "guild_is_singleton" {
+    expr = "id = 1"
+  }
+
+  // week_start is a day-of-week, 0..6.
+  check "guild_week_start_range" {
+    expr = "week_start BETWEEN 0 AND 6"
+  }
+
+  // points_precision is a display-rounding depth, 0..2.
+  check "guild_points_precision_range" {
+    expr = "points_precision BETWEEN 0 AND 2"
+  }
+
+  // Booleans are 0/1 under STRICT, enforced rather than trusted.
+  check "guild_auto_set_inactive_bool" {
+    expr = "auto_set_inactive IN (0, 1)"
+  }
+
+  check "guild_hide_inactive_bool" {
+    expr = "hide_inactive IN (0, 1)"
+  }
+
+  strict = true
+}

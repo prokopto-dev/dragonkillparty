@@ -9,6 +9,33 @@ package api
 // the in-process registry.
 const ExtensionPermission = "x-dkp-permission"
 
+// ExtensionScopes is the OpenAPI extension key naming the PAT scopes an operation accepts.
+//
+// It is declared on every PAT-callable operation, alongside Security and x-dkp-permission
+// (docs/development/phase-0-pr5-decisions.md §U4). Four documents required it before PR 4 and no code
+// emitted it; PR 5a is where it becomes real. Like x-dkp-permission it goes in Extensions, not
+// Metadata — Metadata is tagged `yaml:"-"` and never reaches the document.
+//
+// The three-case rule TestArch_ScopeCoverage_MatchesSecurity enforces:
+//   - an operation whose Security offers a `pat` alternative carries a non-empty x-dkp-scopes, every
+//     member resolving in the authz catalogue (getGuild -> ["roster:read"]);
+//   - an operation in canonical §6's capability floor is session-only and carries
+//     x-dkp-pat-forbidden: true and NO scopes;
+//   - an operation that is session-only merely because no scope family covers it declares NEITHER
+//     (updateGuild -> admin.settings, which is not in the floor).
+//
+// Declaring the extension also retires an unverified claim: 02-api-design.md flagged scope arrays on
+// non-oauth2 Security as of uncertain legality in OpenAPI 3.1. If x-dkp-scopes is always present as a
+// plain extension, that question stops mattering.
+const ExtensionScopes = "x-dkp-scopes"
+
+// ExtensionPATForbidden is the OpenAPI extension key marking an operation as forbidden to personal
+// access tokens — the capability floor of canonical §6. It is `true` on exactly the operations that
+// alter authentication, authorization or bulk-export state, and absent everywhere else. No operation
+// in PR 5a sets it: getGuild is PAT-callable and updateGuild is session-only by omission, not by
+// being in the floor.
+const ExtensionPATForbidden = "x-dkp-pat-forbidden"
+
 // Permission sentinels.
 //
 // docs/design/02-api-design.md §4.1 defines exactly two values that appear in the permission column
