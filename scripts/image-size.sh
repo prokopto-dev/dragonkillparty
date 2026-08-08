@@ -5,11 +5,13 @@
 # uncompressed. This measures the COMPRESSED size (the sum of the gzipped layer sizes, which is what
 # a `docker pull` transfers and what the registry reports) and compares it to the budget.
 #
-# ADVISORY on the PR path: it prints the number and warns on a breach, and the ci.yml step runs it
-# with continue-on-error so a breach is a signal, not a merge block — a legitimate breach is a
-# one-line budget edit reviewed in the diff. On the RELEASE path the same measurement is a hard gate
-# (a shipped image that blew the budget is a real regression). MODE selects which: MODE=enforce exits
-# non-zero on a breach, anything else advises.
+# ADVISORY on the PR path — advisory BY CONSTRUCTION, not via continue-on-error (ci.yml bans that
+# string and a test asserts its absence). In its default MODE=advise the script prints the number,
+# emits a `::warning::` on a breach, and exits 0 regardless, so a legitimate breach is a signal in the
+# diff, not a merge block — the fix is a one-line budget edit reviewed there. On the RELEASE path the
+# same measurement is a HARD gate (a shipped image that blew the budget is a real regression):
+# scripts/release-image.sh invokes this script with MODE=enforce, which exits non-zero on a breach.
+# MODE selects which behaviour: MODE=enforce fails on a breach, anything else advises.
 #
 # `docker` is the only dependency; the number comes from `docker manifest inspect` (registry sizes)
 # with a fallback to `docker image inspect` for a locally built, unpushed image.

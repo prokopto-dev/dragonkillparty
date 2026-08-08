@@ -167,6 +167,41 @@ func TestRenovate_HighRiskDepsNeverAutomerge(t *testing.T) {
 			"never automerge")
 }
 
+// TestImageSize_ReleaseEnforcesBudget backs the "hard gate" claim with a test. The 30 MB compressed
+// budget is advisory on the PR path (MODE=advise → exit 0 + `::warning::`) but a HARD gate on the
+// release path. The only thing that makes it a gate is scripts/release-image.sh invoking
+// scripts/image-size.sh with MODE=enforce AFTER the image is built and pushed: image-size.sh's
+// enforce branch (`[ "$MODE" = "enforce" ] && exit 1`) is dead code unless a caller sets it, and the
+// release matrix is fail-fast so a single over-budget arch stops the release before the manifest is
+// joined. If that enforcing invocation is ever removed, an oversized image would warn-and-ship — so
+// this test fails the moment the gate is laundered back into a no-op.
+func TestImageSize_ReleaseEnforcesBudget(t *testing.T) {
+	t.Parallel()
+
+	// The release-path caller must invoke the measurement in enforce mode.
+	rel := readRepoFile(t, "scripts/release-image.sh")
+	require.Regexp(t, regexp.MustCompile(`MODE=enforce[^\n]*image-size\.sh`), rel,
+		"scripts/release-image.sh must invoke scripts/image-size.sh with MODE=enforce so a "+
+			"breach of the 30 MB budget HARD-FAILS the release (not just warns)")
+
+	// And image-size.sh's enforce branch must actually exit non-zero on a breach — otherwise
+	// MODE=enforce would be cosmetic and the gate a no-op even with the caller wired up.
+	script := readRepoFile(t, "scripts/image-size.sh")
+	require.Contains(t, script, `[ "$MODE" = "enforce" ] && exit 1`,
+		"image-size.sh's enforce mode must exit non-zero on a breach; without it MODE=enforce is a "+
+			"laundered gate")
+
+	// The enforcement runs where a built image and its size genuinely exist and can fail the release:
+	// after the per-arch image is pushed. Assert the enforcing call lives AFTER the buildx push, not
+	// before it (where there would be nothing to measure and the gate could not fire).
+	push := strings.Index(rel, "--push")
+	enforce := strings.Index(rel, "MODE=enforce")
+	require.NotEqual(t, -1, push, "release-image.sh must push the image it then measures")
+	require.NotEqual(t, -1, enforce, "release-image.sh must enforce the image-size budget")
+	require.Greater(t, enforce, push,
+		"the MODE=enforce measurement must run AFTER the image is pushed, so it measures a real image")
+}
+
 // jobBlock extracts the text of a top-level workflow job, from its `name:` key to the next
 // top-level job key (a line indented by exactly two spaces ending in `:`), so an assertion about one
 // job cannot accidentally match text in another.

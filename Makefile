@@ -519,8 +519,10 @@ third-party-notices:
 	@bash scripts/third-party-notices.sh
 
 # Advisory measurement of the compressed image against the 30 MB budget (docs/design section 7). The
-# ci.yml build/image step runs it continue-on-error so a breach is a signal, not a merge block; the
-# release path runs it with MODE=enforce as a hard gate. Prints the number either way.
+# ci.yml build/image step runs this target advisory-by-construction — MODE=advise prints the number,
+# warns on a breach, and exits 0 (NOT continue-on-error, which ci.yml bans). The release path
+# (scripts/release-image.sh) runs the SAME script with MODE=enforce as a hard gate. Prints the number
+# either way.
 image-size:
 	@bash scripts/image-size.sh
 

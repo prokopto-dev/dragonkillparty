@@ -50,3 +50,11 @@ docker buildx build \
     .
 
 echo "release-image: pushed ${IMAGE}:${VERSION}-${ARCH}"
+
+# HARD gate on the release path: measure the image we just pushed against the 30 MB compressed budget
+# and FAIL the release if it is over. This is the enforcing counterpart to ci.yml's advisory PR step
+# (which runs the same script with MODE=advise, exit 0 + `::warning::`). The matrix is fail-fast, so a
+# single over-budget arch stops the release before the manifest is ever joined — a shipped image that
+# blew the budget is a real regression, not a warning. image-size.sh reads the pushed per-arch tag via
+# `docker manifest inspect`, so it measures the true compressed (registry) size.
+MODE=enforce IMAGE="$IMAGE" VERSION="${VERSION}-${ARCH}" bash "$(dirname "$0")/image-size.sh"
