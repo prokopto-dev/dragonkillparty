@@ -1,0 +1,4 @@
+{
+  "$comment": "The initial-route bundle budget: the gzipped size of the entry JS the browser must download before the first route paints. A ONE-WAY RATCHET — raising max_gzip_bytes requires a CODEOWNERS review (this file is listed in .github/CODEOWNERS), which is what turns a size regression into a decision instead of a drift. `make budget-bundle` measures web/dist and fails if it exceeds max_gzip_bytes; the measured number is printed into the CI summary (verify-before-phase-0 item V13). See .claude/rules/web.md > Budgets and gates.",
+  "max_gzip_bytes": 256000
+}

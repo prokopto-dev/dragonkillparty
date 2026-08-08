@@ -50,6 +50,18 @@ type Config struct {
 	// preserving the split PR 3 introduced: /healthz must never touch the database, /readyz must,
 	// and the two are wired from different places so that dependency is visible in the call site.
 	Readiness ReadyChecker
+
+	// APIBase is the value GET /config.json reports as API_BASE, read from DKP_API_BASE in cmd/dkp.
+	// Empty (the default) means same-origin, which is what a co-hosted binary serves. It is a
+	// RUNTIME value like the build stamps: it must not influence the OpenAPI document, and it does
+	// not — /config.json is not an operation, so `dkp openapi` never sees it.
+	APIBase string
+
+	// WebUI, when non-nil, is the embedded SPA handler mounted as the catch-all for every non-/api,
+	// non-infrastructure path. A nil WebUI means the binary serves the API and the docs but no SPA —
+	// the shape every test that predates PR 6 constructs, which is why this is a field rather than an
+	// unconditional mount. cmd/dkp passes internal/ui.Handler(); a handler-level test passes nil.
+	WebUI http.Handler
 }
 
 // New builds the complete HTTP handler tree: routes, Huma mount, and middleware.
@@ -93,10 +105,36 @@ func New(cfg Config) http.Handler {
 		})
 	}
 
+	// The SPA's runtime configuration. Mounted before the Huma tree, at the root and outside
+	// /api/v1, for the reasons config_json.go gives: it is not API surface and must not appear in the
+	// spec. Always registered — a bot benefits from /config.json as much as the SPA does, and it
+	// costs nothing when no SPA is mounted.
+	registerConfigJSON(mux, cfg.APIBase)
+
 	humaAPI := humago.New(mux, humaConfig())
 
 	registerMeta(humaAPI, cfg)
 	registerDocs(mux)
+
+	// The SPA catch-all, mounted LAST and only when a WebUI is supplied.
+	//
+	// It handles "/", which in net/http's ServeMux is the lowest-precedence pattern: every more
+	// specific route above — /healthz, /readyz, /config.json, /api/v1/... , /api/v1/docs — wins over
+	// it, so the SPA receives only the paths nothing else claimed. That is exactly the set the
+	// client-side router should own.
+	//
+	// The "/api/" guard is mounted alongside and is NOT optional: "/api/" is a longer, more specific
+	// pattern than "/", so ServeMux routes every unmatched /api path to this 404 rather than to the
+	// SPA. Without it, a mistyped endpoint like /api/v1/tikcs would fall through to the SPA and
+	// return 200 with an HTML page — the exact "200 with an error page" failure every bot author
+	// suffered from EQdkp. The SPA handler in internal/ui 404s /api too, as defence in depth, but the
+	// routing guarantee belongs here where the mount order is visible. TestServer_WebUI_* pins both.
+	if cfg.WebUI != nil {
+		mux.Handle("/", cfg.WebUI)
+		mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
 
 	// Both arguments are the same mux: Problem asks it which pattern would match, then delegates to
 	// it. Two parameters rather than one because the Matcher it needs is an interface and the
