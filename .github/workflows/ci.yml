@@ -258,9 +258,9 @@ jobs:
           tools: "atlas sqlc"
       - name: Regenerate everything and fail on a dirty tree
         run: make verify-generated
-        # Today: atlas.sum, the schema/migration sync assertion, sqlc, and huma -> openapi.json.
-        # openapi-typescript, openapi-python-client and the generated docs reference pages land in
-        # Phase 0 PR 6. On failure this prints exactly one line:
+        # Today: atlas.sum, the schema/migration sync assertion, sqlc, huma -> openapi.json, and
+        # openapi-typescript -> web/src/api/schema.d.ts. openapi-python-client and the generated docs
+        # reference pages land in a later phase. On failure this prints exactly one line:
         # "generated files are stale — run 'make gen' and commit".
 
   spec-drift:
@@ -575,8 +575,9 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
       - run: make budget-bundle
         # SPA initial route <= 250 KB gzipped, and <= +5% versus the last release. Breaching it
-        # legitimately is a one-line edit to .github/size-budget.json — reviewed, in the diff, by a
-        # human. That turns a size regression into a decision instead of a drift.
+        # legitimately is a one-line edit to web/bundle-budget.json — reviewed, in the diff, by a
+        # human (the file is CODEOWNERS-protected). That turns a size regression into a decision
+        # instead of a drift.
 
   # ---------------------------------------------------------------------------------------------
   # docs — internal links only. External link checking is a nightly job: an external 404 appears on

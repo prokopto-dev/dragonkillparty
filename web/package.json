@@ -1,0 +1,34 @@
+{
+  "name": "@dragonkillparty/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "generate:client": "openapi-typescript ../openapi/openapi.json --output src/api/schema.d.ts"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "5.62.7",
+    "@tanstack/react-router": "1.87.0",
+    "openapi-fetch": "0.13.4",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.17.0",
+    "@types/node": "22.12.0",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "@vitejs/plugin-react": "4.7.0",
+    "eslint": "9.17.0",
+    "openapi-typescript": "7.4.4",
+    "typescript": "5.7.2",
+    "typescript-eslint": "8.18.1",
+    "vite": "7.0.0"
+  },
+  "packageManager": "pnpm@9.15.9"
+}

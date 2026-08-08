@@ -64,3 +64,7 @@
 # green while destroying the evidence that it was ever red.
 /test/golden/                               @prokopto-dev
 /test/fixtures/                             @prokopto-dev
+
+# The SPA bundle-size budget is a one-way ratchet: raising max_gzip_bytes to land an oversized
+# bundle requires a review here, turning a size regression into a decision in the diff.
+/web/bundle-budget.json                     @prokopto-dev

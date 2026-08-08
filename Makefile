@@ -131,21 +131,30 @@ setup:
 		printf '\033[31m  installed but not on PATH\033[0m — every make target adds %s itself, so\n' '$(GOTOOLS_BIN)'; \
 		printf '  `make check` will work. To run the tools directly, add this to your shell profile:\n'; \
 		printf '    export PATH="$$PATH:%s"\n' '$(GOTOOLS_BIN)'; }
+	@if command -v pnpm >/dev/null 2>&1; then \
+		printf '  installing web dependencies\n'; (cd web && pnpm install --frozen-lockfile --ignore-scripts); \
+	else printf '\033[33m  pnpm not found — install Node 22 + pnpm 9 for the SPA (corepack enable)\033[0m\n'; fi
 	@printf '  not installed yet, and deliberately so — nothing needs them at this phase:\n'
 	@printf '    oasdiff              lands in: Phase 2 (spec breaking-change gate)\n'
 	@printf '    vale, lychee         lands in: Phase 0 PR 11 (the docs site and its gates)\n'
-	@printf '    pnpm + web deps      lands in: Phase 0 PR 6 (the SPA)\n'
 	@printf '  the goose CLI is deliberately absent: Atlas authors the migrations and the goose\n'
 	@printf '  LIBRARY applies them from inside the binary, so nothing ever invokes `goose` on PATH.\n'
 
 ## dev: run the dev servers — Go on :8080, Vite on :5173
 dev:
-	@$(call notyet,Phase 0 PR 6,needs cmd/dkp and web/ to exist)
+	@command -v pnpm >/dev/null 2>&1 || { \
+		printf '\033[31m  pnpm is not installed\033[0m — Node + pnpm are needed for the SPA. See make setup.\n'; exit 1; }
+	@[ -d web/node_modules ] || { printf '  installing web dependencies\n'; (cd web && pnpm install --frozen-lockfile --ignore-scripts); }
+	@printf '  Go API on :8080, Vite on :5173 — Ctrl-C stops both\n'
+	@trap 'kill 0' EXIT INT TERM; \
+		( DKP_DB_PATH=$${DKP_DB_PATH:-./data/dev.db} $(GO) run ./cmd/dkp serve --addr :8080 ) & \
+		( cd web && pnpm run dev ) & \
+		wait
 
 ## gen: regenerate ALL generated code — migrations, sqlc, openapi, clients
-# Today: atlas.sum, the schema/migration sync assertion, sqlc, and `dkp openapi ->
-# openapi/openapi.json`. openapi-typescript and openapi-python-client land with the SPA and the SDKs
-# in Phase 0 PR 6. Each arrives as another line here.
+# Today: atlas.sum, the schema/migration sync assertion, sqlc, `dkp openapi ->
+# openapi/openapi.json`, and openapi-typescript -> web/src/api/schema.d.ts. openapi-python-client and
+# the SDKs land with the clients/ tree in a later phase; each arrives as another line here.
 #
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
 # its negative fixtures can run against a tree in t.TempDir(), and a value leaking in from a
@@ -153,6 +162,7 @@ dev:
 gen:
 	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
+	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
 
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
@@ -170,10 +180,14 @@ test-importer:
 lint: lint-repo licence-gate lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
-# Today this runs build + vet only. staticcheck is folded into golangci-lint, so it runs under
-# `make lint`; tsc lands with the SPA in Phase 0 PR 6. AGENTS.md documents the eventual composition.
+# Runs build + vet, then tsc over the SPA. staticcheck is folded into golangci-lint, so it runs
+# under `make lint`. AGENTS.md documents the composition.
 vet:
 	@$(GO) build $(PKG) && $(GO) vet $(PKG)
+	@if [ -f web/package.json ]; then \
+		[ -d web/node_modules ] || (cd web && pnpm install --frozen-lockfile --ignore-scripts); \
+		(cd web && pnpm run typecheck); \
+	fi
 
 ## fmt: gofumpt + goimports over the tree
 fmt:
@@ -205,6 +219,7 @@ docker:
 
 ## build: compile the binary to ./bin
 build:
+	@bash scripts/build-web.sh
 	@CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/dkp
 
 ## verify-commands: assert AGENTS.md's command table matches this Makefile
@@ -410,7 +425,7 @@ api-changelog-comment:
 	@$(call notyet,Phase 2,sticky PR comment summarising the spec diff)
 
 budget-bundle:
-	@$(call notyet,Phase 0 PR 6,250 KB gzipped initial-route budget)
+	@bash scripts/budget-bundle.sh
 
 verify-postgres:
 	@$(call notyet,post-1.0,nightly Postgres schema convergence)
