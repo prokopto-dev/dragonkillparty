@@ -102,6 +102,15 @@ jobs:
               # lazy way to get that, and would also drag in the web, api, docs and importer jobs,
               # none of which can be affected by a shell gate.
               - 'scripts/**'
+              # The two worked-example documents, on the `go` filter for the same reason as the gate
+              # scripts. TestDocs_ExampleEndpointSnippets_Compile (internal/api) extracts and
+              # rebuilds every fence in them and runs under `make test`; without these two lines a
+              # docs-only edit to EXAMPLE_ENDPOINT.md — which selects only the `docs` filter, not
+              # `go`/`db` — would SKIP `test / integration` and the snippet gate would silently stop
+              # running on the exact files it polices. That is the self-concealing omission the header
+              # above warns about, so the anti-rot gate is anchored to its own inputs here.
+              - 'internal/api/EXAMPLE_ENDPOINT.md'
+              - 'db/RECIPES.md'
               # The tracked git hooks, for the same reason as scripts/** above: test/repo's
               # githooks_test runs .githooks/pre-commit and pre-push under `make test`, so a
               # hooks-only change must reach `test / integration` to exercise that gate.

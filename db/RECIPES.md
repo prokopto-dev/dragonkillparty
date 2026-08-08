@@ -1,13 +1,20 @@
 # Query recipes
 
-**Status:** target state. These land alongside the schema they query, phase by phase.
-
-The query shapes actually used in this codebase. **Find one here before writing a new one.** Copying
-a working in-repo query is far more reliable than recalling SQLite's dialect from memory, which is
-the whole reason this file exists.
+The query shapes actually used in this codebase. **Find one here before writing a new one.** Copying a
+working in-repo query is far more reliable than recalling SQLite's dialect from memory, which is the
+whole reason this file exists.
 
 Raw SQL lives only in `db/queries/*.sql`, consumed by sqlc. `db.Query` and `db.Exec` outside
-`internal/store` are grep-banned.
+`internal/store` are grep-banned (gate SQL002).
+
+The two **runnable** recipes below (the `guild` singleton fetch and the `dkp_meta` upsert) are
+extracted and type-checked by `TestDocs_ExampleEndpointSnippets_Compile`
+(`internal/api/docs_snippets_test.go`): they are run through `sqlc` against the committed migration
+set, so a recipe that names a column the schema does not have fails CI. The **forward-looking** recipes
+further down query tables that do not exist yet (`ledger_entry`, `balance_snapshot`, `person`, `raid`,
+`item_fts` and friends); they are marked as such and fenced out of the compile gate, because a query
+cannot be type-checked against a table nobody has migrated. They land, unfenced, with the schema they
+query — phase by phase.
 
 ---
 
@@ -15,33 +22,105 @@ Raw SQL lives only in `db/queries/*.sql`, consumed by sqlc. `db.Query` and `db.E
 
 **`total()` is banned. Use `sum()`.**
 
-SQLite's `total()` returns a **REAL** — a float — where `sum()` returns an INTEGER for integer
-inputs. Since every point value is `INTEGER` centipoints, `total()` would silently convert the
-entire ledger to floating point and defeat the invariant the whole product rests on. It would not
-error. It would just be quietly wrong, by a fraction of a point, for years.
+SQLite's `total()` returns a **REAL** — a float — where `sum()` returns an INTEGER for integer inputs.
+Since every point value is `INTEGER` centipoints, `total()` would silently convert the entire ledger to
+floating point and defeat the invariant the whole product rests on (canonical §1). It would not error.
+It would just be quietly wrong, by a fraction of a point, for years.
 
 `sum()` returns `NULL` over zero rows, so wrap it: `COALESCE(sum(amount_cp), 0)`.
 
-A repo grep gate rejects `total(` anywhere in the tree.
+A repo grep gate (`MONEY002` in `scripts/repo-gates.sh`) rejects `total(` anywhere in the tree, and
+`TestRecipes_TotalIsBanned` proves the gate fires on a fixture query that contains it.
 
-**Never query into a JSON column.** `*_json` columns are validated on write and read whole. If you
-need to filter or sort on a fact, it is a real column. No exceptions — this is what keeps the
-Postgres port cheap and the query planner honest.
+**Never query into a JSON column.** `*_json` columns are validated on write and read whole. If you need
+to filter or sort on a fact, it is a real column. No exceptions — this is what keeps the Postgres port
+cheap and the query planner honest.
 
 ---
 
-## Singleton fetch
+## Singleton fetch — `guild` (runnable)
+
+There is exactly one guild row, keyed on `id = 1` (canonical §9). `GetGuild` reads it without a
+predicate: the schema `CHECK (id = 1)` guarantees a single row, so no filter is needed and the query
+carries no numeric literal. Selecting the columns explicitly — rather than `SELECT *` — is what makes
+sqlc emit a stable, named row struct that the `store.Queries` interface can pin.
 
 ```sql
 -- name: GetGuild :one
-SELECT * FROM guild LIMIT 1;
+SELECT
+    id, name, tag, timezone, week_start, points_label, points_precision,
+    inactive_after_days, auto_set_inactive, hide_inactive, created_at, updated_at
+FROM guild;
 ```
 
-## Upsert
+## Upsert — `dkp_meta` (runnable)
 
-SQLite needs an explicit conflict target. `excluded` is the would-be-inserted row.
+SQLite needs an explicit conflict target, and `excluded` is the would-be-inserted row. `dkp_meta` is
+the instance's key/value state (`schema_version` and friends); every value is `TEXT` and parsed by the
+caller — a `REAL` or `NUMERIC` column here would be the first float in a database whose central
+invariant is that there are none.
 
 ```sql
+-- name: UpsertMetaValue :exec
+INSERT INTO dkp_meta (key, value, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT (key) DO UPDATE SET
+    value      = excluded.value,
+    updated_at = excluded.updated_at;
+```
+
+The `dkp_meta` read is the mirror of it — one row, by key:
+
+```sql
+-- name: GetMetaValue :one
+SELECT value FROM dkp_meta WHERE key = ?;
+```
+
+## Whole-row update with RETURNING — `guild` (runnable)
+
+A PATCH reads the current row, merges the patch in Go (that is domain logic — see
+`internal/api/EXAMPLE_ENDPOINT.md` step 4), and hands this query a full set of values. A
+`COALESCE`-per-column update would put the merge in SQL, where absent and set-to-the-current-value
+become indistinguishable and it cannot be unit-tested without a database. `RETURNING` the new row lets
+the handler emit the fresh representation and its new ETag in one round trip. `id` is never updated: it
+is the singleton key.
+
+```sql
+-- name: UpdateGuild :one
+UPDATE guild SET
+    name                = ?,
+    tag                 = ?,
+    timezone            = ?,
+    week_start          = ?,
+    points_label        = ?,
+    points_precision    = ?,
+    inactive_after_days = ?,
+    auto_set_inactive   = ?,
+    hide_inactive       = ?,
+    updated_at          = ?
+WHERE id = 1
+RETURNING
+    id, name, tag, timezone, week_start, points_label, points_precision,
+    inactive_after_days, auto_set_inactive, hide_inactive, created_at, updated_at;
+```
+
+---
+
+# Forward-looking recipes — the tables do not exist yet
+
+Everything below queries a table no migration has created. The shapes are recorded here so the schema
+they belong to has a query pattern waiting when it lands, but they are **not** run through the compile
+gate — a query cannot be type-checked against a table nobody has migrated. Each moves up into the
+runnable section, in a real `db/queries/*.sql` file, in the PR that ships its table (the ledger tables
+arrive in Phase 0 PR 9; roster, raids and items later). The fences below are tagged `text`, not `sql`,
+so the snippet gate skips them; unfence them to `sql` when the table exists.
+
+## Upsert with a guard — `balance_snapshot` (Phase 0 PR 9)
+
+The snapshot is a droppable cache, maintained synchronously in the same transaction as the write. The
+`WHERE` on the conflict path is the load-bearing part: never move a snapshot backwards.
+
+```text
 -- name: UpsertBalanceSnapshot :exec
 INSERT INTO balance_snapshot (account_id, pool_id, balance_kind, amount_cp, as_of_seq, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -52,12 +131,15 @@ ON CONFLICT (account_id, pool_id, balance_kind) DO UPDATE SET
 WHERE excluded.as_of_seq > balance_snapshot.as_of_seq;  -- never move a snapshot backwards
 ```
 
-## Balance as of a seq
+## Balance as of a seq — `ledger_entry` (Phase 0 PR 9)
 
 The definitional query. A balance is a `SUM` over an append-only log, positioned by `seq` — never by
-timestamp, because a backdated `effective_at` must not change what a past balance *was*.
+timestamp, because a backdated `effective_at` must not change what a past balance *was*. Served entirely
+from the covering index; an `EXPLAIN QUERY PLAN` golden asserts no table access, because the day it
+starts scanning is the day standings gets slow and nobody notices. Note `COALESCE(sum(...), 0)`, never
+`total(...)`.
 
-```sql
+```text
 -- name: BalanceAsOfSeq :one
 SELECT COALESCE(sum(e.amount_cp), 0) AS amount_cp
 FROM ledger_entry e
@@ -65,27 +147,15 @@ JOIN ledger_batch b ON b.id = e.batch_id
 WHERE e.account_id = ? AND e.pool_id = ? AND e.balance_kind = ? AND b.seq <= ?;
 ```
 
-Served entirely from the covering index — no table access. An `EXPLAIN QUERY PLAN` golden asserts
-this, because the day it starts scanning is the day standings gets slow and nobody notices.
+## Account statement with a running balance — `ledger_entry` (Phase 0 PR 9)
 
-```sql
-CREATE INDEX ix_entry_balance
-    ON ledger_entry (account_id, pool_id, balance_kind, batch_id, amount_cp);
-```
+The screen that settles most loot arguments. Window function, one pass. Paginated by cursor on `seq` in
+the real implementation — offset pagination is banned on collections (see below).
 
-## Account statement with a running balance
-
-The screen that settles most loot arguments. Window function, one pass.
-
-```sql
+```text
 -- name: AccountStatement :many
 SELECT
-    b.seq,
-    b.kind,
-    b.reason,
-    b.effective_at,
-    b.recorded_at,
-    b.reverses_batch_id,
+    b.seq, b.kind, b.reason, b.effective_at, b.recorded_at, b.reverses_batch_id,
     e.amount_cp,
     sum(e.amount_cp) OVER (ORDER BY b.seq
                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_cp
@@ -93,185 +163,86 @@ FROM ledger_entry e
 JOIN ledger_batch b ON b.id = e.batch_id
 WHERE e.account_id = ? AND e.pool_id = ? AND e.balance_kind = 'points'
 ORDER BY b.seq DESC
-LIMIT ? OFFSET 0;
+LIMIT ?;
 ```
 
-> `LIMIT` here paginates a single account's history by cursor on `seq` in the real
-> implementation — see the cursor recipe. The `OFFSET 0` above is illustrative only; offset
-> pagination is banned on collections.
+## Standings — `person` + `balance_snapshot` (Phase 2)
 
-## Standings
+The heaviest read in the product: every active person's balance in a pool, sorted, budgeted at **≤ 4
+statements for 280 members**. Read from the snapshot, not the ledger.
 
-The heaviest read in the product: every active person's balance in a pool, sorted. Budgeted at
-**≤ 4 statements for 280 members**, enforced by the per-test statement-count fixture.
-
-Read from the snapshot, not the ledger. The snapshot is a droppable cache, maintained synchronously
-in the same transaction as the write and verified nightly by the replay job.
-
-```sql
+```text
 -- name: Standings :many
 SELECT
-    p.id            AS person_id,
-    p.display_name,
-    c.name          AS main_character,
-    c.class_id,
+    p.id AS person_id, p.display_name, c.name AS main_character, c.class_id,
     COALESCE(s.amount_cp, 0) AS balance_cp,
     COALESCE(r.attended, 0)  AS attended_30,
     COALESCE(r.held, 0)      AS held_30
 FROM person p
-JOIN account          a ON a.person_id = p.id AND a.pool_id = ?
-LEFT JOIN character   c ON c.id = p.main_character_id
-LEFT JOIN balance_snapshot s
-       ON s.account_id = a.id AND s.pool_id = ? AND s.balance_kind = 'points'
-LEFT JOIN attendance_rollup r
-       ON r.person_id = p.id AND r.pool_id = ? AND r.window_days = 30
+JOIN account a ON a.person_id = p.id AND a.pool_id = ?
+LEFT JOIN character c ON c.id = p.main_character_id
+LEFT JOIN balance_snapshot s ON s.account_id = a.id AND s.pool_id = ? AND s.balance_kind = 'points'
+LEFT JOIN attendance_rollup r ON r.person_id = p.id AND r.pool_id = ? AND r.window_days = 30
 WHERE p.state = 'active' AND p.deleted_at IS NULL
 ORDER BY balance_cp DESC, p.display_name ASC
 LIMIT ?;
 ```
 
-## Attendance over a rolling window
+## Cursor pagination — `raid` (Phase 2)
 
-Officers argue about this, so the numerator and denominator are spelled out rather than inferred.
+Cursor only. **Offset is banned on collections**: it drifts under concurrent inserts and is the source
+of the duplicate-and-skip bugs in every bot that has ever polled EQdkp. The cursor is base64 of
+`{sort_key, tiebreak_id}`, opaque, versioned and HMAC-signed. Always include the tiebreak, or rows
+sharing a sort key are silently skipped. SQLite supports row-value comparison (3.15+), so this is one
+index seek rather than the `a < ? OR (a = ? AND b < ?)` expansion.
 
-- **Numerator** — distinct raids in the pool the person attended within the window.
-- **Denominator** — distinct raids *held* in the pool within the window, excluding event types
-  flagged `no_attendance`, and collapsing connected raids via `attendance_group_id` so one raid
-  night split across several mob entries counts once.
-
-```sql
--- name: AttendanceInWindow :one
-WITH held AS (
-    SELECT DISTINCT COALESCE(r.attendance_group_id, r.id) AS raid_key
-    FROM raid r
-    JOIN event_type et ON et.id = r.event_type_id
-    JOIN pool_event_type pet ON pet.event_type_id = et.id AND pet.pool_id = ?
-    WHERE r.started_at >= ? AND r.started_at < ?
-      AND r.state = 'finalized'
-      AND pet.no_attendance = 0
-),
-attended AS (
-    SELECT DISTINCT COALESCE(r.attendance_group_id, r.id) AS raid_key
-    FROM raid_attendance ra
-    JOIN raid r ON r.id = ra.raid_id
-    JOIN pool_event_type pet ON pet.event_type_id = r.event_type_id AND pet.pool_id = ?
-    WHERE ra.person_id = ?
-      AND r.started_at >= ? AND r.started_at < ?
-      AND r.state = 'finalized'
-      AND pet.no_attendance = 0
-      AND ra.credit_kind IN ('full', 'partial')   -- 'bench' and 'standby' are excluded
-)
-SELECT
-    (SELECT count(*) FROM attended) AS attended,
-    (SELECT count(*) FROM held)     AS held;
-```
-
-A slow, obviously-correct Go loop cross-checks this over 50 random member/window pairs on
-`seed.Perf`. Two implementations disagreeing is how you find out which one is wrong.
-
-## Cursor pagination
-
-Cursor only. **Offset is banned on collections**: it drifts under concurrent inserts and is the
-source of the duplicate-and-skip bugs in every bot that has ever polled EQdkp.
-
-The cursor is base64 of `{sort_key, tiebreak_id}`, opaque, versioned and HMAC-signed. Always include
-the tiebreak, or rows sharing a sort key are silently skipped.
-
-```sql
+```text
 -- name: ListRaidsAfter :many
-SELECT * FROM raid
+SELECT id, started_at, state
+FROM raid
 WHERE deleted_at IS NULL
   AND (started_at, id) < (?, ?)   -- (sort_key, tiebreak) from the decoded cursor
 ORDER BY started_at DESC, id DESC
 LIMIT ?;                          -- fetch limit+1 to compute has_more
 ```
 
-SQLite supports row-value comparison (3.15+), so this is one index seek rather than the
-`a < ? OR (a = ? AND b < ?)` expansion.
+## Full-text search — `item_fts` (Phase 3)
 
-## Incremental sync
+FTS5 with **external content** (`content='item'`), not contentless — contentless tables cannot return
+column content and are a classic source of silent index corruption. Fuzzy fallback is Levenshtein in Go
+over the top-N FTS hits; there is deliberately no separate trigram table. Search sits behind a `Search`
+interface, and Postgres returns `501 engine_unsupported` until the `tsvector` implementation lands.
 
-For a bot that was offline. Valid **only** on `/ledger/*`, `/audit` and `/events/replay` — those are
-the only append-only collections with a meaningful sequence.
-
-```sql
--- name: LedgerSince :many
-SELECT b.seq, b.id, b.kind, b.effective_at, e.account_id, e.amount_cp
-FROM ledger_batch b
-JOIN ledger_entry e ON e.batch_id = b.id
-WHERE b.pool_id = ? AND b.seq > ?
-ORDER BY b.seq ASC
-LIMIT ?;
-```
-
-## Full-text search
-
-FTS5 with **external content** (`content='item'`), not contentless (`content=''`). Contentless
-tables cannot return column content and require supplying old values on delete — a classic source of
-silent index corruption when a sync trigger is slightly wrong.
-
-```sql
-CREATE VIRTUAL TABLE item_fts USING fts5(
-    name, aliases, content='item', content_rowid='rowid', tokenize='unicode61'
-);
-
+```text
 -- name: SearchItems :many
-SELECT i.* FROM item_fts f
+SELECT i.id, i.name FROM item_fts f
 JOIN item i ON i.rowid = f.rowid
 WHERE item_fts MATCH ?
 ORDER BY rank
 LIMIT ?;
 ```
 
-Fuzzy fallback is Levenshtein in Go over the top-N FTS hits. There is deliberately **no** separate
-trigram table — two fuzzy-matching mechanisms is one too many.
-
-Search sits behind a `Search` interface; Postgres returns `501 engine_unsupported` until 1.3.
-
-## Case-insensitive name matching
-
-Match on the stored `name_norm` column, never a collation. `name_norm` is computed in Go (NFKC,
-casefold, strip `'` `` ` `` `-`) because SQLite's `lower()` is ASCII-only and has no NFKC, and
-because `ALTER TABLE ADD COLUMN` cannot add a STORED generated column later.
-
-```sql
--- name: FindCharacterByName :one
-SELECT * FROM character WHERE name_norm = ? AND deleted_at IS NULL;
-```
-
-## Provisional item resolve — upsert, not insert
-
-A second parse of the same unknown item name must reuse the existing provisional row, not collide
-with the partial unique index on `name_norm`.
-
-```sql
--- name: ResolveOrCreateProvisionalItem :one
-INSERT INTO item (id, name, name_norm, state, created_at, updated_at)
-VALUES (?, ?, ?, 'provisional', ?, ?)
-ON CONFLICT (name_norm) WHERE deleted_at IS NULL AND state <> 'merged'
-DO UPDATE SET updated_at = excluded.updated_at
-RETURNING *;
-```
-
 ---
 
-## The three known dialect divergences
+## The three known dialect divergences (forward-looking)
 
-Listed on day one so the future Postgres port has them enumerated rather than discovered.
+Listed on day one so the future Postgres port (post-1.0) has them enumerated rather than discovered.
+All three are forward-looking: none of the tables involved exists yet.
 
-| # | Divergence | SQLite | Postgres (1.3) |
+| # | Divergence | SQLite | Postgres (post-1.0) |
 |---|---|---|---|
 | 1 | **Per-pool `seq` allocation** | `SELECT COALESCE(max(seq),0)+1 FROM ledger_batch WHERE pool_id = ?` inside the write transaction, safe because `SetMaxOpenConns(1)` serialises writers | A per-pool sequence row locked `FOR UPDATE`, or an advisory lock — max+1 is **not** safe under real concurrency |
-| 2 | **Bid-hold lock** | No-op; the single writer already serialises | `SELECT ... FOR UPDATE` on `account_lock`. The table ships in 1.0 unused so Postgres is a driver detail, not a schema change |
-| 3 | **Full-text search** | FTS5 | `tsvector` + GIN, behind the `Search` interface (~120 lines each) |
+| 2 | **Bid-hold lock** | No-op; the single writer already serialises | `SELECT ... FOR UPDATE` on `account_lock` |
+| 3 | **Full-text search** | FTS5 | `tsvector` + GIN, behind the `Search` interface |
 
 Everything else is dialect-identical by design: integer micros instead of `timestamptz`, integer
-centipoints instead of `NUMERIC`, ULID text keys instead of `uuidv7()`, and no queries into JSON.
-That is what makes the port cheap, and it is why those four conventions are non-negotiable.
+centipoints instead of `NUMERIC`, ULID text keys instead of `uuidv7()`, and no queries into JSON. That
+is what makes the port cheap, and it is why those conventions are non-negotiable.
 
-## Seq allocation, in full
+The seq allocator, in full — again forward-looking, and again `COALESCE(max(...), 0) + 1`, never
+`total(...)`:
 
-```sql
+```text
 -- name: NextPoolSeq :one
 -- MUST run inside store.Tx (write pool, _txlock=immediate, SetMaxOpenConns(1)).
 -- Divergence #1: this is NOT safe on Postgres. See the table above.
