@@ -1,0 +1,178 @@
+# edge — the moving :edge image, republished on every push to main.
+#
+# This is release.yml's little sibling. It exists so "the latest main" is always a pullable image for
+# officers who want to track the bleeding edge and for the e2e/upgrade tooling that needs a container
+# built from HEAD. It is NOT a release: no version tag, no cosign signature, no SBOM attestation, no
+# reference database, no GitHub Release. Those are release.yml's job and cost minutes that do not
+# belong on the push-to-main path.
+#
+# What it DOES keep from release.yml is the one property that makes a moving tag safe: the immutable,
+# digest-addressable image publishes FIRST, and the moving `:edge` tag advances ONLY after a smoke job
+# has pulled that exact DIGEST and proved it boots. A broken commit on main leaves `:edge` pointing at
+# the previous good digest — the same ordering rule, on the same scripts, as the release train.
+#
+# NO QEMU — see release.yml's header. Multi-arch is cross-compiled on amd64 and joined with
+# `docker buildx imagetools create`, which writes a manifest list and runs no target-arch instruction.
+# QEMU001 in scripts/repo-gates.sh asserts the string appears in no workflow; keep it out of this one.
+#
+# ACTION PINS — every `uses:` is a 40-char commit SHA with the version in a trailing comment, matched
+# to release.yml so the two files pin the same actions to the same digests. PIN001 in `lint / repo`
+# fails any bare-tag `uses:`; Renovate's helpers:pinGitHubActionDigests keeps them current.
+
+name: edge
+
+on:
+  push:
+    branches: [main]
+
+# Least privilege at the workflow level; a job that needs more elevates itself.
+permissions:
+  contents: read
+
+concurrency:
+  # Newer main supersedes older: a push while an edge build is running cancels it, because :edge only
+  # ever means "the tip", and finishing a superseded build wastes minutes to publish a stale digest.
+  group: edge-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: local
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  # The moving channel tag. Immutable per-arch and manifest tags are :edge-<arch> / :edge; the sha
+  # -addressable :edge-<short> is written by release-manifest.sh from SHA7 so a specific edge build
+  # stays pinnable after :edge has moved on.
+  VERSION: edge
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # Per-architecture images, cross-compiled natively on amd64. amd64 + arm64 only: armv7 is a
+  # release-time architecture, not something the edge channel needs to republish every push.
+  # ---------------------------------------------------------------------------------------------
+  image:
+    name: image / ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cross-compile and push the per-arch edge image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: make release-image
+        # buildx build --file deploy/Dockerfile, pushed as $IMAGE:edge-$ARCH. No QEMU: Go
+        # cross-compiles at native speed on this amd64 runner.
+
+  # ---------------------------------------------------------------------------------------------
+  # Join the two per-arch images into the immutable manifest list and emit its digest. Writes ONLY
+  # the immutable :edge tag (and the sha-addressable :edge-<short>); the moving :edge is advanced by
+  # `promote`, and only after smoke. imagetools writes a manifest and executes nothing.
+  # ---------------------------------------------------------------------------------------------
+  manifest:
+    name: manifest / immutable
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.join.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: join
+        name: docker buildx imagetools create
+        env:
+          ARCHES: amd64 arm64
+          SHA7: ${{ github.sha }}
+        run: make release-manifest
+        # imagetools create -t $IMAGE:edge $IMAGE:edge-amd64 $IMAGE:edge-arm64, plus the pinnable
+        # $IMAGE:edge-<short>, and emits `digest`. ONLY the immutable tags — the moving :edge is not
+        # rewritten to point here until `promote`.
+
+  # ---------------------------------------------------------------------------------------------
+  # smoke — the gate. Pulls the immutable DIGEST (never a tag) on real hardware, on both
+  # architectures, and proves it boots before the moving :edge is allowed to point at it.
+  # ---------------------------------------------------------------------------------------------
+  smoke:
+    name: smoke / ${{ matrix.runner }}
+    needs: manifest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - env:
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: make release-smoke
+        # docker run $IMAGE@$DIGEST on an empty volume: first boot, migrations apply, /healthz 200,
+        # /readyz reachable, `dkp version` prints. cosign/gh attestation verification is skipped on
+        # the edge channel (edge images are not release-signed); the script no-ops when the tools are
+        # absent, and this job does not install them.
+
+  # ---------------------------------------------------------------------------------------------
+  # promote — the ONLY job that advances the moving :edge tag, and only if smoke passed. It re-tags
+  # the exact smoked digest with imagetools; it never rebuilds. A broken commit leaves :edge where it
+  # was. release-promote.sh refuses a non-SemVer version by design, so the edge tag move is written
+  # here directly rather than through it.
+  # ---------------------------------------------------------------------------------------------
+  promote:
+    name: promote / edge
+    needs: [manifest, smoke]
+    if: success()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Advance :edge to the smoked digest
+        env:
+          DIGEST: ${{ needs.manifest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Re-tag the EXACT digest smoke verified — never a rebuild. imagetools writes a manifest
+          # list and runs no instruction of any target architecture.
+          docker buildx imagetools create --tag "${IMAGE}:edge" "${IMAGE}@${DIGEST}"
+          echo "edge: :edge advanced to ${DIGEST}"

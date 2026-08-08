@@ -298,6 +298,58 @@ func TestRepoGates_CleanTree_Passes(t *testing.T) {
 	require.NotContains(t, out, "PIN001", "PIN001 must not fire on a pinned action\n%s", out)
 }
 
+// TestRepoGates_QemuInWorkflow_FailsGate is PR 7's "no QEMU" acceptance criterion, as a negative
+// fixture. Multi-arch is cross-compiled and joined with imagetools; a QEMU-emulated build is 10-25x
+// slower and the predictable response is dropping arm64 "to make CI fast". QEMU001 bans the string
+// in any workflow so that reintroduction is a red gate rather than a quiet edit.
+//
+// The fixture pins the action to a real SHA so that PIN001 does NOT fire — this test must prove
+// QEMU001 fires, not merely that the gates went red for some other reason. The action value itself
+// carries the banned string, which is exactly the shape a reintroduction takes.
+func TestRepoGates_QemuInWorkflow_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+	writeWorkflow(t, tree, "docker/setup-qemu-action@"+pinnedCheckoutSHA)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a QEMU step in a workflow must fail the gates\n%s", out)
+	require.Contains(t, out, "QEMU001",
+		"the gates went red, but not because of the QEMU rule — check which rule actually fired\n%s", out)
+	require.Contains(t, out, ".github/workflows/fixture.yml:",
+		"QEMU001 must name the offending file, repo-root-relative\n%s", out)
+}
+
+// TestRepoGates_QemuInComment_PassesGate is the counterpart: the committed workflows document the
+// "No QEMU" choice in prose, and prose about a rule is not a breach of it. A comment line mentioning
+// QEMU must NOT fire QEMU001 — every other gate here strips comments for the same reason, and a gate
+// that fired on its own documentation is a gate people route around.
+func TestRepoGates_QemuInComment_PassesGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	dir := filepath.Join(tree, ".github", "workflows")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	body := "name: fixture\n" +
+		"on: push\n" +
+		"jobs:\n" +
+		"  build:\n" +
+		"    runs-on: ubuntu-latest\n" +
+		"    steps:\n" +
+		"      # No QEMU here: multi-arch is cross-compiled. See release.yml.\n" +
+		"      - uses: actions/checkout@" + pinnedCheckoutSHA + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "fixture.yml"), []byte(body), 0o644))
+
+	out, code := runGateScript(t, script, tree)
+
+	require.Zero(t, code, "a workflow that only mentions QEMU in a comment must pass\n%s", out)
+	require.NotContains(t, out, "QEMU001", "QEMU001 must not fire on a comment\n%s", out)
+}
+
 // TestFourLaws_AppearsInExactlyOneTrackedFile asserts both halves of the acceptance criterion:
 // the architectural-laws heading lives in exactly one tracked file (AGENTS.md), and CLAUDE.md
 // delegates to it with an `@AGENTS.md` line instead of restating it. Two copies of a normative rule
