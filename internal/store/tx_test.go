@@ -6,12 +6,20 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 )
 
 // errBoom is the caller-side failure the rollback tests inject.
 var errBoom = errors.New("boom")
 
-// TestTx_Commits is the positive control. Without it, a Tx that rolled everything back
+// The machinery tests below drive txRaw, the unexported transaction primitive, because they need to
+// run statements no Queries method covers — a scratch table. The public Tx is a thin wrapper that
+// constructs a Queries and delegates to txRaw, so the commit/rollback/panic guarantees proven
+// against txRaw hold for it too; TestTx_PublicTx_HandsAQueriesAndCommits is Tx's own positive
+// control for the one thing txRaw cannot show, that the callback receives a Queries.
+
+// TestTx_Commits is the positive control for txRaw. Without it, a txRaw that rolled everything back
 // unconditionally would pass every other test in this file.
 func TestTx_Commits(t *testing.T) {
 	t.Parallel()
@@ -19,7 +27,7 @@ func TestTx_Commits(t *testing.T) {
 	s := NewDB(t)
 	createScratch(t, s)
 
-	err := s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+	err := s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (1)")
 
 		return err
@@ -27,6 +35,31 @@ func TestTx_Commits(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, 1, scratchRows(t, s), "a committed transaction must leave its row behind")
+}
+
+// TestTx_PublicTx_HandsAQueriesAndCommits is the positive control for the public Tx door.
+//
+// It proves the two things txRaw cannot: that Tx hands the callback a store.Queries rather than a
+// raw handle, and that a write issued through that Queries commits. Without it, Tx could pass a nil
+// Queries or roll everything back, and every other test in this file — which drives txRaw directly
+// — would still pass.
+func TestTx_PublicTx_HandsAQueriesAndCommits(t *testing.T) {
+	t.Parallel()
+
+	s := NewDB(t)
+
+	err := s.Tx(t.Context(), func(ctx context.Context, q Queries) error {
+		require.NotNil(t, q, "Tx must hand the callback a Queries")
+
+		return q.UpsertMetaValue(ctx, sqlitegen.UpsertMetaValueParams{
+			Key: "tx_probe", Value: "committed", UpdatedAt: 1,
+		})
+	})
+	require.NoError(t, err)
+
+	got, err := s.MetaValue(t.Context(), "tx_probe")
+	require.NoError(t, err, "the value written through the transaction's Queries must have committed")
+	require.Equal(t, "committed", got)
 }
 
 // TestTx_FnReturnsError_RollsBack asserts the ordinary failure path: the work is undone and the
@@ -38,7 +71,7 @@ func TestTx_FnReturnsError_RollsBack(t *testing.T) {
 	s := NewDB(t)
 	createScratch(t, s)
 
-	err := s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+	err := s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (1)"); err != nil {
 			return err
 		}
@@ -64,8 +97,8 @@ func TestTx_FnPanics_RollsBackAndRepanics(t *testing.T) {
 	createScratch(t, s)
 
 	require.PanicsWithValue(t, "kaboom", func() {
-		// Nothing to check the result of: the callback panics, so Tx never returns.
-		_ = s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+		// Nothing to check the result of: the callback panics, so txRaw never returns.
+		_ = s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (1)"); err != nil {
 				return err
 			}
@@ -79,7 +112,7 @@ func TestTx_FnPanics_RollsBackAndRepanics(t *testing.T) {
 	require.Zero(t, s.write.Stats().InUse, "the write connection must have been returned to the pool")
 
 	// The real proof: the single writer still works.
-	err := s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+	err := s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (2)")
 
 		return err
@@ -95,7 +128,7 @@ func TestTx_FnPanics_RollsBackAndRepanics(t *testing.T) {
 func createScratch(tb testing.TB, s *Store) {
 	tb.Helper()
 
-	err := s.Tx(tb.Context(), func(ctx context.Context, tx DBTX) error {
+	err := s.txRaw(tb.Context(), func(ctx context.Context, tx DBTX) error {
 		_, err := tx.ExecContext(ctx, "CREATE TABLE scratch (id INTEGER PRIMARY KEY) STRICT")
 
 		return err
@@ -116,18 +149,18 @@ func scratchRows(tb testing.TB, s *Store) int {
 	return n
 }
 
-// TestTx_UsesTheWritePool asserts law-2 plumbing that is otherwise invisible: Tx must never reach
+// TestTx_UsesTheWritePool asserts law-2 plumbing that is otherwise invisible: txRaw must never reach
 // for the read pool, whose connections carry no _txlock and are not serialised.
 func TestTx_UsesTheWritePool(t *testing.T) {
 	t.Parallel()
 
 	s := NewDB(t)
 
-	err := s.Tx(t.Context(), func(_ context.Context, _ DBTX) error {
-		// Inside the callback exactly one write connection is checked out. If Tx had used the read
+	err := s.txRaw(t.Context(), func(_ context.Context, _ DBTX) error {
+		// Inside the callback exactly one write connection is checked out. If txRaw had used the read
 		// pool this would be zero and the read pool's would be one.
-		require.Equal(t, 1, s.write.Stats().InUse, "Tx must hold a write-pool connection")
-		require.Zero(t, s.read.Stats().InUse, "Tx must not touch the read pool")
+		require.Equal(t, 1, s.write.Stats().InUse, "the transaction must hold a write-pool connection")
+		require.Zero(t, s.read.Stats().InUse, "the transaction must not touch the read pool")
 
 		return nil
 	})

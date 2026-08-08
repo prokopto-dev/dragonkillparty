@@ -77,11 +77,18 @@ func realMigrations(tb testing.TB) fs.FS {
 }
 
 // migrationDir materialises the embedded migration set into a directory on disk, plus any extra
-// files given as paths, and returns an fs.FS over it.
+// fixture files given as paths, and returns an fs.FS over it.
 //
 // On-disk rather than an in-memory FS because the extra files are real fixtures read from the
 // repository, and because a failure is far easier to investigate when the directory the migrator
 // actually walked is sitting in the test's temp dir.
+//
+// Each extra fixture is RENUMBERED to sit one past the highest real migration, in the order given.
+// The fixtures represent "the next migration a broken or future release would carry", which is a
+// version RELATIVE to the current release, not an absolute number — so when a real migration lands
+// (PR 5a's 000002_guild, PR 9's ledger, ...) the fixtures must move with it. Renumbering here keeps
+// the fixture files under test/fixtures byte-identical and CODEOWNERS-clean while making the tests
+// immune to the next migration's number. fixtureName reports the renumbered name a test asserts on.
 func migrationDir(tb testing.TB, extra ...string) fs.FS {
 	tb.Helper()
 
@@ -91,21 +98,84 @@ func migrationDir(tb testing.TB, extra ...string) fs.FS {
 	require.NoError(tb, err, "read the embedded migration set")
 	require.NotEmpty(tb, entries, "the embedded migration set is empty — db/migrations-sqlite/ has no .sql files")
 
+	var highest int
 	for _, entry := range entries {
 		body, err := fs.ReadFile(realMigrations(tb), entry.Name())
 		require.NoError(tb, err, "read embedded migration %s", entry.Name())
 		require.NoError(tb, os.WriteFile(filepath.Join(dir, entry.Name()), body, 0o644),
 			"materialise embedded migration %s", entry.Name())
+
+		if v := versionOf(entry.Name()); v > highest {
+			highest = v
+		}
 	}
 
-	for _, src := range extra {
+	for i, src := range extra {
 		body, err := os.ReadFile(src)
 		require.NoError(tb, err, "read fixture migration %s", src)
-		require.NoError(tb, os.WriteFile(filepath.Join(dir, filepath.Base(src)), body, 0o644),
+		require.NoError(tb, os.WriteFile(filepath.Join(dir, renumberedFixtureName(highest+1+i, src)), body, 0o644),
 			"copy fixture migration %s", src)
 	}
 
 	return os.DirFS(dir)
+}
+
+// versionOf extracts the numeric version prefix from a migration filename, or 0 if it has none
+// (atlas.sum and any non-migration file).
+func versionOf(name string) int {
+	base := filepath.Base(name)
+
+	digits := 0
+	for digits < len(base) && base[digits] >= '0' && base[digits] <= '9' {
+		digits++
+	}
+
+	if digits == 0 {
+		return 0
+	}
+
+	v := 0
+	for i := range digits {
+		v = v*10 + int(base[i]-'0')
+	}
+
+	return v
+}
+
+// renumberedFixtureName replaces a fixture's version prefix with version, zero-padded to six digits,
+// keeping the descriptive suffix. "000002_broken_integrity.sql" at version 3 becomes
+// "000003_broken_integrity.sql". A fixture name always has an underscore after its digits; a name
+// that somehow does not keeps its whole self as the suffix, which fails loudly downstream rather than
+// silently misnumbering.
+func renumberedFixtureName(version int, src string) string {
+	base := filepath.Base(src)
+
+	suffix := base
+	if i := strings.IndexByte(base, '_'); i > 0 {
+		suffix = base[i:]
+	}
+
+	return fmt.Sprintf("%06d%s", version, suffix)
+}
+
+// fixtureName reports the on-disk name a fixture is materialised under by migrationDir: its version
+// renumbered to one past the highest real migration, plus the given index for multiple fixtures.
+// A test that asserts which migration failed uses this rather than a hard-coded 000002, so the
+// assertion tracks the fixture as real migrations accumulate ahead of it.
+func fixtureName(tb testing.TB, src string, index int) string {
+	tb.Helper()
+
+	entries, err := fs.ReadDir(realMigrations(tb), ".")
+	require.NoError(tb, err, "read the embedded migration set")
+
+	var highest int
+	for _, entry := range entries {
+		if v := versionOf(entry.Name()); v > highest {
+			highest = v
+		}
+	}
+
+	return renumberedFixtureName(highest+1+index, src)
 }
 
 // openRaw opens a database directly, with no help from internal/store.
