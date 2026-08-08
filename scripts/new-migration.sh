@@ -121,8 +121,16 @@ mv "$created" "$final"
 # literal, wrapping something identifier-shaped. `CHECK (a <> '`abc`')` would become
 # `CHECK (a <> '"abc"')` — still valid SQL, still applies cleanly, and now means something different,
 # with nothing in the diff to suggest the generator did it. Refuse instead. This has never fired; it
-# costs four lines and the alternative is a class of bug that only shows up as wrong data.
-if grep -qE "'[^']*\`[^']*'" "$final"; then
+# costs a few lines and the alternative is a class of bug that only shows up as wrong data.
+#
+# The test STRIPS every backtick-free string literal first, then looks for a backtick still enclosed
+# by quotes. A naive `'[^']*\`[^']*'` cannot do this: its `[^']*` runs hop the `', '` boundary
+# BETWEEN two adjacent literals, so a backtick identifier sitting between `DEFAULT ''` and
+# `DEFAULT 'UTC'` — which is what any table with two TEXT-default columns produces — reads as
+# "inside a literal" when it is plainly between them. Removing the backtick-free literals first
+# leaves only literals that actually contain a backtick, which is exactly the corrupting input.
+stripped=$(sed -E "s/'[^'\`]*'//g" "$final")
+if printf '%s' "$stripped" | grep -qE "'[^']*\`[^']*'"; then
     printf '\033[31m  %s contains a backtick inside a string literal.\033[0m\n' "$final" >&2
     printf '  The backtick-to-double-quote rewrite would change what that literal MEANS, so this\n' >&2
     printf '  script is refusing rather than guessing. Fix the expression in db/schema.hcl to avoid\n' >&2

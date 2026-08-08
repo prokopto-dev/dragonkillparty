@@ -18,6 +18,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 	"github.com/prokopto-dev/dragonkillparty/internal/ui"
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
 
 const (
@@ -199,6 +200,31 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		}
 	}
 
+	// The store the query-backed operations read and write. Opened AFTER migrateOnBoot, so its pools
+	// connect to a fully-migrated database — a store opened before migration would cache a schema
+	// that the next statement invalidates. It is a separate handle from the migrator's short-lived
+	// ones (the Runner opens and closes a store per operation); this one lives for the process.
+	//
+	// A failure here is NOT fatal, for the same reason migrateOnBoot's is not: canonical §13 requires
+	// /healthz to keep answering 200 whatever the database is doing, so a container with an unreadable
+	// DB path stays up rather than crash-looping. The store-backed operations degrade to 500 in that
+	// state — which is correct, an unreadable database cannot serve the guild — while /healthz and
+	// /readyz keep telling an operator what is wrong. api.New tolerates a nil Store: the operations
+	// still register, and their handlers surface the missing store as a 500.
+	var st *store.Store
+
+	if opened, openErr := store.Open(ctx, cfg.dbPath); openErr != nil {
+		slog.ErrorContext(ctx, "could not open the database for serving; serving anyway so /healthz stays up",
+			"error", openErr, "db_path", cfg.dbPath)
+	} else {
+		st = opened
+		defer func() {
+			if closeErr := st.Close(); closeErr != nil {
+				slog.ErrorContext(ctx, "close database", "error", closeErr, "db_path", cfg.dbPath)
+			}
+		}()
+	}
+
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
@@ -233,6 +259,7 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			// same-origin, which is what a co-hosted binary serves.
 			APIBase: os.Getenv(apiBaseEnv),
 			WebUI:   webUI,
+			Store:     st,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,

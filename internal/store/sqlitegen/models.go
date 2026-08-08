@@ -9,3 +9,18 @@ type DkpMetum struct {
 	Value     string
 	UpdatedAt int64
 }
+
+type Guild struct {
+	ID                int64
+	Name              string
+	Tag               string
+	Timezone          string
+	WeekStart         int64
+	PointsLabel       string
+	PointsPrecision   int64
+	InactiveAfterDays *int64
+	AutoSetInactive   int64
+	HideInactive      int64
+	CreatedAt         int64
+	UpdatedAt         int64
+}

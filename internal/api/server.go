@@ -8,6 +8,8 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/guild"
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
 
 const (
@@ -62,6 +64,12 @@ type Config struct {
 	// the shape every test that predates PR 6 constructs, which is why this is a field rather than an
 	// unconditional mount. cmd/dkp passes internal/ui.Handler(); a handler-level test passes nil.
 	WebUI http.Handler
+	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
+	// It is nil when New is called only to build the spec (NewHumaAPI): the operations still register
+	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
+	// reaching a handler at runtime is a wiring bug, not an input to guard, so the service is built
+	// from a nil Store here and the arch tests exercise the spec with it absent.
+	Store *store.Store
 }
 
 // New builds the complete HTTP handler tree: routes, Huma mount, and middleware.
@@ -113,7 +121,7 @@ func New(cfg Config) http.Handler {
 
 	humaAPI := humago.New(mux, humaConfig())
 
-	registerMeta(humaAPI, cfg)
+	registerOperations(humaAPI, cfg)
 	registerDocs(mux)
 
 	// The SPA catch-all, mounted LAST and only when a WebUI is supplied.
@@ -152,9 +160,26 @@ func New(cfg Config) http.Handler {
 // assembly site is how the committed spec starts describing a server nobody runs.
 func NewHumaAPI(cfg Config) huma.API {
 	humaAPI := humago.New(http.NewServeMux(), humaConfig())
-	registerMeta(humaAPI, cfg)
+	registerOperations(humaAPI, cfg)
 
 	return humaAPI
+}
+
+// registerOperations declares every Huma operation the binary serves, in one place.
+//
+// New and NewHumaAPI both call it so the served document and the emitted document are the same
+// document — the second-assembly-site failure server.go's header warns about. The guild service is
+// built from cfg.Store, which is nil in the spec-only path (NewHumaAPI): the operations register
+// regardless, because a route absent from the registry is a route absent from the spec, and the
+// handlers are never invoked without a listener.
+func registerOperations(humaAPI huma.API, cfg Config) {
+	clk := cfg.Clock
+	if clk == nil {
+		clk = clock.System{}
+	}
+
+	registerMeta(humaAPI, cfg)
+	registerGuild(humaAPI, guild.NewService(cfg.Store, clk))
 }
 
 // humaConfig assembles the OpenAPI document's fixed parts.

@@ -74,7 +74,7 @@ func TestStore_Counted_CountsWrites(t *testing.T) {
 	counter := Counted(t)
 	counter.Reset()
 
-	err := s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+	err := s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 		_, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (?)", 1)
 
 		return err
@@ -211,7 +211,7 @@ func TestStore_Open_FileMode_IsOwnerOnly(t *testing.T) {
 
 	t.Cleanup(func() { require.NoError(t, reopened.Close()) })
 
-	require.NoError(t, reopened.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+	require.NoError(t, reopened.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 		_, execErr := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (1)")
 
 		return execErr
@@ -308,7 +308,7 @@ func TestCounter_Budget_Exceeded_FailsWithTheSQL(t *testing.T) {
 	counter.Budget(rec, 1)
 
 	for id := range 3 {
-		err := s.Tx(t.Context(), func(ctx context.Context, tx DBTX) error {
+		err := s.txRaw(t.Context(), func(ctx context.Context, tx DBTX) error {
 			_, err := tx.ExecContext(ctx, "INSERT INTO scratch (id) VALUES (?)", id)
 
 			return err

@@ -65,8 +65,10 @@ func TestMigrate_BrokenMigration_RestoresByteIdentical(t *testing.T) {
 	require.ErrorAs(t, runErr, &failed,
 		"the failure must be a *migrate.FailedError so cmd/dkp can exit 1 and print the snapshot path")
 
-	// (4) The operator-facing message.
-	require.Equal(t, "000002_broken_integrity.sql", failed.Migration.Source,
+	// (4) The operator-facing message. The fixture is materialised one past the highest real
+	// migration (migrationDir renumbers it), so fixtureName reports the name it actually ran under
+	// rather than a hard-coded 000002 that the next real migration would invalidate.
+	require.Equal(t, fixtureName(t, brokenFixture, 0), failed.Migration.Source,
 		"the error names the wrong migration — per-migration integrity checking is what makes this "+
 			"identify the culprit instead of whichever migration happened to run last")
 	require.True(t, failed.Restored, "the migrator reported that it did not restore")
