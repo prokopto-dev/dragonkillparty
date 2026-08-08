@@ -156,3 +156,26 @@ as its own required job.
 The runtime image is `FROM scratch`: no shell, no package manager, no interpreter, and therefore no
 base-image CVE feed. A `:1-debug` tag exists for people who need to exec in, and its larger attack
 surface is documented where it is offered.
+
+## Known Phase 0 gaps
+
+These are deliberate, documented, and pinned by a test that goes red the day the gap closes. They
+exist because Phase 0 builds the shape the security controls attach to before the controls
+themselves — authentication is ROADMAP Phase 2 deliverable 1, and no Phase 0 PR adds it.
+
+### The guild resource is unauthenticated
+
+`GET /api/v1/guild` and `PATCH /api/v1/guild` (Phase 0 PR 5a) are **served with no credential
+required**, while the published OpenAPI document declares `security: [{pat: [...]}, {session: {}}]`
+for the read and `[{session: {}}]` for the write. PATCH is the product's first mutating endpoint. A
+bot author reading the spec is told a credential is required; the server currently accepts the
+request without one.
+
+There is no released binary yet — the release train is Phase 0 PR 7 — so the exposure is a
+developer's laptop, not a guild's site. That is what makes shipping-with-a-tripwire acceptable rather
+than merely convenient (decision record `docs/development/phase-0-pr5-decisions.md` §Q1).
+
+The gap is pinned by `TestGuild_Unauthenticated_IsAKnownPhase0Gap` in
+`test/integration/guild_test.go`, which asserts that an unauthenticated GET **and** an unauthenticated
+PATCH both currently succeed. When the auth middleware lands (Phase 2), those assertions go red;
+closing the gap is then a deliberate edit of that test to expect `401`, not a silent discovery.
