@@ -61,6 +61,56 @@ linters:
             The standard log package is not used here. Log with slog, structured — no secrets, no
             PATs, no bid amounts before reveal.
 
+        # --- The arithmetic bans (Phase 0 PR 8) ------------------------------------------------
+        # These make canonical §1/§2 mechanical rather than aspirational, and they predate the first
+        # arithmetic. scripts/repo-gates.sh carries grep-based twins (MONEY001, CLOCK001, MONEY002);
+        # forbidigo adds what a grep cannot — it resolves the TYPE, so a `float64` reached through
+        # an alias, or a `time.Now` behind a dot-import, does not walk past. Each ban has a negative
+        # fixture under testdata/lintfixtures/ and a test in internal/core proving `make lint`'s
+        # mechanism goes red on it, so a disabled rule is a red test rather than a silent hole.
+
+        # Float is banned in the two arithmetic packages ONLY (canonical §1). It is legitimate
+        # elsewhere — internal/core's own boundary conversion uses it — so the ban is scoped by the
+        # path-except exclusion below rather than fired repo-wide. The exclusion keys on this message
+        # text; do not reword one without the other.
+        - pattern: \bfloat(32|64)\b
+          msg: >-
+            float32/float64 are banned in internal/ledger and internal/strategy (canonical §1). Point
+            arithmetic is core.Centipoints (int64) only; a float in the point path silently converts
+            the ledger to floating point and drifts a balance over time.
+
+        # time.Now is banned everywhere except internal/clock (canonical §2). The clock is injected so
+        # time-dependent behaviour is deterministic. internal/clock is exempted by the exclusion rule
+        # below — it is the one place System.Now is allowed to call it.
+        - pattern: ^time\.Now$
+          msg: >-
+            time.Now is banned outside internal/clock (canonical §2). Inject a clock.Clock and call
+            clock.Now(); the seam is what makes bid timers, decay and snapshots testable.
+
+        # The third arithmetic ban — SQLite total() — is NOT expressed as a forbidigo pattern, and
+        # the omission is deliberate rather than a gap. total() returns a REAL where sum() returns an
+        # INTEGER, so one total() silently floats the centipoint ledger (canonical §1); but the risk
+        # lives entirely in SQL — a *.sql query or a SQL string literal in Go — and forbidigo matches
+        # Go identifiers and cannot see inside a string. There is no Go symbol named total to forbid.
+        # `make lint` bans total() repo-wide through repo-gate MONEY002 (scripts/repo-gates.sh), which
+        # greps both db/*.sql and Go source, and the total_in_query.sql fixture proves it fires.
+        # Adding a forbidigo `^total$` here would be an inert rule that matched nothing, which is worse
+        # than an honest pointer to the gate that actually does the work.
+
+  exclusions:
+    # The float ban is the one rule here that is package-scoped rather than repo-wide, and the only
+    # golangci mechanism that expresses "fire ONLY under these paths" is path-except on an exclusion:
+    # it excludes the finding everywhere its path does NOT match, which leaves the ban live in exactly
+    # internal/ledger and internal/strategy. The time.Now ban is the inverse — repo-wide with a single
+    # carve-out for internal/clock — so it uses an ordinary path exclusion.
+    rules:
+      - linters: [forbidigo]
+        text: float32/float64 are banned
+        path-except: (internal/ledger|internal/strategy)/
+      - linters: [forbidigo]
+        text: time.Now is banned outside internal/clock
+        path: internal/clock/
+
 formatters:
   enable:
     - gofumpt
