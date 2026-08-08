@@ -17,35 +17,26 @@ import (
 // the scan below reads, and a verbatim literal here would make the test fail on its own source.
 var pendingPR6Marker = "PENDING" + " PR " + "6"
 
-// TestDocs_NoPendingMarkers is DEFERRED, and the deferral is deliberate — see coupling #2 in the
-// PR 6 brief and docs/development/first-ten-prs.md §PR 5b.
+// TestDocs_NoPendingMarkers polices the `PENDING PR 6` placeholder that PR 5b left in step 6 of
+// EXAMPLE_ENDPOINT.md, where the generated TypeScript client call belonged. PR 6 (the SPA and its
+// generated client) replaced that placeholder with the real caller, so the token must now appear
+// NOWHERE under docs/ or internal/api/*.md. This test was deferred with a t.Skip until the client
+// existed to write against; PR 6 is that change, so the Skip is gone and the scan is live.
 //
-// The LIVE placeholder it polices — the `PENDING PR 6` token in step 6 of EXAMPLE_ENDPOINT.md, where
-// the generated TypeScript client call belongs — does not exist on this branch. PR 5b rewrites
-// EXAMPLE_ENDPOINT.md from PR 5a's merged code and is what INSERTS that placeholder. PR 5b is being
-// built in parallel and is not on PR 6's base, so removing the Skip now would pass vacuously against a
-// document that has no live placeholder to remove — a green test that proves nothing, which is the
-// failure mode this project's test doctrine exists to prevent.
-//
-// The token is NOT absent from the tree, though: docs/development/first-ten-prs.md carries it in
+// The token is NOT absent from the whole tree: docs/development/first-ten-prs.md carries it in
 // planning prose (it describes the marker and this very test). That is why the scan below excludes the
-// docs/development/** tree and this test's own repo/ package — both DESCRIBE the marker rather than
-// carrying it as a live placeholder, and a scan that flagged them would go red the instant the Skip is
-// removed, on prose nobody is expected to edit. The exclusions are in place NOW so that removing the
-// Skip later is a one-line change with a body that already does the right thing.
+// docs/development/** tree — it DESCRIBES the marker rather than carrying it as a live placeholder, and
+// flagging it would go red on prose nobody is expected to edit. This test's own repo/ package never
+// contains the literal either: pendingPR6Marker is assembled from fragments (see its comment) so the
+// scan cannot match its own source.
 //
-// So the test ships SKIPPED with the reason attached, and its body is written and correct. The scan is
-// real; only the t.Skip guard defers it. When PR 5b has merged and EXAMPLE_ENDPOINT.md carries the
-// live placeholder, the follow-up that removes the placeholder deletes the Skip line below in the same
-// change — at which point this test does its job. The second half of the criterion (step 6's snippet
-// type-checks under `tsc --noEmit`) lands with that follow-up too, because the snippet it checks is
-// the one PR 5b writes.
+// The second half of PR 6's acceptance criterion — that step 6's snippet type-checks under
+// `tsc --noEmit` — is met by web/src/examples/guild-endpoint.ts, the real file the doc's ```ts fence
+// transcribes. That file is compiled by `make vet` and CI's Node-having `typecheck` job; it is NOT
+// checked here, because this Go test runs in `test / integration`, a job with no Node toolchain. A
+// tsc/node call from here would fail-loud there, so the type-check deliberately lives where Node is.
 func TestDocs_NoPendingMarkers(t *testing.T) {
 	t.Parallel()
-
-	t.Skip("deferred until PR 5b inserts the `PENDING PR 6` placeholder into internal/api/EXAMPLE_ENDPOINT.md; " +
-		"see coupling #2 in the PR 6 brief. The body and its exclusions are correct now, so removing this " +
-		"Skip is the one-line follow-up that lands with the change removing the placeholder.")
 
 	root := repoRoot(t)
 
