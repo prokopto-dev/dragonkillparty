@@ -1,0 +1,65 @@
+# systemd unit for a binary install of Dragon Kill Party.
+#
+# Shipped inside the .deb, .rpm and .apk packages (see .goreleaser.yaml) at
+# /lib/systemd/system/dkp.service. An operator who installs the package gets a service they enable
+# with `systemctl enable --now dkp`; the container path uses the Dockerfile HEALTHCHECK instead.
+#
+# The hardening directives below are the default-deny posture appropriate for a network service run
+# by a volunteer who is not a sysadmin: the process gets its own user, a private /tmp, a read-only
+# view of the system, and write access to exactly one directory. modernc.org/sqlite is pure Go, so
+# there is no shared library to load and no reason to relax NoNewPrivileges.
+
+[Unit]
+Description=Dragon Kill Party — DKP and guild management for Project 1999
+Documentation=https://github.com/dragonkillparty/dkp
+# The database is local; there is no external dependency to order against. `network-online` is here
+# so the listener binds after the interface is up on a fresh boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# A dedicated system user with no login and no home. The package's post-install creates it; on a
+# manual install, `useradd --system --no-create-home --shell /usr/sbin/nologin dkp` does the same.
+User=dkp
+Group=dkp
+
+# /data is the single writable location: the SQLite database, the pre-migration snapshots and the
+# artifacts. StateDirectory makes systemd create /var/lib/dkp with the right owner and mode, and
+# DKP_DATA_DIR points the app at it. DKP_DB_PATH puts the database inside it.
+StateDirectory=dkp
+Environment=DKP_DATA_DIR=/var/lib/dkp
+Environment=DKP_DB_PATH=/var/lib/dkp/dkp.db
+
+ExecStart=/usr/bin/dkp serve
+Restart=on-failure
+RestartSec=5s
+# SIGTERM triggers the graceful drain in serve.go; give it more than the 15s shutdown budget.
+TimeoutStopSec=30s
+
+# --- Sandboxing. Deny by default, allow the one directory the app writes. -----------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The app makes only IPv4/IPv6 TCP connections; deny every other socket family.
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# StateDirectory is writable; everything else the strict ProtectSystem view leaves read-only.
+ReadWritePaths=/var/lib/dkp
+
+[Install]
+WantedBy=multi-user.target

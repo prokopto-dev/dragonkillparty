@@ -32,6 +32,11 @@ COMMIT         ?= $(shell git rev-parse --short HEAD 2>/dev/null | tr -cd 'A-Za-
 DATE           ?= $(shell git log -1 --format=%cI 2>/dev/null | tr -cd 'A-Za-z0-9:.+_-' || echo unknown)
 LDFLAGS        := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
+# Build args threaded into the image so a `make docker` build reports the same version/commit/date
+# stamps as `make build`. The Dockerfile mirrors these into its own -ldflags; keep the two in step.
+# Kept as a single variable so the `docker` and (Phase 0 PR 7) release-image recipes cannot drift.
+DOCKER_BUILD_ARGS ?= --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE)
+
 # The `go` directive in go.mod is the single source of the minimum toolchain. `make setup` asserts
 # the installed Go satisfies it; it cannot install Go itself.
 GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
@@ -93,7 +98,8 @@ endef
         fixture-build fixture-seed fixture-capture fixture-verify fixture-manifest \
         fixture-publish fixture-gate release-version release-notes release-image \
         release-manifest release-sign release-sbom release-smoke release-promote \
-        release-promote-rc release-refdb release-failure-issue
+        release-promote-rc release-refdb release-failure-issue \
+        third-party-notices image-size
 
 ## help: list every target with its description
 help:
@@ -195,13 +201,13 @@ seed:
 	@$(call notyet,Phase 1 (perf) / Phase 2 (small) / Phase 3 (demo),dkp seed --profile $${PROFILE:-demo})
 
 ## docker: build the container image
+# buildx, not `docker build`: it is what CI's build/image and mq/image-arm64 jobs invoke, and it is
+# what the Dockerfile's cross-compilation ARGs (TARGETOS/TARGETARCH, supplied per platform) expect.
+# `--load` puts the result in the local image store so `make smoke-local` and `make image-size` can
+# find it. PLATFORM is optional: unset for a native host build (build/image), set to linux/arm64 for
+# the merge-queue cross-compile check (mq/image-arm64). Go cross-compiles, so no QEMU is ever needed.
 docker:
-	@if [ -f deploy/Dockerfile ]; then \
-		docker build -f deploy/Dockerfile -t $(IMAGE):$(VERSION) \
-			--build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) . ; \
-	else \
-		$(call notyet,Phase 0 PR 7,deploy/Dockerfile does not exist yet); \
-	fi
+	docker buildx build $${PLATFORM:+--platform $$PLATFORM} --load -f deploy/Dockerfile -t $(IMAGE):$(VERSION) $(DOCKER_BUILD_ARGS) .
 
 ## build: compile the binary to ./bin
 build:
@@ -456,7 +462,7 @@ soak-jobs:
 	@$(call notyet,Phase 1,10k-job River soak)
 
 smoke-local:
-	@$(call notyet,Phase 0 PR 7,boot the built image and hit /readyz)
+	@bash scripts/smoke-local.sh
 
 nightly-report:
 	@$(call notyet,Phase 8,nightly summary issue)
@@ -489,22 +495,34 @@ release-notes:
 	@$(call notyet,Phase 8,generate notes from oasdiff + migrations + BREAKING trailers)
 
 release-image:
-	@$(call notyet,Phase 0 PR 7,multi-arch build and push)
+	@bash scripts/release-image.sh
 
 release-manifest:
-	@$(call notyet,Phase 0 PR 7,imagetools manifest join)
+	@bash scripts/release-manifest.sh
 
 release-sign:
-	@$(call notyet,Phase 0 PR 7,cosign keyless)
+	@bash scripts/release-sign.sh
 
 release-sbom:
-	@$(call notyet,Phase 0 PR 7,SBOM attestation)
+	@bash scripts/release-sbom.sh
 
 release-smoke:
-	@$(call notyet,Phase 0 PR 7,pull the immutable digest on amd64 and arm64)
+	@bash scripts/release-smoke.sh
 
 release-promote:
-	@$(call notyet,Phase 0 PR 7,advance the moving tags only after smoke passes)
+	@bash scripts/release-promote.sh
+
+# Regenerate THIRD_PARTY_NOTICES.txt from the runtime dependency graph. NOTICE promises this file and
+# .goreleaser.yaml attaches it to every release archive; TestThirdPartyNotices_* asserts it covers the
+# graph. Stdlib + the module cache only — no network, no extra tool. Run it after any go.mod change.
+third-party-notices:
+	@bash scripts/third-party-notices.sh
+
+# Advisory measurement of the compressed image against the 30 MB budget (docs/design section 7). The
+# ci.yml build/image step runs it continue-on-error so a breach is a signal, not a merge block; the
+# release path runs it with MODE=enforce as a hard gate. Prints the number either way.
+image-size:
+	@bash scripts/image-size.sh
 
 release-promote-rc:
 	@$(call notyet,Phase 8,promote a release candidate)

@@ -506,6 +506,16 @@ jobs:
         # docker run, wait for /healthz, then /readyz, then `dkp version`. /healthz never touches
         # the database (canonical conventions section 13) — a DB-touching healthcheck lets Docker
         # kill the container mid-migration.
+      - name: Image size (advisory)
+        run: make image-size
+        # ADVISORY on the PR path, and advisory in the RIGHT way: the step is NOT `continue-on-error`
+        # (ci.yml bans that — it is the quiet way to keep a gate while removing its teeth, and a test
+        # asserts its absence). Instead scripts/image-size.sh is advisory by construction — in its
+        # default MODE=advise it prints the compressed size against the 30 MB budget
+        # (docs/design/06-cicd-and-release.md section 7), emits a `::warning::` on a breach, and exits
+        # 0 regardless, so a legitimate breach is a signal in the diff, not a merge block. The release
+        # train runs the SAME script with MODE=enforce, where a breach is a hard, non-zero failure:
+        # a shipped image that blew the budget is a real regression.
 
   test-e2e:
     name: test / e2e
