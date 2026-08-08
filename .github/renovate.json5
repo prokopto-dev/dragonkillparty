@@ -116,6 +116,29 @@
     },
 
     // ----------------------------------------------------------------------------------------
+    // The internal/auth firewall (PR 7 criterion). internal/auth does not exist yet — it lands
+    // with sessions, PATs and step-up in a later phase — but its dependency set is the highest-
+    // trust code in the binary: password hashing, token minting, session cookies. Whatever it
+    // ends up importing must never automerge on a green CI run alone; a dependency in the auth
+    // path is exactly where a supply-chain compromise wants to land, and CI green is not evidence
+    // the maintainer chose the bump.
+    //
+    // Encoded as a path rule so it is armed BEFORE the package exists: it matches any Go module
+    // manifest under internal/auth (a nested go.mod, or the root go.mod once auth is a real import
+    // path), and freezes automerge behind dashboard approval for anything that path pulls in. The
+    // rule is asserted by TestRenovate_HighRiskDepsNeverAutomerge so it cannot be quietly dropped
+    // when auth is written; a future agent adding the package inherits the firewall rather than
+    // having to remember it.
+    {
+      matchFileNames: ["internal/auth/**", "go.mod"],
+      matchDepTypes: ["require"],
+      matchPackageNames: ["!golang.org/x/**"],
+      dependencyDashboardApproval: true,
+      automerge: false,
+      labels: ["dependencies", "dep:high-risk", "area:auth"],
+    },
+
+    // ----------------------------------------------------------------------------------------
     // The EQdkp fixture images are deliberately frozen. They exist to reproduce four specific
     // vintages of somebody else's application; "updating" one silently changes what the importer
     // suite proves. A new vintage is a new matrix entry in fixtures.yml, never a bump.

@@ -148,6 +148,27 @@ if has .github; then
     [ -n "$hits" ] && violation PIN001 "action not pinned to a 40-char commit SHA" "$hits"
 fi
 
+# --- Supply chain: no QEMU in any workflow ----------------------------------------------------
+# Multi-arch images are produced by CROSS-COMPILATION joined with `docker buildx imagetools`, never
+# by an emulated build. Go cross-compiles at native speed and modernc.org/sqlite is pure Go, so the
+# arm64 and arm/v7 images cost one more `go build` each — about 90 seconds for the whole matrix.
+#
+# The gate exists because a QEMU-emulated build runs 10-25x slower, which turns a 90-second image
+# stage into 20-50 minutes, and the predictable response to that is someone deleting the arm64 leg
+# "to make CI fast" — silently dropping the architecture half this audience runs on (older Raspberry
+# Pis). Banning the string is what stops `docker/setup-qemu-action` or a `--platform` emulation from
+# being reintroduced under wall-clock pressure. docs/design/06-cicd-and-release.md §7 and PR 7's
+# acceptance criteria require this exact assertion.
+#
+# Comments are stripped first, exactly as every other gate here does: the committed workflows say
+# "No QEMU" in prose to document the choice, and prose about a rule is not a breach of it. What
+# survives stripping — a `uses: docker/setup-qemu-action@...` step, a `qemu` platform arg — is the
+# real thing.
+if has .github/workflows; then
+    hits=$(grep -rniE 'qemu' .github/workflows 2>/dev/null | strip_comments || true)
+    [ -n "$hits" ] && violation QEMU001 "QEMU in a workflow — multi-arch is cross-compiled, never emulated" "$hits"
+fi
+
 # --- The AGPL firewall ------------------------------------------------------------------------
 # EQdkp Plus is AGPL-3.0; its game modules are CC BY-NC-SA. Reading a user's database at runtime is
 # fine. Transcribing their PHP is a licence violation — and it is exactly what a helpful agent does
