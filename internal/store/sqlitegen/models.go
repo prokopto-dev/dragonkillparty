@@ -53,21 +53,21 @@ type LedgerBatch struct {
 	StrategyID         string
 	StrategyVersion    string
 	ConfigSnapshotJson string
-	RngSeed            interface{}
+	RngSeed            *int64
 	Source             string
-	SourceRef          interface{}
-	ActorUserID        interface{}
-	ActorTokenID       interface{}
+	SourceRef          *string
+	ActorUserID        *string
+	ActorTokenID       *string
 	ActorIsBeneficiary int64
 	Reason             string
-	ReversesBatchID    interface{}
+	ReversesBatchID    *string
 	EffectiveAt        int64
 	RecordedAt         int64
 	EffectiveDay       string
-	IdempotencyKey     interface{}
+	IdempotencyKey     *string
 	EntryCount         int64
 	NetAmountCp        int64
-	PrevHash           interface{}
+	PrevHash           []byte
 	Hash               []byte
 }
 
@@ -77,13 +77,13 @@ type LedgerEntry struct {
 	PoolID       string
 	Seq          int64
 	AccountID    string
-	CharacterID  interface{}
+	CharacterID  *string
 	BalanceKind  string
 	AmountCp     int64
-	ItemID       interface{}
-	ItemAwardID  interface{}
-	RaidID       interface{}
-	TickID       interface{}
+	ItemID       *string
+	ItemAwardID  *string
+	RaidID       *string
+	TickID       *string
 	MetadataJson string
 }
 

@@ -196,7 +196,7 @@ SELECT
     COALESCE(r.attended, 0)  AS attended_30,
     COALESCE(r.held, 0)      AS held_30
 FROM person p
-JOIN account a ON a.person_id = p.id AND a.pool_id = ?
+JOIN account a ON a.person_id = p.id
 LEFT JOIN character c ON c.id = p.main_character_id
 LEFT JOIN balance_snapshot s ON s.account_id = a.id AND s.pool_id = ? AND s.balance_kind = 'points'
 LEFT JOIN attendance_rollup r ON r.person_id = p.id AND r.pool_id = ? AND r.window_days = 30

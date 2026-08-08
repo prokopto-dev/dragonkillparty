@@ -63,6 +63,7 @@ func TestDefaultPool_Seeded(t *testing.T) {
 
 	require.Equal(t, ledger.DefaultPoolID.String(), id)
 	require.NotEmpty(t, name, "the default pool must carry a name")
+	require.Equal(t, "zero_sum", strategyID, "the default pool is seeded with the zero_sum strategy")
 }
 
 // TestGetAccount_Unknown_ReturnsNotFound is the negative control for the reader: an id that was never
