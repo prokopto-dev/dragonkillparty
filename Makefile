@@ -141,6 +141,14 @@ setup:
 	@$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 	@$(MAKE) --no-print-directory install-atlas
 	@printf '\033[32m  toolchain installed\033[0m into %s\n' '$(GOTOOLS_BIN)'
+	@# Install the tracked git hooks: pre-commit auto-formats staged files, pre-push blocks a push
+	@# that would fail CI on formatting. core.hooksPath points git at the tracked directory instead
+	@# of .git/hooks, so the hooks are versioned and a clone gets them the moment it runs `make
+	@# setup`. chmod because a checkout does not always preserve the executable bit (a zip export, a
+	@# umask, a filesystem that drops it) and git will not run a hook that is not +x.
+	@git config core.hooksPath .githooks
+	@chmod +x .githooks/*
+	@printf '\033[32m  git hooks installed\033[0m — pre-commit auto-formats staged files, pre-push blocks unformatted pushes\n'
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		printf '\033[31m  installed but not on PATH\033[0m — every make target adds %s itself, so\n' '$(GOTOOLS_BIN)'; \
 		printf '  `make check` will work. To run the tools directly, add this to your shell profile:\n'; \

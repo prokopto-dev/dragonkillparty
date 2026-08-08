@@ -51,6 +51,20 @@ Trunk-based. Branch off `main`, keep it short-lived, squash-merge, delete the br
 Today the CODEOWNERS teams contain the same small group of people. The value is the notification and
 the pause, not the gatekeeping.
 
+**Update a stale branch locally, not with GitHub's "Update branch" button.** `make setup` installs
+tracked git hooks: `pre-commit` auto-formats staged files, and `pre-push` blocks a push that would
+land anything unformatted. A server-side merge — the "Update branch" button, or any merge GitHub
+performs for you — bypasses `pre-commit` (git does not run it for a clean merge commit), so a merge
+that stitches two edits of the same file together can land it gofumpt-dirty and fail `lint / go`.
+Merge locally instead, which runs the hooks:
+
+```bash
+git fetch origin main
+git merge origin/main          # or: git rebase origin/main
+make fmt                        # belt and braces; pre-push checks it too
+git push
+```
+
 **Conventional commits are enforced on the PR title only**, because squash-merge makes the PR title
 the commit subject and that is what release-please parses. Your individual WIP commits can say
 whatever you like.
