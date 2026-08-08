@@ -9,6 +9,38 @@ import (
 )
 
 type Querier interface {
+	// Ledger reads and the snapshot upsert - Phase 0 PR 9. Shapes follow db/RECIPES.md.
+	//
+	// Every statement that reaches SQLite in this project is generated from a file like this one:
+	// db.Query and db.Exec outside internal/store are grep-banned (gate SQL002), so the only way a new
+	// query enters the codebase is by being written here first and reviewed as SQL.
+	//
+	// PR 9 is READ and HELPER only. There is deliberately NO batch or entry INSERT here: the commit
+	// service that writes them is PR 10, and batch/entry inserts appear only in tests (raw or generated)
+	// until then. What ships now is the balance query, the seq allocator, the snapshot upsert and the
+	// account/system-account readers - the surface a service reads through, before any service writes.
+	//
+	// Keep every comment in this file ASCII-only. sqlc v1.31.1 computes each query's text span in bytes
+	// but truncates by rune count, so a multibyte character (an em dash, a section sign) in a preceding
+	// comment lops that many trailing characters off the generated query string. The failure is silent
+	// at generate time and shows up as a syntax error only when the query runs.
+	// BalanceAsOfSeq is the definitional balance query, and the single most important read in the
+	// product. A balance is a SUM over an append-only log, positioned by seq - NEVER by timestamp,
+	// because a backdated effective_at must not change what a past balance WAS.
+	//
+	// It reads e.seq directly, with NO join to ledger_batch: the seq is denormalised onto every entry
+	// precisely so this query is served entirely from ix_entry_balance
+	// (pool_id, account_id, balance_kind, seq, amount_cp) with no table access. The EXPLAIN QUERY PLAN
+	// golden (test/golden/explain/ledger_balance.txt) asserts that covering-index plan, because the day
+	// it starts scanning is the day standings gets slow and nobody notices.
+	//
+	// Aggregate with sum(), never the float-returning alternative SQLite offers (canonical C3 / MONEY002):
+	// that one returns a float and would silently convert the ledger to floating point. sum() over zero
+	// rows is NULL, hence COALESCE(..., 0).
+	BalanceAsOfSeq(ctx context.Context, arg BalanceAsOfSeqParams) (int64, error)
+	// GetAccount reads one account by id. It backs the "system accounts are addressable by id"
+	// acceptance test and the account reader in internal/ledger.
+	GetAccount(ctx context.Context, id string) (Account, error)
 	// Guild singleton - the one-row instance identity and its officer-editable settings.
 	//
 	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated
@@ -32,11 +64,25 @@ type Querier interface {
 	// `db.Query` and `db.Exec` outside internal/store are grep-banned (gate SQL002), so the only way
 	// a new query enters the codebase is by being written here first and reviewed as SQL.
 	GetMetaValue(ctx context.Context, key string) (string, error)
+	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
+	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
+	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
 	// InsertGuild creates the singleton row. It exists for the setup flow that Phase 2 builds, which
 	// writes the initial guild once, and for the tests that need a row to read and patch. It always
 	// writes id = 1 (the CHECK enforces it), so a second call fails the primary key rather than creating
 	// a second guild - which is the correct behaviour for a table that must have exactly one row.
 	InsertGuild(ctx context.Context, arg InsertGuildParams) (Guild, error)
+	// MaxPoolSeq is the current head seq for a pool: the ?4 argument BalanceAsOfSeq needs to compute a
+	// CURRENT balance ("as of the latest seq"). COALESCE to 0 for an empty pool, so a pool with no
+	// batches yet reports head 0 rather than NULL.
+	MaxPoolSeq(ctx context.Context, poolID string) (int64, error)
+	// NextPoolSeq allocates the next per-pool sequence number. It MUST run inside store.Tx (the write
+	// pool is _txlock=immediate with SetMaxOpenConns(1), so it is the only writer and max+1 is a correct
+	// allocator). ux_batch_seq(pool_id, seq) is the guardrail if the single-writer property is ever lost.
+	//
+	// This is dialect divergence #1 (db/RECIPES.md): on Postgres max+1 is NOT safe under real
+	// concurrency and becomes a locked counter row or an advisory lock. Do not copy this pattern.
+	NextPoolSeq(ctx context.Context, poolID string) (int64, error)
 	// UpdateGuild writes every settable column and RETURNS the new row, so the handler emits the fresh
 	// representation and its new ETag in the same round trip a bot needs after a PATCH.
 	//
@@ -47,6 +93,13 @@ type Querier interface {
 	// in SQL, where it cannot be unit-tested without a database and where absent and set-to-the-current
 	// value become indistinguishable. id is never updated: it is the singleton key.
 	UpdateGuild(ctx context.Context, arg UpdateGuildParams) (Guild, error)
+	// UpsertBalanceSnapshot maintains the droppable balance cache, ADDITIVELY, in the same transaction
+	// as the batch write (PR 10). The primary key is (pool_id, account_id, balance_kind) - the same key
+	// the WITHOUT ROWID table is built on - and on conflict the amount and the entry count are ADDED to
+	// the existing row, not replaced: the caller passes this batch's delta (the SUM and COUNT of just its
+	// entries), so the running total accumulates. as_of_seq and updated_at are advanced to the new head.
+	// A batch has at most ~70 entries, so this is a sub-millisecond indexed write under the single writer.
+	UpsertBalanceSnapshot(ctx context.Context, arg UpsertBalanceSnapshotParams) error
 	UpsertMetaValue(ctx context.Context, arg UpsertMetaValueParams) error
 }
 

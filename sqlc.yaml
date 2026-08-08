@@ -32,15 +32,29 @@ sql:
         # column arrives as a pointer rather than silently changing every existing signature.
         emit_pointers_for_null_types: true
 
-        # Type overrides. sqlc's SQLite engine (v1.31.1) types a nullable INTEGER column read
-        # through a bare `SELECT col` as `interface{}` rather than honouring
-        # emit_pointers_for_null_types — it loses the affinity of a NULL column that is not
-        # projected through a join or an aggregate. guild.inactive_after_days is the repo's first
-        # nullable column and the first to hit it. Pinning it to *int64 is what the pointer option
-        # would have produced, and it keeps `interface{}` out of the store contract and the domain
-        # signatures (.claude/rules/go-idioms.md bans `any` in the middle of the typed boundaries).
+        # Type overrides. sqlc's SQLite engine (v1.31.1) types a nullable column read through a bare
+        # `SELECT col` as `interface{}` rather than honouring emit_pointers_for_null_types — it loses
+        # the affinity of a NULL column that is not projected through a join or an aggregate.
+        # guild.inactive_after_days is the repo's first nullable column and the first to hit it.
+        # account.person_id and account.system_key are PR 9's, and system_key is additionally a WHERE
+        # parameter in GetSystemAccount, so without the override that method would take `interface{}`.
+        # Pinning each to the pointer type emit_pointers_for_null_types would have produced keeps
+        # `interface{}` out of the store contract and the domain signatures (.claude/rules/go-idioms.md
+        # bans `any` in the middle of the typed boundaries).
+        #
+        # The aggregate/coalesce results (BalanceAsOfSeq, MaxPoolSeq, NextPoolSeq) are pinned in the
+        # QUERY instead, with `CAST(... AS INTEGER)`: an override keys on `table.column` and an
+        # aggregate result has no table, so the cast is the only lever that reaches it.
         overrides:
           - column: "guild.inactive_after_days"
             go_type:
               type: "int64"
+              pointer: true
+          - column: "account.person_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "account.system_key"
+            go_type:
+              type: "string"
               pointer: true
