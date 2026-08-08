@@ -18,6 +18,8 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 )
 
 // Architectural tests over the Huma registry and over the source that populates it.
@@ -676,6 +678,327 @@ func TestArch_MutatingPostWithoutIdempotencyKey_FailsBuild(t *testing.T) {
 			Summary: "A read under a fenced prefix",
 		})), "the fence applied to a GET, which creates no domain state")
 	})
+}
+
+// TestArch_StateChangingOperation_RequiresIfMatch is the precondition tripwire.
+//
+// canonical §7 and .claude/rules/api-endpoints.md require If-Match on every PATCH and every state
+// transition, so two officers editing the same resource race deterministically instead of both
+// winning. .claude/rules/api-endpoints.md:227-237 and EXAMPLE_ENDPOINT.md have both claimed this test
+// exists since PR 4; PR 5a ships the first PATCH and the test with it.
+//
+// The check is that the operation declares an If-Match HEADER parameter — NOT that it is required.
+// The If-Match must be optional (see etag.go: a required tag yields 422, not the 428 canonical §7
+// wants), so requiring it here would contradict the handler design. Declaring it is what matters: an
+// operation with no If-Match parameter at all cannot enforce a precondition however its handler is
+// written.
+//
+// Paired with TestArch_StateChangingWithoutIfMatch_FailsBuild, which drives the same function against
+// a fixture PATCH, because the real registry has exactly one PATCH today and a check matching the
+// wrong parameter location would keep passing as more land.
+func TestArch_StateChangingOperation_RequiresIfMatch(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, ifMatchViolations(registeredOperations(t)))
+}
+
+// ifMatchViolations returns one message per state-changing operation that declares no If-Match header
+// parameter.
+//
+// A state-changing operation is any PATCH, PUT or DELETE — the methods that mutate an existing
+// resource. POST is excluded: a POST creates domain state and is fenced by the Idempotency-Key rule
+// instead (a create has no prior representation to precondition on). Extracted so the vacuous
+// real-registry gate and the fixture test share it, the same arrangement operationIDViolations uses.
+func ifMatchViolations(ops []registeredOp) []string {
+	var problems []string
+
+	for _, op := range ops {
+		switch op.Method {
+		case http.MethodPatch, http.MethodPut, http.MethodDelete:
+		default:
+			continue
+		}
+
+		var found bool
+
+		for _, param := range op.Op.Parameters {
+			if param != nil && strings.EqualFold(param.Name, "If-Match") && param.In == "header" {
+				found = true
+			}
+		}
+
+		if !found {
+			problems = append(problems, fmt.Sprintf(
+				"%s changes state but declares no If-Match header parameter. Add an IfMatch field to "+
+					"its input struct, tagged `header:\"If-Match\"` (optional — the 428 for an absent "+
+					"precondition is an explicit handler check, see etag.go).", op))
+		}
+	}
+
+	return problems
+}
+
+// TestArch_StateChangingWithoutIfMatch_FailsBuild proves the If-Match tripwire fires.
+//
+// The positive test above runs over one PATCH today; without this, a broken check (matching the wrong
+// parameter location, or excluding PATCH) would keep passing as more transitions land.
+func TestArch_StateChangingWithoutIfMatch_FailsBuild(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a PATCH without an If-Match parameter is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		problems := ifMatchViolations(fixtureRegistry(t, huma.Operation{
+			OperationID: "updateThing", Method: http.MethodPatch, Path: "/api/v1/things",
+			Summary:  "A PATCH with no If-Match parameter",
+			Security: []map[string][]string{{"session": {}}},
+			Extensions: map[string]any{
+				ExtensionPermission: "roster.write",
+			},
+		}))
+
+		require.NotEmpty(t, problems,
+			"a PATCH with no If-Match parameter was accepted, so the gate over the real registry would too")
+	})
+
+	t.Run("a GET is not required to carry an If-Match", func(t *testing.T) {
+		t.Parallel()
+
+		require.Empty(t, ifMatchViolations(fixtureRegistry(t, huma.Operation{
+			OperationID: "getThing", Method: http.MethodGet, Path: "/api/v1/things",
+			Summary:    "A read, which changes no state",
+			Security:   []map[string][]string{{"session": {}}},
+			Extensions: map[string]any{ExtensionPermission: "roster.read"},
+		})), "the If-Match rule fired on a GET, which changes no state")
+	})
+}
+
+// TestArch_ScopeCoverage_MatchesSecurity enforces the three-case x-dkp-scopes rule, in both
+// directions, and is the gate the previous four documents lacked when they each described an
+// x-dkp-scopes convention that no code emitted (decision record §U4).
+//
+// The three cases, from canonical §6 and the decision record:
+//
+//   - PAT-callable: Security offers a `pat` alternative -> x-dkp-scopes is non-empty, every member
+//     resolves in authz.Scopes(), and x-dkp-pat-forbidden is absent.
+//   - Capability floor: the permission is in authz.CapabilityFloor() -> Security is session-only,
+//     x-dkp-pat-forbidden is true, and there are NO scopes.
+//   - Session-only by omission: session-only, permission not in the floor -> NEITHER scopes nor
+//     pat-forbidden. Marking such an operation pat-forbidden is a false positive (admin.settings).
+func TestArch_ScopeCoverage_MatchesSecurity(t *testing.T) {
+	t.Parallel()
+
+	require.Empty(t, scopeCoverageViolations(registeredOperations(t)))
+}
+
+// operationOffersPAT reports whether op's Security offers a `pat` alternative.
+func operationOffersPAT(op registeredOp) bool {
+	for _, requirement := range op.Op.Security {
+		if _, ok := requirement["pat"]; ok {
+			return true
+		}
+	}
+
+	return false
+}
+
+// scopeCoverageViolations returns one message per operation that breaks the three-case scope rule.
+//
+// It reads the permission from Extensions to decide which case an operation is in, the scopes and the
+// pat-forbidden flag to check the case's requirements, and authz.Scopes()/authz.CapabilityFloor() as
+// the authorities — never a list local to this file, so the rule and the catalogue cannot drift
+// apart. Extracted so the real-registry gate and the per-case fixtures share it.
+func scopeCoverageViolations(ops []registeredOp) []string {
+	valid := make(map[string]struct{}, len(authz.Scopes()))
+	for _, s := range authz.Scopes() {
+		valid[s.Key] = struct{}{}
+	}
+
+	floor := make(map[string]struct{}, len(authz.CapabilityFloor()))
+	for _, k := range authz.CapabilityFloor() {
+		floor[k] = struct{}{}
+	}
+
+	var problems []string
+
+	for _, op := range ops {
+		permission, _ := op.Op.Extensions[ExtensionPermission].(string)
+		scopes, hasScopes := stringSlice(op.Op.Extensions[ExtensionScopes])
+		patForbidden, _ := op.Op.Extensions[ExtensionPATForbidden].(bool)
+
+		_, inFloor := floor[permission]
+
+		switch {
+		case operationOffersPAT(op):
+			// PAT-callable.
+			if !hasScopes || len(scopes) == 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s offers a pat Security alternative but declares no x-dkp-scopes. A PAT-callable "+
+						"operation must name the scopes a token needs.", op))
+
+				continue
+			}
+
+			for _, sc := range scopes {
+				if _, ok := valid[sc]; !ok {
+					problems = append(problems, fmt.Sprintf(
+						"%s declares x-dkp-scope %q, which is not in authz.Scopes().", op, sc))
+				}
+			}
+
+			if patForbidden {
+				problems = append(problems, fmt.Sprintf(
+					"%s is PAT-callable (its Security offers pat) but also declares "+
+						"x-dkp-pat-forbidden: true. Those contradict.", op))
+			}
+		case inFloor:
+			// Capability floor: session-only, pat-forbidden, no scopes.
+			if !patForbidden {
+				problems = append(problems, fmt.Sprintf(
+					"%s names capability-floor permission %q but does not declare "+
+						"x-dkp-pat-forbidden: true. The floor is session-and-step-up only.", op, permission))
+			}
+
+			if hasScopes && len(scopes) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s is in the capability floor and must carry no scopes, but declares %v.", op, scopes))
+			}
+		default:
+			// Session-only by omission: neither scopes nor pat-forbidden.
+			if hasScopes && len(scopes) > 0 {
+				problems = append(problems, fmt.Sprintf(
+					"%s is session-only (its Security offers no pat) and its permission %q is not in the "+
+						"capability floor, so it must declare no x-dkp-scopes.", op, permission))
+			}
+
+			if patForbidden {
+				problems = append(problems, fmt.Sprintf(
+					"%s declares x-dkp-pat-forbidden: true but its permission %q is not in the capability "+
+						"floor. Marking a session-only-by-omission operation pat-forbidden is a false "+
+						"positive (decision record §U6: admin.settings is not in the floor).", op, permission))
+			}
+		}
+	}
+
+	return problems
+}
+
+// stringSlice coerces an Extensions value to a []string, accepting the []string the operations write
+// and the []any a round-trip through the OpenAPI document would produce.
+func stringSlice(v any) ([]string, bool) {
+	switch s := v.(type) {
+	case []string:
+		return s, true
+	case []any:
+		out := make([]string, 0, len(s))
+		for _, e := range s {
+			str, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+
+			out = append(out, str)
+		}
+
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+// TestArch_ScopeCoverageViolations_FiresPerCase proves the scope gate rejects each of the three
+// cases when it is malformed, and accepts each when it is well-formed. Without a fixture per case, the
+// gate could silently stop checking one of them and every real operation would still pass.
+func TestArch_ScopeCoverageViolations_FiresPerCase(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		op         huma.Operation
+		wantReject bool
+		contains   string
+	}{
+		{
+			name: "PAT-callable with no scopes is rejected",
+			op: huma.Operation{
+				OperationID: "listA", Method: http.MethodGet, Path: "/api/v1/a",
+				Security:   []map[string][]string{{"pat": {"roster:read"}}, {"session": {}}},
+				Extensions: map[string]any{ExtensionPermission: "roster.read"},
+			},
+			wantReject: true, contains: "declares no x-dkp-scopes",
+		},
+		{
+			name: "PAT-callable with an unknown scope is rejected",
+			op: huma.Operation{
+				OperationID: "listB", Method: http.MethodGet, Path: "/api/v1/b",
+				Security:   []map[string][]string{{"pat": {"roster:read"}}},
+				Extensions: map[string]any{ExtensionPermission: "roster.read", ExtensionScopes: []string{"not:a:scope"}},
+			},
+			wantReject: true, contains: "not in authz.Scopes()",
+		},
+		{
+			name: "floor operation without pat-forbidden is rejected",
+			op: huma.Operation{
+				OperationID: "mintC", Method: http.MethodPost, Path: "/api/v1/c",
+				Security:   []map[string][]string{{"session": {}}},
+				Extensions: map[string]any{ExtensionPermission: "token.mint"},
+			},
+			wantReject: true, contains: "does not declare x-dkp-pat-forbidden",
+		},
+		{
+			name: "session-only-by-omission marked pat-forbidden is rejected",
+			op: huma.Operation{
+				OperationID: "updateD", Method: http.MethodPatch, Path: "/api/v1/d",
+				Security: []map[string][]string{{"session": {}}},
+				Extensions: map[string]any{
+					ExtensionPermission: "admin.settings", ExtensionPATForbidden: true,
+				},
+			},
+			wantReject: true, contains: "false positive",
+		},
+		{
+			name: "PAT-callable with a valid scope is accepted",
+			op: huma.Operation{
+				OperationID: "listE", Method: http.MethodGet, Path: "/api/v1/e",
+				Security:   []map[string][]string{{"pat": {"roster:read"}}, {"session": {}}},
+				Extensions: map[string]any{ExtensionPermission: "roster.read", ExtensionScopes: []string{"roster:read"}},
+			},
+			wantReject: false,
+		},
+		{
+			name: "floor operation with pat-forbidden and no scopes is accepted",
+			op: huma.Operation{
+				OperationID: "mintF", Method: http.MethodPost, Path: "/api/v1/f",
+				Security:   []map[string][]string{{"session": {}}},
+				Extensions: map[string]any{ExtensionPermission: "token.mint", ExtensionPATForbidden: true},
+			},
+			wantReject: false,
+		},
+		{
+			name: "session-only-by-omission with neither is accepted",
+			op: huma.Operation{
+				OperationID: "updateG", Method: http.MethodPatch, Path: "/api/v1/g",
+				Security:   []map[string][]string{{"session": {}}},
+				Extensions: map[string]any{ExtensionPermission: "admin.settings"},
+			},
+			wantReject: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			problems := scopeCoverageViolations(fixtureRegistry(t, tc.op))
+
+			if tc.wantReject {
+				require.NotEmpty(t, problems, "the gate accepted a malformed operation")
+				require.Contains(t, strings.Join(problems, "\n"), tc.contains)
+			} else {
+				require.Empty(t, problems, "the gate rejected a well-formed operation: %v", problems)
+			}
+		})
+	}
 }
 
 // repoRoot returns the repository root, located by walking up to the directory holding go.mod.

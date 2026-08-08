@@ -9,12 +9,44 @@ import (
 )
 
 type Querier interface {
+	// Guild singleton - the one-row instance identity and its officer-editable settings.
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated
+	// from a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate
+	// SQL002), so the only way a new query enters the codebase is by being written here first and
+	// reviewed as SQL.
+	//
+	// There is exactly one guild row, keyed on id = 1 (canonical section 9, ADR-0004). GetGuild reads
+	// it without a predicate: the schema CHECK guarantees a single row, so no filter is needed and the
+	// query carries no numeric literal. UpdateGuild names the key explicitly so the UPDATE cannot touch
+	// more than the one row even if the CHECK were ever weakened.
+	//
+	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+	// by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
+	// that many trailing characters off the generated query string. The failure is silent at generate
+	// time and shows up as a syntax error only when the query runs.
+	GetGuild(ctx context.Context) (Guild, error)
 	// Instance state in dkp_meta. Shapes follow db/RECIPES.md.
 	//
 	// Every statement that reaches SQLite in this project is generated from a file like this one.
 	// `db.Query` and `db.Exec` outside internal/store are grep-banned (gate SQL002), so the only way
 	// a new query enters the codebase is by being written here first and reviewed as SQL.
 	GetMetaValue(ctx context.Context, key string) (string, error)
+	// InsertGuild creates the singleton row. It exists for the setup flow that Phase 2 builds, which
+	// writes the initial guild once, and for the tests that need a row to read and patch. It always
+	// writes id = 1 (the CHECK enforces it), so a second call fails the primary key rather than creating
+	// a second guild - which is the correct behaviour for a table that must have exactly one row.
+	InsertGuild(ctx context.Context, arg InsertGuildParams) (Guild, error)
+	// UpdateGuild writes every settable column and RETURNS the new row, so the handler emits the fresh
+	// representation and its new ETag in the same round trip a bot needs after a PATCH.
+	//
+	// It is a WHOLE-ROW write, not a partial one, and that is a deliberate division of labour with the
+	// service. PATCH fields arrive optional (pointer on the wire), but merging the patch onto the
+	// current row is domain logic, so internal/guild reads the current row, applies the patch in Go,
+	// and hands this query a full set of values. A COALESCE-per-column update here would put that merge
+	// in SQL, where it cannot be unit-tested without a database and where absent and set-to-the-current
+	// value become indistinguishable. id is never updated: it is the singleton key.
+	UpdateGuild(ctx context.Context, arg UpdateGuildParams) (Guild, error)
 	UpsertMetaValue(ctx context.Context, arg UpsertMetaValueParams) error
 }
 
