@@ -361,6 +361,11 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # internal/core's TestLintBan_* meta-tests exec `golangci-lint` against
+          # testdata/lintfixtures/* to prove each arithmetic ban actually fires. They are gated out
+          # of the -short unit run and execute in this full suite, so this job needs the linter on
+          # PATH — without it they fail-loud with "golangci-lint not on PATH".
+          tools: "golangci-lint"
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
