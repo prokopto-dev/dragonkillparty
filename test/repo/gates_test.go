@@ -259,6 +259,55 @@ const balanceQuery = "SELECT total(amount_cp) FROM ledger_entry WHERE account_id
 		"a whole-line comment describing the rule must not trip it\n%s", out)
 }
 
+// TestRecipes_TotalIsBanned is the db/*.sql half of the total() ban, and the anchor for the bold note
+// in db/RECIPES.md. The Go half above (TestRepoGates_TotalInGoSQL_FailsGate) proves the ban reaches
+// SQL embedded in Go; this proves it reaches a recipe written the way db/RECIPES.md shows them — a
+// -- name: directive over a SELECT — because that is the shape an author copies. A recipe using
+// total() instead of COALESCE(sum(...), 0) silently converts the centipoint ledger to floating point,
+// so MONEY002 must reject it in a .sql file, naming the file and the rule.
+func TestRecipes_TotalIsBanned(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// A fixture recipe in the same shape db/RECIPES.md documents — the tempting-but-wrong one: a
+	// -- name: directive over a SELECT that reaches for total() instead of COALESCE(sum(...), 0).
+	writeFile(t, tree, "db/queries/balance.sql", `-- name: BalanceAsOfSeq :one
+SELECT total(amount_cp) AS amount_cp
+FROM ledger_entry
+WHERE account_id = ? AND pool_id = ? AND balance_kind = ?;
+`)
+
+	// The control: a correct recipe using COALESCE(sum(...), 0) must NOT trip the gate, so a passing
+	// test means "total() specifically is rejected", not "any query fails".
+	writeFile(t, tree, "db/queries/good.sql", `-- name: GoodBalance :one
+SELECT COALESCE(sum(amount_cp), 0) AS amount_cp FROM ledger_entry WHERE account_id = ?;
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "total() in a db/*.sql recipe must fail the gates\n%s", out)
+	require.Contains(t, out, "MONEY002",
+		"the gates went red, but not because of the money rule — check which rule fired\n%s", out)
+	require.Contains(t, out, "db/queries/balance.sql:",
+		"MONEY002 must name the offending file, repo-root-relative\n%s", out)
+	require.NotContains(t, out, "db/queries/good.sql",
+		"COALESCE(sum(...)) is the sanctioned form and must not trip the ban\n%s", out)
+	require.NotContains(t, out, tree,
+		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
+}
+
+// writeFile writes an arbitrary text file into tree at the given repo-relative path. Used for SQL
+// fixtures, which writeGo (Go-only) does not fit.
+func writeFile(t *testing.T, tree, rel, body string) {
+	t.Helper()
+
+	path := filepath.Join(tree, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
 // TestRepoGates_UnpinnedAction_FailsGate is the supply-chain half of the acceptance criteria: a
 // fixture workflow containing an unpinned `actions/checkout@v4` must make repo-gates.sh exit
 // non-zero, and PIN001 must be the rule that says so.

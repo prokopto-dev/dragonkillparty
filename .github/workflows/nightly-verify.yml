@@ -201,6 +201,33 @@ jobs:
         # Migrations are forward-only: there is no down path to test, and there never will be.
 
   # ---------------------------------------------------------------------------------------------
+  # example-endpoint-eval — DELIBERATELY NOT WIRED HERE YET (decision record §U5).
+  #
+  # The agent-eval that hands a fresh session the two worked-example documents and one instruction
+  # (add GET /api/v1/guild/settings) ships in Phase 0 PR 5b as a LOCAL-ONLY target,
+  # `make eval-example-endpoint` (scripts/eval-example-endpoint.sh). It is not a nightly job because
+  # it needs an agent runner and an API key, and which runner, whose key and what budget are
+  # unsettled — a workflow that referenced a secret nobody has agreed to would be the overreach U5
+  # forbids. The nightly lane, its runner, its budget and the issue-filing land with the release
+  # train in Phase 0 PR 7, where the CI-credentials question is answered anyway. When it does, the
+  # job body is roughly:
+  #
+  #   example-endpoint-eval:
+  #     name: eval / example-endpoint
+  #     needs: guard
+  #     runs-on: ubuntu-24.04
+  #     timeout-minutes: 30
+  #     steps:
+  #       - uses: actions/checkout@<pinned-sha>
+  #       - uses: ./.github/actions/setup-toolchain
+  #       - env:
+  #           DKP_EVAL_RUNNER: <the agreed runner>
+  #           # the agreed API-key secret, once branch-protection and the budget are settled
+  #         run: make eval-example-endpoint
+  #     # A failure files against EXAMPLE_ENDPOINT.md / RECIPES.md, never against the code, and joins
+  #     # the single nightly issue via nightly-report below.
+
+  # ---------------------------------------------------------------------------------------------
   # links — external link checking, deliberately NOT in PR CI.
   # ---------------------------------------------------------------------------------------------
   links:
