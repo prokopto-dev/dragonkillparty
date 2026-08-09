@@ -23,6 +23,19 @@ type Queries interface {
 	UpdateGuild(ctx context.Context, arg sqlitegen.UpdateGuildParams) (sqlitegen.Guild, error)
 	GetMetaValue(ctx context.Context, key string) (string, error)
 	UpsertMetaValue(ctx context.Context, arg sqlitegen.UpsertMetaValueParams) error
+
+	// The ledger reads and helpers (Phase 0 PR 9). READ and HELPER only: the batch/entry commit
+	// service is PR 10, so there is no batch or entry INSERT on this contract yet. BalanceAsOfSeq is
+	// the definitional balance query, served from the covering index ix_entry_balance;
+	// MaxPoolSeq/NextPoolSeq are the per-pool sequence head and allocator (NextPoolSeq is safe only
+	// inside Tx); UpsertBalanceSnapshot maintains the droppable balance cache additively;
+	// GetAccount/GetSystemAccount resolve accounts by id and by system_key.
+	BalanceAsOfSeq(ctx context.Context, arg sqlitegen.BalanceAsOfSeqParams) (int64, error)
+	MaxPoolSeq(ctx context.Context, poolID string) (int64, error)
+	NextPoolSeq(ctx context.Context, poolID string) (int64, error)
+	UpsertBalanceSnapshot(ctx context.Context, arg sqlitegen.UpsertBalanceSnapshotParams) error
+	GetAccount(ctx context.Context, id string) (sqlitegen.Account, error)
+	GetSystemAccount(ctx context.Context, systemKey *string) (sqlitegen.Account, error)
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

@@ -83,6 +83,19 @@ for tree in internal cmd; do
     # Do not "simplify" this back into the allowlist.
     gate SQL002 ".Query/.Exec outside internal/store" \
         "$tree" '*.go' '\.(Query|QueryRow|Exec)(Context)?\(([^)]|$)' '^internal/store/'
+
+    # internal/store exports raw-SQL TEST helpers — ExecForTest, ExecErrForTest, QueryForTest,
+    # QueryRowForTest, TxForTest, TxHandleForTest — so tests in other packages can reach the
+    # unexported pool and *sql.Tx state that a genuine mutation runs against. The raw ExecContext /
+    # QueryContext they wrap lives in internal/store/testing.go, which SQL002 already allows.
+    # Production code must never call them: they take a testing.TB (which cannot exist in a shipped
+    # binary) precisely so misuse fails to compile, and this gate is the belt to that suspenders.
+    # The allowlist exempts *_test.go call sites and the definition file; a hit anywhere else is a
+    # test affordance leaking into the binary. This machine check replaces the earlier, fragile
+    # convention of naming the wrapper method `Do` so the SQL002 grep could not see `h.Do(...)`.
+    gate SQL003 "ForTest raw-SQL helper called outside _test.go" \
+        "$tree" '*.go' '\b(ExecForTest|ExecErrForTest|QueryForTest|QueryRowForTest|TxForTest|TxHandleForTest)\b' \
+        '(_test\.go:|store/testing\.go:)'
 done
 
 # --- Law 3: internal/strategy is pure --------------------------------------------------------

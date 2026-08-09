@@ -1,0 +1,1 @@
+SEARCH ledger_entry USING COVERING INDEX ix_entry_balance (pool_id=? AND account_id=? AND balance_kind=? AND seq<?)
