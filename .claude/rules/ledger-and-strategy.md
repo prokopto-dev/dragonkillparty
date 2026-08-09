@@ -21,7 +21,7 @@ ledger_batch(id ULID PK, pool_id, seq, kind, strategy_id, strategy_version,
              reason, reverses_batch_id, effective_at, recorded_at, effective_day,
              idempotency_key, entry_count, net_amount_cp, prev_hash, hash)
 
-ledger_entry(id ULID PK, batch_id, pool_id, account_id, character_id, balance_kind,
+ledger_entry(id ULID PK, batch_id, pool_id, seq, account_id, character_id, balance_kind,
              amount_cp, item_id, item_award_id, raid_id, tick_id, metadata_json)
 ```
 

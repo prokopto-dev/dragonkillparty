@@ -11,10 +11,16 @@ The two **runnable** recipes below (the `guild` singleton fetch and the `dkp_met
 extracted and type-checked by `TestDocs_ExampleEndpointSnippets_Compile`
 (`internal/api/docs_snippets_test.go`): they are run through `sqlc` against the committed migration
 set, so a recipe that names a column the schema does not have fails CI. The **forward-looking** recipes
-further down query tables that do not exist yet (`ledger_entry`, `balance_snapshot`, `person`, `raid`,
-`item_fts` and friends); they are marked as such and fenced out of the compile gate, because a query
-cannot be type-checked against a table nobody has migrated. They land, unfenced, with the schema they
-query — phase by phase.
+further down query tables that do not exist yet (`person`, `raid`, `item_fts` and friends); they are
+marked as such and fenced out of the compile gate, because a query cannot be type-checked against a
+table nobody has migrated. They land, unfenced, with the schema they query — phase by phase.
+
+`ledger_batch`, `ledger_entry` and `balance_snapshot` now **exist** (Phase 0 PR 9): the real queries
+live in `db/queries/ledger.sql` and are compiled by `sqlc` on every `make gen`. The ledger recipes
+below stay fenced as `text` rather than `sql` on purpose — the snippet gate's `sqlc`/`atlas` step
+`t.Skip`s in the integration job (no `sqlc` there), so un-fencing them adds zero CI coverage while
+risking the per-job-tool trap; the real queries carry the coverage regardless. The shapes below are
+kept in step with `db/queries/ledger.sql`, which is the authority.
 
 ---
 
@@ -115,36 +121,47 @@ runnable section, in a real `db/queries/*.sql` file, in the PR that ships its ta
 arrive in Phase 0 PR 9; roster, raids and items later). The fences below are tagged `text`, not `sql`,
 so the snippet gate skips them; unfence them to `sql` when the table exists.
 
-## Upsert with a guard — `balance_snapshot` (Phase 0 PR 9)
+## Additive upsert — `balance_snapshot` (Phase 0 PR 9, live in `db/queries/ledger.sql`)
 
-The snapshot is a droppable cache, maintained synchronously in the same transaction as the write. The
-`WHERE` on the conflict path is the load-bearing part: never move a snapshot backwards.
+The snapshot is a droppable cache, maintained synchronously in the same transaction as the write. It
+is upserted **additively**: the caller passes this batch's per-account delta (the SUM and COUNT of just
+its entries) and the running total accumulates. The primary key is `(pool_id, account_id, balance_kind)`
+— the same order the `WITHOUT ROWID` table is built on — and the conflict target matches it exactly.
+`entry_count` is carried alongside `amount_cp` (per the domain model) so a nightly drift check has both
+a sum and a count to compare against the fold.
+
+There is deliberately no `WHERE excluded.as_of_seq > ...` guard: under the single writer the snapshot
+only ever moves forward, one batch at a time, and an additive upsert with a backward guard would
+silently drop a legitimate delta.
 
 ```text
 -- name: UpsertBalanceSnapshot :exec
-INSERT INTO balance_snapshot (account_id, pool_id, balance_kind, amount_cp, as_of_seq, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (account_id, pool_id, balance_kind) DO UPDATE SET
-    amount_cp  = excluded.amount_cp,
-    as_of_seq  = excluded.as_of_seq,
-    updated_at = excluded.updated_at
-WHERE excluded.as_of_seq > balance_snapshot.as_of_seq;  -- never move a snapshot backwards
+INSERT INTO balance_snapshot (pool_id, account_id, balance_kind, amount_cp, as_of_seq, entry_count, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (pool_id, account_id, balance_kind) DO UPDATE SET
+    amount_cp   = amount_cp   + excluded.amount_cp,    -- ADDITIVE: accumulate the batch's delta
+    entry_count = entry_count + excluded.entry_count,
+    as_of_seq   = excluded.as_of_seq,
+    updated_at  = excluded.updated_at;
 ```
 
-## Balance as of a seq — `ledger_entry` (Phase 0 PR 9)
+## Balance as of a seq — `ledger_entry` (Phase 0 PR 9, live in `db/queries/ledger.sql`)
 
 The definitional query. A balance is a `SUM` over an append-only log, positioned by `seq` — never by
-timestamp, because a backdated `effective_at` must not change what a past balance *was*. Served entirely
-from the covering index; an `EXPLAIN QUERY PLAN` golden asserts no table access, because the day it
-starts scanning is the day standings gets slow and nobody notices. Note `COALESCE(sum(...), 0)`, never
-`total(...)`.
+timestamp, because a backdated `effective_at` must not change what a past balance *was*. It filters the
+**denormalised `seq`** on `ledger_entry` directly, with **no join to `ledger_batch`**: the seq is
+carried on every entry precisely so this query is served entirely from the covering index
+`ix_entry_balance(pool_id, account_id, balance_kind, seq, amount_cp)` with no table access. An
+`EXPLAIN QUERY PLAN` golden (`test/golden/explain/ledger_balance.txt`) asserts that, because the day it
+starts scanning is the day standings gets slow and nobody notices. Note `sum(...)`, never `total(...)`
+(which returns a REAL); the `CAST(... AS INTEGER)` pins sqlc's result type to `int64` rather than
+`interface{}`, since an aggregate loses column affinity.
 
 ```text
 -- name: BalanceAsOfSeq :one
-SELECT COALESCE(sum(e.amount_cp), 0) AS amount_cp
-FROM ledger_entry e
-JOIN ledger_batch b ON b.id = e.batch_id
-WHERE e.account_id = ? AND e.pool_id = ? AND e.balance_kind = ? AND b.seq <= ?;
+SELECT CAST(COALESCE(sum(amount_cp), 0) AS INTEGER) AS amount_cp
+FROM ledger_entry
+WHERE pool_id = ? AND account_id = ? AND balance_kind = ? AND seq <= ?;
 ```
 
 ## Account statement with a running balance — `ledger_entry` (Phase 0 PR 9)
@@ -179,7 +196,7 @@ SELECT
     COALESCE(r.attended, 0)  AS attended_30,
     COALESCE(r.held, 0)      AS held_30
 FROM person p
-JOIN account a ON a.person_id = p.id AND a.pool_id = ?
+JOIN account a ON a.person_id = p.id
 LEFT JOIN character c ON c.id = p.main_character_id
 LEFT JOIN balance_snapshot s ON s.account_id = a.id AND s.pool_id = ? AND s.balance_kind = 'points'
 LEFT JOIN attendance_rollup r ON r.person_id = p.id AND r.pool_id = ? AND r.window_days = 30
@@ -224,27 +241,31 @@ LIMIT ?;
 
 ---
 
-## The three known dialect divergences (forward-looking)
+## The three known dialect divergences
 
 Listed on day one so the future Postgres port (post-1.0) has them enumerated rather than discovered.
-All three are forward-looking: none of the tables involved exists yet.
+**Divergence #1 is now LIVE** — `ledger_batch` exists and the seq allocator ships in
+`db/queries/ledger.sql` as `NextPoolSeq` (Phase 0 PR 9). The other two stay forward-looking: neither
+`account_lock` nor `item_fts` exists yet.
 
-| # | Divergence | SQLite | Postgres (post-1.0) |
-|---|---|---|---|
-| 1 | **Per-pool `seq` allocation** | `SELECT COALESCE(max(seq),0)+1 FROM ledger_batch WHERE pool_id = ?` inside the write transaction, safe because `SetMaxOpenConns(1)` serialises writers | A per-pool sequence row locked `FOR UPDATE`, or an advisory lock — max+1 is **not** safe under real concurrency |
-| 2 | **Bid-hold lock** | No-op; the single writer already serialises | `SELECT ... FOR UPDATE` on `account_lock` |
-| 3 | **Full-text search** | FTS5 | `tsvector` + GIN, behind the `Search` interface |
+| # | Divergence | SQLite | Postgres (post-1.0) | Status |
+|---|---|---|---|---|
+| 1 | **Per-pool `seq` allocation** | `SELECT COALESCE(max(seq),0)+1 FROM ledger_batch WHERE pool_id = ?` inside the write transaction, safe because `SetMaxOpenConns(1)` serialises writers | A per-pool sequence row locked `FOR UPDATE`, or an advisory lock — max+1 is **not** safe under real concurrency | **live** (PR 9) |
+| 2 | **Bid-hold lock** | No-op; the single writer already serialises | `SELECT ... FOR UPDATE` on `account_lock` | forward-looking |
+| 3 | **Full-text search** | FTS5 | `tsvector` + GIN, behind the `Search` interface | forward-looking |
 
 Everything else is dialect-identical by design: integer micros instead of `timestamptz`, integer
 centipoints instead of `NUMERIC`, ULID text keys instead of `uuidv7()`, and no queries into JSON. That
 is what makes the port cheap, and it is why those conventions are non-negotiable.
 
-The seq allocator, in full — again forward-looking, and again `COALESCE(max(...), 0) + 1`, never
-`total(...)`:
+The seq allocator, in full — `COALESCE(max(...), 0) + 1`, never `total(...)`. This is the LIVE query in
+`db/queries/ledger.sql`; the `CAST(... AS INTEGER)` pins sqlc's result type to `int64` (an aggregate
+otherwise loses affinity). `MaxPoolSeq` (the current head, without the `+ 1`) sits beside it for the
+"as of the latest seq" case.
 
 ```text
 -- name: NextPoolSeq :one
 -- MUST run inside store.Tx (write pool, _txlock=immediate, SetMaxOpenConns(1)).
 -- Divergence #1: this is NOT safe on Postgres. See the table above.
-SELECT COALESCE(max(seq), 0) + 1 AS next_seq FROM ledger_batch WHERE pool_id = ?;
+SELECT CAST(COALESCE(max(seq), 0) + 1 AS INTEGER) AS next_seq FROM ledger_batch WHERE pool_id = ?;
 ```

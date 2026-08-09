@@ -4,6 +4,26 @@
 
 package sqlitegen
 
+type Account struct {
+	ID        string
+	Kind      string
+	PersonID  *string
+	SystemKey *string
+	Label     string
+	CreatedAt int64
+	UpdatedAt int64
+}
+
+type BalanceSnapshot struct {
+	PoolID      string
+	AccountID   string
+	BalanceKind string
+	AmountCp    int64
+	AsOfSeq     int64
+	EntryCount  int64
+	UpdatedAt   int64
+}
+
 type DkpMetum struct {
 	Key       string
 	Value     string
@@ -23,4 +43,57 @@ type Guild struct {
 	HideInactive      int64
 	CreatedAt         int64
 	UpdatedAt         int64
+}
+
+type LedgerBatch struct {
+	ID                 string
+	PoolID             string
+	Seq                int64
+	Kind               string
+	StrategyID         string
+	StrategyVersion    string
+	ConfigSnapshotJson string
+	RngSeed            *int64
+	Source             string
+	SourceRef          *string
+	ActorUserID        *string
+	ActorTokenID       *string
+	ActorIsBeneficiary int64
+	Reason             string
+	ReversesBatchID    *string
+	EffectiveAt        int64
+	RecordedAt         int64
+	EffectiveDay       string
+	IdempotencyKey     *string
+	EntryCount         int64
+	NetAmountCp        int64
+	PrevHash           []byte
+	Hash               []byte
+}
+
+type LedgerEntry struct {
+	ID           string
+	BatchID      string
+	PoolID       string
+	Seq          int64
+	AccountID    string
+	CharacterID  *string
+	BalanceKind  string
+	AmountCp     int64
+	ItemID       *string
+	ItemAwardID  *string
+	RaidID       *string
+	TickID       *string
+	MetadataJson string
+}
+
+type Pool struct {
+	ID              string
+	Name            string
+	NameNorm        string
+	StrategyID      string
+	StrategyVersion string
+	BalanceKinds    string
+	CreatedAt       int64
+	UpdatedAt       int64
 }

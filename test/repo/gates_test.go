@@ -227,6 +227,48 @@ func wrapped(ctx context.Context, conn *sql.DB) error {
 		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
 }
 
+// TestRepoGates_ForTestHelperOutsideTest_FailsGate covers SQL003: the internal/store raw-SQL test
+// helpers (ExecForTest and friends) must never be called from production code. A call in a
+// non-_test.go file makes repo-gates.sh exit non-zero naming SQL003; the same call in a _test.go file,
+// and the definition file itself, are allowlisted so the gate does not fire on legitimate use. This is
+// the machine check that lets the helpers keep honest names rather than being disguised to slip past
+// the SQL002 grep.
+func TestRepoGates_ForTestHelperOutsideTest_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// Production leak: a non-test file under internal/ calls a ForTest helper. This must fire SQL003.
+	writeGo(t, tree, "internal/ledger/leak.go", `package ledger
+
+func leak(s *store.Store) { _ = s.ExecForTest(nil, "SELECT 1") }
+`)
+	// Allowlisted: the same family of helper in a _test.go file is legitimate test-only use.
+	writeGo(t, tree, "internal/ledger/ok_test.go", `package ledger
+
+func okUse(s *store.Store) { _ = s.TxForTest(nil, nil) }
+`)
+	// Allowlisted: the definition file exports the helpers.
+	writeGo(t, tree, "internal/store/testing.go", `package store
+
+func (s *Store) ExecForTest(tb any, q string, a ...any) error { return nil }
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotEqual(t, 0, code,
+		"a ForTest raw-SQL helper called in a non-test file must fail the gate\n%s", out)
+	require.Contains(t, out, "SQL003",
+		"the ForTest-outside-_test.go leak must fire SQL003\n%s", out)
+	require.Contains(t, out, "internal/ledger/leak.go",
+		"SQL003 must name the offending production file\n%s", out)
+	require.NotContains(t, out, "ok_test.go",
+		"SQL003 must not fire on a _test.go call site\n%s", out)
+	require.NotContains(t, out, "internal/store/testing.go",
+		"SQL003 must not fire on the definition file\n%s", out)
+}
+
 // TestRepoGates_TotalInGoSQL_FailsGate covers the other half of the query bans PR 2 installs.
 //
 // total() returns a REAL where sum() returns an INTEGER, so a single total() silently converts the
