@@ -1,0 +1,112 @@
+# The label set, as code.
+#
+# This file is the source of truth for which labels exist. Repo settings are the copy, applied by
+# `bash scripts/sync-labels.sh --apply`. Before this file existed the direction was the other way
+# round and nobody could see it: all five issue forms in .github/ISSUE_TEMPLATE/ declared labels
+# that had never been created, GitHub dropped them silently on every issue filed, and the triage
+# slot — specified as `is:open no:label` in docs/design/06-cicd-and-release.md — matched every issue
+# in the repository (#43).
+#
+# So the mechanism is: a form may only declare a label named here, and
+# TestIssueForms_DeclaredLabels_AllExistInManifest in test/repo/labels_test.go fails the build when
+# one does not. That test catches the drift at PR time, on a laptop, with no network. The sync
+# script is what pushes this file's contents at repo settings afterwards.
+#
+# FORMAT IS STRICT, and the parser rejects anything else rather than skipping it — a line a parser
+# ignores is a label the gate cannot see:
+#
+#     - name: <label>
+#       color: <six lowercase hex digits, no leading '#'>
+#       description: "<one line, quoted>"
+#
+# Adding one: append the block, run `bash scripts/sync-labels.sh` to see the plan, then
+# `--apply`. Renaming or deleting one is NOT done here — the script never deletes, because a
+# label removed from repo settings is removed from every issue that carried it.
+
+# ---------------------------------------------------------------------------
+# Triage state — what has to happen next, not what the issue is about.
+# ---------------------------------------------------------------------------
+
+- name: needs-triage
+  color: fbca04
+  description: "Filed and not yet triaged. Cleared by the weekly triage slot."
+
+- name: needs-info
+  color: c5def5
+  description: "Waiting on the reporter. Warned at 14 d, closed as not planned at 21 d."
+
+- name: cannot-reproduce
+  color: d4c5f9
+  description: "Not reproducible from what we have. Warned at 21 d, closed as not planned at 35 d."
+
+- name: dormant
+  color: ededed
+  description: "Open and untouched for 180 d. Listed in the monthly triage issue; never auto-closed."
+
+# ---------------------------------------------------------------------------
+# Kind — what the issue is. One of these is what the issue forms apply.
+# ---------------------------------------------------------------------------
+
+- name: bug
+  color: d73a4a
+  description: "Something isn't working"
+
+- name: enhancement
+  color: a2eeef
+  description: "New feature or request"
+
+- name: documentation
+  color: 0075ca
+  description: "Improvements or additions to documentation"
+
+- name: parser-bug
+  color: b60205
+  description: "A P99 log line was read wrongly. Free golden-file test case; never closed unread."
+
+- name: importer
+  color: 5319e7
+  description: "EQdkp Plus import: staging, transform, reconciliation, or the dry-run report."
+
+- name: parity
+  color: 1d76db
+  description: "EQdkp Plus did something this does not. A label, not a promise."
+
+- name: support
+  color: c2e0c6
+  description: "A how-do-I, not a defect. Answered here or moved to Discussions."
+
+- name: question
+  color: d876e3
+  description: "Further information is requested"
+
+# ---------------------------------------------------------------------------
+# Disposition, and the two Renovate applies to its own PRs.
+# ---------------------------------------------------------------------------
+
+- name: duplicate
+  color: cfd3d7
+  description: "This issue or pull request already exists"
+
+- name: invalid
+  color: e4e669
+  description: "This doesn't seem right"
+
+- name: wontfix
+  color: ffffff
+  description: "This will not be worked on"
+
+- name: good first issue
+  color: 7057ff
+  description: "Good for newcomers"
+
+- name: help wanted
+  color: 008672
+  description: "Extra attention is needed"
+
+- name: dependencies
+  color: 0366d6
+  description: "Pull requests that update a dependency file"
+
+- name: javascript
+  color: 168700
+  description: "Pull requests that update javascript code"

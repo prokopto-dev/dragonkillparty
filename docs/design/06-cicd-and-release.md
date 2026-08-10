@@ -612,6 +612,17 @@ class where silence genuinely means resolved or abandoned:
 | `bug` `enhancement` `parity` `parser-bug` | — | **never** | labelled `dormant` at 180 d, listed in the monthly triage issue |
 | PRs with `changes-requested` and no author activity | 30 d | +30 d | `not_planned` — "reopen any time" |
 
+**The labels this table is keyed on are code.** They exist because `.github/labels.yml` declares
+them and `make labels-sync ARGS=--apply` pushed that file at repo settings — not because somebody
+typed them into the settings page once. The reason is that the drift is invisible from GitHub's
+side: an issue form may declare any label it likes and GitHub **silently drops** the ones that do
+not exist, so for a while every one of the five forms applied nothing at all and this policy was
+keyed on four labels nobody had created ([#43](https://github.com/prokopto-dev/dragonkillparty/issues/43)).
+`test/repo/labels_test.go` fails `make check` when a form declares a label the manifest does not
+carry, which is the half that runs on every PR with no network. The sync script never deletes: a
+label removed from settings is removed from every issue that carried it, and that is not
+recoverable from a manifest.
+
 `parser-bug` issues are filed by the in-app "report this line as a parser bug" button with a redacted
 line pre-filled. They are **free golden-file test cases** and must never be closed unread; the triage
 step is literally "add the line to `test/golden/`, watch it fail, fix it".
@@ -624,7 +635,7 @@ step is literally "add the line to `test/golden/`, watch it fail, fix it".
 | Activity | Budget | Mechanism that makes it hold |
 |---|---|---|
 | Dependency review | 20 min | Weekly window, 3 concurrent PRs, automerge on low risk, dashboard approval on high risk |
-| Issue triage | 30 min | One slot, driven by `is:open no:label`. Templates force version, deployment mode and `dkp doctor` output up front |
+| Issue triage | 30 min | One slot, driven by `is:open label:needs-triage` — every form applies that label and the triage step is removing it. Templates force version, deployment mode and `dkp doctor` output up front |
 | PR review | 90 min | Squash-only, one approval, narrow CODEOWNERS. The architectural gates mean a reviewer checks *intent*, not conformance |
 | Release | 15 min × ~2/month | Merge the Release PR, read the generated upgrade notes |
 | CI maintenance | 30 min | One composite action for toolchain setup, workflow LOC capped at ~600, action SHAs maintained by Renovate |
