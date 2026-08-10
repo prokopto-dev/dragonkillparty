@@ -65,6 +65,20 @@ make check
 - [ ] **Breaking API change** — I added the `!breaking-api` label and updated
       `docs/api-changelog.md`. `/api/v1` is additive-only; a real break mints `/api/v2`.
 
+## Issues filed
+
+<!-- Out-of-scope findings from this work, one row per issue. AGENTS.md § "Out-of-scope findings:
+     file an issue" — you are empowered to file these yourself with `gh issue create`, without
+     asking first, and one issue per distinct item. Do not grow this PR to fix them.
+
+     "None" is a fine answer. A follow-up described only in prose here is not: the issue is the
+     durable artefact, this table is the pointer. Say what each one blocks, so triage need not
+     re-derive it. -->
+
+| Issue | What it is | What it blocks |
+|---|---|---|
+| #___ | | |
+
 ## Anything a reviewer should push back on
 
 <!-- Shortcuts taken, a test you could not write, a guess you made about a P99 log format, a
