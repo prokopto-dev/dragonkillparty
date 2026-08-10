@@ -1090,6 +1090,8 @@ CREATE TABLE ledger_batch (
   id       TEXT NOT NULL PRIMARY KEY,             -- ULID
   pool_id  TEXT NOT NULL REFERENCES pool(id),
   seq      INTEGER NOT NULL,                      -- PER-POOL monotonic; THE ordering authority
+  -- The live list is GENERATED from internal/ledger/kinds.go into db/schema.hcl (canonical §5);
+  -- this sketch is illustrative and db/schema.hcl is the schema truth.
   kind     TEXT NOT NULL CHECK (kind IN (
              'attendance','award','adjustment','decay','cap','start_points',
              'zero_sum_credit','reversal','correction','re_attribution',

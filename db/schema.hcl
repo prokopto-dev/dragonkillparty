@@ -584,6 +584,11 @@ table "ledger_batch" {
     on_delete   = NO_ACTION
   }
 
+  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds.go. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestLedgerKinds_CheckMatchesCatalogue fails on.
   check "ledger_batch_kind_enum" {
     expr = "kind IN ('attendance', 'award', 'adjustment', 'decay', 'cap', 'start_points', 'zero_sum_credit', 'reversal', 'correction', 're_attribution', 'migration', 'import', 'seed', 'write_off')"
   }
@@ -591,6 +596,7 @@ table "ledger_batch" {
   check "ledger_batch_source_enum" {
     expr = "source IN ('web', 'api', 'discord', 'parser', 'import', 'system')"
   }
+  // END GENERATED — ledger enum CHECKs.
 
   check "ledger_batch_actor_is_beneficiary_bool" {
     expr = "actor_is_beneficiary IN (0, 1)"

@@ -57,9 +57,11 @@ var (
 
 // BalanceKindDKP is the single balance kind every 1.0 strategy but epgp and suicide_kings moves.
 //
-// The vocabulary as a whole is a database value, an OpenAPI enum and a docs page in one, exactly as
-// ledger_batch.kind is, so it is not enumerated as a Go type — 'ep', 'gp' and 'sk_position' arrive
-// with the strategies that need them, and a Go enum would offer a second place to add one.
+// The vocabulary as a whole is a database value, an OpenAPI enum and a docs page in one. Unlike
+// ledger_batch.kind — whose catalogue is internal/ledger/kinds.go and whose CHECK `make gen` writes
+// from it (canonical §5) — balance_kind carries no CHECK constraint, because 'ep', 'gp' and
+// 'sk_position' arrive with the strategies that need them and a fixed list would make shipping one a
+// migration. It gets the same treatment as ledger_batch.kind the day a second kind ships.
 const BalanceKindDKP = "dkp"
 
 // The four system-account keys: the ledger-addressable non-human targets that make zero-sum splits,

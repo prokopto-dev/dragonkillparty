@@ -54,11 +54,14 @@ var (
 
 // KindReversal is the ledger_batch.kind a Negated proposal carries.
 //
-// The kind vocabulary as a whole is a CHECK constraint, an OpenAPI enum and a docs page in one
-// (.claude/rules/ledger-and-strategy.md), so it is not enumerated here as a Go type — adding a kind
-// is a schema change, and a Go enum would offer a second place to add one. This single constant
-// exists because Negated must set it and a literal in that function would be invisible to a reader
-// looking for where reversals are made.
+// The kind vocabulary as a whole lives in internal/ledger/kinds.go, which canonical §5 makes the one
+// source: `make gen` writes it into db/schema.hcl's CHECK, and adding a kind is still a schema
+// change and a docs page (.claude/rules/ledger-and-strategy.md).
+//
+// This constant is here rather than there because internal/strategy MAY NOT IMPORT internal/ledger —
+// that would reach internal/store transitively and break the purity law. It is the one kind written
+// as a literal outside the catalogue, and TestLedgerKinds_StrategyReversalKind_IsInCatalogue asserts
+// the two agree, which is the guarantee a shared constant would have given.
 const KindReversal = "reversal"
 
 // Rng is the seeded random source a strategy is given.

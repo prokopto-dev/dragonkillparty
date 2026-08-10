@@ -43,7 +43,9 @@ resolves to a real target, not that every target appears here.)
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
-- `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations.
+- `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations. The one
+  region you do not edit is the `ledger_batch` enum CHECKs between the `GENERATED` markers: their
+  values are `internal/ledger/kinds.go` and `make gen` writes them (canonical §5).
 - `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach
   upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.

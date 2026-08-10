@@ -175,14 +175,21 @@ dev:
 		wait
 
 ## gen: regenerate ALL generated code — migrations, sqlc, openapi, clients
-# Today: atlas.sum, the schema/migration sync assertion, sqlc, `dkp openapi ->
-# openapi/openapi.json`, and openapi-typescript -> web/src/api/schema.d.ts. openapi-python-client and
-# the SDKs land with the clients/ tree in a later phase; each arrives as another line here.
+# Today: db/schema.hcl's ledger enum CHECKs, atlas.sum, the schema/migration sync assertion, sqlc,
+# `dkp openapi -> openapi/openapi.json`, and openapi-typescript -> web/src/api/schema.d.ts.
+# openapi-python-client and the SDKs land with the clients/ tree in a later phase; each arrives as
+# another line here.
+#
+# gen-enums.sh runs FIRST and the order is load-bearing: it writes the enum CHECKs into
+# db/schema.hcl, and gen-db.sh's next step asserts that db/schema.hcl and the committed migrations
+# describe the same schema. Reversed, a catalogue change would read as clean on the run that
+# introduced it.
 #
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
 # its negative fixtures can run against a tree in t.TempDir(), and a value leaking in from a
 # developer's shell would regenerate somebody else's tree while reporting success here.
 gen:
+	@env -u DKP_REPO_ROOT bash scripts/gen-enums.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
@@ -320,7 +327,13 @@ verify-commands:
 # CI checkout.
 #
 # `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
-GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api
+#
+# db/schema.hcl is in the list even though it is hand-authored schema truth, because ONE REGION of
+# it is not: scripts/gen-enums.sh rewrites the ledger enum CHECKs between the GENERATED markers from
+# internal/ledger/kinds.go. Listing the file is what makes a hand-edit of that region fail here with
+# "run make gen" instead of surviving until the CHECK and the Go catalogue disagree in production.
+GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
+                   db/schema.hcl
 verify-generated:
 	@before=$$($(MAKE) --no-print-directory generated-digest); \
 	$(MAKE) --no-print-directory gen; \
