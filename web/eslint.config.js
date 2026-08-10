@@ -32,8 +32,42 @@ const useEffectFetchSelector =
   "CallExpression[callee.name='useEffect'] :matches(CallExpression[callee.name='fetch'], NewExpression[callee.name='XMLHttpRequest']), " +
   "CallExpression[callee.property.name='useEffect'] :matches(CallExpression[callee.name='fetch'], NewExpression[callee.name='XMLHttpRequest'])";
 
-// The law-4 rule set, shared by src/** and the negative fixtures so the fixtures are held to exactly
-// the rule they are meant to trip.
+// Canonical §17: raw hex and raw `px` live in the token layer and nowhere else in web/src.
+//
+// This is the AST half. DS001/DS002 in scripts/repo-gates.sh are the CSS half, and the split is the
+// same one law 4 uses above, for the same reason: a grep over *.tsx cannot tell a value from prose —
+// web/src/routes/design.tsx renders the sentences "Base unit 4px x 0.70" and "a 1px accent border on
+// transparent" as visible copy — but an AST can, because JSX text is not a string literal. So the
+// grep covers CSS, this covers code, and between them the rule holds over all of web/src as §17
+// states. A CSS-only gate could not honestly be described as enforcing it.
+//
+// Two shapes are matched, and the pair is what makes this precise rather than noisy:
+//
+//   1. A literal that is ENTIRELY a length or a colour, anywhere — `const PAD = "4px"`,
+//      `{ color: "#ff0000" }`. Anchored, so a sentence that merely contains "4px" is untouched.
+//   2. ANY length or colour inside a `style` attribute, anchored or not — `style={{ padding: "0 4px" }}`,
+//      `style={{ border: "1px solid #fff" }}`, and the template-literal spelling of either. Inside a
+//      style attribute there is no prose to confuse it with.
+//
+// Verified against the tree at the time of writing: zero matches. Every existing `style` passes either
+// a number or a `var(--token)` reference, which is the shape this rule is steering towards.
+const rawHexAnywhereSelector =
+  "Literal[value=/^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/]";
+const rawPxAnywhereSelector = "Literal[value=/^-?[0-9]+(?:\\.[0-9]+)?px$/]";
+const rawValueInStyleSelector =
+  "JSXAttribute[name.name='style'] Literal[value=/[0-9]px|#[0-9a-fA-F]{3}/], " +
+  "JSXAttribute[name.name='style'] TemplateElement[value.raw=/[0-9]px|#[0-9a-fA-F]{3}/]";
+
+const tokenLayerMessage =
+  "Raw hex and raw px belong in web/src/styles/tokens.css, never in a component (canonical §17). " +
+  "A value the scale does not carry gets a named rung there; reference it as var(--rung).";
+
+// The law-4 and token-layer rule sets, shared by src/** and the negative fixtures so the fixtures are
+// held to exactly the rules they are meant to trip.
+//
+// Both rule sets live in ONE `no-restricted-syntax` entry because ESLint takes a single options array
+// per rule — declaring the rule twice silently keeps only the last, which would disable law 4's
+// useEffect-fetch selector and leave every existing test still passing.
 const lawFourRules = {
   "no-restricted-globals": ["error", ...objectToRestrictedGlobals(bannedFetchGlobals)],
   "no-restricted-syntax": [
@@ -43,6 +77,9 @@ const lawFourRules = {
       message:
         "A useEffect containing a fetch is banned — use useQuery/useSuspenseQuery. See .claude/rules/web.md.",
     },
+    { selector: rawHexAnywhereSelector, message: tokenLayerMessage },
+    { selector: rawPxAnywhereSelector, message: tokenLayerMessage },
+    { selector: rawValueInStyleSelector, message: tokenLayerMessage },
   ],
 };
 

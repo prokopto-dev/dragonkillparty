@@ -163,11 +163,18 @@ gate WEB002 "dangerouslySetInnerHTML" \
 # AGENTS.md resolves that conflict in canonical's favour, so this gate implements canonical and the
 # rules file's wording is the thing that needs correcting.
 #
-# SCOPED TO CSS, and that boundary is deliberate rather than an oversight. A raw px in a TSX inline
-# style is a real violation of the same rule, but a grep cannot tell one from prose: web/src/routes/
-# design.tsx renders the sentences "Base unit 4px x 0.70" and "a 1px accent border on transparent" as
-# visible copy, and both would trip a gate over *.tsx. CSS is where the rule is enforceable dumbly,
-# and a gate that is usually wrong is a gate people route around.
+# SCOPED TO CSS, because canonical §17's rule needs TWO mechanisms and this is the dumb half — the
+# same split law 4 uses above, for the same reason. A grep over *.tsx cannot tell a value from prose:
+# web/src/routes/design.tsx renders the sentences "Base unit 4px x 0.70" and "a 1px accent border on
+# transparent" as visible copy, and both would trip it. So:
+#
+#   this gate          CSS, by grep, in `lint / repo` — no Node toolchain needed
+#   eslint.config.js   TS/TSX, by AST, in `lint / web` — sees `style={{ padding: "4px" }}` and knows
+#                      JSX text is not a string literal
+#
+# Between them the rule holds over all of web/src, which is what §17 states. NEITHER IS SUFFICIENT
+# ALONE and removing either is a §17 regression. The AST half's negative fixture is
+# web/test-fixtures/lint/raw-token-values.tsx.
 #
 # The generic `gate` helper is not used because its comment stripping knows `#` and `//`, not CSS's
 # `/* */`. Every component sheet here documents its own values in prose — "a 1px accent border",

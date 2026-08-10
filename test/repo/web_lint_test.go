@@ -118,6 +118,43 @@ func TestWebLint_UseEffectFetch_FailsLint(t *testing.T) {
 		"the useEffect-wrapped fetch must be rejected by no-restricted-syntax\n%s", out)
 }
 
+// TestWebLint_RawTokenValues_FailsLint covers canonical §17's token-layer rule over CODE.
+//
+// DS001/DS002 in scripts/repo-gates.sh enforce the same rule over CSS and deliberately do not scan
+// TS/TSX: a grep cannot tell `style={{ padding: "4px" }}` from web/src/routes/design.tsx's visible
+// copy "Base unit 4px x 0.70". An AST can, because JSX text is not a string literal — so this half
+// is the only thing standing between a component and an inline raw value, and §17 says the rule holds
+// throughout web/src rather than only in its stylesheets.
+//
+// The fixture carries every shape the rule must catch (a whole-value length, a whole-value colour,
+// inline and multi-value declarations, and the template-literal spelling) AND a line of prose
+// containing both "4px" and "#ff0000" that must NOT trip it.
+func TestWebLint_RawTokenValues_FailsLint(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("runs eslint through the web toolchain; run `make test` or `make lint`")
+	}
+
+	eslint := eslintBin(t)
+	if eslint == "" {
+		t.Skip("web dependencies not installed — run `pnpm install` in web/")
+	}
+
+	fixture := filepath.Join(webRoot(t), "test-fixtures", "lint", "raw-token-values.tsx")
+	out, code := runEslint(t, eslint, fixture)
+
+	require.NotZero(t, code, "a raw px or hex in a component must fail eslint\n%s", out)
+	require.Contains(t, out, "no-restricted-syntax",
+		"the raw token value must be rejected by no-restricted-syntax\n%s", out)
+
+	// The prose line is the last one in the fixture. If the rule fired on it, the AST selectors have
+	// been widened into a grep and the "cannot tell a value from prose" argument no longer holds —
+	// which is the failure mode that makes a gate get disabled rather than fixed.
+	require.NotContains(t, out, "32:",
+		"the rule fired on JSX text containing \"4px\" — it must match literals, not prose\n%s", out)
+}
+
 // TestWebLint_CleanComponent_PassesLint is the control: a component using the generated client the
 // sanctioned way must PASS eslint. Without it, a config that fired on everything would satisfy both
 // negative tests above while making the real SPA unlintable — and the first person to hit that would

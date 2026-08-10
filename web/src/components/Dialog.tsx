@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 
 import "./Dialog.css";
 
@@ -44,7 +44,23 @@ export function Dialog({
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
-  useEffect(() => {
+  // useLayoutEffect, NOT useEffect, and the difference is the whole focus-restoration guarantee.
+  //
+  // Passive (useEffect) cleanup runs AFTER React has detached the DOM node. Removing an open
+  // <dialog> from the document runs the platform's removing steps first — it drops out of the top
+  // layer and document focus is reset — so a close() afterwards no longer takes the modal close path
+  // that refocuses the previously focused element. The trigger never gets focus back, which is
+  // exactly the guarantee this component advertises by using showModal() at all.
+  //
+  // Layout-effect cleanup runs during the commit's mutation phase, before the node is removed, so
+  // close() still sees an open, connected, modal dialog and the platform restores focus to whatever
+  // opened it. Both close paths — Escape and an action button — end in this cleanup, so there is one
+  // ordering to get right rather than two.
+  //
+  // Opening here rather than in a passive effect is a second, smaller win: showModal() runs before
+  // paint, so the frame of not-yet-modal overlay that Dialog.css's :not([open]) rule guards against
+  // cannot occur at all. The CSS guard stays as the belt to this braces.
+  useLayoutEffect(() => {
     const el = ref.current;
     if (el === null) {
       return undefined;
@@ -54,8 +70,6 @@ export function Dialog({
       el.showModal();
     }
 
-    // Closing on unmount is what returns focus to whatever opened the dialog. Without it a dialog
-        // removed from the tree while still `open` leaves focus on a detached node.
     return () => {
       if (el.open) {
         el.close();
