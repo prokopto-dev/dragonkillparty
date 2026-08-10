@@ -30,10 +30,11 @@ type BalanceAsOfSeqParams struct {
 // db.Query and db.Exec outside internal/store are grep-banned (gate SQL002), so the only way a new
 // query enters the codebase is by being written here first and reviewed as SQL.
 //
-// PR 9 is READ and HELPER only. There is deliberately NO batch or entry INSERT here: the commit
-// service that writes them is PR 10, and batch/entry inserts appear only in tests (raw or generated)
-// until then. What ships now is the balance query, the seq allocator, the snapshot upsert and the
-// account/system-account readers - the surface a service reads through, before any service writes.
+// PR 9 was READ and HELPER only; PR 10a adds the WRITE half. InsertLedgerBatch and InsertLedgerEntry
+// below are the only INSERTs the product has into the two append-only tables, and they are called
+// from exactly one place: ledger.Service.Commit, inside one store.Tx. There is deliberately no
+// UPDATE and no DELETE for either table, in this file or anywhere else - the append-only triggers
+// would abort them, and a correction is a reversal batch (canonical section 10).
 //
 // Keep every comment in this file ASCII-only. sqlc v1.31.1 computes each query's text span in bytes
 // but truncates by rune count, so a multibyte character (an em dash, a section sign) in a preceding
@@ -87,6 +88,52 @@ func (q *Queries) GetAccount(ctx context.Context, id string) (Account, error) {
 	return i, err
 }
 
+const getBatchByIdempotencyKey = `-- name: GetBatchByIdempotencyKey :one
+
+SELECT id, seq, entry_count, net_amount_cp, prev_hash, hash
+FROM ledger_batch
+WHERE pool_id = ? AND idempotency_key = ?
+`
+
+type GetBatchByIdempotencyKeyParams struct {
+	PoolID         string
+	IdempotencyKey *string
+}
+
+type GetBatchByIdempotencyKeyRow struct {
+	ID          string
+	Seq         int64
+	EntryCount  int64
+	NetAmountCp int64
+	PrevHash    []byte
+	Hash        []byte
+}
+
+// GetBatchByIdempotencyKey is the replay lookup. Every mutating POST that creates domain state
+// carries an Idempotency-Key (canonical invariant); a bot that retries must land on the FIRST batch
+// rather than committing a second one, because a duplicated raid tick or a double-charged bid is the
+// top support burden this product exists to remove.
+//
+// The key is (pool_id, idempotency_key) and it is served by the partial unique index ux_batch_idem,
+// so this is an index lookup rather than a scan. It is deliberately NOT scoped by token: a token
+// rotated between the first attempt and the retry must still replay, which is why the uniqueness is
+// on the pool and the key and never on actor_token_id (domain model section 15 says the same of
+// idempotency_key.principal_ref: "NEVER 'token:<ulid>': rotation mid-retry must replay").
+// TestCommit_DuplicateIdempotencyKey_ReturnsFirstBatch rotates the token between the two calls.
+func (q *Queries) GetBatchByIdempotencyKey(ctx context.Context, arg GetBatchByIdempotencyKeyParams) (GetBatchByIdempotencyKeyRow, error) {
+	row := q.db.QueryRowContext(ctx, getBatchByIdempotencyKey, arg.PoolID, arg.IdempotencyKey)
+	var i GetBatchByIdempotencyKeyRow
+	err := row.Scan(
+		&i.ID,
+		&i.Seq,
+		&i.EntryCount,
+		&i.NetAmountCp,
+		&i.PrevHash,
+		&i.Hash,
+	)
+	return i, err
+}
+
 const getSystemAccount = `-- name: GetSystemAccount :one
 
 SELECT id, kind, person_id, system_key, label, created_at, updated_at
@@ -108,6 +155,138 @@ func (q *Queries) GetSystemAccount(ctx context.Context, systemKey *string) (Acco
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertLedgerBatch = `-- name: InsertLedgerBatch :exec
+
+INSERT INTO ledger_batch (
+    id, pool_id, seq, kind, strategy_id, strategy_version, config_snapshot_json, rng_seed,
+    source, source_ref, actor_user_id, actor_token_id, actor_is_beneficiary, reason,
+    reverses_batch_id, effective_at, recorded_at, effective_day, idempotency_key,
+    entry_count, net_amount_cp, prev_hash, hash
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?,
+    ?, ?, ?, ?
+)
+`
+
+type InsertLedgerBatchParams struct {
+	ID                 string
+	PoolID             string
+	Seq                int64
+	Kind               string
+	StrategyID         string
+	StrategyVersion    string
+	ConfigSnapshotJson string
+	RngSeed            *int64
+	Source             string
+	SourceRef          *string
+	ActorUserID        *string
+	ActorTokenID       *string
+	ActorIsBeneficiary int64
+	Reason             string
+	ReversesBatchID    *string
+	EffectiveAt        int64
+	RecordedAt         int64
+	EffectiveDay       string
+	IdempotencyKey     *string
+	EntryCount         int64
+	NetAmountCp        int64
+	PrevHash           []byte
+	Hash               []byte
+}
+
+// InsertLedgerBatch writes the batch header. Every column is supplied by the caller, including seq
+// (allocated by NextPoolSeq in the same transaction) and hash (computed over the batch and its
+// entries by internal/ledger/hashchain.go). Nothing is defaulted at the database, because a value
+// the database invented is a value the hash did not cover.
+//
+// Note what is NOT here: no UPDATE. ledger_batch is append-only, enforced by trg_ledger_batch_no_update
+// and by TestTriggers_MutatingLedger_Raises. If this insert fails, the whole transaction rolls back
+// and no partial batch survives (TestCommit_FaultInjectedMidWrite_LeavesNothing).
+func (q *Queries) InsertLedgerBatch(ctx context.Context, arg InsertLedgerBatchParams) error {
+	_, err := q.db.ExecContext(ctx, insertLedgerBatch,
+		arg.ID,
+		arg.PoolID,
+		arg.Seq,
+		arg.Kind,
+		arg.StrategyID,
+		arg.StrategyVersion,
+		arg.ConfigSnapshotJson,
+		arg.RngSeed,
+		arg.Source,
+		arg.SourceRef,
+		arg.ActorUserID,
+		arg.ActorTokenID,
+		arg.ActorIsBeneficiary,
+		arg.Reason,
+		arg.ReversesBatchID,
+		arg.EffectiveAt,
+		arg.RecordedAt,
+		arg.EffectiveDay,
+		arg.IdempotencyKey,
+		arg.EntryCount,
+		arg.NetAmountCp,
+		arg.PrevHash,
+		arg.Hash,
+	)
+	return err
+}
+
+const insertLedgerEntry = `-- name: InsertLedgerEntry :exec
+
+INSERT INTO ledger_entry (
+    id, batch_id, pool_id, seq, account_id, character_id, balance_kind, amount_cp,
+    item_id, item_award_id, raid_id, tick_id, metadata_json
+) VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?
+)
+`
+
+type InsertLedgerEntryParams struct {
+	ID           string
+	BatchID      string
+	PoolID       string
+	Seq          int64
+	AccountID    string
+	CharacterID  *string
+	BalanceKind  string
+	AmountCp     int64
+	ItemID       *string
+	ItemAwardID  *string
+	RaidID       *string
+	TickID       *string
+	MetadataJson string
+}
+
+// InsertLedgerEntry writes one account's share of one batch. pool_id and seq are DENORMALISED from
+// the batch on purpose: carrying them on the entry is what lets BalanceAsOfSeq be answered from
+// ix_entry_balance with no join (see that query's comment). The caller must write the batch's own
+// pool_id and seq here - a mismatch would make the balance index disagree with the batch.
+//
+// amount_cp carries CHECK (amount_cp <> 0). A zero entry is noise that breaks entry_count reasoning,
+// so a caller that computed a zero share drops the entry rather than writing it; ledger.Allocate
+// filters zero allocations for exactly this reason.
+func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error {
+	_, err := q.db.ExecContext(ctx, insertLedgerEntry,
+		arg.ID,
+		arg.BatchID,
+		arg.PoolID,
+		arg.Seq,
+		arg.AccountID,
+		arg.CharacterID,
+		arg.BalanceKind,
+		arg.AmountCp,
+		arg.ItemID,
+		arg.ItemAwardID,
+		arg.RaidID,
+		arg.TickID,
+		arg.MetadataJson,
+	)
+	return err
 }
 
 const maxPoolSeq = `-- name: MaxPoolSeq :one

@@ -112,3 +112,24 @@ sql:
             go_type:
               type: "string"
               pointer: true
+          # audit_log (PR 10a). Same affinity loss as every block above: without these three the
+          # generated InsertAuditLogParams would carry `interface{}` for the two nullable TEXT
+          # columns and the nullable BLOB, and `any` in a domain signature is what
+          # .claude/rules/go-idioms.md bans. resource_id is NULL for an instance-wide action;
+          # ledger_batch_id is NULL for an audit row that moved no points (a role grant, a settings
+          # change); prev_hash is NULL only at seq = 1, where the chain has no predecessor.
+          #
+          # event_outbox needs no override: every one of its columns is NOT NULL, and event_seq is
+          # read back through RETURNING rather than projected out of a nullable expression.
+          - column: "audit_log.resource_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "audit_log.ledger_batch_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "audit_log.prev_hash"
+            go_type:
+              type: "byte"
+              slice: true

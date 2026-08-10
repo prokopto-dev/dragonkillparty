@@ -71,6 +71,46 @@ func TestTriggers_MutatingLedger_Raises(t *testing.T) {
 	}
 }
 
+// TestTriggers_MutatingAuditLog_Raises asserts trg_audit_log_no_update fires — and, in the same
+// test, that DELETE is deliberately NOT blocked.
+//
+// The asymmetry with the ledger is the point, and it is why both halves are asserted here rather
+// than only the one that raises. A ledger row is never removed, so ledger_batch and ledger_entry
+// carry both an update and a delete trigger. An audit row IS prunable by retention — domain model
+// §17's `dkp audit prune --before`, which leaves an audit_gap_marker scar rather than a silence — so
+// a no-delete trigger would have to be dropped in order to run the prune, and a guardrail that gets
+// dropped during normal operation is not a guardrail.
+//
+// What must never happen is an audit row being EDITED. That is how a forensic record becomes
+// fiction, and a test that only checked the UPDATE half would go green against a future migration
+// that "helpfully" added the delete trigger too — quietly making the retention command impossible.
+func TestTriggers_MutatingAuditLog_Raises(t *testing.T) {
+	t.Parallel()
+
+	s := store.NewDB(t)
+
+	const auditID = "0000000000000000000AUDIT01"
+
+	s.ExecForTest(t,
+		`INSERT INTO audit_log
+		   (id, seq, at, actor_kind, actor_label, action, resource_kind, resource_id, outcome,
+		    ledger_batch_id, prev_hash, hash)
+		 VALUES (?, 1, 1704067200000000, 'system', 'boot', 'ledger.batch.commit', 'ledger_batch',
+		         NULL, 'success', NULL, NULL, X'00')`,
+		auditID)
+
+	require.ErrorContains(t,
+		s.ExecErrForTest(t, `UPDATE audit_log SET actor_label = 'somebody else' WHERE id = ?`, auditID),
+		"audit_log is append-only",
+		"editing an audit row must abort: the row's whole value is that it was not edited")
+
+	require.NoError(t,
+		s.ExecErrForTest(t, `DELETE FROM audit_log WHERE id = ?`, auditID),
+		"DELETE must NOT be blocked — retention pruning is a supported operation (domain model §17) "+
+			"and adding a no-delete trigger here would make `dkp audit prune` impossible without "+
+			"first dropping the guardrail")
+}
+
 // TestTriggers_Insert_IsAllowed is the positive control: an INSERT must NOT be blocked, or the test
 // above would pass against a table nobody can write to at all. The seed helper inserts a batch and an
 // entry; reaching this assertion at all means both inserts succeeded, and the count confirms it.

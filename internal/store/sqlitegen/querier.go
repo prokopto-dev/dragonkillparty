@@ -15,10 +15,11 @@ type Querier interface {
 	// db.Query and db.Exec outside internal/store are grep-banned (gate SQL002), so the only way a new
 	// query enters the codebase is by being written here first and reviewed as SQL.
 	//
-	// PR 9 is READ and HELPER only. There is deliberately NO batch or entry INSERT here: the commit
-	// service that writes them is PR 10, and batch/entry inserts appear only in tests (raw or generated)
-	// until then. What ships now is the balance query, the seq allocator, the snapshot upsert and the
-	// account/system-account readers - the surface a service reads through, before any service writes.
+	// PR 9 was READ and HELPER only; PR 10a adds the WRITE half. InsertLedgerBatch and InsertLedgerEntry
+	// below are the only INSERTs the product has into the two append-only tables, and they are called
+	// from exactly one place: ledger.Service.Commit, inside one store.Tx. There is deliberately no
+	// UPDATE and no DELETE for either table, in this file or anywhere else - the append-only triggers
+	// would abort them, and a correction is a reversal batch (canonical section 10).
 	//
 	// Keep every comment in this file ASCII-only. sqlc v1.31.1 computes each query's text span in bytes
 	// but truncates by rune count, so a multibyte character (an em dash, a section sign) in a preceding
@@ -41,6 +42,18 @@ type Querier interface {
 	// GetAccount reads one account by id. It backs the "system accounts are addressable by id"
 	// acceptance test and the account reader in internal/ledger.
 	GetAccount(ctx context.Context, id string) (Account, error)
+	// GetBatchByIdempotencyKey is the replay lookup. Every mutating POST that creates domain state
+	// carries an Idempotency-Key (canonical invariant); a bot that retries must land on the FIRST batch
+	// rather than committing a second one, because a duplicated raid tick or a double-charged bid is the
+	// top support burden this product exists to remove.
+	//
+	// The key is (pool_id, idempotency_key) and it is served by the partial unique index ux_batch_idem,
+	// so this is an index lookup rather than a scan. It is deliberately NOT scoped by token: a token
+	// rotated between the first attempt and the retry must still replay, which is why the uniqueness is
+	// on the pool and the key and never on actor_token_id (domain model section 15 says the same of
+	// idempotency_key.principal_ref: "NEVER 'token:<ulid>': rotation mid-retry must replay").
+	// TestCommit_DuplicateIdempotencyKey_ReturnsFirstBatch rotates the token between the two calls.
+	GetBatchByIdempotencyKey(ctx context.Context, arg GetBatchByIdempotencyKeyParams) (GetBatchByIdempotencyKeyRow, error)
 	// Guild singleton - the one-row instance identity and its officer-editable settings.
 	//
 	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated
@@ -67,15 +80,98 @@ type Querier interface {
 	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
 	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
 	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
+	// InsertAuditLog appends one row. There is no update and no delete here: trg_audit_log_no_update
+	// aborts an UPDATE, and pruning is `dkp audit prune --before`, a Phase 2+ interactive command that
+	// writes an audit_gap_marker rather than a silence. No endpoint deletes audit rows at any permission
+	// level (domain model section 17).
+	//
+	// prev_hash is NULL only at seq = 1; hash is SHA-256(prev_hash || canonical_json(row without hash)),
+	// computed by internal/ledger/hashchain.go and mirrored into dkp_meta('audit_head') in the same
+	// transaction.
+	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	// InsertGuild creates the singleton row. It exists for the setup flow that Phase 2 builds, which
 	// writes the initial guild once, and for the tests that need a row to read and patch. It always
 	// writes id = 1 (the CHECK enforces it), so a second call fails the primary key rather than creating
 	// a second guild - which is the correct behaviour for a table that must have exactly one row.
 	InsertGuild(ctx context.Context, arg InsertGuildParams) (Guild, error)
+	// InsertLedgerBatch writes the batch header. Every column is supplied by the caller, including seq
+	// (allocated by NextPoolSeq in the same transaction) and hash (computed over the batch and its
+	// entries by internal/ledger/hashchain.go). Nothing is defaulted at the database, because a value
+	// the database invented is a value the hash did not cover.
+	//
+	// Note what is NOT here: no UPDATE. ledger_batch is append-only, enforced by trg_ledger_batch_no_update
+	// and by TestTriggers_MutatingLedger_Raises. If this insert fails, the whole transaction rolls back
+	// and no partial batch survives (TestCommit_FaultInjectedMidWrite_LeavesNothing).
+	InsertLedgerBatch(ctx context.Context, arg InsertLedgerBatchParams) error
+	// InsertLedgerEntry writes one account's share of one batch. pool_id and seq are DENORMALISED from
+	// the batch on purpose: carrying them on the entry is what lets BalanceAsOfSeq be answered from
+	// ix_entry_balance with no join (see that query's comment). The caller must write the batch's own
+	// pool_id and seq here - a mismatch would make the balance index disagree with the batch.
+	//
+	// amount_cp carries CHECK (amount_cp <> 0). A zero entry is noise that breaks entry_count reasoning,
+	// so a caller that computed a zero share drops the entry rather than writing it; ledger.Allocate
+	// filters zero allocations for exactly this reason.
+	InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryParams) error
+	// Event outbox - the global event sequence behind SSE, webhooks and Last-Event-ID. Phase 0 PR 10a.
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated from
+	// a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate SQL002),
+	// so the only way a new query enters the codebase is by being written here first and reviewed as SQL.
+	//
+	// WRITE-ONLY at this phase. The tailer that reads ix_outbox_topic and feeds SSE frames is Phase 1
+	// (the realtime lane); what ships now is the insert a committing transaction makes, so that no state
+	// change can ever exist without its event and no event can exist for a change that rolled back.
+	//
+	// Keep every comment in this file ASCII-only. sqlc v1.31.1 computes each query's text span in bytes
+	// but truncates by rune count, so a multibyte character in a preceding comment lops that many
+	// trailing characters off the generated query string - silent at generate time, a syntax error at
+	// run time.
+	// InsertOutboxEvent appends one event and RETURNS the sequence the database allocated.
+	//
+	// event_seq is INTEGER PRIMARY KEY AUTOINCREMENT, so SQLite allocates it and never reuses a number
+	// that has been used before - which is what keeps Last-Event-ID replay sound across a prune. RETURNING
+	// reads it back in the same statement: the alternative, last_insert_rowid(), is a second round trip
+	// whose answer depends on nothing else having written on this connection in between, and "nothing
+	// else wrote in between" is a property nobody should have to reason about to learn a row's own id.
+	//
+	// This is the third sequence in the product and it answers a different question from the other two.
+	// ledger_batch.seq is per-pool and orders a balance; audit_log.seq is instance-wide and gapless and
+	// orders the audit chain; event_seq is instance-wide, never-reused and orders the event stream. A
+	// bot author who confuses them gets wrong answers silently, which is why they do not share a name.
+	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) (int64, error)
 	// MaxPoolSeq is the current head seq for a pool: the ?4 argument BalanceAsOfSeq needs to compute a
 	// CURRENT balance ("as of the latest seq"). COALESCE to 0 for an empty pool, so a pool with no
 	// batches yet reports head 0 rather than NULL.
 	MaxPoolSeq(ctx context.Context, poolID string) (int64, error)
+	// Audit log - who did this, with what authority, and to what. Phase 0 PR 10a.
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated from
+	// a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate SQL002),
+	// so the only way a new query enters the codebase is by being written here first and reviewed as SQL.
+	//
+	// WRITE-ONLY at this phase, and deliberately so. The officer-facing forensic view is Phase 2: it
+	// needs `audit.read`, and there is no authorization middleware yet, so shipping a reader now would
+	// mean shipping an unauthenticated route over the one table that records who did what. What ships is
+	// the seq allocator and the insert that ledger.Service.Commit calls in the same transaction as the
+	// batch (domain model section 17.1: "committing a ledger batch also writes an audit row").
+	//
+	// Keep every comment in this file ASCII-only. sqlc v1.31.1 computes each query's text span in bytes
+	// but truncates by rune count, so a multibyte character (an em dash, a section sign) in a preceding
+	// comment lops that many trailing characters off the generated query string. The failure is silent
+	// at generate time and shows up as a syntax error only when the query runs.
+	// NextAuditSeq allocates the next INSTANCE-WIDE audit sequence number. It MUST run inside store.Tx,
+	// for the same reason NextPoolSeq must: the write pool is _txlock=immediate with SetMaxOpenConns(1),
+	// so the write transaction is the only writer and max+1 cannot race. ux_audit_seq is the guardrail if
+	// that single-writer property is ever lost.
+	//
+	// Instance-wide, where the ledger's seq is per-pool. Gaplessness is what gives the audit hash chain
+	// an ordering to hash over (domain model section 17), and it is the reason this is an allocator
+	// rather than an AUTOINCREMENT column: event_outbox.event_seq must never reuse a number after a
+	// prune, whereas audit_log.seq must never SKIP one. Those are different requirements and they need
+	// different mechanisms.
+	//
+	// Like NextPoolSeq this is dialect divergence #1 (db/RECIPES.md): max+1 is not safe on Postgres.
+	NextAuditSeq(ctx context.Context) (int64, error)
 	// NextPoolSeq allocates the next per-pool sequence number. It MUST run inside store.Tx (the write
 	// pool is _txlock=immediate with SetMaxOpenConns(1), so it is the only writer and max+1 is a correct
 	// allocator). ux_batch_seq(pool_id, seq) is the guardrail if the single-writer property is ever lost.
