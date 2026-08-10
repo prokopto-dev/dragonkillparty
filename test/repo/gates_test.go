@@ -301,6 +301,162 @@ const balanceQuery = "SELECT total(amount_cp) FROM ledger_entry WHERE account_id
 		"a whole-line comment describing the rule must not trip it\n%s", out)
 }
 
+// TestRepoGates_StrategyImportsStore_FailsGate covers PURE001, law 3's first clause: a strategy
+// plans, it does not read the database. Everything a planner is allowed to know arrives through
+// strategy.Ctx; a planner that could reach the store could decide on state its own Ctx never saw,
+// and the batch that decision produced would not replay.
+//
+// The AST twin is TestArch_Strategy_ImportGraph_HasNoStore in internal/strategy, which walks the
+// whole import graph and so also sees a TRANSITIVE path this grep cannot. That twin is why PURE001
+// had no fixture until now: the law was covered, so nobody noticed the GATE was not. A pattern typo
+// here — a stray anchor, a plural — would have gone unnoticed until the day the AST test was the one
+// that broke, and `make check` would have stayed green throughout.
+func TestRepoGates_StrategyImportsStore_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/strategy/zero_sum.go", `package strategy
+
+import "github.com/prokopto-dev/dragonkillparty/internal/store"
+
+func plan(q *store.Queries) error { return nil }
+`)
+
+	// A comment naming the rule must not fire it. internal/strategy/doc.go and strategy.go both
+	// discuss this ban at length, so a gate that fired on its own documentation would be unusable
+	// from the day law 3 was written down.
+	writeGo(t, tree, "internal/strategy/doc.go", `package strategy
+
+// internal/store is banned here: everything the planner may know arrives through Ctx.
+`)
+
+	// Scope control: internal/ledger is the package that is SUPPOSED to hold a store handle. PURE001
+	// firing there would make the ledger unbuildable, and the first person to hit that would reach
+	// for --no-verify rather than for the rule id.
+	writeGo(t, tree, "internal/ledger/service.go", `package ledger
+
+import "github.com/prokopto-dev/dragonkillparty/internal/store"
+
+type Service struct{ q *store.Queries }
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "internal/strategy importing internal/store must fail the gates\n%s", out)
+	require.Contains(t, out, "PURE001", "%s", out)
+	require.Contains(t, out, "internal/strategy/zero_sum.go:",
+		"PURE001 must name the offending file, repo-root-relative\n%s", out)
+	require.NotContains(t, out, "internal/strategy/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+	require.NotContains(t, out, "internal/ledger/service.go",
+		"PURE001 is scoped to internal/strategy; the ledger is where the store belongs\n%s", out)
+	require.NotContains(t, out, tree,
+		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
+}
+
+// TestRepoGates_MathRandInStrategy_FailsGate covers PURE002, law 3's second clause.
+//
+// The seeded Rng arrives through Ctx.Rng(), and its seed is persisted onto ledger_batch.rng_seed —
+// that seed is the entire reason a batch replays byte-identically. A strategy that reached for
+// math/rand instead would make the persisted seed a decoration and the determinism property a
+// tautology: it would still pass, because it replays the recorded outcome, and nothing would say the
+// tie-break had been a coin flip nobody can reproduce.
+//
+// The AST twin is TestArch_Strategy_Files_DoNotImportTimeOrMathRand, which resolves imports and so
+// also catches an ALIASED one (`import r "math/rand"`) that this grep would miss.
+func TestRepoGates_MathRandInStrategy_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/strategy/tiebreak.go", `package strategy
+
+import "math/rand"
+
+func breakTie(n int) int { return rand.Intn(n) }
+`)
+
+	// A comment naming the rule must not fire it.
+	writeGo(t, tree, "internal/strategy/doc.go", `package strategy
+
+// math/rand is banned here: the seeded Rng arrives through Ctx.Rng() and its seed is persisted.
+`)
+
+	// The sanctioned form must not fire: the ban is on the IMPORT, not on the idea of randomness. A
+	// pattern widened to `rand` would reject the injected Rng this rule exists to require, which is
+	// the shape of "fixing" a gate by making it useless.
+	writeGo(t, tree, "internal/strategy/roll.go", `package strategy
+
+func roll(ctx Ctx, sides int64) int64 { return ctx.Rng().Int63n(sides) }
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "math/rand in internal/strategy must fail the gates\n%s", out)
+	require.Contains(t, out, "PURE002", "%s", out)
+	require.Contains(t, out, "internal/strategy/tiebreak.go:",
+		"PURE002 must name the offending file, repo-root-relative\n%s", out)
+	require.NotContains(t, out, "internal/strategy/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+	require.NotContains(t, out, "internal/strategy/roll.go",
+		"the INJECTED Rng is the sanctioned source of randomness and must not trip the ban\n%s", out)
+}
+
+// TestRepoGates_WallClockOutsideClockPackage_FailsGate covers CLOCK001: `time.Now` belongs to
+// internal/clock and nowhere else, because a service that reads the wall clock directly cannot be
+// tested without sleeping and cannot be replayed at all.
+//
+// It asserts the ALLOWLIST in the same run, and that half is the one that matters: internal/clock's
+// System.Now is the single call site in the repository that is allowed to call time.Now, so a gate
+// that fired repo-wide would make the injected-clock design itself a violation.
+//
+// The forbidigo twin is `^time\.Now$` in .golangci.yml, proven by TestLintBan_TimeNowOutsideClock_FailsLint
+// in internal/core. It resolves types and so also catches a dot-imported or aliased call; this grep
+// is the cheap one, and until this fixture existed it was the untested one.
+func TestRepoGates_WallClockOutsideClockPackage_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/ledger/batch.go", `package ledger
+
+import "time"
+
+func stamp() int64 { return time.Now().UnixMicro() }
+`)
+
+	// Allowlisted: the one implementation that is permitted to read the wall clock.
+	writeGo(t, tree, "internal/clock/system.go", `package clock
+
+import "time"
+
+type System struct{}
+
+func (System) Now() time.Time { return time.Now() }
+`)
+
+	// A comment naming the rule must not fire it.
+	writeGo(t, tree, "internal/ledger/doc.go", `package ledger
+
+// time.Now() is banned here: the clock is injected so a batch can be replayed.
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "time.Now outside internal/clock must fail the gates\n%s", out)
+	require.Contains(t, out, "CLOCK001", "%s", out)
+	require.Contains(t, out, "internal/ledger/batch.go:",
+		"CLOCK001 must name the offending file, repo-root-relative\n%s", out)
+	require.NotContains(t, out, "internal/clock/system.go",
+		"internal/clock is where time.Now is SUPPOSED to be called — the allowlist is not working\n%s", out)
+	require.NotContains(t, out, "internal/ledger/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+}
+
 // TestRepoGates_RealClockInStrategy_FailsGate covers CLOCK002, added in Phase 0 PR 10b to close a
 // hole CLOCK001 could not see.
 //
@@ -409,6 +565,197 @@ func writeFile(t *testing.T, tree, rel, body string) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
+// TestRepoGates_FloatInPointArithmetic_FailsGate covers MONEY001: `float32`/`float64` do not exist
+// in internal/ledger or internal/strategy. Point arithmetic is core.Centipoints (int64) only — a
+// float in the point path does not fail, it DRIFTS, and a balance that is wrong by a fraction of a
+// point for a year is discovered by a guild member disputing a bid, not by CI.
+//
+// The fixture taints BOTH gated trees in one run, because MONEY001 is a shell `for` loop over two
+// directories: a fixture in only one of them would keep passing if the loop lost its second element,
+// and internal/strategy is where the tempting float lives (an attendance ratio, a decay rate).
+//
+// The forbidigo twin is `\bfloat(32|64)\b` scoped by a path-except exclusion in .golangci.yml, proven
+// by TestLintBan_FloatInLedger_FailsLint in internal/core.
+func TestRepoGates_FloatInPointArithmetic_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/ledger/decay.go", `package ledger
+
+var rate float64 = 0.5
+`)
+	writeGo(t, tree, "internal/strategy/attendance.go", `package strategy
+
+func weight(attended, held int32) float32 { return float32(attended) / float32(held) }
+`)
+
+	// Scope control: float is legitimate outside the two arithmetic packages — internal/core's own
+	// boundary conversion uses one — so a repo-wide ban would be wrong, and the .golangci.yml
+	// exclusion says so in as many words.
+	writeGo(t, tree, "internal/api/report.go", `package api
+
+type Report struct{ Ratio float64 }
+`)
+
+	// A comment naming the rule must not fire it.
+	writeGo(t, tree, "internal/ledger/doc.go", `package ledger
+
+// float64 is banned here: point arithmetic is core.Centipoints (int64) only.
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a float in the point path must fail the gates\n%s", out)
+	require.Contains(t, out, "MONEY001", "%s", out)
+	require.Contains(t, out, "internal/ledger/decay.go:",
+		"MONEY001 must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "internal/strategy/attendance.go:",
+		"MONEY001 covers internal/strategy as well as internal/ledger — has the loop lost a tree?\n%s", out)
+	require.NotContains(t, out, "internal/api/report.go",
+		"MONEY001 is scoped to the two arithmetic packages; a float elsewhere is legitimate\n%s", out)
+	require.NotContains(t, out, "internal/ledger/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+}
+
+// TestRepoGates_RealColumnInMigration_FailsGate covers MONEY003, the schema half of the same rule.
+//
+// SQLite's type affinity makes this quiet in a way the Go ban is not: a REAL column accepts every
+// integer a correct writer inserts, so the taint is invisible until a value arrives that cannot be
+// represented exactly — and by then the column holds years of history. There is no compensating
+// linter for this one; the grep is the only mechanism, which is why the fixture is not optional.
+//
+// All three banned type names appear, because the rule is a single alternation: dropping an arm
+// while keeping the others is exactly the regression a one-type fixture would wave through.
+func TestRepoGates_RealColumnInMigration_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeFile(t, tree, "db/migrations-sqlite/0002_ledger_entry.sql", `-- +goose Up
+CREATE TABLE ledger_entry (
+    id        TEXT    NOT NULL PRIMARY KEY,
+    amount_cp REAL    NOT NULL,
+    rate_bp   NUMERIC NOT NULL,
+    fee_cp    DECIMAL NOT NULL
+);
+`)
+
+	// The control: the sanctioned INTEGER column must not trip the gate, so a passing test means
+	// "the float types specifically are rejected", not "any migration fails".
+	writeFile(t, tree, "db/migrations-sqlite/0003_ledger_snapshot.sql", `-- +goose Up
+CREATE TABLE ledger_snapshot (
+    id        TEXT    NOT NULL PRIMARY KEY,
+    amount_cp INTEGER NOT NULL
+);
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a REAL column in a migration must fail the gates\n%s", out)
+	require.Contains(t, out, "MONEY003", "%s", out)
+	require.Contains(t, out, "db/migrations-sqlite/0002_ledger_entry.sql:",
+		"MONEY003 must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "amount_cp REAL", "the REAL arm of the alternation must fire\n%s", out)
+	require.Contains(t, out, "rate_bp   NUMERIC", "the NUMERIC arm of the alternation must fire\n%s", out)
+	require.Contains(t, out, "fee_cp    DECIMAL", "the DECIMAL arm of the alternation must fire\n%s", out)
+	require.NotContains(t, out, "0003_ledger_snapshot.sql",
+		"INTEGER is the sanctioned column type and must not trip the ban\n%s", out)
+}
+
+// TestRepoGates_RawFetchOutsideGeneratedClient_FailsGate covers WEB001, law 4: the SPA is an API
+// client, and a component that calls the network itself is a capability the public API does not
+// have. That is not a style preference — it is how "if the UI can do it, a bot can do it" stays true,
+// and a back door added in a component is invisible in the OpenAPI document CI diffs.
+//
+// The eslint twin (no-restricted-globals, proven by TestWebLint_BareFetch_FailsLint) is AST-aware and
+// catches shapes the grep cannot, but it needs a Node toolchain — so on a job that has only Go, this
+// grep is law 4's entire enforcement.
+//
+// Both extensions are tainted deliberately: the include glob is `*.ts*`, and narrowing it to `*.tsx`
+// would silently stop scanning every hook, loader and lib file in the SPA — which is where a raw
+// fetch actually gets written.
+func TestRepoGates_RawFetchOutsideGeneratedClient_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "web/src/routes/roster.tsx", `export async function loadRoster() {
+  const res = await fetch("/api/v1/roster");
+  return res.json();
+}
+`)
+	writeRepoFile(t, tree, "web/src/lib/legacy.ts", `export function poll(url: string) {
+  const xhr = new XMLHttpRequest();
+  xhr.open("GET", url);
+  return xhr;
+}
+`)
+
+	// Allowlisted: the generated client is where a fetch is SUPPOSED to happen. Without this half,
+	// a gate that fired on everything would pass the assertions above while making web/src/api
+	// unlintable.
+	writeRepoFile(t, tree, "web/src/api/client.ts", `export const client = createClient({
+  fetch: (req: Request) => fetch(req),
+});
+`)
+
+	// A comment naming the rule must not fire it.
+	writeRepoFile(t, tree, "web/src/routes/doc.tsx", `// fetch( is banned here: every call goes through the generated client in src/api.
+export const Doc = () => null;
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a raw fetch outside web/src/api must fail the gates\n%s", out)
+	require.Contains(t, out, "WEB001", "%s", out)
+	require.Contains(t, out, "web/src/routes/roster.tsx:",
+		"WEB001 must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "web/src/lib/legacy.ts:",
+		"WEB001 must reach .ts as well as .tsx, and XMLHttpRequest as well as fetch\n%s", out)
+	require.NotContains(t, out, "web/src/api/client.ts",
+		"web/src/api is where the fetch belongs — the allowlist is not working\n%s", out)
+	require.NotContains(t, out, "web/src/routes/doc.tsx",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+}
+
+// TestRepoGates_DangerouslySetInnerHTML_FailsGate covers WEB002.
+//
+// internal/cms accepts untrusted rich text — articles, comments, signatures written by whoever the
+// officers gave an account to — and this is the one prop that turns it into script running with the
+// reader's session. The repo has no eslint react/no-danger rule, so unlike WEB001 this grep is not
+// defence in depth: it is the only thing standing between a CMS field and stored XSS, which makes a
+// silent regression in its pattern the most expensive one in this file.
+func TestRepoGates_DangerouslySetInnerHTML_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "web/src/components/Article.tsx", `export function Article({ html }: { html: string }) {
+  return <div dangerouslySetInnerHTML={{ __html: html }} />;
+}
+`)
+
+	// A comment naming the rule must not fire it — the CMS components have every reason to document
+	// why they render sanitised text the long way round.
+	writeRepoFile(t, tree, "web/src/components/SafeArticle.tsx", `// dangerouslySetInnerHTML is banned here: CMS bodies are rendered from sanitised nodes.
+export const SafeArticle = () => null;
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "dangerouslySetInnerHTML must fail the gates\n%s", out)
+	require.Contains(t, out, "WEB002", "%s", out)
+	require.Contains(t, out, "web/src/components/Article.tsx:",
+		"WEB002 must name the offending file, repo-root-relative\n%s", out)
+	require.NotContains(t, out, "web/src/components/SafeArticle.tsx",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+}
+
 // TestRepoGates_UnpinnedAction_FailsGate is the supply-chain half of the acceptance criteria: a
 // fixture workflow containing an unpinned `actions/checkout@v4` must make repo-gates.sh exit
 // non-zero, and PIN001 must be the rule that says so.
@@ -498,6 +845,62 @@ func TestRepoGates_QemuInComment_PassesGate(t *testing.T) {
 
 	require.Zero(t, code, "a workflow that only mentions QEMU in a comment must pass\n%s", out)
 	require.NotContains(t, out, "QEMU001", "QEMU001 must not fire on a comment\n%s", out)
+}
+
+// TestRepoGates_UpdateFlagInCICommand_FailsGate covers GOLD001, the golden-file rewrite fence.
+//
+// `go test -update` regenerates test/golden/ to match whatever the code currently produces. Run on a
+// laptop that is a deliberate act; run in CI it is a machine that makes every golden assertion agree
+// with the change under test, and the parser suite — the thing standing between a P99 log format and
+// silently wrong attendance — stops being a test at all. AGENTS.md bans it in prose ("do not
+// -update a test to make CI green"); this is the mechanism.
+//
+// Nothing else enforces this: there is no linter for a shell command inside a YAML string. The gate
+// is also the most pattern-dependent one in the script — three alternatives for where the flag may
+// appear and a six-term exclusion list — so it is the one most likely to rot into a no-op, and the
+// one where a no-op is invisible.
+func TestRepoGates_UpdateFlagInCICommand_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// The action is SHA-pinned and no step mentions QEMU, so PIN001 and QEMU001 stay quiet and a red
+	// run can only mean GOLD001. The two violations are the two shapes the flag really takes: a
+	// single-line `run:`, and a continuation line inside a `run: |` block — which is why the pattern
+	// has a bare `\s{4,}` arm at all. A fixture with only the first would let that arm be deleted.
+	writeRepoFile(t, tree, ".github/workflows/golden.yml", `name: fixture
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@`+pinnedCheckoutSHA+`
+      # Never pass -update in CI: it rewrites test/golden/ to agree with the change under test.
+      - run: sudo apt-get update
+      - run: go test ./internal/parse -update
+      - run: |
+          make test-golden --update
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "'-update' in a CI command must fail the gates\n%s", out)
+	require.Contains(t, out, "GOLD001", "%s", out)
+	require.Contains(t, out, ".github/workflows/golden.yml:",
+		"GOLD001 must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "go test ./internal/parse -update",
+		"GOLD001 must quote the offending line\n%s", out)
+	require.Contains(t, out, "make test-golden --update",
+		"GOLD001 missed a `--update` on a continuation line inside a `run: |` block — the "+
+			"indentation arm of the pattern is what covers multi-line run steps\n%s", out)
+
+	require.NotContains(t, out, "apt-get",
+		"`apt-get update` is a package index refresh, not a golden rewrite — it is allowlisted\n%s", out)
+	require.NotContains(t, out, "actions/checkout",
+		"an `actions/` line is allowlisted; a pinned checkout must not read as a golden rewrite\n%s", out)
+	require.NotContains(t, out, "PIN001",
+		"the fixture pins its action — a PIN001 hit means this test proves the wrong thing\n%s", out)
 }
 
 // TestFourLaws_AppearsInExactlyOneTrackedFile asserts both halves of the acceptance criterion:
@@ -622,6 +1025,82 @@ func writeRepoFile(t *testing.T, tree, rel, body string) {
 	path := filepath.Join(tree, filepath.FromSlash(rel))
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}
+
+// TestRepoGates_EQdkpIdentifierOutsideAllowlist_FailsGate covers AGPL001, the licence firewall.
+//
+// EQdkp Plus is AGPL-3.0 and this project is Apache-2.0, so transcribing their PHP is not a style
+// problem, it is a licence violation — and the moment it happens is when the task is "match EQdkp's
+// behaviour", which is most of the importer's specification. `pdh_`, `gen_class`, `plus_exchange`
+// and `__multidkp2event` are distinctive enough that a hit is always transcription and never
+// coincidence.
+//
+// Two properties are asserted that no other test in this file asserts, and both are deliberate
+// design decisions in the script rather than accidents of it:
+//
+//   - AGPL001 does NOT strip comments. Everywhere else a banned token inside a comment is prose about
+//     the rule; here it is the thing itself, because pasting AGPL source into a Go comment "just as a
+//     reference" infringes exactly as much as pasting it into code. A well-meaning refactor that gave
+//     this gate the same `strip_comments` pipeline as its neighbours — for consistency — would open
+//     the firewall, and this fixture is what would say so.
+//   - The loop covers internal, web, cmd and db. A transcription can land in any of them; losing a
+//     tree from that list is a silent hole.
+func TestRepoGates_EQdkpIdentifierOutsideAllowlist_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/importer/points.go", `package importer
+
+func readPoints(row map[string]any) int64 { return row["pdh_points"].(int64) }
+`)
+
+	// The comment case — a violation, not prose about one.
+	writeGo(t, tree, "internal/importer/notes.go", `package importer
+
+// gen_class is EQdkp's class table; the column list was copied from their schema.
+`)
+
+	// One violation per remaining gated tree, so a lost loop element cannot hide.
+	writeRepoFile(t, tree, "web/src/lib/legacy.ts", `export const EXCHANGE_TABLE = "plus_exchange";
+`)
+	writeGo(t, tree, "cmd/dkp/import.go", `package main
+
+const legacyEventTable = "__multidkp2event"
+`)
+
+	// Allowlisted, and this half is what keeps the importer possible at all: reading a user's
+	// database at runtime requires naming their tables somewhere. legacy_names.go is that somewhere,
+	// and the compat shim answers their api.php function names.
+	writeGo(t, tree, "internal/importer/legacy_names.go", `package importer
+
+var legacyTables = []string{"pdh_points", "gen_class", "plus_exchange", "__multidkp2event"}
+`)
+	writeGo(t, tree, "internal/api/compat/shim.go", `package compat
+
+const pointsColumn = "pdh_points"
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "an EQdkp identifier outside the allowlist must fail the gates\n%s", out)
+	require.Contains(t, out, "AGPL001", "%s", out)
+	require.Contains(t, out, "internal/importer/points.go:",
+		"AGPL001 must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "internal/importer/notes.go:",
+		"AGPL001 must NOT strip comments: transcribing AGPL source into a Go comment is the same "+
+			"licence violation as transcribing it into code\n%s", out)
+	require.Contains(t, out, "web/src/lib/legacy.ts:",
+		"AGPL001 scans web/ too — has the tree loop lost an element?\n%s", out)
+	require.Contains(t, out, "cmd/dkp/import.go:",
+		"AGPL001 scans cmd/ too — has the tree loop lost an element?\n%s", out)
+
+	require.NotContains(t, out, "internal/importer/legacy_names.go",
+		"legacy_names.go is where EQdkp's table names are ALLOWED to be written down; the importer "+
+			"cannot read their database without naming it\n%s", out)
+	require.NotContains(t, out, "internal/api/compat/shim.go",
+		"the api.php compat shim answers EQdkp's own function names by design\n%s", out)
 }
 
 // TestRepoGates_EQdkpConfigKeyInSchema_FailsGate covers AGPL002.
