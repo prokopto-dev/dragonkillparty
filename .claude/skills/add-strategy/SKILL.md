@@ -114,6 +114,12 @@ This is where the interface earns its shape.
 The reversal property must hold: **apply then reverse leaves every balance and every positional state
 exactly as it was.**
 
+`BatchProposal.Negated` drops `NonNegative` from the inherited set and keeps the conservation rules.
+Do not add the floor back. A reversal is the only repair primitive an append-only ledger has, so a
+floor on it does not prevent a debt — it prevents the correction, and leaves the original mistake
+permanently unfixable. Declare `NonNegative` in `PlanAward`, where it refuses an overdraft on a
+**spend** before anything is written.
+
 ### 7. Write property tests, not only example tests
 
 Example tests prove the case you thought of. Properties prove the cases you did not.

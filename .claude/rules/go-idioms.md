@@ -15,14 +15,24 @@ House Go, not general Go. Everything here has a mechanism; where it doesn't, it 
 | Context reads as a noun phrase, lowercase, no punctuation | `"decode who block"`, not `"Failed to decode!"` |
 | Sentinels live in the owning package | `var ErrNotFound = errors.New("not found")`, `ErrConflict`, `ErrImmutable` |
 | Compare with `errors.Is` / `errors.As`, never `==` | `errors.Is(err, sql.ErrNoRows)` |
-| Never discard | `_ = err` is a `golangci-lint errcheck` failure |
+| Never discard | An error is returned, handled or logged. `_ = f()` is a waiver, not a default |
 | Never `panic` outside `main` wiring | A panic in a handler kills the raid night, not the request |
 
 Handlers translate at the edge: `problem.From(err)` maps sentinels to Huma error types. A handler
 never writes to `http.ResponseWriter` and never formats an error string for the wire — the
 `code` comes from the closed enum in `internal/api/errors.go`.
 
-**Enforced by:** `errcheck` and `wrapcheck` in `golangci-lint`; a repo grep gate on `_ = err`.
+**Enforced by:** `errcheck` in `golangci-lint`, which fires on an error return that is never
+assigned at all — `resp.Body.Close()` on its own line. It does **not** see `_ = f()`, and its
+`check-blank` option is deliberately off (`.golangci.yml`); nor would `check-blank` see a bare
+`_ = err` on an error you already hold, because that is an identifier and not a call. So the waiver
+is caught in review, not by a linter, which is the reason it has to stay rare enough to notice: use
+it only where a failure genuinely cannot be acted on — a deferred `Close` on a read-only body, a
+write to a response already committed — and say so in a comment when it is not obvious.
+
+`wrapcheck` is **not** enabled, despite the `%w` rule above; `.golangci.yml` records why (almost
+entirely false positives on stdlib returns at the current call count). The `%w`-plus-context rule is
+a review rule today.
 
 ## Context
 
