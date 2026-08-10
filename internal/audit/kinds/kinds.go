@@ -8,7 +8,7 @@ import (
 )
 
 // Package kinds is the audit_log enum catalogue — canonical §5's "one Go catalogue" for
-// audit_log.actor_kind.
+// audit_log.actor_kind and audit_log.outcome.
 //
 // WHY THIS FILE EXISTS. Before it, the six actor kinds were a literal in db/schema.hcl's CHECK and a
 // SECOND literal in internal/ledger/commit.go's `validActorKinds` map, which is two lists and two
@@ -42,6 +42,16 @@ import (
 // `make migration`) → the database, and separately this file → internal/ledger/commit.go's
 // validation. Nothing reads it in the other direction.
 //
+// WHY outcome IS HERE TOO, and why it arrived a PR later. Its three values had no Go list at all
+// (#53): db/schema.hcl's CHECK was the only place they were written, and internal/ledger/commit.go —
+// the one writer — passed 'success' as a bare literal. That is the weaker defect, because there was
+// no second list to drift from; it is worth closing now rather than later because domain model §17
+// has the Phase 2 HTTP middleware writing an audit row for every mutating action, with 'denied' and
+// 'error' as its whole point. That writer will name the three values somewhere, and without a
+// catalogue it will name them as literals — which is exactly how the validActorKinds map above came
+// to exist. A literal is not a symbol: `Outcome: "sucess"` is valid Go that reaches the database and
+// fails a CHECK inside the commit transaction, where OutcomeSuccess is a compile error.
+//
 // ADDING AN ACTOR KIND IS A SCHEMA CHANGE. Appending here does not change a deployed database:
 // run `make gen` to rewrite the CHECK in db/schema.hcl, then `make migration NAME=<snake_case>` and
 // read what Atlas wrote — a CHECK change on SQLite is the 12-step table rebuild, and audit_log
@@ -71,6 +81,19 @@ const (
 	ActorAnonymous      = "anonymous"       // an unauthenticated request that reached an audited path
 )
 
+// The audit_log.outcome vocabulary: WHAT HAPPENED when the actor tried. A denied or errored action is
+// audited too — the forensic question "who TRIED this?" is at least as important as "who did it", and
+// a table that recorded only successes would answer neither during an incident.
+//
+// The distinction between the two failures is the one a reader needs: 'denied' is the system working
+// (authorisation refused the action), 'error' is the system failing (it tried and could not). Merging
+// them would make "are we under attack?" and "are we broken?" the same query.
+const (
+	OutcomeSuccess = "success" // the action completed and its state change is committed
+	OutcomeDenied  = "denied"  // authorisation refused it; nothing changed
+	OutcomeError   = "error"   // it was permitted and failed
+)
+
 // ActorKinds returns every legal audit_log.actor_kind, in the order the CHECK constraint carries
 // them.
 //
@@ -92,6 +115,16 @@ func ActorKinds() []string {
 	}
 }
 
+// Outcomes returns every legal audit_log.outcome, in the order the CHECK constraint carries them. A
+// fresh slice over the constants above, for the reason ActorKinds is one.
+func Outcomes() []string {
+	return []string{
+		OutcomeSuccess,
+		OutcomeDenied,
+		OutcomeError,
+	}
+}
+
 // IsActorKind reports whether v is a legal audit_log.actor_kind.
 //
 // This is the RUNTIME half of the catalogue and the reason it is worth having one:
@@ -102,8 +135,18 @@ func ActorKinds() []string {
 //
 // A linear scan over six values, called once per commit. A package-level set would be package-level
 // mutable state to save nothing measurable.
-func IsActorKind(v string) bool {
-	for _, candidate := range ActorKinds() {
+func IsActorKind(v string) bool { return contains(ActorKinds(), v) }
+
+// IsOutcome reports whether v is a legal audit_log.outcome. The runtime half of Outcomes, for the
+// reason IsActorKind is.
+//
+// It has no caller in production code today — internal/ledger/commit.go names OutcomeSuccess, a
+// constant, so there is nothing to validate — and it exists for the Phase 2 middleware, which will
+// map a request's fate onto this vocabulary and needs somewhere to refuse a value that is not in it.
+func IsOutcome(v string) bool { return contains(Outcomes(), v) }
+
+func contains(values []string, v string) bool {
+	for _, candidate := range values {
 		if candidate == v {
 			return true
 		}
@@ -112,34 +155,55 @@ func IsActorKind(v string) bool {
 	return false
 }
 
-// column is the one column this catalogue governs. Unexported: CheckExpr below is the only thing that
-// needs to name it, and a caller wanting the string wants CheckExpr's whole expression.
-const column = "actor_kind"
+// The columns this catalogue governs. Unexported: the CheckExpr functions below are the only things
+// that need to name them, and a caller wanting the string wants the whole expression.
+const (
+	actorKindColumn = "actor_kind"
+	outcomeColumn   = "outcome"
+)
 
-// CheckExpr renders the body of audit_log's actor_kind CHECK constraint:
+// ActorKindCheckExpr renders the body of audit_log's actor_kind CHECK constraint:
 //
 //	actor_kind IN ('user', 'service_account', …)
 //
-// No column parameter, where internal/ledger/kinds.CheckExpr takes one: that catalogue governs two
-// columns and this governs one, so naming it at the call site would be an invitation to render the
-// actor kinds against some other column. The formatting itself is internal/schemaenum's, shared with
-// every other catalogue so that one separator change cannot rewrite one CHECK and not another.
-func CheckExpr() string {
-	return schemaenum.CheckExpr(column, ActorKinds())
+// Named for its column rather than taking one as a parameter, where internal/ledger/kinds.CheckExpr
+// takes one: naming the column at the call site would be an invitation to render the actor kinds
+// against some other column, which is a CHECK that compiles, applies and rejects every row. It was
+// simply `CheckExpr` while this catalogue governed one column; outcome is the second, and an
+// unqualified name for one of two is worse than either. The formatting itself is
+// internal/schemaenum's, shared with every other catalogue so that one separator change cannot
+// rewrite one CHECK and not another.
+func ActorKindCheckExpr() string {
+	return schemaenum.CheckExpr(actorKindColumn, ActorKinds())
+}
+
+// OutcomeCheckExpr renders the body of audit_log's outcome CHECK constraint:
+//
+//	outcome IN ('success', 'denied', 'error')
+//
+// NOT the nullable form: the column is NOT NULL, because an audit row that does not say how the
+// action ended is not an audit row.
+func OutcomeCheckExpr() string {
+	return schemaenum.CheckExpr(outcomeColumn, Outcomes())
 }
 
 // The markers delimiting this catalogue's generated region of db/schema.hcl, inside
-// `table "audit_log"`. Everything between them is written by `make gen`; everything outside them —
-// including the neighbouring audit_log_outcome_enum CHECK, which has no catalogue yet — is
+// `table "audit_log"`. Everything between them is written by `make gen`; everything outside them is
 // hand-authored schema truth.
+//
+// ONE REGION FOR BOTH CHECKS, as internal/ledger/kinds has one for ledger_batch's kind and source.
+// The alternative — a region per column — would make this catalogue's render two rewrites of one file
+// to buy nothing: the two CHECKs are adjacent, they are written by the same `make gen` step from the
+// same package, and a reader who finds one generated wants to know the other is too. The marker text
+// therefore names the CATALOGUE and not the column, and it changed when outcome joined (#53).
 //
 // HCL line comments, so Atlas parses the file unchanged and the region is invisible to the diff
 // engine. The marker text names the catalogue because db/schema.hcl carries more than one generated
 // region and each is found by an exact whole-line match on ITS OWN markers: two regions sharing a
 // marker line would each rewrite the other's.
 const (
-	schemaEnumBegin = "  // BEGIN GENERATED — audit_log.actor_kind CHECK, from internal/audit/kinds. Run `make gen`."
-	schemaEnumEnd   = "  // END GENERATED — audit_log.actor_kind CHECK."
+	schemaEnumBegin = "  // BEGIN GENERATED — audit_log enum CHECKs, from internal/audit/kinds. Run `make gen`."
+	schemaEnumEnd   = "  // END GENERATED — audit_log enum CHECKs."
 )
 
 // schemaRegion is the marked region this catalogue owns. A function rather than a package-level var,
@@ -148,7 +212,7 @@ func schemaRegion() schemaenum.Region {
 	return schemaenum.Region{
 		Begin:   schemaEnumBegin,
 		End:     schemaEnumEnd,
-		Subject: "audit_log's actor_kind CHECK",
+		Subject: "the two audit_log enum CHECKs",
 	}
 }
 
@@ -164,14 +228,18 @@ func SchemaEnumBlock() string {
 		"  // enum are generated from one Go catalogue. Adding a value here by hand is drift that",
 		"  // TestAuditKinds_CheckMatchesCatalogue fails on.",
 		`  check "audit_log_actor_kind_enum" {`,
-		fmt.Sprintf(`    expr = %q`, CheckExpr()),
+		fmt.Sprintf(`    expr = %q`, ActorKindCheckExpr()),
+		"  }",
+		"",
+		`  check "audit_log_outcome_enum" {`,
+		fmt.Sprintf(`    expr = %q`, OutcomeCheckExpr()),
 		"  }",
 		schemaEnumEnd,
 	}, "\n")
 }
 
 // RenderSchemaHCL returns src with this catalogue's generated region replaced by SchemaEnumBlock(),
-// and is one of the two rewrites `make gen` composes before writing db/schema.hcl back.
+// and is one of the three rewrites `make gen` composes before writing db/schema.hcl back.
 //
 // Idempotent, and it touches ONLY this catalogue's region: rendering an already-current file returns
 // it unchanged, which is what lets the drift test be "generating again changes nothing" and lets this

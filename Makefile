@@ -250,7 +250,7 @@ test-property:
 # several packages and one word, and the assertion would then be wrong in the safe-looking direction.
 COVERAGE_FLOOR          := 95
 COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
-                           ./internal/schemaenum ./internal/strategy
+                           ./internal/account/kinds ./internal/schemaenum ./internal/strategy
 test-coverage-floor:
 	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
@@ -361,11 +361,12 @@ labels-sync:
 #
 # `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
 #
-# db/schema.hcl is in the list even though it is hand-authored schema truth, because TWO REGIONS of
-# it are not: scripts/gen-enums.sh rewrites the ledger_batch enum CHECKs from internal/ledger/kinds
-# and audit_log's actor_kind CHECK from internal/audit/kinds, each between its own GENERATED
-# markers. Listing the file is what makes a hand-edit of either region fail here with "run make gen"
-# instead of surviving until the CHECK and the Go catalogue disagree in production.
+# db/schema.hcl is in the list even though it is hand-authored schema truth, because THREE REGIONS of
+# it are not: scripts/gen-enums.sh rewrites the ledger_batch enum CHECKs from internal/ledger/kinds,
+# audit_log's actor_kind and outcome CHECKs from internal/audit/kinds, and account's kind and
+# system_key CHECKs from internal/account/kinds, each between its own GENERATED markers. Listing the
+# file is what makes a hand-edit of any region fail here with "run make gen" instead of surviving
+# until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
                    db/schema.hcl
 #
