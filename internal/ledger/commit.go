@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
@@ -76,22 +77,16 @@ const (
 	metaAuditHead        = "audit_head"
 )
 
-// ledger_batch.kind and ledger_batch.source are NOT restated here. They live in
-// internal/ledger/kinds — the catalogue db/schema.hcl's CHECK is generated from (canonical §5) — and
-// validate below consults it through kinds.IsBatchKind and kinds.IsBatchSource. A second list in
-// this file was exactly the drift the catalogue removes: adding a source in one place and not the
-// other means either the database rejects a legal value or this function accepts an illegal one.
-
-// validActorKinds is audit_log.actor_kind's CHECK enum, restated in Go so a bad value fails with the
-// field name rather than as a constraint violation from inside SQLite.
+// NO ENUM VOCABULARY IS RESTATED IN THIS FILE. ledger_batch.kind and ledger_batch.source live in
+// internal/ledger/kinds, audit_log.actor_kind lives in internal/audit/kinds, and both are the
+// catalogues db/schema.hcl's CHECKs are generated from (canonical §5). validate below consults them
+// through kinds.IsBatchKind, kinds.IsBatchSource and auditkinds.IsActorKind.
 //
-// It is a SEPARATE vocabulary from the ledger enums — a different table, a different CHECK — and it
-// has no generated catalogue yet. Giving it one is the same change as this file's ledger half and is
-// not folded in here, because audit_log's schema is not what the ledger enum finding was about.
-var validActorKinds = map[string]bool{
-	"user": true, "service_account": true, "system": true,
-	"boot": true, "import": true, "anonymous": true,
-}
+// A second list here was exactly the drift the catalogues remove, and it is worth naming both
+// directions because they fail differently: a value added to the CHECK alone makes this function
+// refuse a legal value with ErrInvalidRequest, and a value added to the list alone waves through a
+// value SQLite rejects from inside the transaction — after the batch, its entries and its snapshots
+// have been written and must be rolled back. `validSources` went in #29 and `validActorKinds` in #40.
 
 // TxRunner is the transaction seam Commit writes through. *store.Store satisfies it as declared.
 //
@@ -109,12 +104,14 @@ type TxRunner interface {
 // Actor is who is committing, for the audit row.
 //
 // UserID and TokenID are nullable TEXT with no foreign key: app_user and api_token are Phase 2
-// tables. A Phase 0 caller leaves both nil and sets Kind to "system", which is the truth — there is
-// no authentication yet, and recording an invented user id in the one table whose entire value is
-// that it is not invented would be the worst possible place to start.
+// tables. A Phase 0 caller leaves both nil and sets Kind to auditkinds.ActorSystem, which is the
+// truth — there is no authentication yet, and recording an invented user id in the one table whose
+// entire value is that it is not invented would be the worst possible place to start.
 type Actor struct {
-	// Kind is audit_log.actor_kind: 'user' | 'service_account' | 'system' | 'boot' | 'import' |
-	// 'anonymous'. Required.
+	// Kind is audit_log.actor_kind. Required, and named through internal/audit/kinds
+	// (auditkinds.ActorSystem, not "system") — that package is the catalogue the column's CHECK is
+	// generated from, so a constant is a compile error when it is wrong where a literal is a runtime
+	// one.
 	Kind string
 	// Label is the denormalised display name, kept so the row survives the actor's deletion.
 	Label string
@@ -766,10 +763,9 @@ func validate(req CommitRequest) error {
 			req.Source, strings.Join(kinds.BatchSources(), ", "), ErrInvalidRequest)
 	}
 
-	if !validActorKinds[req.Actor.Kind] {
-		return fmt.Errorf(
-			"actor kind %q is not one of user, service_account, system, boot, import, anonymous: %w",
-			req.Actor.Kind, ErrInvalidRequest)
+	if !auditkinds.IsActorKind(req.Actor.Kind) {
+		return fmt.Errorf("actor kind %q is not one of %s: %w",
+			req.Actor.Kind, strings.Join(auditkinds.ActorKinds(), ", "), ErrInvalidRequest)
 	}
 
 	if req.Proposal.Kind == "" {

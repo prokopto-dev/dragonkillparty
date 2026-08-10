@@ -172,6 +172,11 @@ struct tag. `TestLedgerKinds_OpenAPIEnums_MatchCatalogue` catches a hand-written
 named for a batch, and a partial list anywhere that carries a distinctive value — but a hand-written
 enum is drift whether or not that test happens to see it.
 
+`audit_log.actor_kind` is the same, from `internal/audit/kinds`: the first audit DTO derives its
+schema from `auditkinds.ActorKinds()`. It has no OpenAPI drift test of its own — there is no audit
+endpoint yet, so there is nothing to walk — which makes the rule the only thing standing between the
+catalogue and a hand-typed list.
+
 Codes you will reach for most: `validation_failed` (422, populate `errors[]` with
 `location`/`code`/`message`/`suggestions`), `not_found`, `permission_denied`, `insufficient_scope`
 (always name `meta.required_scopes`), `precondition_required` (428), `precondition_failed` (412,

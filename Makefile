@@ -229,10 +229,16 @@ test-property:
 	fi; \
 	printf '  \033[32m%s properties\033[0m at %s checks each\n' "$$n" "$${DKP_PROPERTY_CHECKS:-200}"
 
-## test-coverage-floor: fail if internal/ledger or internal/strategy is below 95% covered
-# A JOB, not a report (Phase 0 PR 10's acceptance criterion). The two packages this covers are the
-# ones where a plausible-looking wrong change reallocates points across the whole guild, and an
-# uncovered branch there is a branch nobody has ever watched execute.
+## test-coverage-floor: fail if the ledger, strategy or enum-catalogue packages fall below 95% covered
+# A JOB, not a report (Phase 0 PR 10's acceptance criterion). The packages this covers are the ones
+# where a plausible-looking wrong change reallocates points across the whole guild, and an uncovered
+# branch there is a branch nobody has ever watched execute.
+#
+# THE ENUM CATALOGUES ARE HERE FOR THE SAME REASON, one step removed: a branch of the region rewrite
+# nobody executes is a `make gen` that silently writes the wrong CHECK, and the CHECK is what stops
+# the database accepting a kind no code knows how to read. internal/schemaenum joined the list when
+# that rewrite moved out of internal/ledger/kinds — otherwise the extraction would have quietly taken
+# the logic out from under a floor it had been sitting behind.
 #
 # It is a ONE-WAY RATCHET in intent and a fixed floor in mechanism: raise COVERAGE_FLOOR when the
 # real number has been comfortably above it for a while, never lower it to land a change.
@@ -243,7 +249,8 @@ test-property:
 # word count of the list below, so keep it as explicit package paths — a `...` pattern expands to
 # several packages and one word, and the assertion would then be wrong in the safe-looking direction.
 COVERAGE_FLOOR          := 95
-COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/strategy
+COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
+                           ./internal/schemaenum ./internal/strategy
 test-coverage-floor:
 	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
@@ -339,10 +346,11 @@ labels-sync:
 #
 # `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
 #
-# db/schema.hcl is in the list even though it is hand-authored schema truth, because ONE REGION of
-# it is not: scripts/gen-enums.sh rewrites the ledger enum CHECKs between the GENERATED markers from
-# internal/ledger/kinds. Listing the file is what makes a hand-edit of that region fail here with
-# "run make gen" instead of surviving until the CHECK and the Go catalogue disagree in production.
+# db/schema.hcl is in the list even though it is hand-authored schema truth, because TWO REGIONS of
+# it are not: scripts/gen-enums.sh rewrites the ledger_batch enum CHECKs from internal/ledger/kinds
+# and audit_log's actor_kind CHECK from internal/audit/kinds, each between its own GENERATED
+# markers. Listing the file is what makes a hand-edit of either region fail here with "run make gen"
+# instead of surviving until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
                    db/schema.hcl
 #
