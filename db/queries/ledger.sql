@@ -137,3 +137,16 @@ INSERT INTO ledger_entry (
 SELECT id, seq, entry_count, net_amount_cp, prev_hash, hash
 FROM ledger_batch
 WHERE pool_id = ? AND idempotency_key = ?;
+
+-- GetLedgerBatch reads one batch by id. It backs the reversal-linkage check: before a reversal is
+-- written, the commit path loads the batch it claims to reverse and requires it to be in the SAME
+-- POOL, because balances are per-pool and a cross-pool reversal undoes nothing while still marking
+-- its target reversed.
+--
+-- The database cannot answer this on its own, which is why the read exists. The self-FK proves the
+-- target EXISTS and ux_batch_reverses proves it is reversed at most once; neither can express "and
+-- it is in this pool", and neither can express "only a batch of kind 'reversal' may carry this
+-- pointer at all". Both of those are checked in Go, inside the transaction, against this row.
+
+-- name: GetLedgerBatch :one
+SELECT id, pool_id, seq, kind FROM ledger_batch WHERE id = ?;

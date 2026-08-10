@@ -146,6 +146,12 @@ func checkUniversal(
 			ic.seq, ic.poolID, ic.headSeq)
 	}
 
+	// ReversalLinkage. Checked before the account lookups because it is one indexed read and they
+	// are up to forty.
+	if err := checkReversalLinkage(ctx, ic, p); err != nil {
+		return nil, err
+	}
+
 	// EntriesReferenceLiveAccounts. The foreign key would also reject an unknown account, but as a
 	// constraint violation naming a column rather than a rule naming an account — and the FK cannot
 	// speak at all about an account that exists but should not receive entries, which is where this
@@ -173,11 +179,102 @@ func checkUniversal(
 // accountKindSystem is account.kind's value for the four ledger-addressable non-human accounts.
 const accountKindSystem = "system"
 
+// checkReversalLinkage requires that reverses_batch_id is set if and only if this is a reversal, and
+// that the batch it names lives in the same pool.
+//
+// NEITHER PROPERTY IS EXPRESSIBLE IN THE SCHEMA, which is why they are here. The self-FK proves the
+// target exists; ux_batch_reverses proves a batch is reversed at most once. Nothing in the database
+// can say "only a batch of kind 'reversal' may carry this pointer", and nothing can say "and the
+// target must be in this pool" — so without this check the database happily accepts both mistakes.
+//
+// The damage from each is PERMANENT, which is what makes this worth a read inside every commit:
+//
+//   - An ordinary batch carrying the pointer marks its target reversed, because "is this batch
+//     reversed?" is a query rather than a column (§9.2). The target renders struck through, and —
+//     worse — the unique index slot is now consumed, so the REAL reversal can never be written. In
+//     an append-only table there is no way to take that back.
+//   - A cross-pool reversal undoes nothing, because a balance is a sum within one pool, while still
+//     marking the other pool's batch reversed.
+//
+// A reversal of a reversal is legal and stays legal: `.claude/rules/ledger-and-strategy.md` says it
+// is just another reversal, so the target's own kind is not constrained.
+func checkReversalLinkage(ctx context.Context, ic invariantCtx, p strategy.BatchProposal) error {
+	isReversal := p.Kind == strategy.KindReversal
+
+	switch {
+	case isReversal && p.ReversesBatchID == nil:
+		return violation("ReversalLinkage",
+			"batch kind is %q but it names no batch as reversed; a reversal that points at nothing "+
+				"is an ordinary batch wearing the word", strategy.KindReversal)
+
+	case !isReversal && p.ReversesBatchID != nil:
+		return violation("ReversalLinkage",
+			"a batch of kind %q names batch %s as reversed; only a reversal may carry that pointer, "+
+				"and setting it here would both strike through %s and consume the unique slot its "+
+				"real reversal needs", p.Kind, *p.ReversesBatchID, *p.ReversesBatchID)
+
+	case !isReversal:
+		return nil
+	}
+
+	target, err := ic.q.GetLedgerBatch(ctx, p.ReversesBatchID.String())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return violation("ReversalLinkage",
+				"batch %s does not exist, so there is nothing to reverse", *p.ReversesBatchID)
+		}
+
+		return fmt.Errorf("load batch %s to reverse: %w", *p.ReversesBatchID, err)
+	}
+
+	if core.ULID(target.PoolID) != ic.poolID {
+		return violation("ReversalLinkage",
+			"batch %s belongs to pool %s, not %s; a balance is a sum within one pool, so a "+
+				"cross-pool reversal would undo nothing while still marking its target reversed",
+			*p.ReversesBatchID, target.PoolID, ic.poolID)
+	}
+
+	return nil
+}
+
+// touchesBalanceKind reports whether any entry in the proposal moves the given balance kind.
+func touchesBalanceKind(p strategy.BatchProposal, kind string) bool {
+	for _, e := range p.Entries {
+		if e.BalanceKind == kind {
+			return true
+		}
+	}
+
+	return false
+}
+
 // checkDeclared runs one declared invariant, or refuses because the engine cannot.
 func checkDeclared(
 	ctx context.Context, ic invariantCtx, p strategy.BatchProposal,
 	inv strategy.Invariant, kinds map[core.ULID]string,
 ) error {
+	// A SCOPE THAT MATCHES NOTHING IS A FAILURE, NOT A PASS, and this guard is why every rule below
+	// can assume its aggregate is non-empty.
+	//
+	// Each scoped rule filters the batch's entries down to one balance kind. When that filter
+	// matched nothing the aggregate was empty, the loop over it ran zero times, and the rule
+	// returned success — so a planner declaring `dkp` while emitting `dpk` satisfied SumZero without
+	// a single entry being summed, and committed a non-zero-sum batch. Every review of that strategy
+	// would read the declaration and believe it was constrained. Found in review of PR 10a.
+	//
+	// The trade-off, stated so the next person does not have to rediscover it: a strategy whose
+	// batches only SOMETIMES touch a kind must now declare its invariants conditionally rather than
+	// returning one fixed set. That is a real cost and it falls on multi-kind strategies (EPGP's
+	// EP/GP pair is the case). It is the right side to err on — a declared rule that quietly checks
+	// nothing is worse than a rejected batch, because the rejection is visible and the silence is
+	// not — but a strategy that hits it should change its declaration, not this guard.
+	if inv.BalanceKind != "" && !touchesBalanceKind(p, inv.BalanceKind) {
+		return violation(string(inv.Kind),
+			"the invariant is scoped to balance kind %q, which no entry in this batch touches, so it "+
+				"would check nothing. Declare the kind the batch actually moves, or declare the "+
+				"invariant only for the batches that move it.", inv.BalanceKind)
+	}
+
 	switch inv.Kind {
 	case strategy.InvariantSumZero:
 		return checkSumsToZero(p, inv, "SumZero",

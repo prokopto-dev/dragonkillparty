@@ -134,6 +134,39 @@ func (q *Queries) GetBatchByIdempotencyKey(ctx context.Context, arg GetBatchById
 	return i, err
 }
 
+const getLedgerBatch = `-- name: GetLedgerBatch :one
+
+SELECT id, pool_id, seq, kind FROM ledger_batch WHERE id = ?
+`
+
+type GetLedgerBatchRow struct {
+	ID     string
+	PoolID string
+	Seq    int64
+	Kind   string
+}
+
+// GetLedgerBatch reads one batch by id. It backs the reversal-linkage check: before a reversal is
+// written, the commit path loads the batch it claims to reverse and requires it to be in the SAME
+// POOL, because balances are per-pool and a cross-pool reversal undoes nothing while still marking
+// its target reversed.
+//
+// The database cannot answer this on its own, which is why the read exists. The self-FK proves the
+// target EXISTS and ux_batch_reverses proves it is reversed at most once; neither can express "and
+// it is in this pool", and neither can express "only a batch of kind 'reversal' may carry this
+// pointer at all". Both of those are checked in Go, inside the transaction, against this row.
+func (q *Queries) GetLedgerBatch(ctx context.Context, id string) (GetLedgerBatchRow, error) {
+	row := q.db.QueryRowContext(ctx, getLedgerBatch, id)
+	var i GetLedgerBatchRow
+	err := row.Scan(
+		&i.ID,
+		&i.PoolID,
+		&i.Seq,
+		&i.Kind,
+	)
+	return i, err
+}
+
 const getSystemAccount = `-- name: GetSystemAccount :one
 
 SELECT id, kind, person_id, system_key, label, created_at, updated_at

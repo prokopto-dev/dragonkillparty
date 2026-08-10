@@ -71,6 +71,16 @@ type Querier interface {
 	// that many trailing characters off the generated query string. The failure is silent at generate
 	// time and shows up as a syntax error only when the query runs.
 	GetGuild(ctx context.Context) (Guild, error)
+	// GetLedgerBatch reads one batch by id. It backs the reversal-linkage check: before a reversal is
+	// written, the commit path loads the batch it claims to reverse and requires it to be in the SAME
+	// POOL, because balances are per-pool and a cross-pool reversal undoes nothing while still marking
+	// its target reversed.
+	//
+	// The database cannot answer this on its own, which is why the read exists. The self-FK proves the
+	// target EXISTS and ux_batch_reverses proves it is reversed at most once; neither can express "and
+	// it is in this pool", and neither can express "only a batch of kind 'reversal' may carry this
+	// pointer at all". Both of those are checked in Go, inside the transaction, against this row.
+	GetLedgerBatch(ctx context.Context, id string) (GetLedgerBatchRow, error)
 	// Instance state in dkp_meta. Shapes follow db/RECIPES.md.
 	//
 	// Every statement that reaches SQLite in this project is generated from a file like this one.

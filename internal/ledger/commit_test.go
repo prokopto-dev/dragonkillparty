@@ -468,6 +468,215 @@ func TestCommit_InvariantViolations_AreRejectedByName(t *testing.T) {
 	}
 }
 
+// TestCommit_InvariantScopedToAnUntouchedKind_IsRejected is the regression test for a silent
+// no-op, found in review of this PR.
+//
+// A scoped invariant filters the batch's entries down to one balance kind. When that filter matched
+// NOTHING, the aggregate was empty, the loop over it ran zero times, and the invariant returned
+// success — so a planner that declared `dkp` while emitting `dpk` got a batch that satisfied
+// SumZero without any entry ever being summed. The batch then committed non-zero-sum, which is the
+// single failure the whole zero-sum model exists to prevent, and every review of that strategy would
+// read the declaration and believe it was constrained.
+//
+// The batches below are deliberately ILLEGAL under the invariant they declare — they do not sum to
+// zero, and the account would go below its floor — so if the scope check ever regresses to a silent
+// pass, these commit and the test goes red on the count rather than on the error.
+func TestCommit_InvariantScopedToAnUntouchedKind_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	floor := core.Centipoints(0)
+
+	cases := []struct {
+		name string
+		inv  strategy.Invariant
+	}{
+		{"sum zero", strategy.Invariant{Kind: strategy.InvariantSumZero, BalanceKind: "dpk"}},
+		{
+			"largest remainder",
+			strategy.Invariant{Kind: strategy.InvariantLargestRemainderSumsToDebit, BalanceKind: "dpk"},
+		},
+		{
+			"non negative",
+			strategy.Invariant{Kind: strategy.InvariantNonNegative, BalanceKind: "dpk", FloorCp: &floor},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, s := newService(t)
+			accounts := seedPersonAccounts(t, s, 1)
+
+			// Every entry is 'dkp'; the invariant is scoped to the typo'd 'dpk'. The batch does not
+			// sum to zero and drives the account negative, so nothing about it is legal.
+			proposal := strategy.BatchProposal{
+				Kind:            "award",
+				StrategyID:      "zero_sum",
+				StrategyVersion: "0.0.0",
+				EffectiveAt:     core.FromTime(fixedNow),
+				Entries: []strategy.EntryProposal{
+					{AccountID: accounts[0], BalanceKind: "dkp", AmountCp: -500},
+				},
+				Invariants: []strategy.Invariant{tc.inv},
+			}
+
+			_, err := svc.Commit(t.Context(), request(proposal))
+			require.ErrorIs(t, err, ledger.ErrInvariantViolated,
+				"an invariant scoped to a balance kind the batch never touches must FAIL CLOSED; "+
+					"treating the empty selection as success lets a typo'd scope commit anything")
+			require.ErrorContains(t, err, "dpk")
+
+			require.Equal(t, int64(0), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
+		})
+	}
+}
+
+// TestCommit_ReversalLinkage_IsValidated is the regression test for unvalidated reversal metadata,
+// found in review of this PR.
+//
+// `reverses_batch_id` was copied out of the proposal verbatim. The self-FK proves the target EXISTS
+// and `ux_batch_reverses` proves it is reversed at most once, but neither says anything about the
+// two properties that actually matter, and the damage from each is permanent:
+//
+//   - AN ORDINARY BATCH POINTING AT ANOTHER. "Is this batch reversed?" is a query, not a column
+//     (`EXISTS (SELECT 1 FROM ledger_batch WHERE reverses_batch_id = ?)`), so an award carrying the
+//     pointer makes its target render struck through — AND consumes the unique-index slot, so the
+//     real reversal can never be written. The history is now wrong and uncorrectable, in a table
+//     where nothing can be updated to fix it.
+//   - A CROSS-POOL REVERSAL. Balances are per-pool, so a reversal in pool A undoes nothing in pool
+//     B while still marking B's batch reversed.
+//
+// The fourth case is the positive control: a well-formed reversal must still commit, or all of the
+// above would be satisfied by a check that rejected every reversal.
+func TestCommit_ReversalLinkage_IsValidated(t *testing.T) {
+	t.Parallel()
+
+	// A second pool, so the cross-pool case has somewhere to point. The ledger ships one pool; a
+	// test needs two and inserts the second directly, which is the shape a later multi-pool PR will
+	// replace with a real creation path.
+	const otherPoolID = "0000000000000000000POOLB00"
+
+	seedOtherPool := func(tb testing.TB, s *store.Store) {
+		tb.Helper()
+
+		s.ExecForTest(tb,
+			`INSERT INTO pool (id, name, name_norm, strategy_id, strategy_version, balance_kinds,
+			                   created_at, updated_at)
+			 VALUES (?, 'Second', 'second', 'zero_sum', '0.0.0', 'dkp', 1704067200000000, 1704067200000000)`,
+			otherPoolID)
+	}
+
+	cases := []struct {
+		name      string
+		wantErr   bool
+		wantMatch string
+		// build returns the request to commit second, given the first batch's id.
+		build func(t *testing.T, s *store.Store, first core.ULID, accounts []core.ULID) ledger.CommitRequest
+	}{
+		{
+			name:      "an award may not name a batch as reversed",
+			wantErr:   true,
+			wantMatch: "only a reversal",
+			build: func(_ *testing.T, _ *store.Store, first core.ULID, accounts []core.ULID) ledger.CommitRequest {
+				p := award(ledger.AccountIDGuildBank,
+					[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 10}})
+				p.ReversesBatchID = &first
+
+				return request(p)
+			},
+		},
+		{
+			name:      "a reversal must name the batch it reverses",
+			wantErr:   true,
+			wantMatch: "names no batch",
+			build: func(_ *testing.T, _ *store.Store, _ core.ULID, accounts []core.ULID) ledger.CommitRequest {
+				p := award(ledger.AccountIDGuildBank,
+					[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 10}})
+				p.Kind = strategy.KindReversal
+
+				return request(p)
+			},
+		},
+		{
+			name:      "a reversal may not cross pools",
+			wantErr:   true,
+			wantMatch: "belongs to pool",
+			build: func(t *testing.T, s *store.Store, _ core.ULID, accounts []core.ULID) ledger.CommitRequest {
+				seedOtherPool(t, s)
+
+				// A batch in the OTHER pool, seeded raw so it exists to be pointed at.
+				const strayID = "0000000000000000000STRAY01"
+
+				s.ExecForTest(t,
+					`INSERT INTO ledger_batch
+					   (id, pool_id, seq, kind, strategy_id, strategy_version, source,
+					    actor_is_beneficiary, effective_at, recorded_at, effective_day,
+					    entry_count, net_amount_cp, hash)
+					 VALUES (?, ?, 1, 'award', 'zero_sum', '0.0.0', 'system', 0,
+					         1704067200000000, 1704067200000000, '2024-01-01', 1, 0, X'00')`,
+					strayID, otherPoolID)
+
+				stray := core.ULID(strayID)
+
+				p := award(ledger.AccountIDGuildBank,
+					[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 10}})
+				p.Kind = strategy.KindReversal
+				p.ReversesBatchID = &stray
+
+				return request(p)
+			},
+		},
+		{
+			name:    "a well-formed reversal still commits",
+			wantErr: false,
+			build: func(_ *testing.T, _ *store.Store, first core.ULID, accounts []core.ULID) ledger.CommitRequest {
+				p := award(ledger.AccountIDGuildBank,
+					[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 10}})
+				p.Kind = strategy.KindReversal
+				p.ReversesBatchID = &first
+
+				return request(p)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc, s := newService(t)
+			accounts := seedPersonAccounts(t, s, 1)
+
+			first, err := svc.Commit(t.Context(), request(award(ledger.AccountIDGuildBank,
+				[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 100}})))
+			require.NoError(t, err)
+
+			_, err = svc.Commit(t.Context(), tc.build(t, s, first.BatchID, accounts))
+
+			// Scoped to the pool under test: the cross-pool case seeds a batch in the OTHER pool on
+			// purpose, and an unscoped count would include it and mean something different per case.
+			const countInPool = `SELECT count(*) FROM ledger_batch WHERE pool_id = ?`
+
+			if !tc.wantErr {
+				require.NoError(t, err, "a well-formed reversal must still commit")
+				require.Equal(t, int64(2),
+					countRow(t, s, countInPool, ledger.DefaultPoolID.String()))
+
+				return
+			}
+
+			require.ErrorIs(t, err, ledger.ErrInvariantViolated)
+			require.ErrorContains(t, err, tc.wantMatch)
+
+			require.Equal(t, int64(1),
+				countRow(t, s, countInPool, ledger.DefaultPoolID.String()),
+				"the malformed batch must not have been written; reverses_batch_id is unique, so a "+
+					"bad pointer permanently consumes the slot the real correction needs")
+		})
+	}
+}
+
 // TestCommit_NonNegativeFloor_BlocksAnOverdraft is the invariant's positive and negative control in
 // one: the same floor accepts a spend that stays above it and rejects one that does not.
 //

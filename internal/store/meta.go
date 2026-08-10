@@ -49,6 +49,7 @@ type Queries interface {
 	InsertLedgerBatch(ctx context.Context, arg sqlitegen.InsertLedgerBatchParams) error
 	InsertLedgerEntry(ctx context.Context, arg sqlitegen.InsertLedgerEntryParams) error
 	GetBatchByIdempotencyKey(ctx context.Context, arg sqlitegen.GetBatchByIdempotencyKeyParams) (sqlitegen.GetBatchByIdempotencyKeyRow, error)
+	GetLedgerBatch(ctx context.Context, id string) (sqlitegen.GetLedgerBatchRow, error)
 	NextAuditSeq(ctx context.Context) (int64, error)
 	InsertAuditLog(ctx context.Context, arg sqlitegen.InsertAuditLogParams) error
 	InsertOutboxEvent(ctx context.Context, arg sqlitegen.InsertOutboxEventParams) (int64, error)
