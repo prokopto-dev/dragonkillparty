@@ -335,15 +335,22 @@ verify-commands:
 # "run make gen" instead of surviving until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
                    db/schema.hcl
+#
+# CHAINED WITH `&&`, NOT `;`. A recipe is one shell invocation and make judges it by the LAST
+# command's status, so a `;`-separated version reported success whenever `make gen` failed without
+# writing anything: the two digests were equal because nothing had run, and the final printf exited
+# 0. A generator that dies on a missing tool — which every gen script does deliberately, rather than
+# soft-skipping — is exactly that case, and `codegen-drift` is a required job that would have gone
+# green having generated nothing. TestVerifyGenerated_FailingGenerator_FailsTheTarget holds this.
 verify-generated:
-	@before=$$($(MAKE) --no-print-directory generated-digest); \
-	$(MAKE) --no-print-directory gen; \
-	after=$$($(MAKE) --no-print-directory generated-digest); \
+	@before=$$($(MAKE) --no-print-directory generated-digest) && \
+	$(MAKE) --no-print-directory gen && \
+	after=$$($(MAKE) --no-print-directory generated-digest) && \
 	if [ "$$before" != "$$after" ]; then \
 		printf '\033[31m  generated files are stale — run '"'"'make gen'"'"' and commit\033[0m\n'; \
 		git --no-pager diff --stat -- $(GENERATED_PATHS) 2>/dev/null || true; \
 		exit 1; \
-	fi; \
+	fi && \
 	printf '  \033[32mgenerated files match their sources\033[0m\n'
 
 # A stable digest of every generated file's path and contents. Sorted, so it does not depend on

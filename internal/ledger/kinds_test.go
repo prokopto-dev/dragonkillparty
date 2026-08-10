@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
@@ -177,8 +178,54 @@ func TestLedgerKinds_MissingMarkers_IsAnError(t *testing.T) {
 	}
 }
 
-// TestLedgerKinds_MigrationCheckMatchesCatalogue asserts the copy that actually reaches the
-// database — the CHECK the migration set creates — matches the catalogue.
+// TestLedgerKinds_AppliedSchema_MatchesCatalogue is the authoritative check on the copy that reaches
+// the database: the schema a FRESH INSTALL actually ends up with, read back from sqlite_schema after
+// every migration has been applied.
+//
+// It exists because reading the migration TEXT cannot answer this question. A later migration that
+// rebuilds ledger_batch — SQLite's 12-step rebuild, which this PR's own doc comments warn a CHECK
+// change triggers — and forgets to re-create the constraint leaves 000003_ledger.sql's text intact
+// and the running database without the enum. Only the applied schema knows. The sibling test below
+// still reads the migration text, because naming the file that drifted is a better error message,
+// but this is the one that is sound on its own.
+//
+// store.NewDB applies the embedded migration set to a real SQLite database in t.TempDir(), which is
+// what every other test in this package writes against — no fake, per .claude/rules/go-idioms.md.
+func TestLedgerKinds_AppliedSchema_MatchesCatalogue(t *testing.T) {
+	t.Parallel()
+
+	s := store.NewDB(t)
+
+	var ddl string
+
+	require.NoError(t,
+		s.QueryRowForTest(t,
+			`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'ledger_batch'`).Scan(&ddl),
+		"read the applied ledger_batch DDL")
+
+	tests := []struct {
+		constraint string
+		column     string
+		values     []string
+	}{
+		{constraint: "ledger_batch_kind_enum", column: "kind", values: ledger.BatchKinds()},
+		{constraint: "ledger_batch_source_enum", column: "source", values: ledger.BatchSources()},
+	}
+
+	for _, tt := range tests {
+		want := fmt.Sprintf("CONSTRAINT %q CHECK (%s)", tt.constraint, ledger.CheckExpr(tt.column, tt.values))
+
+		require.Contains(t, ddl, want,
+			"the migrated database's ledger_batch does not carry the catalogue's %s CHECK — either a "+
+				"migration is missing after a catalogue change, or a later migration rebuilt the table "+
+				"and dropped the constraint. Applied DDL:\n%s", tt.constraint, ddl)
+	}
+}
+
+// TestLedgerKinds_MigrationCheckMatchesCatalogue reads the migration TEXT, and names the file that
+// drifted. It is a better error message than the applied-schema test above and a WEAKER assertion:
+// it cannot see a later migration that rebuilt the table without re-creating the constraint. Keep
+// both; the one above is the one that is sound.
 //
 // THE LAST OCCURRENCE, NOT EVERY ONE. A shipped migration is frozen (.claude/rules/migrations.md), so
 // when a kind is added the migration that created the original CHECK keeps the original list forever
@@ -259,6 +306,9 @@ func TestLedgerKinds_StrategyReversalKind_IsInCatalogue(t *testing.T) {
 
 	require.Contains(t, ledger.BatchKinds(), strategy.KindReversal,
 		"strategy.KindReversal is stamped on every reversal batch and must be a legal ledger_batch.kind")
+
+	require.Equal(t, ledger.KindReversal, strategy.KindReversal,
+		"the two constants name the same ledger_batch.kind and must not drift apart")
 }
 
 // TestBatchKinds_Values_AreCanonicalEnumValues checks both catalogues against canonical §5's rule for

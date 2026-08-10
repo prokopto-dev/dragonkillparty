@@ -37,47 +37,81 @@ import (
 // every gate downstream reports success.
 var ErrSchemaMarkersMissing = errors.New("db/schema.hcl generated-region markers not found")
 
+// The ledger_batch.kind vocabulary, as the Go const block canonical §5 requires.
+//
+// Named constants rather than bare literals for two reasons. Canonical §5 says "the enum catalogue is
+// a Go const block", and a consumer needs a SYMBOL to reference: `Kind: KindAward` is a compile
+// error when it is misspelled, where `Kind: "awrad"` is valid Go that only IsBatchKind catches, and
+// only at runtime.
+const (
+	KindAttendance    = "attendance"      // a raid tick's award
+	KindAward         = "award"           // an item award and its zero-sum split
+	KindAdjustment    = "adjustment"      // an officer's manual correction of a balance
+	KindDecay         = "decay"           // a posted decay run — decay is posted, never computed
+	KindCap           = "cap"             // a cap strategy trimming a balance to its ceiling
+	KindStartPoints   = "start_points"    // opening points for a new raider
+	KindZeroSumCredit = "zero_sum_credit" // a split's credit half, posted apart from its debit
+	KindReversal      = "reversal"        // undoes a prior batch; reverses_batch_id is set
+	KindCorrection    = "correction"      // the net-delta batch a replay emits instead of rewriting
+	KindReAttribution = "re_attribution"  // moves attribution between characters, never a balance
+	KindMigration     = "migration"       // written by a schema or data migration
+	KindImport        = "import"          // written by the EQdkp importer's commit phase
+	KindSeed          = "seed"            // written by `make seed` and the fixture seeder
+	KindWriteOff      = "write_off"       // a rotted item's debit, routed to the write_off account
+)
+
+// The ledger_batch.source vocabulary. The source is WHERE the write came from, not who authorised
+// it — the actor is actor_user_id and actor_token_id. A bot posting through a PAT is SourceAPI
+// whether or not a human triggered it.
+const (
+	SourceWeb     = "web"     // the SPA, on a session
+	SourceAPI     = "api"     // the public API, on a PAT or a service-account token
+	SourceDiscord = "discord" // the Discord integration
+	SourceParser  = "parser"  // an ingested P99 log artefact
+	SourceImport  = "import"  // the EQdkp importer
+	SourceSystem  = "system"  // the binary itself — jobs, decay cadence, boot-time repair
+)
+
 // BatchKinds returns every legal ledger_batch.kind, in the order the CHECK constraint carries them.
 //
-// A FUNCTION returning a FRESH LITERAL, never a package-level var — .claude/rules/go-idioms.md bans
-// package-level mutable state, and a shared slice is one append in a test away from an intermittent
-// failure under -shuffle=on. internal/authz.Catalogue() is the same shape for the same reason.
+// A FUNCTION returning a FRESH SLICE of the constants above, never a package-level var —
+// .claude/rules/go-idioms.md bans package-level mutable state, and a shared slice is one append in a
+// test away from an intermittent failure under -shuffle=on. internal/authz.Catalogue() is the same
+// shape for the same reason. The const block and the fresh slice are not in tension: the constants
+// are the immutable vocabulary, this is the ordered view of it that renders the CHECK.
 //
 // The order is not semantic (bid.tier is the one enum in the system whose declaration order is a
 // rule, canonical §5) but it is FIXED: CheckExpr renders in this order, so reordering rewrites the
 // CHECK expression, which Atlas sees as a schema change and a migration nobody wanted.
 func BatchKinds() []string {
 	return []string{
-		"attendance",      // a raid tick's award
-		"award",           // an item award and its zero-sum split
-		"adjustment",      // an officer's manual correction of a balance
-		"decay",           // a posted decay run — decay is posted, never computed
-		"cap",             // a cap strategy trimming a balance to its ceiling
-		"start_points",    // opening points for a new raider
-		"zero_sum_credit", // the credit half of a split, when it is posted apart from its debit
-		"reversal",        // undoes a prior batch; reverses_batch_id is set
-		"correction",      // the net-delta batch a replay emits instead of rewriting history
-		"re_attribution",  // moves attribution between characters; never moves a balance
-		"migration",       // written by a schema or data migration
-		"import",          // written by the EQdkp importer's commit phase
-		"seed",            // written by `make seed` and the fixture seeder
-		"write_off",       // a rotted item's debit, routed to the write_off system account
+		KindAttendance,
+		KindAward,
+		KindAdjustment,
+		KindDecay,
+		KindCap,
+		KindStartPoints,
+		KindZeroSumCredit,
+		KindReversal,
+		KindCorrection,
+		KindReAttribution,
+		KindMigration,
+		KindImport,
+		KindSeed,
+		KindWriteOff,
 	}
 }
 
 // BatchSources returns every legal ledger_batch.source, in the order the CHECK constraint carries
-// them. A fresh literal, for the reason BatchKinds is.
-//
-// The source is WHERE the write came from, not who authorised it — the actor is actor_user_id and
-// actor_token_id. A bot posting through a PAT is 'api' whether or not a human triggered it.
+// them. A fresh slice over the constants above, for the reason BatchKinds is.
 func BatchSources() []string {
 	return []string{
-		"web",     // the SPA, on a session
-		"api",     // the public API, on a PAT or a service-account token
-		"discord", // the Discord integration
-		"parser",  // an ingested P99 log artefact
-		"import",  // the EQdkp importer
-		"system",  // the binary itself — jobs, decay cadence, boot-time repair
+		SourceWeb,
+		SourceAPI,
+		SourceDiscord,
+		SourceParser,
+		SourceImport,
+		SourceSystem,
 	}
 }
 
