@@ -131,6 +131,34 @@ Inter at 400 (body) and 500 (headings). Loaded **self-hosted**, not through the 
 `@import` the source sheet uses — the binary serves the SPA offline and a render-blocking third-party
 request contradicts that.
 
+### How it is loaded
+
+Two faces, byte-for-byte upstream Inter 4.1 (SIL OFL 1.1), committed under
+`web/src/assets/fonts/` beside their licence text and a provenance table; `web/src/styles/fonts.css`
+declares the `@font-face` pair at `font-display: swap` and `base.css` imports it before `tokens.css`,
+so `--font-heading` and `--font-body` resolve to real faces rather than to the `system-ui` tail of
+their stacks. Vite content-hashes both files into `web/dist`, `internal/ui` embeds them and serves
+them `immutable` for a year, and the SPA makes **no** request off its own origin for type.
+
+Three things hold that shape, because prose does not:
+
+- `WEB003` in `scripts/repo-gates.sh` fails on any **off-origin URL** under `web/src` or in
+  `web/index.html` — not a list of asset-bearing shapes, because an enumeration is only as complete
+  as whoever wrote it, and `<script src>`, `<img src="//…">` and the quoted `@import "https://…"`
+  each break the offline contract exactly as much as the Google Fonts line this system declines to
+  transcribe. The generated client under `web/src/api/` is the one exemption.
+- `test/repo/web_fonts_test.go` requires every declared face to resolve to a committed file, every
+  committed face to be declared, and the OFL text to be recorded in `NOTICE` and
+  `THIRD_PARTY_NOTICES.txt`. The licence gate cannot: it reads the Go module graph and a font is
+  not a module.
+- Only 400 and 500 are vendored, which makes "do not bolden a heading past 500" below a fact about
+  the shipped bytes rather than a request.
+
+The faces carry Inter's full character set rather than a Latin subset (~225 KB, not ~60 KB): a
+subset would be a binary this repository generated, and the checksums stop meaning anything without
+a reproducible subsetting step. Fonts are assets, so none of it counts against
+`web/bundle-budget.json`, which measures entry JS.
+
 | Element | Size | Notes |
 |---|---|---|
 | `h1` | 42px | all headings: `line-height: 1.12`, `letter-spacing: -0.015em`, weight 500 |
