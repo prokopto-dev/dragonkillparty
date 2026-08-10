@@ -85,6 +85,16 @@ ask() {
 # ---------------------------------------------------------------------------
 lock="$root/db/migrations-sqlite/SHIPPED.lock"
 case "$rel" in
+db/migrations-sqlite/SHIPPED.lock)
+	# The manifest itself. Denied for a different reason than the migrations it lists — it is not
+	# Atlas output, so `make gen` will not restore a hand-edit, and a row silently dropped by hand
+	# un-freezes a migration that has already run on somebody's database.
+	deny "SHIPPED.lock is an append-only record, not a file you edit. Rows are appended by
+the release seal and never rewritten or removed.
+
+  seal it:    make shipped-lock-seal      (in the Release PR)
+  check it:   make lint-repo              (MIG003)"
+	;;
 db/migrations-*/*)
 	if [[ -f "$lock" ]] && awk -v b="$base" '$1 == b { found = 1 } END { exit !found }' "$lock"; then
 		deny "This migration is listed in db/migrations-sqlite/SHIPPED.lock — it shipped in a tagged

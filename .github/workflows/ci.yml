@@ -160,7 +160,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # the test-integrity analyser diffs against the merge base
+          # REQUIRED, not an optimisation. The test-integrity analyser diffs against the merge base,
+          # and so does MIG003: it compares db/migrations-sqlite/SHIPPED.lock with its merge-base
+          # version to prove rows were only appended. A shallow checkout downgrades that to a
+          # printed skip and a green check. TestCI_LintRepoJob_FetchesFullHistory pins this line.
+          fetch-depth: 0
       - name: Architectural grep gates and the licence firewall
         run: make lint-repo
         # Bans, each with a named rule id and a file:line in the failure message:

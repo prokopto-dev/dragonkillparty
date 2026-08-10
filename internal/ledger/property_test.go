@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -352,8 +353,15 @@ func TestProperty_P1_ZeroSumConservationOverBatchSequences(t *testing.T) {
 // "Exactly" is the whole claim. A reversal that is off by a centipoint on one account is a reversal
 // that leaves a permanent, unexplainable discrepancy in a member's statement — and one that nobody
 // finds, because the batch and its reversal both look right individually.
+//
+// The property also asserts the reversal's DECLARED SET over the same random cases: SumZero survives
+// and NonNegative does not, whatever the original declared. An exact inverse the engine would reject
+// is not a repair primitive, and the ledger has no other one — so "the arithmetic is right" and "the
+// batch is committable" are two halves of the same property rather than two tests.
 func TestProperty_P5_ReversalIsAnExactInverse(t *testing.T) {
 	t.Parallel()
+
+	floor := core.Centipoints(0)
 
 	inverts := func(c splitCase) bool {
 		credits, err := ledger.Allocate(c.Total, c.shares(), ledger.AccountIDGuildBank)
@@ -370,8 +378,14 @@ func TestProperty_P5_ReversalIsAnExactInverse(t *testing.T) {
 			})
 		}
 
+		// Declared the way a well-written zero-sum award declares: conserving AND floored, because the
+		// floor is what refuses an overdraft on the spend side.
 		original := strategy.BatchProposal{
 			Kind: "award", StrategyID: "zero_sum", StrategyVersion: "0.0.0", Entries: entries,
+			Invariants: []strategy.Invariant{
+				{Kind: strategy.InvariantSumZero, BalanceKind: "dkp"},
+				{Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor},
+			},
 		}
 
 		reversal, err := original.Negated(core.ULID(padID("BATCH", 1)))
@@ -380,6 +394,20 @@ func TestProperty_P5_ReversalIsAnExactInverse(t *testing.T) {
 		}
 
 		if reversal.Kind != strategy.KindReversal || reversal.ReversesBatchID == nil {
+			return false
+		}
+
+		// Committable as well as exact. A floor inherited onto a reversal does not prevent a debt, it
+		// prevents the correction — and an append-only ledger has no other way to correct anything.
+		if !slices.ContainsFunc(reversal.Invariants, func(inv strategy.Invariant) bool {
+			return inv.Kind == strategy.InvariantSumZero
+		}) {
+			return false
+		}
+
+		if slices.ContainsFunc(reversal.Invariants, func(inv strategy.Invariant) bool {
+			return inv.Kind == strategy.InvariantNonNegative
+		}) {
 			return false
 		}
 

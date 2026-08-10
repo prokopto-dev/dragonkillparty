@@ -76,6 +76,18 @@ jobs:
         # Parses the tag, refuses anything that is not strict SemVer, refuses a tag whose commit is
         # not an ancestor of main (or of a release-1.x branch), and writes the three outputs.
 
+      - name: Verify the shipped-migration manifest
+        run: make release-shipped-lock
+        # db/migrations-sqlite/SHIPPED.lock is the append-only record of which migrations have run on
+        # a user's database. EVERY migration present at this tag ships with it, so the manifest must
+        # already list them all, with hashes that still match.
+        #
+        # It VERIFIES here and does not write: the manifest is sealed in the Release PR with
+        # `make shipped-lock-seal`, because nothing in CI pushes to main and a record written by the
+        # job that consumes it is not a record. An unsealed manifest fails the release in `prepare` —
+        # before any image, binary, attestation or moving tag exists, which is the last moment at
+        # which a hole in the ledger of shipped migrations is still free to fix.
+
   # ---------------------------------------------------------------------------------------------
   # Per-architecture images, all built natively on amd64. No QEMU. No `--platform` emulation.
   # ---------------------------------------------------------------------------------------------

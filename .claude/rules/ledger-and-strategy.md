@@ -92,6 +92,25 @@ kind and you must not assume it.**
 Any strategy whose balance kind is not a plain quantity must override `PlanReversal` and say so in
 its doc comment. `RatioPreserved`-style kinds (EPGP's EP/GP pair) must reverse both legs together.
 
+**A reversal does not inherit `NonNegative`, and it must not.** `BatchProposal.Negated` carries the
+original's declared invariants forward *minus every `NonNegative`*; the conservation rules
+(`SumZero`, `LargestRemainderSumsToDebit`) survive, because a reversal can no more mint a centipoint
+than the original could. The floor is dropped because a floor on a reversal does not prevent a debt,
+it prevents the **correction**:
+
+```
+an officer credits a tick to the wrong raider  ->  Alice +500
+Alice spends it on an item                     ->  Alice 0
+the officer reverses the erroneous tick        ->  Alice -500   <- below a floor of 0
+```
+
+The table is append-only, so that third batch is the only repair primitive there is. Refusing it
+leaves a mistake that is provably wrong and permanently unfixable, which is worse than a visible
+negative balance by every measure that matters. The debt is the correct outcome and it is meant to be
+seen. What a floor legitimately guards is a **spend** — declare it in `PlanAward`, where an overdraft
+is refused before anything is written. A strategy that genuinely wants a floor on a reversal may
+still declare one, but it has to say so.
+
 **Retroactive zero-sum edits compensate, never replay.** Reversing a six-month-old zero-sum award
 means every intermediate balance was arithmetically "wrong", and you cannot fix that without
 rewriting history. Default: one corrective batch at today's `seq`, surfaced in a per-account
