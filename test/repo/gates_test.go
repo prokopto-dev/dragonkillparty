@@ -1062,12 +1062,24 @@ func readPoints(row map[string]any) int64 { return row["pdh_points"].(int64) }
 // gen_class is EQdkp's class table; the column list was copied from their schema.
 `)
 
-	// One violation per remaining gated tree, so a lost loop element cannot hide.
+	// One violation per remaining gated tree, so that dropping ANY SINGLE element from the loop
+	// turns this test red. Three of four trees is not the property this test claims: it leaves the
+	// fourth free to be deleted in silence, which is the precise regression the assertions below
+	// describe.
 	writeRepoFile(t, tree, "web/src/lib/legacy.ts", `export const EXCHANGE_TABLE = "plus_exchange";
 `)
 	writeGo(t, tree, "cmd/dkp/import.go", `package main
 
 const legacyEventTable = "__multidkp2event"
+`)
+
+	// The db/ leg, in the shape a transcription really takes there: a column name copied verbatim
+	// out of EQdkp's schema into DKP's own. db/schema.hcl is the single source of schema truth, so a
+	// name that lands here propagates into the migrations, the generated queries and the wire — and
+	// unlike internal/importer, db/ has no allowlisted file where an EQdkp name is ever legitimate.
+	writeRepoFile(t, tree, "db/schema.hcl", `table "member" {
+  column "gen_class" { type = text }
+}
 `)
 
 	// Allowlisted, and this half is what keeps the importer possible at all: reading a user's
@@ -1095,6 +1107,8 @@ const pointsColumn = "pdh_points"
 		"AGPL001 scans web/ too — has the tree loop lost an element?\n%s", out)
 	require.Contains(t, out, "cmd/dkp/import.go:",
 		"AGPL001 scans cmd/ too — has the tree loop lost an element?\n%s", out)
+	require.Contains(t, out, "db/schema.hcl:",
+		"AGPL001 scans db/ too — has the tree loop lost an element?\n%s", out)
 
 	require.NotContains(t, out, "internal/importer/legacy_names.go",
 		"legacy_names.go is where EQdkp's table names are ALLOWED to be written down; the importer "+
