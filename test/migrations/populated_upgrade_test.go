@@ -97,13 +97,20 @@ func seedHash(label string) []byte {
 // migration is covered from the moment it exists, with nobody remembering to add a field here.
 type tableSnapshot map[string]map[string]any
 
-// ledgerSnapshot is the append-only pair, together.
+// ledgerSnapshot is the append-only pair, plus the two mutable tables they hang off.
+//
+// All four are captured the same way, with SELECT *. What differs is what the comparison DEMANDS of
+// each, and that asymmetry is a decision on the record rather than an accident — see
+// requireTableShapeUnchanged and .claude/rules/migrations.md, "What the populated-upgrade gate
+// compares".
 type ledgerSnapshot struct {
-	batches tableSnapshot
-	entries tableSnapshot
+	batches  tableSnapshot
+	entries  tableSnapshot
+	pools    tableSnapshot
+	accounts tableSnapshot
 }
 
-// snapshotLedger captures every column of every seeded ledger row.
+// snapshotLedger captures every column of every seeded row, in the ledger and in its parents.
 func snapshotLedger(tb testing.TB, handle *sql.DB) ledgerSnapshot {
 	tb.Helper()
 
@@ -112,12 +119,18 @@ func snapshotLedger(tb testing.TB, handle *sql.DB) ledgerSnapshot {
 			`SELECT * FROM ledger_batch WHERE pool_id = ? ORDER BY id`, seedPoolID),
 		entries: snapshotTable(tb, handle,
 			`SELECT * FROM ledger_entry WHERE pool_id = ? ORDER BY id`, seedPoolID),
+		pools: snapshotTable(tb, handle,
+			`SELECT * FROM pool WHERE id = ? ORDER BY id`, seedPoolID),
+		accounts: snapshotTable(tb, handle,
+			`SELECT * FROM account WHERE id IN (?, ?) ORDER BY id`, seedAccountID, guildBankAccountID),
 	}
 
 	// An empty snapshot compares equal to an empty snapshot. Pinning the counts means a migration
 	// that removed every seeded row cannot pass the comparison by leaving nothing to compare.
 	require.Len(tb, snap.batches, 2, "expected the two seeded ledger_batch rows")
 	require.Len(tb, snap.entries, 4, "expected the four seeded ledger_entry rows")
+	require.Len(tb, snap.pools, 1, "expected the seeded pool")
+	require.Len(tb, snap.accounts, 2, "expected the seeded person account and the guild bank account")
 
 	return snap
 }
@@ -177,6 +190,56 @@ func requireLedgerUnchanged(tb testing.TB, before, after ledgerSnapshot, stage s
 
 	requireTableUnchanged(tb, "ledger_batch", before.batches, after.batches, stage)
 	requireTableUnchanged(tb, "ledger_entry", before.entries, after.entries, stage)
+
+	// pool and account get the WEAKER comparison, and the difference is deliberate. See
+	// requireTableShapeUnchanged.
+	requireTableShapeUnchanged(tb, "pool", before.pools, after.pools, stage)
+	requireTableShapeUnchanged(tb, "account", before.accounts, after.accounts, stage)
+}
+
+// requireTableShapeUnchanged is the comparison the ledger's PARENTS get: the rows are still there
+// and still have every column they had, but what is IN those columns is not compared.
+//
+// This is the settled answer to "should pool and account be strict too", and the reasoning is worth
+// stating because the obvious instinct — compare everything, everywhere — produces a test that has
+// to be edited to land correct work, which is a test nobody trusts by the third time.
+//
+//   - VALUES are not compared, because a data backfill on a mutable table is SANCTIONED work.
+//     .claude/rules/migrations.md case 4 names populating name_norm for existing rows as the worked
+//     example, and that is literally a pool row and an account row being rewritten by a migration.
+//     Strict comparison here would fail the migration the rule tells the author to write, and the
+//     fix would be to loosen this test — the wrong direction of travel, and the direction that ends
+//     with the ledger's own comparison being loosened by someone in a hurry.
+//   - COLUMNS are compared, because dropping a column is not a backfill. It destroys data an
+//     officer's database already holds, it is destructive under the same rule, and it needs the
+//     !destructive-migration label and a human. No legitimate backfill removes a column, so this
+//     half cannot fire on correct work.
+//   - ROW PRESENCE is compared, because these rows are the ledger's referents. A migration that
+//     deleted the pool the seeded batches point at leaves a ledger that is intact and meaningless.
+//
+// The blast radius argument is the other half of it: a wrong pool.name is embarrassing and fixable
+// at runtime, while a wrong ledger_entry.amount_cp is unfixable without a reversal batch and takes
+// the product's trust argument with it. Strictness is spent where it buys that.
+func requireTableShapeUnchanged(tb testing.TB, table string, before, after tableSnapshot, stage string) {
+	tb.Helper()
+
+	require.Equal(tb, slices.Sorted(maps.Keys(before)), slices.Sorted(maps.Keys(after)),
+		"the set of %s rows changed across %s. These rows are what the ledger's foreign keys point "+
+			"at: removing one leaves a ledger that is internally consistent and refers to nothing.",
+		table, stage)
+
+	for _, id := range slices.Sorted(maps.Keys(before)) {
+		was, is := before[id], after[id]
+
+		for _, column := range slices.Sorted(maps.Keys(was)) {
+			require.Contains(tb, is, column,
+				"%s.%s was DROPPED by %s, taking row %s's stored value with it. A backfill may rewrite "+
+					"this table's values — that is sanctioned (.claude/rules/migrations.md case 4) and "+
+					"is why this check does not compare them — but removing a column a user's database "+
+					"already holds is destructive and needs the !destructive-migration label and a human.",
+				table, column, stage, id)
+		}
+	}
 }
 
 func requireTableUnchanged(tb testing.TB, table string, before, after tableSnapshot, stage string) {
@@ -449,20 +512,10 @@ func requireLedgerIntact(tb testing.TB, handle *sql.DB, before ledgerSnapshot, s
 		"%s left dangling references — PRAGMA integrity_check would still call this database healthy",
 		stage)
 
-	// The parents the entries hang off are still there. A migration that took a referenced row with
-	// it would show up above as a violation, but naming the rows makes the failure readable.
-	//
-	// Presence only, deliberately: pool and account are NOT append-only. A backfill that populates
-	// name_norm for existing rows is a legitimate migration (.claude/rules/migrations.md case 4), so
-	// asserting their columns never change would fire on correct work. The ledger's two tables get
-	// the strict treatment precisely because nothing may ever rewrite them.
-	var pools, accounts int
-	require.NoError(tb, handle.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM pool WHERE id = ?`, seedPoolID).Scan(&pools))
-	require.Equal(tb, 1, pools, "the seeded pool is gone after %s", stage)
-	require.NoError(tb, handle.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM account WHERE id IN (?, ?)`, seedAccountID, guildBankAccountID).Scan(&accounts))
-	require.Equal(tb, 2, accounts, "a seeded account is gone after %s", stage)
+	// The parents the entries hang off are covered by requireLedgerUnchanged above, which compares
+	// pool and account by ROW PRESENCE and COLUMN SET but not by value — see
+	// requireTableShapeUnchanged for why that asymmetry is the right one and not an omission.
+	// snapshotLedger pins their row counts, so "presence" cannot pass by finding nothing.
 
 	// The guarantee itself, both halves. The names first, so a missing trigger reports as a missing
 	// trigger rather than as a mutation that unexpectedly succeeded.
@@ -626,14 +679,27 @@ func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 // real migration omits, because Atlas cannot express a trigger and therefore never emits one — and
 // asserts what actually happens:
 //
-//   - the migration SUCCEEDS. No error, no warning;
-//   - PRAGMA integrity_check and PRAGMA foreign_key_check both pass (the runner runs them after
-//     every migration and this run did not fail);
+//   - the migration SUCCEEDS at the DATABASE level. No error, no warning;
+//   - PRAGMA integrity_check and PRAGMA foreign_key_check both pass;
 //   - every ledger row is still present and correct;
 //   - and the ledger is now editable. UPDATE and DELETE on ledger_entry succeed.
 //
-// That combination is why this is a must-fix rather than a nice-to-have: every check the product
-// currently runs on an upgrade reports success, and the append-only guarantee is gone.
+// That combination is why this was a must-fix rather than a nice-to-have: every check the product
+// ran on an upgrade reported success, and the append-only guarantee was gone.
+//
+// # Why this applies the fixture directly instead of through the boot path
+//
+// It used to run through internal/migrate, and the version of this comment that said so ended:
+// "if it started failing, the boot path grew a check that catches this". It did — issue #39's
+// AppendOnlyTriggerCheck, which now refuses this migration and restores the snapshot, and
+// TestMigrate_ForgetfulRebuild_BootRefusesAndRestores is the test of that behaviour.
+//
+// So the two questions have been separated rather than one of them being dropped. What the boot path
+// DOES about a forgetful rebuild is now that test's subject. What SQLite does — the finding, which is
+// a fact about the database and not about our code — is this one's, and it has to bypass the runner
+// to still be observable at all. That also keeps this control honest if the runner check is ever
+// removed or narrowed: this test would keep passing and keep proving the danger is real, which is
+// exactly what a negative control is for.
 //
 // This test failing means one of two things. Either the rebuild fixture was "helpfully" repaired,
 // in which case the control controls for nothing and the test above proves nothing — restore the
@@ -660,18 +726,21 @@ func TestMigrate_FullStack_ForgetfulRebuildLosesTheTriggers(t *testing.T) {
 	withRawFK(t, dbPath, func(handle *sql.DB) {
 		seedLedger(t, handle)
 		baseline = snapshotLedger(t, handle)
-	})
 
-	upgraded, err := migrate.New(migrationDir(t, ledgerRebuildNoTriggersFixture), migrate.Config{
-		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.1.0", AutoMigrate: true,
+		// The fixture's Up block, statement by statement, on one connection with foreign keys
+		// enforced — the conditions goose's transaction actually presents to a migration, minus the
+		// checks the runner wraps around it.
+		applyStatements(t, handle, gooseUpStatements(t, ledgerRebuildNoTriggersFixture))
 	})
-	require.NoError(t, err)
-	require.NoError(t, upgraded.Migrate(t.Context()),
-		"the forgetful rebuild must APPLY CLEANLY — that is the finding. If it started failing, the "+
-			"boot path grew a check that catches this, and the test above should be re-read in that "+
-			"light rather than this one being deleted.")
 
 	withRawFK(t, dbPath, func(handle *sql.DB) {
+		// Both of the checks the boot path used to be limited to still report a healthy database.
+		var integrity string
+		require.NoError(t, handle.QueryRowContext(t.Context(), `PRAGMA integrity_check`).Scan(&integrity))
+		require.Equal(t, "ok", integrity,
+			"integrity_check must still pass — a lost trigger is not corruption, and that is what "+
+				"made it invisible")
+
 		// The data is fine, every column of it. That is what makes this invisible: nobody loses a row.
 		requireLedgerUnchanged(t, baseline, snapshotLedger(t, handle), "the forgetful rebuild")
 		require.Equal(t, 0, foreignKeyViolations(t, handle))

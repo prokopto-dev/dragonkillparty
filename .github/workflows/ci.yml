@@ -619,10 +619,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # Playwright is a Node tool and `make test-e2e` drives it through pnpm. Without this the
+          # job fails "pnpm is not installed"; the script installs web deps itself.
+          #
+          # No `go: "true"`: the binary arrives as the artifact below rather than being rebuilt here.
+          # A second Go+Vite build would put this job past the whole workflow's wall-clock budget,
+          # which is why `build / binary` uploads it in the first place.
+          node: "true"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        # Only when build / binary actually produced one. The job still RUNS either way, so the
-        # ci-required anti-silent-skip assertion holds; the make target below is a no-op until
-        # there is something to exercise.
+        # Only when build / binary actually produced one — an output that is permanently 'true' now
+        # that cmd/dkp has sources, kept because the job graph should not assume it. If the artifact
+        # ever fails to arrive, scripts/test-e2e.sh builds the binary rather than skipping the suite,
+        # and fails loudly on a runner with no Go.
         if: needs.build-binary.outputs.built == 'true'
         with:
           name: dkp-linux-amd64
@@ -630,6 +639,8 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
+          # Keyed on the lockfile because that is where the pinned @playwright/test version lives:
+          # bumping it must miss the cache, or the run drives last version's browser.
           key: pw-${{ runner.os }}-${{ hashFiles('web/pnpm-lock.yaml') }}
       - env:
           SHARD: ${{ matrix.shard }}/2
@@ -639,6 +650,10 @@ jobs:
         # --retries=0, deliberately. A flaky e2e is QUARANTINED, never retried. Retrying converts a
         # four-hour debugging cost into an unbounded recurring one, and a retried test is a test an
         # agent learns to trust when it should not.
+        #
+        # The target itself fails when a shard selects zero tests: Playwright exits 0 in that case,
+        # and a browser job reporting green having opened no browser is the exact defect promoting
+        # this target from its stub was meant to remove.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

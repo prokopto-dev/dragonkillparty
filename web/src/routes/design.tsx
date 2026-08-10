@@ -244,7 +244,17 @@ type SampleRow = {
 
 const SAMPLE_CLASSES = ["Cleric", "Warrior", "Enchanter", "Rogue", "Shaman", "Wizard"];
 const SAMPLE_RANKS = ["Member", "Officer", "Recruit", "Alt"];
-const SAMPLE_ZONES = ["Plane of Hate", "Kael Drakkel", "Temple of Veeshan", "Sleeper's Tomb"];
+
+// FIVE zones against four ranks and six classes, and the count is deliberate: the cycles stay out of
+// step, so no attribute of a row can be predicted from another. A four-entry list would put zone and
+// rank in lockstep, and sorting by one would silently sort by the other.
+const SAMPLE_ZONES = [
+  "Plane of Hate",
+  "Kael Drakkel",
+  "Temple of Veeshan",
+  "Sleeper's Tomb",
+  "Plane of Sky",
+];
 const SAMPLE_STATUS = ["Active", "Active", "Inactive", "Active"];
 
 const SAMPLE_ROWS: SampleRow[] = Array.from({ length: 200 }, (_, i) => ({
@@ -262,8 +272,56 @@ const SAMPLE_ROWS: SampleRow[] = Array.from({ length: 200 }, (_, i) => ({
   status: SAMPLE_STATUS[i % SAMPLE_STATUS.length],
 }));
 
+// The same 200 rows, in the other order the server could have returned them.
+//
+// NOT A CLIENT-SIDE SORT. Sort and filter are server-side (.claude/rules/web.md) and VirtualTable
+// knows nothing about ordering; this is a precomputed constant standing in for a second page of
+// results, so the fixture can exercise the one operation `getItemKey` exists to survive — the same
+// rows arriving under stable identities in a different order.
+//
+// BY RANK, and the choice is what gives e2e/virtual-table.spec.ts a signal it cannot miss. The tall
+// rows are the alts (see SAMPLE_COLUMNS below), and "Alt" sorts first, so the top of the collection
+// goes from one row in four being tall to EVERY row being tall. A re-order that merely reshuffled
+// tall rows among themselves — reversing, say, where rank cycles every four rows — would leave any
+// given window with the same number of tall rows in it, and the defect would cancel out of the
+// measurement. Compared by code unit rather than localeCompare: a fixture's order must not depend on
+// the machine's locale.
+const SAMPLE_ROWS_BY_RANK: SampleRow[] = [...SAMPLE_ROWS].sort((a, b) => {
+  if (a.rank === b.rank) {
+    return 0;
+  }
+
+  return a.rank < b.rank ? -1 : 1;
+});
+
 const SAMPLE_COLUMNS: VirtualTableColumn<SampleRow>[] = [
-  { key: "character", header: "Character", cell: (row) => row.character },
+  {
+    key: "character",
+    header: "Character",
+    // AN ALT RENDERS ON TWO LINES, and that is the fixture's only source of nonuniform row height.
+    // It is load-bearing: with every row the same height, a virtualizer that keys its measurement
+    // cache by POSITION and one that keys it by ROW produce identical output, so the defect
+    // VirtualTable's `getItemKey` comment describes cannot be observed at all — stale heights and
+    // correct heights are the same number. e2e/virtual-table.spec.ts needs this; issue #33 says why.
+    //
+    // Height comes from MARKUP rather than from a long string that wraps, and the difference is not
+    // stylistic. A <table> in auto layout sizes its columns from the cells currently rendered, so a
+    // wrapping cell's height depends on which OTHER rows happen to be virtualised in beside it —
+    // row height stops being a function of the row, and the invariant the test rests on ("the same
+    // rows in a different order total the same height") becomes false for honest reasons. Measured:
+    // a long zone name moved the total by ~90px across a re-order with a correct getItemKey. The
+    // second line is also deliberately SHORTER than the character name above it, so it never becomes
+    // the column's widest content and cannot shift the layout either.
+    cell: (row) =>
+      row.rank === "Alt" ? (
+        <>
+          {row.character}
+          <div className="text-muted">alt</div>
+        </>
+      ) : (
+        row.character
+      ),
+  },
   { key: "class", header: "Class", cell: (row) => row.className },
   { key: "level", header: "Level", cell: (row) => row.level },
   { key: "rank", header: "Rank", cell: (row) => row.rank },
@@ -506,15 +564,11 @@ function DesignSystem() {
       <Section title="Virtualised table">
         <p className="text-muted">
           200 rows x 12 columns, the heaviest view in the product. Row virtualisation only — sort and
-          filter are server-side.
+          filter are server-side. The order control swaps between two precomputed orders of the same
+          rows; it stands in for the server returning them re-ordered, and nothing here sorts a
+          collection in the browser.
         </p>
-        <VirtualTable
-          columns={SAMPLE_COLUMNS}
-          rows={SAMPLE_ROWS}
-          rowKey={(row) => row.id}
-          height={VIRTUAL_TABLE_HEIGHT}
-          label="Sample standings"
-        />
+        <VirtualTableDemo />
       </Section>
 
       <Section title="Dialog">
@@ -562,6 +616,47 @@ function Metrics({ tokens }: { tokens: string[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+// The virtualised table plus the control that re-orders it.
+//
+// The Seg here is doing a second job beyond appearing in the vocabulary: a re-order is the operation
+// VirtualTable's `getItemKey` exists for, and until this control existed nothing in the repository
+// could perform one. Keeping the two adjacent is the point — the segment IS how the fixture asks the
+// table for a different order.
+function VirtualTableDemo() {
+  const [byRank, setByRank] = useState(false);
+
+  return (
+    <>
+      <div className="design-row">
+        <Seg label="Server order">
+          <SegOption
+            defaultChecked
+            onChange={() => {
+              setByRank(false);
+            }}
+          >
+            By balance
+          </SegOption>
+          <SegOption
+            onChange={() => {
+              setByRank(true);
+            }}
+          >
+            By rank
+          </SegOption>
+        </Seg>
+      </div>
+      <VirtualTable
+        columns={SAMPLE_COLUMNS}
+        rows={byRank ? SAMPLE_ROWS_BY_RANK : SAMPLE_ROWS}
+        rowKey={(row) => row.id}
+        height={VIRTUAL_TABLE_HEIGHT}
+        label="Sample standings"
+      />
+    </>
   );
 }
 

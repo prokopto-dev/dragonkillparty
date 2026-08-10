@@ -1,0 +1,27 @@
+{
+  "$comment": [
+    "Known serious/critical axe violations, per route. docs/design/04-testing.md §Accessibility",
+    "specifies exactly this: 'zero serious/critical violations on the primary routes, with a",
+    "per-route, shrink-only allowlist under the same anti-tampering rules as golden files'.",
+    "",
+    "SHRINK-ONLY IS ENFORCED, not requested. a11y.spec.ts fails when an entry matches nothing —",
+    "so a violation that gets fixed forces the entry to be deleted in the same change, and the",
+    "list cannot quietly accumulate dead exceptions that make the gate look stricter than it is.",
+    "It is equally a failure to add an entry with no issue number: an exception nobody has agreed",
+    "to is just a lowered bar.",
+    "",
+    "Adding a row here is NOT the way to make a red build green. It is for a violation that is",
+    "real, understood, and whose fix is a decision someone else has to take — which today is one",
+    "entry, in the vendored design reference itself."
+  ],
+  "routes": {
+    "/_design": [
+      {
+        "rule": "color-contrast",
+        "target": ".card-meta",
+        "issue": 58,
+        "why": "soft(50) at 11px on --color-surface is 4.25:1 against a 4.5:1 AA floor. web/src/components/Card.css is byte-faithful to docs/design/mockups/nocturne/styles.css:214, so the defect is in Nocturne itself and raising the rung is a design decision, not a component fix."
+      }
+    ]
+  }
+}
