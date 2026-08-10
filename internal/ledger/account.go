@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
-	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
 // The four system-account keys (docs/design/01-domain-model.md §6.1). They are the ledger-addressable
@@ -21,20 +21,25 @@ import (
 //   - WriteOff     receives the debit for a rotted item nobody bought.
 //   - ImportOpening is the counter-account for opening balances brought in by the EQdkp importer.
 //
-// These strings are identical to the account.system_key CHECK in db/schema.hcl and to the seed rows
-// in db/migrations-sqlite/000003_ledger.sql. Adding a fifth is a schema change (a new CHECK value),
-// not a constant.
+// They are the CATALOGUE'S, re-exported here and in internal/strategy (#51). This comment used to
+// say the strings were "identical to the account.system_key CHECK in db/schema.hcl and to the seed
+// rows in db/migrations-sqlite/000003_ledger.sql" — which was true, and was the workaround: three
+// copies agreeing by inspection, generated from none of each other. internal/account/kinds is now
+// the one definition, `make gen` writes the CHECK from it, and the seed rows are held to it by
+// TestSystemAccountIDs_CoverTheCatalogue below rather than by a comment.
 //
-// They are DEFINED IN internal/strategy and referenced here, rather than the reverse. A planner has
-// to be able to say "route this solo kill to the guild bank" without importing the package that
-// knows what a guild bank's row id is — law 3 bans internal/store transitively and this package
-// holds it — so the vocabulary lives on the pure side and `strategy.Ctx.SystemAccount` is what turns
-// a key into the id below. One definition, referenced twice; not two definitions that agree today.
+// They are re-exported from BOTH sides rather than from internal/strategy alone, because both sides
+// need them and neither owns them: a planner has to say "route this solo kill to the guild bank"
+// without importing the package that knows what a guild bank's row id is (law 3 bans internal/store
+// transitively and this package holds it), and this package owns the ids that key maps to.
+// `strategy.Ctx.SystemAccount` is still what turns a key into the id below.
+//
+// Adding a fifth is a schema change AND a seed row — see the catalogue's package comment.
 const (
-	SystemKeyResidue       = strategy.SystemKeyResidue
-	SystemKeyGuildBank     = strategy.SystemKeyGuildBank
-	SystemKeyWriteOff      = strategy.SystemKeyWriteOff
-	SystemKeyImportOpening = strategy.SystemKeyImportOpening
+	SystemKeyResidue       = accountkinds.SystemKeyResidue
+	SystemKeyGuildBank     = accountkinds.SystemKeyGuildBank
+	SystemKeyWriteOff      = accountkinds.SystemKeyWriteOff
+	SystemKeyImportOpening = accountkinds.SystemKeyImportOpening
 )
 
 // The deterministic ULIDs the migration seeds these rows with, and the default pool's id. This block

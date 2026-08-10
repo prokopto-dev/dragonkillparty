@@ -227,7 +227,7 @@ func SchemaEnumBlock() string {
 }
 
 // RenderSchemaHCL returns src with this catalogue's generated region replaced by SchemaEnumBlock(),
-// and is one of the two rewrites `make gen` composes before writing db/schema.hcl back.
+// and is one of the three rewrites `make gen` composes before writing db/schema.hcl back.
 //
 // It rewrites a MARKED REGION rather than pattern-matching the two `expr =` lines, because a regex
 // over a schema file cannot tell the CHECK it means from the next one somebody names similarly, and

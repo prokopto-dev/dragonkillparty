@@ -49,12 +49,15 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: process.env.CI !== undefined,
 
-  // ZERO RETRIES, and it is a deliberate difference from docs/design/04-testing.md §"Flake policy",
-  // which specifies `retries: 1` so that a pass-on-retry is REPORTED as flaky and still fails the
-  // build. .github/workflows/ci.yml's e2e step says the opposite in as many words ("--retries=0,
-  // deliberately"), and the two cannot both be followed. Retries-0 is the conservative reading:
-  // it can only turn a flake into a red build, never into a green one. The conflict is a
-  // documentation bug and is filed as its own issue rather than resolved by an agent here.
+  // ZERO RETRIES. A flaky e2e is quarantined, never retried — .github/workflows/ci.yml's e2e step,
+  // scripts/test-e2e.sh's `--retries=0`, and docs/design/04-testing.md §"Flake policy" now all say
+  // the same thing, which they did not before #60: that section specified `retries: 1` plus a
+  // fail-on-flaky report, and the two mechanisms cannot both be followed. Retries-0 won as the
+  // conservative reading — it can only turn a flake into a red build, never into a green one.
+  //
+  // Raising this to 1 without also passing --fail-on-flaky-tests is strictly weaker than either
+  // policy: Playwright does not fail the build on a `flaky` result by default, so a pass-on-retry
+  // would go green.
   retries: 0,
 
   reporter: [

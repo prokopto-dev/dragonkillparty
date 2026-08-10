@@ -86,7 +86,7 @@ nfpms:
       - dkp
     package_name: dkp
     vendor: The Dragon Kill Party contributors
-    homepage: https://github.com/dragonkillparty/dkp
+    homepage: https://github.com/prokopto-dev/dragonkillparty
     maintainer: The Dragon Kill Party contributors <noreply@dragonkillparty.org>
     description: DKP and guild management for Project 1999 EverQuest raiding guilds.
     license: Apache-2.0
@@ -138,7 +138,7 @@ brews:
       owner: dragonkillparty
       name: homebrew-dkp
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: https://github.com/dragonkillparty/dkp
+    homepage: https://github.com/prokopto-dev/dragonkillparty
     description: DKP and guild management for Project 1999 EverQuest raiding guilds.
     license: Apache-2.0
     # A formula install is a binary drop; the service is the operator's to wire up.

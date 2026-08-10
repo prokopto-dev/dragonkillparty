@@ -2,15 +2,16 @@
 //
 // It is the `make gen` half of canonical §5 ("the enum catalogue is a Go const block; make gen
 // writes it into the migration CHECK"): internal/ledger/kinds holds ledger_batch's kind and source,
-// internal/audit/kinds holds audit_log's actor_kind, this rewrites their CHECK constraints from them,
-// and `make migration` turns the resulting schema into SQL. It never writes a migration itself, for
+// internal/audit/kinds holds audit_log's actor_kind and outcome, internal/account/kinds holds
+// account's kind and system_key, this rewrites their CHECK constraints from them, and
+// `make migration` turns the resulting schema into SQL. It never writes a migration itself, for
 // the reason scripts/gen-db.sh gives — `make gen` runs reflexively and must not create numbered,
 // permanent, append-only files as a side effect.
 //
 // A GENERATOR, NOT A GATE. It rewrites and says nothing; the drift assertions are
-// TestLedgerKinds_CheckMatchesCatalogue, TestAuditKinds_CheckMatchesCatalogue and
-// `make verify-generated`. Keeping the two apart is what lets `make gen` be the fix rather than
-// another thing to interpret.
+// TestLedgerKinds_CheckMatchesCatalogue, TestAuditKinds_CheckMatchesCatalogue,
+// TestAccountKinds_CheckMatchesCatalogue and `make verify-generated`. Keeping the two apart is what
+// lets `make gen` be the fix rather than another thing to interpret.
 //
 // It lives beside the ledger catalogue rather than in cmd/dkp because it is dev tooling: cmd/dkp is
 // the product binary and an officer never runs a code generator. It stays here, rather than moving
@@ -18,7 +19,7 @@
 // scripts/gen-enums.sh, the Makefile and test/repo/verify_generated_test.go to buy tidiness and
 // nothing else — and its name, not its parent directory, is what a reader looks up.
 //
-// It imports the two catalogues and NOTHING ELSE from this repository. Importing internal/ledger or
+// It imports the three catalogues and NOTHING ELSE from this repository. Importing internal/ledger or
 // internal/audit's future service package would pull in internal/store/sqlitegen — generated code —
 // and make `make gen` unable to repair a tree whose generated code does not build. See the package
 // comment on internal/ledger/kinds.
@@ -30,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/schemaenum"
@@ -72,6 +74,7 @@ func catalogues() []catalogue {
 	return []catalogue{
 		{name: "internal/ledger/kinds", render: kinds.RenderSchemaHCL},
 		{name: "internal/audit/kinds", render: auditkinds.RenderSchemaHCL},
+		{name: "internal/account/kinds", render: accountkinds.RenderSchemaHCL},
 	}
 }
 

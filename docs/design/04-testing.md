@@ -745,10 +745,20 @@ verify job asserting zero balance drift.
 
 **Zero tolerance, mechanically enforced.**
 
-- `gotestsum --rerun-fails=0`. **Retries are forbidden for Go.** Playwright uses `retries: 1` in CI
-  *solely so flakes are detected*: a test that passes on retry is reported flaky, and **a flaky result
-  fails the build**. This is a single-process app with no eventual consistency; there is no legitimate
-  reason a retry should help.
+- **Retries are forbidden, in both suites.** `gotestsum --rerun-fails=0` for Go; `retries: 0` for
+  Playwright, set in `web/playwright.config.ts` and restated as `--retries=0` on the command line in
+  `scripts/test-e2e.sh` so that the promise `.github/workflows/ci.yml`'s e2e step makes by name is
+  literally true. A flaky e2e is **quarantined, never retried**. This is a single-process app with
+  no eventual consistency, so there is no legitimate reason a retry should help — and a retried test
+  is a test an agent learns to trust when it should not.
+
+  Recorded as a decision because this section and `ci.yml` once specified opposite mechanisms
+  (#60). The rejected alternative was `retries: 1` plus `--fail-on-flaky-tests`, which reaches the
+  same **outcome** — a flaky test fails the build — and additionally buys the diagnostic retries-0
+  gives up: under retries-0 a flake is a red build with no in-run evidence that it *was* a flake.
+  Retries-0 won on being the conservative reading; it can only turn a flake into a red build, never
+  into a green one. Whichever is chosen, `retries: 1` **alone** is strictly weaker than both, because
+  Playwright does not fail on a `flaky` result without that flag.
 - **`-shuffle=on -count=1` always.** A shuffle failure is a real shared-state bug, not flake.
 - **Any test that sleeps is a bug.** `time.Sleep` is grep-banned in `**/*_test.go` and `test/`.
   Sanctioned replacements: `testing/synctest`, `jobs.DrainForTest`, and bounded polling **only**
@@ -761,7 +771,10 @@ verify job asserting zero balance drift.
   `// FLAKE(#123, @owner, expires YYYY-MM-DD): reason`, linted for shape and expiry.
 - **Flake dashboard.** CI uploads `go test -json` and the Playwright report; a nightly script
   aggregates the last 200 runs and opens or updates one issue listing any test that failed twice or
-  more. This is the only way you learn about flakes that self-heal on local rerun.
+  more. This is the only way you learn about flakes that self-heal on local rerun. With retries
+  forbidden there is no `flaky` status to count *within* a run, so the aggregation is necessarily
+  **across** runs: a test that fails in run 8 and passes in run 9 is the signal, and 200 runs is the
+  window that makes it visible.
 
 ---
 

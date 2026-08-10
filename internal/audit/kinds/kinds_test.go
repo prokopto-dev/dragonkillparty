@@ -15,7 +15,7 @@ import (
 )
 
 // The drift tests for canonical §5's third clause — "a test asserts the copies agree" — applied to
-// audit_log.actor_kind.
+// audit_log.actor_kind and audit_log.outcome.
 //
 // THE COPIES ARE FOUR, and each has a test somewhere:
 //
@@ -31,6 +31,11 @@ import (
 // The OpenAPI copy has no subject: there is no audit endpoint at Phase 0, so nothing in
 // openapi/openapi.json carries this vocabulary. Deriving the enum AT the DTO rather than asserting
 // about it is #42's work, which lands with the first endpoint that exposes one.
+//
+// EVERY TEST BELOW COVERS BOTH COLUMNS, and outcome is not the junior partner: it joined the
+// catalogue with no Go copy to reconcile (#53), so these tests are the only thing that will notice
+// the Phase 2 middleware adding a fourth outcome to the CHECK and not to the const block, or the
+// reverse.
 //
 // WHAT DRIFT COSTS HERE. An actor kind in Go but not in the CHECK is a legal-looking commit that
 // SQLite rejects at the audit INSERT — inside the transaction, after the batch, its entries and its
@@ -92,10 +97,11 @@ func TestAuditKinds_CheckMatchesCatalogue(t *testing.T) {
 	require.NoError(t, err, "render db/schema.hcl from the catalogue")
 
 	require.Equal(t, committed, rendered,
-		"db/schema.hcl's audit_log.actor_kind CHECK has drifted from internal/audit/kinds — run "+
+		"db/schema.hcl's audit_log enum CHECKs have drifted from internal/audit/kinds — run "+
 			"`make gen` (and `make migration NAME=<snake_case>` if a value actually changed)")
 
-	require.Contains(t, committed, kinds.CheckExpr())
+	require.Contains(t, committed, kinds.ActorKindCheckExpr())
+	require.Contains(t, committed, kinds.OutcomeCheckExpr())
 }
 
 // TestAuditKinds_SchemaDivergence_IsRestored is the negative control for the test above: a
@@ -129,6 +135,16 @@ func TestAuditKinds_SchemaDivergence_IsRestored(t *testing.T) {
 			mutate:  func(s string) string { return strings.Replace(s, "'boot'", "'boot', 'cron'", 1) },
 			explain: "an actor kind hand-added to the CHECK and never added to Go",
 		},
+		{
+			name:    "outcome dropped from the CHECK",
+			mutate:  func(s string) string { return strings.Replace(s, ", 'denied'", "", 1) },
+			explain: "the outcome the Phase 2 middleware exists to record, deleted from the CHECK",
+		},
+		{
+			name:    "outcome invented in the CHECK",
+			mutate:  func(s string) string { return strings.Replace(s, "'error'", "'error', 'partial'", 1) },
+			explain: "a fourth outcome hand-added to the CHECK and never added to Go",
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,8 +171,8 @@ func TestAuditKinds_MissingMarkers_IsAnError(t *testing.T) {
 	t.Parallel()
 
 	committed := readSchemaHCL(t)
-	begin := "  // BEGIN GENERATED — audit_log.actor_kind CHECK, from internal/audit/kinds. Run `make gen`."
-	end := "  // END GENERATED — audit_log.actor_kind CHECK."
+	begin := "  // BEGIN GENERATED — audit_log enum CHECKs, from internal/audit/kinds. Run `make gen`."
+	end := "  // END GENERATED — audit_log enum CHECKs."
 
 	require.Contains(t, committed, begin, "marker text changed — update this test with it")
 	require.Contains(t, committed, end, "marker text changed — update this test with it")
@@ -196,16 +212,29 @@ func TestAuditKinds_MissingMarkers_IsAnError(t *testing.T) {
 func TestAuditKinds_MigrationCheckMatchesCatalogue(t *testing.T) {
 	t.Parallel()
 
-	const constraint = "audit_log_actor_kind_enum"
+	tests := []struct {
+		constraint string
+		column     string
+		want       string
+	}{
+		{constraint: "audit_log_actor_kind_enum", column: "actor_kind", want: kinds.ActorKindCheckExpr()},
+		{constraint: "audit_log_outcome_enum", column: "outcome", want: kinds.OutcomeCheckExpr()},
+	}
 
-	last, file := lastMigrationCheck(t, constraint, "actor_kind")
-	require.NotEmpty(t, file,
-		"no migration declares CONSTRAINT %q — the enum reaches no database", constraint)
+	for _, tt := range tests {
+		t.Run(tt.column, func(t *testing.T) {
+			t.Parallel()
 
-	require.Equal(t, kinds.CheckExpr(), last,
-		"%s carries an actor_kind CHECK that the Go catalogue no longer matches — the values in "+
-			"internal/audit/kinds need a migration, written with `make migration NAME=<snake_case>` "+
-			"after `make gen`", file)
+			last, file := lastMigrationCheck(t, tt.constraint, tt.column)
+			require.NotEmpty(t, file,
+				"no migration declares CONSTRAINT %q — the enum reaches no database", tt.constraint)
+
+			require.Equal(t, tt.want, last,
+				"%s carries a %s CHECK that the Go catalogue no longer matches — the values in "+
+					"internal/audit/kinds need a migration, written with `make migration NAME=<snake_case>` "+
+					"after `make gen`", file, tt.column)
+		})
+	}
 }
 
 // lastMigrationCheck returns the CHECK expression the final migration to declare constraint carries,
@@ -255,16 +284,22 @@ func TestActorKinds_Values_AreCanonicalEnumValues(t *testing.T) {
 
 	snakeCase := regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 
-	values := kinds.ActorKinds()
-	require.NotEmpty(t, values)
+	vocabularies := map[string][]string{
+		"actor_kind": kinds.ActorKinds(),
+		"outcome":    kinds.Outcomes(),
+	}
 
-	seen := make(map[string]bool, len(values))
+	for column, values := range vocabularies {
+		require.NotEmpty(t, values, "%s has no values", column)
 
-	for _, v := range values {
-		require.Regexp(t, snakeCase, v, "%q is not lowercase snake_case (canonical §5)", v)
-		require.False(t, seen[v], "%q appears twice in the catalogue", v)
+		seen := make(map[string]bool, len(values))
 
-		seen[v] = true
+		for _, v := range values {
+			require.Regexp(t, snakeCase, v, "%s: %q is not lowercase snake_case (canonical §5)", column, v)
+			require.False(t, seen[v], "%s: %q appears twice in the catalogue", column, v)
+
+			seen[v] = true
+		}
 	}
 }
 
@@ -285,6 +320,14 @@ func TestActorKinds_ReturnsAFreshSlice(t *testing.T) {
 		"ActorKinds handed out a slice backed by shared state")
 	require.True(t, kinds.IsActorKind(kinds.ActorUser))
 	require.False(t, kinds.IsActorKind("clobbered"))
+
+	outcomes := kinds.Outcomes()
+	outcomes[0] = "clobbered"
+
+	require.Equal(t, kinds.OutcomeSuccess, kinds.Outcomes()[0],
+		"Outcomes handed out a slice backed by shared state")
+	require.True(t, kinds.IsOutcome(kinds.OutcomeSuccess))
+	require.False(t, kinds.IsOutcome("clobbered"))
 }
 
 // TestAuditKinds_RuntimeValidation_AcceptsExactlyTheCatalogue is the drift test for the RUNTIME copy:
@@ -312,6 +355,21 @@ func TestAuditKinds_RuntimeValidation_AcceptsExactlyTheCatalogue(t *testing.T) {
 		require.False(t, kinds.IsActorKind(v),
 			"%q is not in the catalogue, so the validator must refuse it before the transaction", v)
 	}
+
+	for _, v := range kinds.Outcomes() {
+		require.True(t, kinds.IsOutcome(v),
+			"%q is in the catalogue and the generated CHECK, so a writer must be able to use it", v)
+	}
+
+	// The outcome near-misses are the ones the Phase 2 middleware will actually reach for: the HTTP
+	// vocabulary ('ok', 'failure', 'forbidden'), a status code, the typo #53 names, and the value of
+	// the neighbouring column.
+	rejectedOutcomes := []string{"", "sucess", "ok", "failure", "forbidden", "403", "Success", "system"}
+
+	for _, v := range rejectedOutcomes {
+		require.False(t, kinds.IsOutcome(v),
+			"%q is not in the catalogue, so a writer must be refused before the transaction", v)
+	}
 }
 
 // TestAuditKinds_CheckExpr_RendersASQLInList pins the rendering, because the generator and the drift
@@ -323,7 +381,13 @@ func TestAuditKinds_CheckExpr_RendersASQLInList(t *testing.T) {
 
 	require.Equal(t,
 		"actor_kind IN ('user', 'service_account', 'system', 'boot', 'import', 'anonymous')",
-		kinds.CheckExpr(),
+		kinds.ActorKindCheckExpr(),
+		"the rendered expression changed — every existing database carries the old text, so this is a "+
+			"migration, not a formatting choice")
+
+	require.Equal(t,
+		"outcome IN ('success', 'denied', 'error')",
+		kinds.OutcomeCheckExpr(),
 		"the rendered expression changed — every existing database carries the old text, so this is a "+
 			"migration, not a formatting choice")
 }

@@ -327,8 +327,11 @@ table "account" {
     type = text
   }
 
-  // 'person' | 'system'. The two paired CHECKs below tie this to which of person_id / system_key
-  // is populated, so an account is exactly one of the two kinds and cannot be malformed.
+  // The values are internal/account/kinds' and the CHECK below is generated from it — this comment
+  // deliberately does not restate them, because a prose list beside a generated one is the drift the
+  // catalogue exists to remove. The two paired CHECKs further down tie this column to which of
+  // person_id / system_key is populated, so an account is exactly one of the kinds and cannot be
+  // malformed.
   column "kind" {
     null = false
     type = text
@@ -342,9 +345,10 @@ table "account" {
     type = text
   }
 
-  // 'guild_bank' | 'residue' | 'write_off' | 'import_opening', or NULL for a person account. The
-  // closed set is a CHECK because these four keys are addressed by name in code (the seeded
-  // constants in internal/ledger/account.go) and a fifth would be a deliberate schema change.
+  // One of internal/account/kinds' system keys, or NULL for a person account. The closed set is a
+  // CHECK — generated from that catalogue — because the keys are addressed by name in code, and a
+  // fifth is a deliberate schema change plus a seed row (internal/ledger.SystemAccountIDs pairs each
+  // key with the deterministic id its row carries).
   column "system_key" {
     null = true
     type = text
@@ -369,15 +373,19 @@ table "account" {
     columns = [column.id]
   }
 
-  // kind is one of the two legal values.
+  // BEGIN GENERATED — account enum CHECKs, from internal/account/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestAccountKinds_CheckMatchesCatalogue fails on.
   check "account_kind_enum" {
     expr = "kind IN ('person', 'system')"
   }
 
-  // system_key, when present, is one of the four known system accounts.
   check "account_system_key_enum" {
     expr = "system_key IS NULL OR system_key IN ('guild_bank', 'residue', 'write_off', 'import_opening')"
   }
+  // END GENERATED — account enum CHECKs.
 
   // A person account has a person_id and no system_key; a system account is the mirror image.
   // These two paired CHECKs are the domain model's (01-domain-model.md:516-517) and are what make
@@ -1019,7 +1027,7 @@ table "audit_log" {
     on_delete   = NO_ACTION
   }
 
-  // BEGIN GENERATED — audit_log.actor_kind CHECK, from internal/audit/kinds. Run `make gen`.
+  // BEGIN GENERATED — audit_log enum CHECKs, from internal/audit/kinds. Run `make gen`.
   //
   // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
   // enum are generated from one Go catalogue. Adding a value here by hand is drift that
@@ -1027,18 +1035,11 @@ table "audit_log" {
   check "audit_log_actor_kind_enum" {
     expr = "actor_kind IN ('user', 'service_account', 'system', 'boot', 'import', 'anonymous')"
   }
-  // END GENERATED — audit_log.actor_kind CHECK.
 
-  // NOT generated, and the asymmetry is deliberate rather than an oversight: `outcome` has no Go
-  // catalogue, so this CHECK is still the only place its three values are written. Nothing in Go
-  // validates it — the one writer passes 'success' as a literal — so there is no second list to
-  // drift from, which is why the actor_kind work above stopped where it did. Giving it a catalogue
-  // is issue #53 — do not hand-add a fourth value here without doing that first, because the Phase 2
-  // middleware that writes 'denied' and 'error' is the change that would otherwise write the second
-  // list.
   check "audit_log_outcome_enum" {
     expr = "outcome IN ('success', 'denied', 'error')"
   }
+  // END GENERATED — audit_log enum CHECKs.
 
   // The gaplessness guardrail: two rows cannot claim the same position in the chain.
   index "ux_audit_seq" {

@@ -16,13 +16,56 @@
  *      than the virtualizer computed — the scroll height drifts from the measured total and the
  *      thumb no longer matches the content.
  *
- * No sticky header, deliberately. A `position: sticky` on <th> detaches the header from its <tr>, and
- * the fading rule is painted by the <tr>: the hairline would scroll away from the labels it belongs
- * to. That is a design decision for the first screen that needs it, tracked in issue #34.
+ * THE HEADER IS STICKY, AND IT GIVES UP THE END-FADE. That is a break with docs/design/09 §4's
+ * signature detail, decided in issue #34 (2026-08-10) and recorded as a sanctioned exception in §4
+ * itself — this comment is the pointer, not the decision. `position: sticky` on a <th> sticks the
+ * CELLS, not the row, and the fading hairline is painted by the <tr>: left alone, the row would
+ * scroll out from under its own labels and take the rule with it. So the row's paint is suppressed
+ * here and the <th> carries the rule instead, as a solid strip that cannot fade at the ends —
+ * a per-cell strip has no row to fade across. 200 characters x 12 columns is the heaviest view in
+ * the product and a scrolling table with no visible column labels is the worse trade.
+ *
+ * EVERY RULE BELOW IS SCOPED THROUGH `.virtual-table`, and that scoping is the whole reason the
+ * exception is narrow enough to sanction: an ordinary, non-scrolling `.table` keeps the fading thead
+ * rule, and both tables keep it on every tbody row. Only the scrolling case pays.
+ * test/repo/design_tokens_test.go holds that boundary — a divergence from the source sheet that is
+ * not in its list, or one that is not scoped to this viewport, fails.
  */
 
 .virtual-table {
   overflow: auto;
+}
+
+/*
+ * (0,2,1) beats .table th at (0,1,1).
+ *
+ * The rule is a background strip rather than a border because `border-collapse: collapse` hands
+ * collapsed borders to the TABLE to paint, not to the cell — a border declared here scrolls away
+ * with the table and leaves the sticky labels bare, which is the defect this rule exists to avoid.
+ * `background-origin: border-box` lands the strip on the border box, where the <tr>'s rule sat, so
+ * the header hairline does not shift by a pixel when a table becomes virtualised.
+ *
+ * The opaque ground is load-bearing: data rows scroll UNDERNEATH a sticky header, and a translucent
+ * one shows them through. --color-bg is the page ground (base.css sets it on <body>); a virtual
+ * table hosted on --color-surface would need that surface's ground instead, and would be the moment
+ * to make this a parameter rather than a constant.
+ */
+.virtual-table .table thead th {
+  position: sticky;
+  top: 0;
+  background-color: var(--color-bg);
+  background-image: linear-gradient(var(--color-divider), var(--color-divider));
+  background-repeat: no-repeat;
+  background-position: bottom;
+  background-size: 100% var(--hairline);
+  background-origin: border-box;
+}
+
+/* (0,2,2) beats .table thead tr at (0,1,2). The row keeps its box — it is what lays the header out —
+   but not its paint: the <th> above carries the rule now, and two hairlines a scroll apart is worse
+   than the one that never fades. */
+.virtual-table .table thead tr {
+  background: none;
 }
 
 /* (0,2,2) beats .table tbody tr at (0,1,2). */

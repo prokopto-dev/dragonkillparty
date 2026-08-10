@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
@@ -17,9 +18,9 @@ import (
 // left alone, and that a file it cannot understand makes it refuse instead of exit 0.
 //
 // The last one is the case worth a test: a generator that cannot find its target and succeeds
-// anyway leaves every gate downstream reporting a clean tree it never wrote to. It matters twice over
-// now that there are TWO regions: a file carrying only one of them must refuse, not quietly rewrite
-// the region it recognises and leave the other frozen.
+// anyway leaves every gate downstream reporting a clean tree it never wrote to. It matters more with
+// every region added — there are THREE — because a file carrying only some of them must refuse, not
+// quietly rewrite the regions it recognises and leave the rest frozen.
 
 // fixture writes a miniature schema.hcl into t.TempDir() and returns its path. The markers are taken
 // from the real rendering, so a change to the marker text cannot leave this test passing against a
@@ -33,29 +34,27 @@ func fixture(t *testing.T, body string) string {
 	return path
 }
 
-// markedSchema returns a fixture body whose two generated regions BOTH hold stale values: each
+// markedSchema returns a fixture body whose three generated regions ALL hold stale values: each
 // catalogue's real rendered block with one value dropped from its CHECK. Every marker survives, so
-// the generator's job is to notice both regions are out of date and replace them.
+// the generator's job is to notice all three regions are out of date and replace them.
 //
-// Both are stale rather than one, because the failure this shape catches is a generator that stops
-// after the first render — which would leave the second region frozen while reporting success.
+// All three are stale rather than one, because the failure this shape catches is a generator that
+// stops after the first render — which would leave the later regions frozen while reporting success.
 func markedSchema(t *testing.T) string {
 	t.Helper()
 
-	ledger := kinds.SchemaEnumBlock()
+	stale := func(block, value string) string {
+		t.Helper()
 
-	staleLedger := strings.Replace(ledger, "'attendance', ", "", 1)
-	require.NotEqual(t, ledger, staleLedger,
-		"fixture is stale: the rendered ledger block no longer contains 'attendance'")
+		out := strings.Replace(block, value, "", 1)
+		require.NotEqual(t, block, out, "fixture is stale: a rendered block no longer contains %q", value)
 
-	audit := auditkinds.SchemaEnumBlock()
+		return out
+	}
 
-	staleAudit := strings.Replace(audit, "'boot', ", "", 1)
-	require.NotEqual(t, audit, staleAudit,
-		"fixture is stale: the rendered audit block no longer contains 'boot'")
-
-	return "table \"ledger_batch\" {\n" + staleLedger + "\n}\n\n" +
-		"table \"audit_log\" {\n" + staleAudit + "\n}\n"
+	return "table \"ledger_batch\" {\n" + stale(kinds.SchemaEnumBlock(), "'attendance', ") + "\n}\n\n" +
+		"table \"audit_log\" {\n" + stale(auditkinds.SchemaEnumBlock(), "'boot', ") + "\n}\n\n" +
+		"table \"account\" {\n" + stale(accountkinds.SchemaEnumBlock(), "'write_off', ") + "\n}\n"
 }
 
 func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
@@ -70,7 +69,10 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 
 	require.Contains(t, string(got), kinds.CheckExpr("kind", kinds.BatchKinds()))
 	require.Contains(t, string(got), kinds.CheckExpr("source", kinds.BatchSources()))
-	require.Contains(t, string(got), auditkinds.CheckExpr())
+	require.Contains(t, string(got), auditkinds.ActorKindCheckExpr())
+	require.Contains(t, string(got), auditkinds.OutcomeCheckExpr())
+	require.Contains(t, string(got), accountkinds.KindCheckExpr())
+	require.Contains(t, string(got), accountkinds.SystemKeyCheckExpr())
 
 	// And the rewrite is exactly what rendering the ORIGINAL through every catalogue would produce —
 	// no drift between the generator's write path and the drift tests' comparison.
@@ -78,6 +80,9 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	require.NoError(t, err)
 
 	want, err = auditkinds.RenderSchemaHCL(want)
+	require.NoError(t, err)
+
+	want, err = accountkinds.RenderSchemaHCL(want)
 	require.NoError(t, err)
 
 	require.Equal(t, want, string(got))
@@ -125,16 +130,25 @@ func TestRun_MissingMarkers_RefusesAndLeavesTheFileAlone(t *testing.T) {
 		body string
 	}{
 		{
-			name: "neither region marked",
+			name: "no region marked",
 			body: "table \"ledger_batch\" {\n  check \"ledger_batch_kind_enum\" {\n  }\n}\n",
 		},
 		{
-			name: "ledger region marked, audit region missing",
+			name: "ledger region marked, the other two missing",
 			body: "table \"ledger_batch\" {\n" + kinds.SchemaEnumBlock() + "\n}\n",
 		},
 		{
-			name: "audit region marked, ledger region missing",
+			name: "audit region marked, the other two missing",
 			body: "table \"audit_log\" {\n" + auditkinds.SchemaEnumBlock() + "\n}\n",
+		},
+		{
+			name: "account region marked, the other two missing",
+			body: "table \"account\" {\n" + accountkinds.SchemaEnumBlock() + "\n}\n",
+		},
+		{
+			name: "only the account region missing — the one a new catalogue forgets",
+			body: "table \"ledger_batch\" {\n" + kinds.SchemaEnumBlock() + "\n}\n\n" +
+				"table \"audit_log\" {\n" + auditkinds.SchemaEnumBlock() + "\n}\n",
 		},
 	}
 
