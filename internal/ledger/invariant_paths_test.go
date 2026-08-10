@@ -8,6 +8,7 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
@@ -256,6 +257,112 @@ func TestCommit_DeclaredButUnimplementedInvariant_IsRefusedEvenWhenItsKindIsTouc
 			require.Equal(t, int64(0), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
 		})
 	}
+}
+
+// TestCommit_ReversalBelowTheFloor_IsAcceptedWhenNoFloorIsDeclared is the database-backed half of a
+// defect found in review of PR 10b, and it is the assertion the whole correction path rests on.
+//
+// The scenario is an ordinary Tuesday for a volunteer officer:
+//
+//	an officer credits a tick to the wrong raider  ->  Alice +500
+//	Alice spends it on an item                     ->  Alice 0
+//	the officer reverses the erroneous tick        ->  Alice -500
+//
+// The ledger is append-only. There is no UPDATE, no DELETE, and a batch carrying reverses_batch_id is
+// the ONLY repair primitive that exists. So a NonNegative floor on that third batch does not prevent
+// the debt — it prevents the CORRECTION, and the guild is left with a mistake everybody can see and
+// nobody can fix.
+//
+// Both directions are asserted, because only the pair proves it. The reversal that declares no floor
+// must COMMIT and leave the balance negative; the identical reversal that declares one must be
+// REJECTED. Without the second assertion this test would pass against an engine that had stopped
+// checking NonNegative altogether, which is the opposite defect.
+func TestCommit_ReversalBelowTheFloor_IsAcceptedWhenNoFloorIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	floor := core.Centipoints(0)
+
+	// setUp commits the erroneous credit and Alice's spend, and returns the erroneous batch's id.
+	setUp := func(t *testing.T) (*ledger.Service, *store.Store, core.ULID, []core.ULID) {
+		t.Helper()
+
+		svc, s := newService(t)
+		accounts := seedPersonAccounts(t, s, 1)
+
+		erroneous, err := svc.Commit(t.Context(), request(award(ledger.AccountIDGuildBank,
+			[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 500}})))
+		require.NoError(t, err)
+
+		// Alice spends it. This one DOES declare the floor — a spend is exactly what a floor is for —
+		// and it passes, because she has the points at the time.
+		spend := award(accounts[0], []ledger.Allocation{{AccountID: ledger.AccountIDGuildBank, AmountCp: 500}})
+		spend.Invariants = append(spend.Invariants, strategy.Invariant{
+			Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor,
+		})
+
+		_, err = svc.Commit(t.Context(), request(spend))
+		require.NoError(t, err)
+		require.Equal(t, int64(0), balanceOf(t, s, accounts[0]))
+
+		return svc, s, erroneous.BatchID, accounts
+	}
+
+	// reversalOf builds the exact inverse of the erroneous credit.
+	reversalOf := func(target core.ULID, alice core.ULID) strategy.BatchProposal {
+		p := strategy.BatchProposal{
+			Kind:            strategy.KindReversal,
+			StrategyID:      "fixed_price",
+			StrategyVersion: "0.1.0",
+			EffectiveAt:     core.FromTime(fixedNow),
+			ReversesBatchID: &target,
+			Entries: []strategy.EntryProposal{
+				{AccountID: ledger.AccountIDGuildBank, BalanceKind: "dkp", AmountCp: 500},
+				{AccountID: alice, BalanceKind: "dkp", AmountCp: -500},
+			},
+			Invariants: []strategy.Invariant{{Kind: strategy.InvariantSumZero, BalanceKind: "dkp"}},
+		}
+
+		return p
+	}
+
+	t.Run("no floor declared: the correction commits and the debt is visible", func(t *testing.T) {
+		t.Parallel()
+
+		svc, s, erroneous, accounts := setUp(t)
+
+		_, err := svc.Commit(t.Context(), request(reversalOf(erroneous, accounts[0])))
+		require.NoError(t, err,
+			"an append-only ledger has no repair primitive other than a reversal; refusing this one "+
+				"leaves the original mistake permanently uncorrectable")
+
+		require.Equal(t, int64(-500), balanceOf(t, s, accounts[0]),
+			"the debt is the correct outcome and is meant to be seen: Alice spent points she was "+
+				"never owed, and the ledger says so")
+		require.Equal(t, int64(3), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
+	})
+
+	t.Run("floor declared: the same correction is refused", func(t *testing.T) {
+		t.Parallel()
+
+		svc, s, erroneous, accounts := setUp(t)
+
+		blocked := reversalOf(erroneous, accounts[0])
+		blocked.Invariants = append(blocked.Invariants, strategy.Invariant{
+			Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor,
+		})
+
+		_, err := svc.Commit(t.Context(), request(blocked))
+
+		var invErr *ledger.InvariantError
+		require.ErrorAs(t, err, &invErr,
+			"this is the control: with the floor declared the engine really does reject it, so the "+
+				"subtest above is passing because of the declaration and not because NonNegative "+
+				"stopped being checked")
+		require.Equal(t, "NonNegative", invErr.Invariant)
+
+		require.Equal(t, int64(0), balanceOf(t, s, accounts[0]))
+		require.Equal(t, int64(2), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
+	})
 }
 
 // TestCommit_ReversalOfABatchThatDoesNotExist_IsRejected covers the reversal-linkage lookup missing

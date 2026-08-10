@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/bits"
 	"sort"
+	"strings"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 )
@@ -198,12 +199,55 @@ func defaultFixedPriceConfig() fixedPriceConfig {
 func (FixedPrice) config(ctx Ctx) (fixedPriceConfig, error) {
 	cfg := defaultFixedPriceConfig()
 
-	if raw := ctx.ConfigJSON(); raw != "" && raw != "{}" {
-		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-			return fixedPriceConfig{}, fmt.Errorf("parse %s config: %w: %w", fixedPriceID, ErrInvalidConfig, err)
-		}
+	// An ABSENT config is not a malformed one: a pool that has set nothing runs the defaults, and
+	// the column's own default is '{}'. Everything past this point is a document somebody wrote.
+	raw := strings.TrimSpace(ctx.ConfigJSON())
+	if raw == "" || raw == "{}" {
+		return validateFixedPriceConfig(cfg)
 	}
 
+	// STRICTLY, and the two rejections below are the whole reason this is a Decoder rather than
+	// json.Unmarshal. Both were found in review of this PR, and both are the same defect: a document
+	// the SCHEMA rejects that the PARSER accepted, leaving the pool running defaults nobody chose.
+	//
+	//   - An UNKNOWN KEY. `{"decay_pb": 1000}` — a transposition of decay_bp — unmarshals without
+	//     error and leaves decay at 0. The officer sets decay, the form shows decay, and no decay is
+	//     ever posted. The schema says additionalProperties: false; DisallowUnknownFields is what
+	//     makes the parser agree.
+	//   - A BARE `null`. json.Unmarshal of `null` into a struct is a documented no-op that returns
+	//     no error, so a config column holding the four characters `null` reads as "the defaults"
+	//     rather than as the invalid document the schema's `type: object` says it is. It cannot be
+	//     caught by the decoder — it is legal JSON for any target — so it is checked by hand.
+	//
+	// The other malformed shapes already fail: an array or a scalar cannot unmarshal into a struct,
+	// a decimal cannot unmarshal into an int64 (which is canonical §1 enforced by the type system),
+	// and trailing content after the object is caught by the More() check below.
+	if raw == "null" {
+		return fixedPriceConfig{}, fmt.Errorf(
+			"%s: config is the JSON literal null, not an object; an unset config is an empty column, "+
+				"not a null document: %w", fixedPriceID, ErrInvalidConfig)
+	}
+
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&cfg); err != nil {
+		return fixedPriceConfig{}, fmt.Errorf("parse %s config: %w: %w", fixedPriceID, ErrInvalidConfig, err)
+	}
+
+	if dec.More() {
+		return fixedPriceConfig{}, fmt.Errorf(
+			"%s: config carries content after the object; only one document is a config: %w",
+			fixedPriceID, ErrInvalidConfig)
+	}
+
+	return validateFixedPriceConfig(cfg)
+}
+
+// validateFixedPriceConfig applies the bounds the schema declares, to a config that has already
+// parsed. Split from config so that the defaults are validated too — a default that violated its own
+// schema would otherwise be the one config nothing ever checked.
+func validateFixedPriceConfig(cfg fixedPriceConfig) (fixedPriceConfig, error) {
 	switch cfg.Proceeds {
 	case ProceedsGuildBank, ProceedsAttendees:
 	default:
@@ -676,9 +720,32 @@ func decayAmount(balance core.Centipoints, bp int64) core.Centipoints {
 //
 // The reversal's effective time is NOT the original's. A correction is a new economic event at the
 // time it is decided; backdating it would silently rewrite what every intermediate balance meant.
+//
+// A REVERSAL DOES NOT DECLARE NonNegative, AND THAT IS THE POINT. Found in review of this PR, where
+// it was declared and would have made real mistakes uncorrectable:
+//
+//	an officer credits a tick to the wrong raider  ->  +500 to Alice
+//	Alice spends it                                ->  -500, balance 0
+//	the officer reverses the erroneous tick        ->  -500, balance -500  <- below the floor
+//
+// With the floor declared, the ledger REJECTS that third batch. The ledger is append-only: there is
+// no UPDATE, no DELETE, and a reversal is the only repair primitive there is
+// (.claude/rules/ledger-and-strategy.md). A floor on it therefore does not prevent a debt — it
+// prevents the CORRECTION, and the guild is left with a mistake that is provably wrong and
+// permanently unfixable, which is a worse outcome than a visible negative balance by every measure
+// that matters.
+//
+// The debt is the correct outcome and it is meant to be seen. Alice is at -500 because she spent
+// points she was never owed; the balance says so, the reversal batch says why, and she works it off.
+// What the floor legitimately guards is a SPEND — PlanAward declares it, and an overdraft there is
+// refused before anything is written.
+//
+// SumZero still holds and is still declared: a reversal is the exact negation of a committed batch,
+// so it can no more mint a point than the original could.
 func (s FixedPrice) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) {
-	cfg, err := s.config(ctx)
-	if err != nil {
+	// The config is parsed and validated but its floor is deliberately unused; a pool whose config
+	// cannot be parsed is a pool whose planner must stop, reversal or not.
+	if _, err := s.config(ctx); err != nil {
 		return BatchProposal{}, err
 	}
 
@@ -695,12 +762,12 @@ func (s FixedPrice) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) 
 	}
 
 	// The reversal carries the ORIGINAL's config snapshot (LedgerBatch.Reversal copies it), so the
-	// batch still records the rules that were in force for the thing being undone. What it takes from
-	// today's config is the floor: a reversal that would push somebody below the CURRENT floor is
-	// still a reversal that must be refused.
+	// batch still records the rules that were in force for the thing being undone rather than the
+	// rules in force today. Its invariant set is replaced rather than inherited: the original's set
+	// constrained a spend, and this is not one. See the doc comment above for why NonNegative in
+	// particular must not be here.
 	reversal.Invariants = []Invariant{
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
-		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
 	}
 	reversal.EffectiveAt = s.effectiveAt(ctx, 0)
 

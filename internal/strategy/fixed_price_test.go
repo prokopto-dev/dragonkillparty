@@ -540,6 +540,70 @@ func TestFixedPrice_PlanReversal_NegatesAndRestampsTheEffectiveTime(t *testing.T
 	}
 }
 
+// TestFixedPrice_PlanReversal_DeclaresNoFloor_SoACorrectionIsAlwaysPostable is the regression test
+// for a defect found in review of this PR.
+//
+// The scenario, which is an ordinary Tuesday for a volunteer officer:
+//
+//	an officer credits a tick to the wrong raider  ->  Alice +500
+//	Alice spends it on an item                     ->  Alice 0
+//	the officer reverses the erroneous tick        ->  Alice -500
+//
+// A NonNegative floor on that third batch makes the ledger REJECT it. The ledger is append-only —
+// there is no UPDATE, no DELETE, and a reversal is the only repair primitive that exists — so the
+// floor would not prevent the debt, it would prevent the CORRECTION, leaving a mistake everybody can
+// see and nobody can fix. The negative balance is the correct outcome: Alice spent points she was
+// never owed, and the ledger says so.
+//
+// The end-to-end half of this — that ledger.Commit really does accept the exact inverse after the
+// spend, and really would have rejected it with the floor — is
+// TestCommit_ReversalBelowTheFloor_IsAcceptedWhenNoFloorIsDeclared in internal/ledger, which needs a
+// database this package may not have.
+func TestFixedPrice_PlanReversal_DeclaresNoFloor_SoACorrectionIsAlwaysPostable(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 0, `{"tick_award_cp": 500, "floor_cp": 0}`)
+	s := strategy.FixedPrice{}
+
+	erroneous, err := s.PlanAttendance(ctx, strategy.AttendanceEvent{
+		Attendees:   []strategy.Share{{AccountID: acct(0), Weight: 1}},
+		EffectiveAt: fixedNow,
+	})
+	require.NoError(t, err)
+
+	// Alice spends it, so her balance is 0 and the exact inverse must take her below the floor.
+	ctx.balances[acct(0)] = 0
+
+	reversal, err := s.PlanReversal(ctx, strategy.LedgerBatch{
+		ID:              acct(70),
+		Kind:            erroneous.Kind,
+		StrategyID:      erroneous.StrategyID,
+		StrategyVersion: erroneous.StrategyVersion,
+		EffectiveAt:     erroneous.EffectiveAt,
+		Entries:         erroneous.Entries,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.InvariantKind{strategy.InvariantSumZero}, invariantKinds(reversal),
+		"a reversal must declare SumZero and NOTHING else. A floor here does not stop a debt — it "+
+			"stops the correction, and an append-only ledger has no other repair primitive.")
+
+	// The inverse really is exact, and it really does go below the floor. Without both halves the
+	// assertion above is a claim about a batch that never needed the exemption.
+	var alice core.Centipoints
+
+	for _, e := range reversal.Entries {
+		if e.AccountID == acct(0) {
+			alice += e.AmountCp
+		}
+	}
+
+	require.Equal(t, core.Centipoints(-500), alice,
+		"the reversal is the exact inverse of the erroneous credit")
+	require.Negative(t, ctx.balances[acct(0)]+alice,
+		"and it takes a spent-out account below zero, which is the case the floor would have blocked")
+}
+
 // TestFixedPrice_PlanReversal_ForeignBatch_IsRefused: a reversal must be planned by the strategy that
 // planned the original, because only that strategy knows whether negation is the right inverse.
 func TestFixedPrice_PlanReversal_ForeignBatch_IsRefused(t *testing.T) {
@@ -885,6 +949,19 @@ func TestFixedPrice_Config_RejectsWhatTheSchemaWouldHaveRejected(t *testing.T) {
 		`{"tick_award_cp": 0}`,
 		`{"decay_bp": 10001}`,
 		`{"decay_bp": -5}`,
+
+		// The two the SCHEMA rejects and a lax parser would not, both found in review of this PR.
+		// A knob nobody typed correctly and a document that is not an object must not read as "the
+		// defaults" — that is a pool silently running rules its officers did not choose.
+		`{"decay_pb": 1000}`,
+		`null`,
+
+		// The rest of the not-an-object family, and the decimal that canonical §1 bans.
+		`[]`,
+		`"attendees"`,
+		`{"decay_bp": 1000}{"decay_bp": 2000}`,
+		`{"decay_bp": 1.5}`,
+		`{"default_price_cp": "250"}`,
 	} {
 		t.Run(config, func(t *testing.T) {
 			t.Parallel()
@@ -949,6 +1026,38 @@ func everyPlanner() map[string]func(ctx strategy.Ctx) error {
 			return err
 		},
 	}
+}
+
+// TestFixedPrice_Config_AbsentIsTheDefaults_AndTypoedIsNot is the other direction of the strict
+// decoding, and it is what stops the fix from being a regression.
+//
+// A pool that has set NOTHING must still plan: an empty column and the schema default '{}' both mean
+// "the shipped defaults", and rejecting them would break every pool created before its officers
+// opened the settings form. What must not be accepted is a document that LOOKS configured and is not.
+func TestFixedPrice_Config_AbsentIsTheDefaults_AndTypoedIsNot(t *testing.T) {
+	t.Parallel()
+
+	for _, config := range []string{"", "{}", "  ", "\n{}\n"} {
+		t.Run(fmt.Sprintf("%q", config), func(t *testing.T) {
+			t.Parallel()
+
+			p, err := strategy.FixedPrice{}.PlanAttendance(
+				newCtx(t, 1, 0, config), strategy.AttendanceEvent{Attendees: shares(1)})
+			require.NoError(t, err)
+			require.Equal(t, core.Centipoints(100), p.Entries[1].AmountCp,
+				"an unset config runs the shipped default tick award of 100 centipoints")
+		})
+	}
+
+	// And the near-miss it is contrasted with: one transposed character, which the schema rejects
+	// under additionalProperties: false and which used to leave decay silently off.
+	_, err := strategy.FixedPrice{}.PlanDecay(
+		newCtx(t, 1, 1_000, `{"decay_pb": 1000}`),
+		strategy.DecayRun{PeriodKey: "2024-06", AsOfSeq: 7})
+	require.ErrorIs(t, err, strategy.ErrInvalidConfig)
+	require.ErrorContains(t, err, "decay_pb",
+		"the error must name the key nobody spelled right; 'invalid config' sends an officer to read "+
+			"the whole form")
 }
 
 // TestFixedPrice_Planners_PropagateFacadeFailures asserts a failing façade read stops the plan rather

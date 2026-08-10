@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,9 +38,62 @@ import (
 // than a build tag so that the nightly lane is `DKP_PROPERTY_CHECKS=20000 make test` with no second
 // code path — a nightly suite that compiles differently from the per-PR suite is a nightly suite
 // that can go green while the real one is broken.
+//
+// ON THE SEED. Every property below draws from a FIXED, overridable seed, and prints it. That is a
+// correction from review of PR 10b: these previously passed a quick.Config with no Rand, so the
+// standard library seeded them from time.Now().UnixNano() — the cases differed on every run, the
+// seed was never printed, and a nightly counterexample could not be reproduced by any command at
+// all. `make test-property`, the nightly workflow and docs/design/04-testing.md all promise a
+// replayable seed; this is what makes the promise true here as well as in internal/strategy.
+//
+// A fixed default also beats a random one on the morning something goes red: a suite whose inputs
+// change every run is a suite where "it passed when I re-ran it" closes a real counterexample. The
+// breadth comes from the nightly 20,000-case lane, not from irreproducibility.
 
 // defaultPropertyChecks is the per-PR count from the acceptance criterion.
 const defaultPropertyChecks = 200
+
+// defaultPropertySeed is the base seed the cases are drawn from when DKP_PROPERTY_SEED is unset. The
+// same constant as internal/strategy's, so the two halves of a nightly run replay together.
+const defaultPropertySeed = 1_717_243_200
+
+// propertySeed is the base seed for this run, overridable to replay a reported failure. A malformed
+// value fails the test for the same reason a malformed check count does.
+func propertySeed(tb testing.TB) int64 {
+	tb.Helper()
+
+	raw, ok := os.LookupEnv("DKP_PROPERTY_SEED")
+	if !ok || raw == "" {
+		return defaultPropertySeed
+	}
+
+	seed, err := strconv.ParseInt(raw, 10, 64)
+	require.NoError(tb, err, "DKP_PROPERTY_SEED=%q is not a number", raw)
+
+	return seed
+}
+
+// propertyConfig builds the quick.Config every property here uses: the run's check count, and a
+// generator seeded from the run's base seed rather than from the wall clock.
+//
+// The seed is LOGGED, not just used. A counterexample that cannot be reproduced is a bug report
+// nobody can act on, and `go test` only shows the log line on failure — which is exactly when it is
+// wanted.
+func propertyConfig(tb testing.TB) *quick.Config {
+	tb.Helper()
+
+	seed := propertySeed(tb)
+	checks := propertyChecks(tb)
+
+	tb.Logf("%d cases from base seed %d — replay with DKP_PROPERTY_SEED=%d", checks, seed, seed)
+
+	return &quick.Config{
+		MaxCount: checks,
+		//nolint:gosec // G404: this is a test generator, not a security primitive. Reproducibility is
+		// the whole requirement and crypto/rand cannot be seeded.
+		Rand: rand.New(rand.NewSource(seed)),
+	}
+}
 
 // propertyChecks is the number of random cases each property runs, overridable with
 // DKP_PROPERTY_CHECKS for the nightly 20,000-case lane.
@@ -61,6 +115,79 @@ func propertyChecks(tb testing.TB) int {
 
 	return n
 }
+
+// TestPropertyConfig_SameSeed_DrawsTheSameCases is the test of the replay promise itself.
+//
+// `make test-property`, nightly-verify.yml and docs/design/04-testing.md all tell a maintainer that a
+// counterexample replays with DKP_PROPERTY_SEED. That promise was FALSE for these four properties
+// until PR 10b — they passed a quick.Config with no Rand, so the standard library seeded them from
+// the wall clock — and it went unnoticed precisely because nothing asserted it. A documented
+// reproduce command that does not reproduce is worse than none: it is a maintainer's whole Saturday.
+//
+// Both halves are the test. The same seed must draw the same cases, and a different seed must not:
+// a propertyConfig that returned a constant generator would satisfy the first alone, and 20,000
+// nightly checks of the same case is not a deep run.
+// It does NOT call t.Parallel, and cannot: t.Setenv panics in a parallel test, because the
+// environment is process-wide. That is a forced exception to the house rule, not an oversight.
+func TestPropertyConfig_SameSeed_DrawsTheSameCases(t *testing.T) {
+	draw := func(cfg *quick.Config) []splitCase {
+		out := make([]splitCase, 0, 8)
+		for range 8 {
+			out = append(out, splitCase{}.Generate(cfg.Rand, 0).Interface().(splitCase))
+		}
+
+		return out
+	}
+
+	t.Setenv("DKP_PROPERTY_SEED", "424242")
+	first := draw(propertyConfig(t))
+
+	t.Setenv("DKP_PROPERTY_SEED", "424242")
+	require.Equal(t, first, draw(propertyConfig(t)),
+		"the same seed must draw the same cases, or DKP_PROPERTY_SEED replays nothing")
+
+	t.Setenv("DKP_PROPERTY_SEED", "424243")
+	require.NotEqual(t, first, draw(propertyConfig(t)),
+		"a different seed must draw different cases; a generator that ignored its seed would make "+
+			"the nightly 20 000-case lane 20 000 runs of one case")
+}
+
+// TestPropertySeed_MalformedValue_FailsRatherThanFallingBack: a typo'd seed must not silently run the
+// default, for the same reason a typo'd check count must not — a run that reports a replay it did
+// not perform sends somebody looking for a bug in the wrong place.
+func TestPropertySeed_MalformedValue_FailsRatherThanFallingBack(t *testing.T) {
+	t.Setenv("DKP_PROPERTY_SEED", "4242forty-two")
+
+	fake := &recordingTB{TB: t}
+
+	// On its own goroutine: require.NoError calls FailNow, which the recorder implements with
+	// runtime.Goexit, and running that on the test's goroutine would end this test rather than
+	// record the failure. The deferred close still runs on Goexit, which is what makes the wait
+	// terminate.
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		propertySeed(fake)
+	}()
+
+	<-done
+
+	require.True(t, fake.failed, "a malformed DKP_PROPERTY_SEED must fail the test")
+}
+
+// recordingTB captures a require failure instead of ending the real test. require.NoError calls
+// FailNow, which must run on the test's own goroutine, so the helper under test is called directly
+// and the failure is recorded rather than propagated.
+type recordingTB struct {
+	testing.TB
+
+	failed bool
+}
+
+func (r *recordingTB) Errorf(string, ...any) { r.failed = true }
+func (r *recordingTB) FailNow()              { r.failed = true; runtime.Goexit() }
 
 // splitCase is one generated (total, weights) pair — the input to a zero-sum split.
 type splitCase struct {
@@ -154,7 +281,7 @@ func TestProperty_P2_CreditsSumToDebitExactly(t *testing.T) {
 		return sum == c.Total
 	}
 
-	require.NoError(t, quick.Check(sumsExactly, &quick.Config{MaxCount: propertyChecks(t)}))
+	require.NoError(t, quick.Check(sumsExactly, propertyConfig(t)))
 }
 
 // TestProperty_P1_ZeroSumConservationOverBatchSequences is P1: over a random SEQUENCE of zero-sum
@@ -202,21 +329,21 @@ func TestProperty_P1_ZeroSumConservationOverBatchSequences(t *testing.T) {
 		return total == 0
 	}
 
-	require.NoError(t, quick.Check(conserves, &quick.Config{
-		MaxCount: propertyChecks(t),
-		Values: func(vs []reflect.Value, rng *rand.Rand) {
-			// One to eight batches per sequence: enough for remainders to interact, small enough
-			// that a failure is readable.
-			n := rng.Intn(8) + 1
-			seq := make([]splitCase, n)
+	cfg := propertyConfig(t)
+	cfg.Values = func(vs []reflect.Value, rng *rand.Rand) {
+		// One to eight batches per sequence: enough for remainders to interact, small enough
+		// that a failure is readable.
+		n := rng.Intn(8) + 1
+		seq := make([]splitCase, n)
 
-			for i := range seq {
-				seq[i] = splitCase{}.Generate(rng, 0).Interface().(splitCase)
-			}
+		for i := range seq {
+			seq[i] = splitCase{}.Generate(rng, 0).Interface().(splitCase)
+		}
 
-			vs[0] = reflect.ValueOf(seq)
-		},
-	}))
+		vs[0] = reflect.ValueOf(seq)
+	}
+
+	require.NoError(t, quick.Check(conserves, cfg))
 }
 
 // TestProperty_P5_ReversalIsAnExactInverse is P5: negating a proposal and applying both leaves every
@@ -289,7 +416,7 @@ func TestProperty_P5_ReversalIsAnExactInverse(t *testing.T) {
 		return true
 	}
 
-	require.NoError(t, quick.Check(inverts, &quick.Config{MaxCount: propertyChecks(t)}))
+	require.NoError(t, quick.Check(inverts, propertyConfig(t)))
 }
 
 // TestProperty_P8_SameSeedProducesAByteIdenticalProposal is P8: planning the same event twice from
@@ -360,13 +487,13 @@ func TestProperty_P8_SameSeedProducesAByteIdenticalProposal(t *testing.T) {
 		return false
 	}
 
-	require.NoError(t, quick.Check(deterministic, &quick.Config{
-		MaxCount: propertyChecks(t),
-		Values: func(vs []reflect.Value, rng *rand.Rand) {
-			vs[0] = reflect.ValueOf(rng.Int63() - (1 << 62)) // negative seeds must work too
-			vs[1] = splitCase{}.Generate(rng, 0)
-		},
-	}))
+	cfg := propertyConfig(t)
+	cfg.Values = func(vs []reflect.Value, rng *rand.Rand) {
+		vs[0] = reflect.ValueOf(rng.Int63() - (1 << 62)) // negative seeds must work too
+		vs[1] = splitCase{}.Generate(rng, 0)
+	}
+
+	require.NoError(t, quick.Check(deterministic, cfg))
 }
 
 // planWithRng is the miniature planner P8 exercises: it shuffles the shares with the injected Rng,
