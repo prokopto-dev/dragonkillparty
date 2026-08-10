@@ -1,10 +1,12 @@
 package ledger_test
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -33,7 +35,7 @@ func TestSystemAccounts_SeededAndAddressableByID(t *testing.T) {
 			byID, err := ledger.GetAccount(t.Context(), q, wantID)
 			require.NoError(t, err, "system account %q must be addressable at id %s", key, wantID)
 			require.Equal(t, wantID, byID.ID)
-			require.Equal(t, "system", byID.Kind)
+			require.Equal(t, accountkinds.KindSystem, byID.Kind)
 			require.Nil(t, byID.PersonID, "a system account has no person")
 			require.NotNil(t, byID.SystemKey)
 			require.Equal(t, key, *byID.SystemKey)
@@ -44,6 +46,37 @@ func TestSystemAccounts_SeededAndAddressableByID(t *testing.T) {
 			require.Equal(t, wantID, byKey.ID, "id-lookup and key-lookup must return the same account")
 		})
 	}
+}
+
+// TestSystemAccountIDs_CoverTheCatalogue holds the pairing above to internal/account/kinds: every
+// system key in the catalogue has a deterministic id here, and every id here belongs to a key that is
+// still in the catalogue.
+//
+// The test above iterates SystemAccountIDs, so it proves the map's OWN entries are seeded and says
+// nothing about a key the map has never heard of. That is the gap a fifth system key falls through: a
+// value added to the catalogue and to the generated CHECK, with no id and no seed row, is accepted by
+// the database and resolves to store.ErrNotFound the first time a planner routes a remainder to it.
+// The set comparison is what internal/ledger/account.go's doc comment now points at instead of
+// asserting by prose that the three lists are identical.
+func TestSystemAccountIDs_CoverTheCatalogue(t *testing.T) {
+	t.Parallel()
+
+	ids := ledger.SystemAccountIDs()
+
+	paired := make([]string, 0, len(ids))
+	for key := range ids {
+		paired = append(paired, key)
+	}
+
+	sort.Strings(paired)
+
+	want := accountkinds.SystemKeys()
+	sort.Strings(want)
+
+	require.Equal(t, want, paired,
+		"internal/ledger.SystemAccountIDs and internal/account/kinds disagree — a catalogued key with "+
+			"no id cannot be seeded or resolved, and an id whose key left the catalogue names an account "+
+			"the CHECK now rejects")
 }
 
 // TestDefaultPool_Seeded proves the one default pool the migration seeds exists at its deterministic

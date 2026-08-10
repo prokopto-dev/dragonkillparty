@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
@@ -175,9 +176,6 @@ func checkUniversal(
 
 	return kinds, nil
 }
-
-// accountKindSystem is account.kind's value for the four ledger-addressable non-human accounts.
-const accountKindSystem = "system"
 
 // checkReversalLinkage requires that reverses_batch_id is set if and only if this is a reversal, and
 // that the batch it names lives in the same pool.
@@ -378,7 +376,7 @@ func checkNonNegative(
 	}
 
 	for _, k := range sortedKeys(deltas) {
-		if kinds[k.accountID] == accountKindSystem {
+		if kinds[k.accountID] == accountkinds.KindSystem {
 			continue
 		}
 
