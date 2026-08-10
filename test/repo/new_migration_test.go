@@ -10,13 +10,20 @@ import (
 )
 
 // migrationFixture builds a minimal tree that scripts/new-migration.sh can run against: a Makefile
-// carrying the ATLAS_VERSION pin shape, an atlas.hcl, a db/schema.hcl and an empty migration
-// directory.
+// carrying the ATLAS_VERSION pin shape, the repository's own atlas.hcl, a db/schema.hcl and an
+// empty migration directory.
 //
 // Same DKP_REPO_ROOT mechanism as the licence-gate and install-atlas fixtures, for the same reason:
 // a script whose refusals have never been observed firing is a script nobody knows refuses
 // anything, and a fixture that triggers them cannot live in this checkout without breaking the real
 // `make migration`.
+//
+// THE REAL atlas.hcl IS COPIED IN rather than re-typed here, and that is load-bearing. Its paths
+// are relative (`file://db/schema.hcl`, `file://db/migrations-sqlite`), so it resolves against this
+// tree unchanged. A hand-written second copy drifts: the version this fixture carried before issue
+// #36 pinned the dev database to one fixed name, so the fix to the real file would have left every
+// fixture-driven invocation still contending for the one machine-wide Atlas lock — the flake would
+// have survived its own fix, in the tests that exist to catch it.
 func migrationFixture(tb testing.TB, schema string) string {
 	tb.Helper()
 
@@ -30,15 +37,11 @@ func migrationFixture(tb testing.TB, schema string) string {
 	}
 
 	write("Makefile", "ATLAS_VERSION          ?= v1.3.0\n")
-	write("atlas.hcl", `env "sqlite" {
-  src = "file://db/schema.hcl"
-  dev = "sqlite://file?mode=memory"
-  migration {
-    dir    = "file://db/migrations-sqlite"
-    format = goose
-  }
-}
-`)
+
+	realHCL, err := os.ReadFile(filepath.Join(repoRoot(tb), "atlas.hcl"))
+	require.NoError(tb, err, "read the repository's atlas.hcl")
+	write("atlas.hcl", string(realHCL))
+
 	write("db/schema.hcl", schema)
 	require.NoError(tb, os.MkdirAll(filepath.Join(tree, "db", "migrations-sqlite"), 0o755))
 

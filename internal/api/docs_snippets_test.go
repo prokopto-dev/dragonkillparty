@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,7 +288,7 @@ func compileHCLSnippets(t *testing.T, root string, snippets []snippet) {
 
 		cmd := exec.Command(atlas, "schema", "inspect", //nolint:gosec // resolved path, fixed args
 			"--url", "file://"+file,
-			"--dev-url", "sqlite://file?mode=memory",
+			"--dev-url", atlasDevURL(t),
 		)
 
 		out, inspectErr := cmd.CombinedOutput()
@@ -297,6 +299,24 @@ func compileHCLSnippets(t *testing.T, root string, snippets []snippet) {
 	}
 
 	require.Positive(t, checked, "no HCL snippets were checked")
+}
+
+// atlasDevURL returns an in-memory Atlas dev-url whose database name no other invocation will use.
+//
+// Atlas derives its advisory lock name from the dev-url and takes that lock machine-wide, so two
+// Atlas processes sharing a dev-url can fail with `acquiring database lock: ... already taken`
+// rather than queueing — the flake in issue #36, which fired on `migrate diff` between packages
+// that `go test ./...` was running at the same time. `schema inspect` is not observed taking that
+// lock today, so this call site is not the one that failed; it gets its own name anyway, because
+// the fixed string is what a future call site copies and atlas.hcl no longer contains one to copy.
+func atlasDevURL(t *testing.T) string {
+	t.Helper()
+
+	var id [8]byte
+	_, err := rand.Read(id[:])
+	require.NoError(t, err, "read random bytes for the Atlas dev database name")
+
+	return "sqlite://dkp_dev_" + hex.EncodeToString(id[:]) + "?mode=memory"
 }
 
 // uniqueQueryNames suffixes every `-- name: Foo :one` in a snippet with a per-snippet tag, so the
