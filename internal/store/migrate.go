@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/pressly/goose/v3"
@@ -330,8 +331,23 @@ func AppendOnlyTriggers() []AppendOnlyTrigger {
 	return out
 }
 
-// MissingAppendOnlyTriggers returns the catalogued triggers this database does not have, in
-// catalogue order.
+// AppendOnlyState is the ledger's database-level protection as it stands right now: which of the
+// catalogued tables exist, and which of their triggers are absent.
+//
+// Both halves, because either one alone can be defeated. Triggers alone would miss a migration that
+// drops a ledger table outright — every trigger on a table that does not exist is vacuously fine,
+// which is the same exemption that makes a fresh install work. Tables alone would miss the forgetful
+// rebuild this whole mechanism exists for. What the boot path compares is this pair, before a
+// migration against after it.
+type AppendOnlyState struct {
+	// Tables are the catalogued ledger tables that exist, in catalogue order.
+	Tables []string
+	// MissingTriggers are catalogued triggers absent from a table that DOES exist, in catalogue
+	// order. A trigger whose table is not there is not listed — see AppendOnlyState's doc comment.
+	MissingTriggers []string
+}
+
+// AppendOnlyState reads the ledger's protection out of sqlite_schema.
 //
 // This is the third question the boot path asks after each migration, alongside integrity_check and
 // foreign_key_check, and it is the one neither of those can answer. SQLite's DROP TABLE takes every
@@ -340,11 +356,11 @@ func AppendOnlyTriggers() []AppendOnlyTrigger {
 // whose history is editable. "Your ledger cannot be edited" is the product's entire trust argument
 // and this is the only runtime verification of the database half of it.
 //
-// It reports a SET rather than pass/fail because the policy is not this package's to make — this
+// It reports STATE rather than pass/fail because the policy is not this package's to make — this
 // file owns the statements an upgrade runs and internal/migrate owns what to do about the answers.
 // The difference matters here more than usual: what internal/migrate does with this is compare the
-// set before a migration with the set after it, so that a database which ARRIVED degraded can still
-// be upgraded while a migration that degrades one is refused.
+// state before a migration with the state after it, so that a database which ARRIVED degraded can
+// still be upgraded while a migration that degrades one is refused.
 //
 // It is strictly cheaper than integrity_check, which already runs at the same points: one read of
 // sqlite_schema against a whole-file page scan.
@@ -352,8 +368,10 @@ func AppendOnlyTriggers() []AppendOnlyTrigger {
 // A trigger whose TABLE does not exist yet is not missing — it is early. The boot path runs this
 // after every migration including the ones that precede the ledger's own, so a check that demanded
 // trg_ledger_entry_no_update on a database that has not yet created ledger_entry would fail every
-// fresh install on migration 1. Presence of the table is what makes its triggers required.
-func (s *Store) MissingAppendOnlyTriggers(ctx context.Context) ([]string, error) {
+// fresh install on migration 1. Presence of the table is what makes its triggers required — and
+// reporting the table set alongside is what stops that exemption from being a way through, because
+// a table that was there before a migration and is not there after it is not "early", it is gone.
+func (s *Store) AppendOnlyState(ctx context.Context) (AppendOnlyState, error) {
 	// sqlite_schema rows for the ledger's two tables: the tables themselves and everything attached
 	// to them. One read rather than two, so the table set and the trigger set cannot be observed at
 	// different moments.
@@ -361,7 +379,7 @@ func (s *Store) MissingAppendOnlyTriggers(ctx context.Context) ([]string, error)
 		`SELECT type, name, tbl_name FROM sqlite_schema
 		 WHERE tbl_name IN ('ledger_batch', 'ledger_entry') AND type IN ('table', 'trigger')`)
 	if err != nil {
-		return nil, fmt.Errorf("read append-only triggers: %w", err)
+		return AppendOnlyState{}, fmt.Errorf("read the ledger's append-only state: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -373,7 +391,7 @@ func (s *Store) MissingAppendOnlyTriggers(ctx context.Context) ([]string, error)
 	for rows.Next() {
 		var objType, name, tblName string
 		if err := rows.Scan(&objType, &name, &tblName); err != nil {
-			return nil, fmt.Errorf("scan append-only triggers: %w", err)
+			return AppendOnlyState{}, fmt.Errorf("scan the ledger's append-only state: %w", err)
 		}
 
 		switch objType {
@@ -385,18 +403,26 @@ func (s *Store) MissingAppendOnlyTriggers(ctx context.Context) ([]string, error)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read append-only triggers: %w", err)
+		return AppendOnlyState{}, fmt.Errorf("read the ledger's append-only state: %w", err)
 	}
 
-	var missing []string
+	var state AppendOnlyState
 
 	for _, want := range appendOnlyTriggers {
-		if tables[want.Table] && !present[want.Name] {
-			missing = append(missing, want.Name)
+		if !tables[want.Table] {
+			continue
+		}
+
+		if !slices.Contains(state.Tables, want.Table) {
+			state.Tables = append(state.Tables, want.Table)
+		}
+
+		if !present[want.Name] {
+			state.MissingTriggers = append(state.MissingTriggers, want.Name)
 		}
 	}
 
-	return missing, nil
+	return state, nil
 }
 
 // QuickCheck runs PRAGMA quick_check — integrity_check without the (expensive) index content

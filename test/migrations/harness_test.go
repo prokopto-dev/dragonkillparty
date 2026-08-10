@@ -58,6 +58,10 @@ const (
 	// the "works on fresh install, breaks on upgrade" class .claude/rules/migrations.md calls the
 	// most damaging bug this product can ship.
 	batchRebuildInTransactionFixture = "../fixtures/migrations/rebuild/000002_ledger_batch_rebuild_in_transaction.sql"
+	// dropLedgerEntryFixture removes a ledger table and does not put it back. It is the way THROUGH
+	// a trigger check that only counts triggers: a trigger on a table that does not exist is
+	// vacuously present, so this destroys every entry and reports nothing missing.
+	dropLedgerEntryFixture = "../fixtures/migrations/drop/000002_drop_ledger_entry.sql"
 )
 
 // gooseUpStatements returns the executable statements in a migration's Up block.

@@ -97,7 +97,7 @@ func foreignKeysOn(tb testing.TB, s *Store) int {
 // TestAppendOnlyTriggers_Catalogue_MatchesAFreshInstall is what stops the hard-coded catalogue from
 // becoming a lie.
 //
-// AppendOnlyTriggerCheck is deliberately literal: it compares the database against a list written
+// The check is deliberately literal: it compares the database against a list written
 // out in Go rather than against the migration set, because a check derived from the migrations
 // cannot notice a migration that dropped a trigger — it would just expect less. The price of that
 // choice is a list that has to be maintained, and a stale list narrows the boot check silently: a
@@ -134,26 +134,28 @@ func TestAppendOnlyTriggers_ReturnsACopy(t *testing.T) {
 			"boot check reads")
 }
 
-// TestMissingAppendOnlyTriggers_FreshInstall_ReportsNone is the control for the two tests below.
+// TestAppendOnlyState_FreshInstall_ReportsEverythingPresent is the control for the two tests below.
 // Without it, a check that reported every database broken would satisfy them both.
-func TestMissingAppendOnlyTriggers_FreshInstall_ReportsNone(t *testing.T) {
+func TestAppendOnlyState_FreshInstall_ReportsEverythingPresent(t *testing.T) {
 	t.Parallel()
 
 	s := NewDB(t)
 
-	missing, err := s.MissingAppendOnlyTriggers(t.Context())
+	state, err := s.AppendOnlyState(t.Context())
 	require.NoError(t, err)
-	require.Empty(t, missing, "a fresh install has every append-only trigger")
+	require.Empty(t, state.MissingTriggers, "a fresh install has every append-only trigger")
+	require.Equal(t, []string{"ledger_batch", "ledger_entry"}, state.Tables,
+		"a fresh install has both ledger tables")
 }
 
-// TestMissingAppendOnlyTriggers_DroppedTrigger_IsReported is the failure the check exists for,
+// TestAppendOnlyState_DroppedTrigger_IsReported is the failure the check exists for,
 // produced the way a 12-step table rebuild produces it: the trigger is gone and nothing else is
 // wrong.
 //
 // The database here is otherwise perfect — integrity_check and foreign_key_check both pass, no row
 // moved — which is the entire point. Those two are what the boot path used to run, and neither has
 // an opinion about a trigger.
-func TestMissingAppendOnlyTriggers_DroppedTrigger_IsReported(t *testing.T) {
+func TestAppendOnlyState_DroppedTrigger_IsReported(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -189,9 +191,11 @@ func TestMissingAppendOnlyTriggers_DroppedTrigger_IsReported(t *testing.T) {
 				require.NoError(t, err, "drop %s to simulate a rebuild that forgot it", name)
 			}
 
-			missing, err := s.MissingAppendOnlyTriggers(t.Context())
+			state, err := s.AppendOnlyState(t.Context())
 			require.NoError(t, err)
-			require.Equal(t, tc.want, missing)
+			require.Equal(t, tc.want, state.MissingTriggers)
+			require.Equal(t, []string{"ledger_batch", "ledger_entry"}, state.Tables,
+				"dropping a trigger must not disturb the table set the boot path compares")
 
 			// The two checks that used to be the whole story still say the database is fine, which is
 			// why this third one had to exist.
@@ -204,14 +208,14 @@ func TestMissingAppendOnlyTriggers_DroppedTrigger_IsReported(t *testing.T) {
 	}
 }
 
-// TestMissingAppendOnlyTriggers_TableAbsent_IsNotAFailure covers the fresh-install path the boot loop
+// TestAppendOnlyState_TableAbsent_ReportsNeitherTableNorTriggers covers the fresh-install path the boot loop
 // walks every time.
 //
 // The check runs after EVERY migration, including the ones that land before the ledger exists. If a
 // trigger whose table has not been created yet counted as missing, the first migration of every
 // fresh install would fail the check, restore a snapshot of an empty database and exit 1 — turning a
 // guarantee about the ledger into a product that cannot start.
-func TestMissingAppendOnlyTriggers_TableAbsent_IsNotAFailure(t *testing.T) {
+func TestAppendOnlyState_TableAbsent_ReportsNeitherTableNorTriggers(t *testing.T) {
 	t.Parallel()
 
 	s := NewDB(t)
@@ -223,9 +227,16 @@ func TestMissingAppendOnlyTriggers_TableAbsent_IsNotAFailure(t *testing.T) {
 		require.NoError(t, err, stmt)
 	}
 
-	missing, err := s.MissingAppendOnlyTriggers(t.Context())
+	state, err := s.AppendOnlyState(t.Context())
 	require.NoError(t, err)
-	require.Empty(t, missing,
+	require.Empty(t, state.MissingTriggers,
 		"a trigger whose table does not exist yet is early, not missing — demanding it would fail "+
 			"migration 000001 of every fresh install")
+
+	// And the half that stops that exemption from being a way through. The triggers are vacuously
+	// fine; the TABLES are not there, and the boot path compares this set across each migration so a
+	// table that was present before one and absent after it is caught as the disaster it is.
+	require.Empty(t, state.Tables,
+		"AppendOnlyState must report the ledger tables it found, or a migration that DROPS one "+
+			"reports nothing missing and passes every check")
 }

@@ -116,6 +116,15 @@ var ErrMigrationFailed = errors.New("migration failed and the database was resto
 // prose. It arrives wrapped in a FailedError, whose Unwrap reaches it.
 var ErrAppendOnlyTriggerLost = errors.New("a migration dropped an append-only ledger trigger")
 
+// ErrLedgerTableDropped is the same check's other half: a migration removed a ledger table outright
+// and did not put it back.
+//
+// Distinct from ErrAppendOnlyTriggerLost because the events read differently to whoever gets paged —
+// one says the ledger can be rewritten, this one says it is gone — and because a check that only
+// counted triggers would never fire here at all: every trigger on a table that does not exist is
+// vacuously present, which is the exemption that lets a fresh install run migration 000001.
+var ErrLedgerTableDropped = errors.New("a migration dropped a ledger table")
+
 // FailedError is returned when a migration failed and the snapshot was put back.
 //
 // It carries the snapshot path because that is the single most useful fact for the operator, and

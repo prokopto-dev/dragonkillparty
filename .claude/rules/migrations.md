@@ -264,14 +264,22 @@ future normalisation change would force a 12-step rebuild.
 1. `schema_version` newer than the binary → **refuse to start** with the restore command printed.
 2. Pending migrations and `DKP_AUTO_MIGRATE != false` → `VACUUM INTO` a zstd snapshot **first**,
    then apply per-migration, and after each one: restore `foreign_keys = ON` on the write
-   connection, then `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and **the append-only
-   triggers are all still there**.
+   connection, then `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and **the ledger's tables
+   and append-only triggers are all still there**.
 3. Any failure → **automatically restore the snapshot**, exit 1, name the failing migration.
 
-The third check is `internal/store.MissingAppendOnlyTriggers`, read against a hard-coded catalogue in
-that package. It is there because the other two have no opinion about a trigger: a migration that
-rebuilds a ledger table and forgets the re-creation passes both, loses no row, and hands back a
-database whose history is editable. Two properties are worth knowing before you write a migration:
+The third check is `internal/store.AppendOnlyState`, read against a hard-coded catalogue in that
+package. It is there because the other two have no opinion about a trigger: a migration that rebuilds
+a ledger table and forgets the re-creation passes both, loses no row, and hands back a database whose
+history is editable. It compares **two** things, and the second is not decoration — a trigger on a
+table that does not exist is vacuously present, which is what lets a fresh install run migration
+000001, and would otherwise be a way straight through: a migration that `DROP`s `ledger_entry` takes
+every row and both triggers with it, dangles no foreign key, corrupts no page, and leaves nothing
+"missing" to report. Three properties are worth knowing before you write a migration:
+
+- **A ledger table that disappears across a migration is refused.** A 12-step rebuild is unaffected:
+  it drops and re-creates the table under the same name inside one file, and only the state before
+  and after the whole file is compared.
 
 - **It compares against the state before each migration, not against the catalogue.** What is refused
   is a migration that *lost* a trigger that was present when it started. A database that arrived

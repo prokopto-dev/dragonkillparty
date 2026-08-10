@@ -104,6 +104,73 @@ func TestMigrate_ForgetfulRebuild_BootRefusesAndRestores(t *testing.T) {
 	})
 }
 
+// TestMigrate_DroppedLedgerTable_BootRefusesAndRestores closes the way THROUGH the check above.
+//
+// A check that only counts triggers cannot see this, and the reason is the same exemption that makes
+// it usable: a trigger on a table that does not exist is vacuously present, because a fresh install
+// has to be able to apply migration 000001 without ledger_entry existing yet. Drop the table
+// afterwards and that exemption reports a healthy database — integrity_check passes, foreign_key_check
+// passes (ledger_entry is the child, so nothing dangles), no trigger is missing because neither has a
+// table to be missing from, and every entry the guild ever recorded is gone.
+//
+// So the boot path compares the ledger's TABLE SET across each migration as well. Legitimate rebuilds
+// are unaffected: a 12-step rebuild drops and re-creates the table under the same name inside one
+// migration, and the comparison only looks at the state before and after the whole file — which is
+// exactly what TestMigrate_FullStack_LedgerDataSurvivesUpgrade and the ledger_batch rebuild tests
+// demonstrate by passing.
+func TestMigrate_DroppedLedgerTable_BootRefusesAndRestores(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("applies real migrations to a real database; run `make test` or `make check`")
+	}
+
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "dkp.db")
+
+	installed, err := migrate.New(migrationDir(t), migrate.Config{
+		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.0.0", AutoMigrate: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, installed.Migrate(t.Context()))
+
+	var baseline ledgerSnapshot
+
+	withRawFK(t, dbPath, func(handle *sql.DB) {
+		seedLedger(t, handle)
+		baseline = snapshotLedger(t, handle)
+	})
+
+	upgraded, err := migrate.New(migrationDir(t, dropLedgerEntryFixture), migrate.Config{
+		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.1.0", AutoMigrate: true,
+	})
+	require.NoError(t, err)
+
+	runErr := upgraded.Migrate(t.Context())
+	require.Error(t, runErr,
+		"a migration that DROPPED ledger_entry was accepted. Every entry the guild ever recorded is "+
+			"gone, and integrity_check, foreign_key_check and a trigger-only check all report a "+
+			"perfectly healthy database — a table with no rows has no triggers to be missing.")
+
+	require.ErrorIs(t, runErr, migrate.ErrLedgerTableDropped)
+	require.ErrorIs(t, runErr, migrate.ErrMigrationFailed, "it must take the auto-restore path")
+	require.ErrorContains(t, runErr, "ledger_entry", "the failure must name the table that went")
+
+	var failed *migrate.FailedError
+	require.ErrorAs(t, runErr, &failed)
+	require.Equal(t, fixtureName(t, dropLedgerEntryFixture, 0), failed.Migration.Source)
+	require.True(t, failed.Restored, "the migrator reported that it did not restore")
+
+	restored := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, migrate.Decompress(failed.Snapshot, restored))
+	require.Equal(t, fileSHA256(t, restored), fileSHA256(t, dbPath),
+		"the database is not byte-identical to the pre-migration snapshot after a dropped ledger table")
+
+	withRawFK(t, dbPath, func(handle *sql.DB) {
+		requireLedgerIntact(t, handle, baseline, "the refused DROP TABLE")
+	})
+}
+
 // TestMigrate_AlreadyDegradedDatabase_StillUpgrades is the other half of the decision, and it is the
 // half that is easy to get wrong by being strict.
 //

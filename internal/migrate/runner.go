@@ -185,12 +185,12 @@ func (r *Runner) Migrate(ctx context.Context) error {
 	// Before anything is applied, and on every boot including the ones with nothing to do: does this
 	// database still have its append-only triggers?
 	//
-	// This half only warns, and it doubles as the BASELINE for the loop below. Failing here would
-	// refuse to start a database that arrived already degraded — from a past upgrade, a fork's
-	// build, or a support session with a SQLite client — and locking an officer out of their guild's
-	// site over damage that is already done helps nobody, least of all at 1 a.m. What the loop
-	// refuses is a migration that makes it WORSE, which is a thing this boot did and can undo.
-	missing := r.warnIfTriggersMissing(ctx, s)
+	// This only warns. Failing here would refuse to start a database that arrived already degraded —
+	// from a past upgrade, a fork's build, or a support session with a SQLite client — and locking
+	// an officer out of their guild's site over damage that is already done helps nobody, least of
+	// all at 1 a.m. What the loop below refuses is a migration that makes it WORSE, which is a thing
+	// this boot did and can undo.
+	r.warnIfTriggersMissing(ctx, s)
 
 	if len(st.Pending) == 0 {
 		return r.recordVersion(ctx, s, st.Applied)
@@ -215,6 +215,19 @@ func (r *Runner) Migrate(ctx context.Context) error {
 	migrator, err := s.Migrator(r.fsys)
 	if err != nil {
 		return err
+	}
+
+	// The baseline the append-only check below compares against: which ledger tables exist and which
+	// of their triggers are already absent, before any of this boot's migrations run.
+	//
+	// Read here rather than at the warn above, and its failure is fatal rather than logged. Nothing
+	// has been applied yet, so returning is safe and needs no restore — and proceeding on a baseline
+	// nobody could establish is the one option that must not be available: it would make every
+	// comparison below vacuous on exactly the database too damaged to read, which is the database
+	// that most needs them.
+	guard, err := s.AppendOnlyState(ctx)
+	if err != nil {
+		return fmt.Errorf("read the ledger's append-only state before migrating: %w", err)
 	}
 
 	// One at a time, with all three checks after each. A bulk apply would discover the corruption
@@ -262,22 +275,35 @@ func (r *Runner) Migrate(ctx context.Context) error {
 		// pre-migration snapshot is still on disk, and restoring it is strictly better than serving
 		// a ledger that no longer refuses to be rewritten.
 		//
-		// The comparison is against what was missing BEFORE this migration, not against the full
-		// catalogue, and that is what keeps the check from being a trap. A database that arrived
-		// already missing a trigger would otherwise fail this check on the first migration it was
-		// ever offered — the officer's upgrade path would be closed for good by damage that predates
-		// the binary, and the only escape would be the flag that turns migrations off. What is
-		// refused here is a migration that LOST something that was present when it started.
-		found, checkErr := s.MissingAppendOnlyTriggers(ctx)
+		// The comparison is against the state BEFORE this migration, not against the full catalogue,
+		// and that is what keeps the check from being a trap. A database that arrived already
+		// missing a trigger would otherwise fail this check on the first migration it was ever
+		// offered — the officer's upgrade path would be closed for good by damage that predates the
+		// binary, and the only escape would be the flag that turns migrations off. What is refused
+		// here is a migration that LOST something that was present when it started.
+		//
+		// Both halves of that state are compared, and the table half is not decoration. A trigger on
+		// a table that does not exist is vacuously fine — that exemption is what lets a fresh
+		// install apply migration 000001 without demanding triggers for tables migration 000003
+		// creates. Without the table comparison it is also a way straight through the check: a
+		// migration that DROPS ledger_entry takes the rows and both triggers with it, dangles no
+		// foreign key, corrupts no page, and would leave nothing "missing" to report.
+		found, checkErr := s.AppendOnlyState(ctx)
 		if checkErr != nil {
 			return r.failed(ctx, s, closeStore, applied, snapshot, checkErr)
 		}
 
-		if lost := newlyMissing(missing, found); len(lost) > 0 {
+		// Tables that were there before this migration and are not there now.
+		if dropped := notIn(guard.Tables, found.Tables); len(dropped) > 0 {
+			return r.failed(ctx, s, closeStore, applied, snapshot, tablesDroppedError(dropped))
+		}
+
+		// Triggers missing now that were not missing before.
+		if lost := notIn(found.MissingTriggers, guard.MissingTriggers); len(lost) > 0 {
 			return r.failed(ctx, s, closeStore, applied, snapshot, triggersLostError(lost))
 		}
 
-		missing = found
+		guard = found
 
 		slog.InfoContext(ctx, "migration applied", "migration", applied.Source, "version", applied.Version)
 	}
@@ -302,54 +328,48 @@ func (r *Runner) Migrate(ctx context.Context) error {
 // see it; a guild whose site refuses to boot at 1 a.m. would learn nothing more and lose the raid.
 //
 // A failure to ASK the question is reported as itself rather than as a missing trigger, and neither
-// stops the boot: this is a diagnostic on a path that has not been asked to do anything yet, and a
-// database too broken to read sqlite_schema is about to fail a check that does stop the boot.
-//
-// It returns the missing set, which the migration loop uses as its baseline. An unreadable schema
-// yields nil — the pessimistic direction: every trigger then counts as present, so a migration that
-// drops one is still refused, and the run fails on the re-read rather than on a baseline nobody
-// could establish.
-func (r *Runner) warnIfTriggersMissing(ctx context.Context, s *store.Store) []string {
-	missing, err := s.MissingAppendOnlyTriggers(ctx)
+// stops the boot: this is a diagnostic on a path that has not been asked to do anything yet. The
+// migration loop reads the same state again as its baseline, and there the read failing IS fatal —
+// see Migrate.
+func (r *Runner) warnIfTriggersMissing(ctx context.Context, s *store.Store) {
+	state, err := s.AppendOnlyState(ctx)
 	if err != nil {
 		slog.WarnContext(ctx, "could not verify the ledger's append-only triggers",
 			"error", err, "db_path", r.cfg.DBPath)
 
-		return nil
+		return
 	}
 
-	if len(missing) == 0 {
-		return nil
+	if len(state.MissingTriggers) == 0 {
+		return
 	}
 
 	slog.ErrorContext(ctx, "the ledger's append-only triggers are not all present on this database",
-		"missing", missing, "db_path", r.cfg.DBPath,
+		"missing", state.MissingTriggers, "db_path", r.cfg.DBPath,
 		"detail", "this database arrived in this state; this boot did not cause it. Ledger history "+
 			"can be rewritten until the triggers are restored.")
-
-	return missing
 }
 
-// newlyMissing returns the triggers absent after a migration that were present before it.
+// notIn returns the elements of want that do not appear in have.
 //
-// The subtraction is the whole point: it separates "this migration destroyed a guarantee" from "this
-// database was already like that", and only the first is something the boot path can or should act
-// on.
-func newlyMissing(before, after []string) []string {
-	was := make(map[string]bool, len(before))
-	for _, name := range before {
-		was[name] = true
+// The subtraction is the whole point of the check it serves: it separates "this migration destroyed
+// a guarantee" from "this database was already like that", and only the first is something the boot
+// path can or should act on.
+func notIn(want, have []string) []string {
+	present := make(map[string]bool, len(have))
+	for _, name := range have {
+		present[name] = true
 	}
 
-	var lost []string
+	var out []string
 
-	for _, name := range after {
-		if !was[name] {
-			lost = append(lost, name)
+	for _, name := range want {
+		if !present[name] {
+			out = append(out, name)
 		}
 	}
 
-	return lost
+	return out
 }
 
 // triggersLostError is what the operator reads when a migration dropped a trigger.
@@ -362,6 +382,19 @@ func triggersLostError(lost []string) error {
 		"A migration that rebuilds a table carrying a trigger must re-create it after the rename, "+
 		"in the same file (.claude/rules/migrations.md case 1)",
 		ErrAppendOnlyTriggerLost, strings.Join(lost, ", "))
+}
+
+// tablesDroppedError is the louder sibling: not "the ledger can be edited" but "the ledger is gone".
+//
+// Separate from triggersLostError because the two are different events to whoever reads them, and
+// because a rebuild is the ONE legitimate reason a ledger table is dropped at all — a correct one
+// re-creates it under the same name within the same migration, so this fires only when it was still
+// absent at the end.
+func tablesDroppedError(dropped []string) error {
+	return fmt.Errorf("%w: %s. The rows are gone with the table. A 12-step rebuild must re-create "+
+		"the table under the same name within the same migration; nothing else may drop one "+
+		"(.claude/rules/migrations.md)",
+		ErrLedgerTableDropped, strings.Join(dropped, ", "))
 }
 
 // failed restores the snapshot and builds the error the operator sees.
