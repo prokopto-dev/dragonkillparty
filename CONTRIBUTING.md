@@ -231,6 +231,10 @@ in the body. Agents follow [AGENTS.md](AGENTS.md) and the path-scoped rules in `
 same review bar applies either way, and "the agent wrote it" is not a defence for a change nobody
 understood.
 
+A real finding that does not belong in the PR you are on gets its own issue, filed by whoever found
+it — agents included, without asking first — and linked from the PR's **Issues filed** table. See
+[AGENTS.md § Out-of-scope findings](AGENTS.md#out-of-scope-findings-file-an-issue).
+
 ## When you are uncertain
 
 Stop and ask. Do not guess at a schema column that does not exist, a P99 log line you have not seen
