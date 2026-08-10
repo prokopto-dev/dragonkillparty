@@ -1,25 +1,41 @@
 /*
- * The virtualised table's scroll viewport. The row look itself is entirely .table's (Table.css) —
- * nothing here restyles a base class, and nothing here may: the row-level fading hairline is the
- * system's signature and a virtualised table is still a table.
+ * The virtualised table's scroll viewport. The row look is entirely .table's (Table.css) — this sheet
+ * adds nothing to a DATA row.
  *
- * The spacer rows exist only to hold scroll height, so they must NOT paint .table's row rule — a
- * 4000px-tall spacer carrying a bottom hairline draws a stray line across the viewport.
+ * It does suppress the base row paint on SPACER rows, and that needs the base rule's own specificity
+ * to work. `.table tbody tr` is (0,1,2) and `.virtual-table-spacer` alone is (0,1,0), so source order
+ * cannot save it: the earlier version lost the cascade outright and the spacers kept both the fading
+ * hairline and the hover paint — the exact stray rendering its comment claimed to prevent. Found in
+ * review. The selectors below are scoped through `.table tbody tr` so they win on specificity rather
+ * than on import order, which Vite decides from the module graph.
  *
- * No sticky header, deliberately. A `position: sticky` on <th> detaches the header from its <tr>,
- * and the fading rule is painted by the <tr>: the hairline would scroll away from the labels it
- * belongs to. Solving that is a design decision for the first screen that needs it, not something to
- * improvise in the foundation.
+ * Two reasons the suppression matters, and the second is functional rather than cosmetic:
+ *
+ *   1. a 4000px-tall spacer carrying a 1px bottom hairline draws a stray line across the viewport;
+ *   2. `.table td`'s padding is added to the spacer's inline height, so every spacer row is taller
+ *      than the virtualizer computed — the scroll height drifts from the measured total and the
+ *      thumb no longer matches the content.
+ *
+ * No sticky header, deliberately. A `position: sticky` on <th> detaches the header from its <tr>, and
+ * the fading rule is painted by the <tr>: the hairline would scroll away from the labels it belongs
+ * to. That is a design decision for the first screen that needs it, tracked in issue #34.
  */
 
 .virtual-table {
   overflow: auto;
 }
 
-.virtual-table-spacer {
+/* (0,2,2) beats .table tbody tr at (0,1,2). */
+.table tbody tr.virtual-table-spacer {
   background: none;
 }
 
-.virtual-table-spacer td {
+/* (0,3,2) beats .table tbody tr:hover at (0,2,2), which would otherwise repaint the rule on hover. */
+.table tbody tr.virtual-table-spacer:hover {
+  background: none;
+}
+
+/* (0,2,3) beats .table td at (0,1,1). Padding here would inflate the spacer past its inline height. */
+.table tbody tr.virtual-table-spacer td {
   padding: 0;
 }

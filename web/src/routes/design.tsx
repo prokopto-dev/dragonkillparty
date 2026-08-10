@@ -312,6 +312,12 @@ function DesignSystem() {
         <p className="text-muted">
           Density moves spacing, never sizes. Headings are 500 weight; hierarchy is size and space.
         </p>
+        <p className="text-muted">
+          These samples are NOT rendering in Inter. §3 requires the faces be self-hosted and none is
+          vendored yet, so the stack falls through to system-ui and this section reads differently on
+          every machine. Tracked in issue #45; until it lands, the type scale cannot be reviewed against
+          the mockups here.
+        </p>
         <div className="design-row">
           <span style={{ fontFamily: "var(--font-heading)", fontWeight: "var(--font-heading-weight)" }}>
             --font-heading at --font-heading-weight

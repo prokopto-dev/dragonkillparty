@@ -484,6 +484,183 @@ func TestDesignSystem_Stylesheets_DeclareNoTransition(t *testing.T) {
 	require.NotZero(t, checked, "found no stylesheets to check — this check must not pass vacuously")
 }
 
+// cssRule is one selector and the properties it declares.
+type cssRule struct {
+	sheet    string
+	selector string
+	props    map[string]string
+}
+
+// cssRules parses a flat stylesheet into one entry per selector (a comma-separated selector list
+// becomes one entry each, which is how the cascade sees them).
+func cssRules(sheet, css string) []cssRule {
+	css = cssCommentRe.ReplaceAllString(css, "")
+
+	var out []cssRule
+
+	for _, block := range regexp.MustCompile(`(?s)([^{}]*)\{([^{}]*)\}`).FindAllStringSubmatch(css, -1) {
+		selectors := strings.TrimSpace(block[1])
+		if selectors == "" || strings.HasPrefix(selectors, "@") {
+			continue
+		}
+
+		props := map[string]string{}
+
+		for _, decl := range strings.Split(block[2], ";") {
+			name, value, ok := strings.Cut(decl, ":")
+			name = strings.TrimSpace(name)
+			if !ok || name == "" || strings.HasPrefix(name, "--") {
+				continue
+			}
+			props[name] = strings.TrimSpace(value)
+		}
+
+		if len(props) == 0 {
+			continue
+		}
+
+		for _, selector := range strings.Split(selectors, ",") {
+			selector = strings.Join(strings.Fields(selector), " ")
+			if selector != "" {
+				out = append(out, cssRule{sheet: sheet, selector: selector, props: props})
+			}
+		}
+	}
+
+	return out
+}
+
+// One simple selector: a pseudo-element, a pseudo-class (with its argument), a class, an id, an
+// attribute, a type, or the universal selector.
+var simpleSelectorRe = regexp.MustCompile(`::[a-z-]+|:[a-z-]+(\([^)]*\))?|\.[a-zA-Z][\w-]*|#[a-zA-Z][\w-]*|\[[^\]]*\]|[a-zA-Z][\w-]*|\*`)
+
+// specificity returns the (id, class, type) triple for a selector, per CSS Selectors level 3.
+//
+// Simplifications, all safe for this system's flat selectors: `:not(...)` contributes its argument's
+// specificity (correct), and `:has(...)` is treated the same way (also correct in level 4). `*`
+// contributes nothing. No selector here nests further than that.
+func specificity(selector string) [3]int {
+	var out [3]int
+
+	for _, tok := range simpleSelectorRe.FindAllString(selector, -1) {
+		switch {
+		case strings.HasPrefix(tok, "::"):
+			out[2]++
+		case strings.HasPrefix(tok, ":"):
+			if open := strings.Index(tok, "("); open >= 0 {
+				inner := specificity(tok[open+1 : len(tok)-1])
+				out[0] += inner[0]
+				out[1] += inner[1]
+				out[2] += inner[2]
+
+				continue
+			}
+			out[1]++
+		case strings.HasPrefix(tok, "#"):
+			out[0]++
+		case strings.HasPrefix(tok, "."), strings.HasPrefix(tok, "["):
+			out[1]++
+		case tok == "*":
+		default:
+			out[2]++
+		}
+	}
+
+	return out
+}
+
+func specificityLess(a, b [3]int) bool {
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+
+	return false
+}
+
+// baseRowRule maps a pseudo-class suffix to the .table rule a spacer row must out-specify.
+var spacerBaseRules = map[string]string{
+	"":       ".table tbody tr",
+	":hover": ".table tbody tr:hover",
+	" td":    ".table td",
+}
+
+// TestDesignSystem_VirtualTableSpacer_OutSpecifiesTheBaseRowRule locks a bug that did not look like
+// one: a rule written to suppress a base rule, which silently lost the cascade.
+//
+// VirtualTable.css shipped `.virtual-table-spacer { background: none }` — (0,1,0) against
+// `.table tbody tr` at (0,1,2). No source order could make it win, so the spacer rows kept the fading
+// row hairline and the hover paint the comment above them claimed to suppress, and `.table td`'s
+// padding they also kept inflated every spacer past the height the virtualizer had computed, drifting
+// the scroll height from the measured total. Nothing failed; the sheet just did not do what it said.
+// Found in review.
+//
+// EQUAL specificity is a failure here, not a pass: the winner would then be decided by source order,
+// and Vite orders CSS from the module import graph rather than from anything visible in these files.
+// A rule that wins because of an import order nobody chose is not a rule.
+//
+// This is deliberately TARGETED at the spacer rather than a general cascade checker. Deciding whether
+// two arbitrary selectors can match the same element needs the markup, not just the sheets — the first
+// attempt at a general version compared only selectors that *subsume* each other and therefore skipped
+// this very pair, which is exactly the wrong direction for "a shorter selector fails to win". The
+// general guarantee is a computed-style assertion in a browser, tracked in issue #33.
+func TestDesignSystem_VirtualTableSpacer_OutSpecifiesTheBaseRowRule(t *testing.T) {
+	t.Parallel()
+
+	tableRules := cssRules("Table.css", readRepoFile(t, componentsRel+"/Table.css"))
+	spacerRules := cssRules("VirtualTable.css", readRepoFile(t, componentsRel+"/VirtualTable.css"))
+
+	baseFor := func(selector string) ([3]int, bool) {
+		for _, rule := range tableRules {
+			if rule.selector == selector {
+				return specificity(selector), true
+			}
+		}
+
+		return [3]int{}, false
+	}
+
+	checked := 0
+
+	for suffix, baseSelector := range spacerBaseRules {
+		want := ".table tbody tr.virtual-table-spacer" + suffix
+
+		var found *cssRule
+
+		for i, rule := range spacerRules {
+			if !strings.Contains(rule.selector, "virtual-table-spacer") {
+				continue
+			}
+			if strings.HasSuffix(rule.selector, suffix) && (suffix != "" || !strings.ContainsAny(rule.selector, ":")) {
+				if suffix == "" && strings.HasSuffix(rule.selector, " td") {
+					continue
+				}
+				found = &spacerRules[i]
+
+				break
+			}
+		}
+
+		require.NotNilf(t, found,
+			"VirtualTable.css has no spacer rule for %q. It must exist and be scoped through the base "+
+				"row selector, e.g. `%s`.", baseSelector, want)
+
+		baseSpec, ok := baseFor(baseSelector)
+		require.Truef(t, ok, "Table.css no longer declares %q — this check has lost its subject", baseSelector)
+
+		gotSpec := specificity(found.selector)
+		checked++
+
+		require.Falsef(t, specificityLess(gotSpec, baseSpec) || gotSpec == baseSpec,
+			"VirtualTable.css `%s` (%v) does not out-specify Table.css `%s` (%v), so the spacer keeps the "+
+				"base row paint. Scope it through the base rule's own selector: `%s`.",
+			found.selector, gotSpec, baseSelector, baseSpec, want)
+	}
+
+	require.Equal(t, len(spacerBaseRules), checked, "every spacer rule must be checked")
+}
+
 // The DS001 / DS002 negative fixtures. AGENTS.md: add a test when you add a gate, not when you add a
 // feature — a gate nobody proved can fire is a gate that quietly stops firing.
 //

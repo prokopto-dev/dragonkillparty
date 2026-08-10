@@ -411,12 +411,12 @@ Phase 6, not a scope change.
 
 **Resolved (2026-08-10), and it came out well.** The shell that item describes — React 19 +
 TanStack Router + TanStack Query + `@tanstack/react-virtual`, plus a 12-column virtualised table and
-the whole Nocturne token layer and base component set — measures **98 843 bytes gzipped**, 39% of the
+the whole Nocturne token layer and base component set — measures **99 021 bytes gzipped**, 39% of the
 250 KB ceiling. `web/bundle-budget.json` now carries that measurement and a `max_gzip_bytes` of
 **128 000**, replacing the unmeasured 256 000 placeholder it shipped with; the file records the
 derivation and the headroom argument. Two further datapoints for whoever revisits this: the same
 build with neither the `/_design` fixture nor the virtual list is 86 895 bytes, so the design-system
-vocabulary and TanStack Virtual together cost 11 948 bytes gzipped.
+vocabulary and TanStack Virtual together cost 12 126 bytes gzipped.
 
 The budget is measured on every PR rather than once, because `/_design` is imported *statically* by
 `web/src/router.tsx` and therefore sits inside the entry closure `budget / bundle` measures. Making
@@ -533,7 +533,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V10 | The ~12 P99 log formats | week 1 | all of Phase 4 | open |
 | V11 | `?atoken=` + eight shim functions | before Phase 5 | the compat shim | open |
 | V12 | Guilds want server-side auctions | before Phase 6 | bid UX emphasis | open |
-| V13 | 250 KB gzipped initial route | PR 6 | the bundle budget | **resolved (2026-08-10): the shell measures 98 843 bytes gzipped, 39% of the ceiling. `web/bundle-budget.json` set to 128 000 from that measurement, replacing the unmeasured 256 000, and re-measured on every PR because `/_design` is a static import** |
+| V13 | 250 KB gzipped initial route | PR 6 | the bundle budget | **resolved (2026-08-10): the shell measures 99 021 bytes gzipped, 39% of the ceiling. `web/bundle-budget.json` set to 128 000 from that measurement, replacing the unmeasured 256 000, and re-measured on every PR because `/_design` is a static import** |
 | V14 | `riversqlite` maturity | Phase 1 | the job queue | **resolved: early preview, not production ready — spike the alternative** |
 | V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | **partially resolved (2026-08-04): Go 1.26 pinned via `go.mod`, 1.26.5 exercised locally; CI's resolved patch, `testing/synctest`, `os.Root`, Vite 7, Huma v2 and the validator all still open** |
 

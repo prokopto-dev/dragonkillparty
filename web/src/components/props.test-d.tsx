@@ -1,3 +1,4 @@
+import { Button } from "./Button";
 import { Dialog } from "./Dialog";
 import { Field, Input, TextArea } from "./Field";
 import { Radio } from "./Radio";
@@ -13,10 +14,13 @@ import { VirtualTable } from "./VirtualTable";
  *
  * This is the coverage available without a browser harness. `make test-e2e` is still a Phase 3 stub
  * ("Playwright against the built binary"), so nothing in this repository can yet click a segmented
- * control or press Escape — which is exactly why these three guarantees are expressed as types the
+ * control or press Escape — which is exactly why each guarantee below is expressed as a type the
  * compiler enforces rather than as behaviour a future test might check. When the Playwright harness
- * lands, the interaction tests belong beside it against /_design; these stay either way, because they
- * fail at author time rather than in CI.
+ * lands, the interaction tests belong beside it against /_design (issue #33); these stay either way,
+ * because they fail at author time rather than in CI.
+ *
+ * Every entry here is a defect that SHIPPED and was caught in review, not a hypothetical. Each one
+ * compiled, rendered, and looked correct in a screenshot.
  *
  * Nothing imports this module, so it is not in the entry graph and contributes nothing to the bundle.
  */
@@ -59,6 +63,22 @@ export const segOptionRejectsAName = (
 
 // @ts-expect-error a Radio without a name is not in any group.
 export const radioRequiresAName = <Radio>Quarantine</Radio>;
+
+// --- An icon button must carry its own accessible name --------------------------------------------
+//
+// The defect: `icon?: boolean` was unrelated to `aria-label`, so an icon button whose only child is an
+// aria-hidden glyph compiled into a control that announces as "button" and nothing else.
+
+// @ts-expect-error icon buttons require aria-label — the glyph carries no accessible name.
+export const iconButtonRequiresALabel = <Button icon>+</Button>;
+
+// The control: with a label it compiles. Without this, narrowing the type to reject *every* icon button
+// would satisfy the negative test above while making icon buttons unusable.
+export const iconButtonWithALabelIsFine = (
+  <Button icon aria-label="Add">
+    +
+  </Button>
+);
 
 // --- The modal contract ---------------------------------------------------------------------------
 //

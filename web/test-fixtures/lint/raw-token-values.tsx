@@ -18,8 +18,16 @@ export function RawValues() {
   // A literal that is entirely a colour.
   const brand = "#9184d9";
 
+  // The BACKTICK spelling of both. This is the shape that bypassed the rule until review caught it:
+  // the template elements are not syntactically inside the `style` attribute, so neither the anchored
+  // Literal selectors nor the descendant style selector saw them, and eslint exited 0 on this exact
+  // file. Both anchored selectors now match TemplateElement as well.
+  const gap = `4px`;
+  const tint = `#fff`;
+
   return (
     <div>
+      <span style={{ gap, color: tint }}>indirect via template literal</span>
       <span style={{ padding: pad, color: brand }}>indirect</span>
       {/* Inline, the most likely real-world shape. */}
       <span style={{ padding: "8px" }}>inline length</span>

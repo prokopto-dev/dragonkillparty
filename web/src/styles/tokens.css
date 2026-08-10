@@ -102,7 +102,11 @@
   --color-danger-800: oklch(0.383 0.086 25);
   --color-danger-900: oklch(0.283 0.061 25);
 
-  /* Type */
+  /* Type.
+     NOT YET RENDERING AS INTER: §3 requires the faces be loaded self-hosted and no @font-face or font
+     asset exists in this tree yet, so both stacks currently fall through to system-ui. The token values
+     are the §2 contract and are correct; what is missing is the asset. Vendoring it is a dependency
+     decision (SIL OFL 1.1) — proposal and both mechanisms in issue #45. */
   --font-heading: "Inter", system-ui, sans-serif;
   --font-heading-weight: 500;
   --font-body: "Inter", system-ui, sans-serif;

@@ -22,14 +22,31 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   ghost: "btn-ghost",
 };
 
-type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> & {
+type ButtonBase = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className"> & {
   children: ReactNode;
   variant?: ButtonVariant;
-  /** A square button holding a single icon. The accessible name must come from aria-label. */
-  icon?: boolean;
   /** Full width, for a form's terminal action. */
   block?: boolean;
 };
+
+// `icon` DISCRIMINATES, and requiring aria-label on that branch is the point.
+//
+// An icon button's children are a glyph, and a glyph carries no accessible name — the SVG is
+// aria-hidden, so without aria-label the control announces as "button" and nothing else. With
+// `icon?: boolean` the type said nothing about that, and `<Button icon><PlusIcon /></Button>`
+// compiled into a nameless control; the fixture happened to pass aria-label, which is exactly how a
+// gap like this stays invisible. Found in review.
+//
+// Every other accessibility guarantee in this directory is enforced by types rather than documented
+// (Field owns the control id, Seg owns the group name, Radio requires a name, Dialog requires
+// onClose). This one now is too. props.test-d.tsx locks it.
+type ButtonProps =
+  | (ButtonBase & {
+      /** A square button holding a single icon. Its accessible name comes from aria-label. */
+      icon: true;
+      "aria-label": string;
+    })
+  | (ButtonBase & { icon?: false });
 
 export function Button({ children, variant, icon, block, type, ...rest }: ButtonProps) {
   return (

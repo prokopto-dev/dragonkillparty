@@ -43,20 +43,35 @@ const useEffectFetchSelector =
 //
 // Two shapes are matched, and the pair is what makes this precise rather than noisy:
 //
-//   1. A literal that is ENTIRELY a length or a colour, anywhere — `const PAD = "4px"`,
+//   1. A value that is ENTIRELY a length or a colour, anywhere — `const PAD = "4px"`,
 //      `{ color: "#ff0000" }`. Anchored, so a sentence that merely contains "4px" is untouched.
 //   2. ANY length or colour inside a `style` attribute, anchored or not — `style={{ padding: "0 4px" }}`,
-//      `style={{ border: "1px solid #fff" }}`, and the template-literal spelling of either. Inside a
-//      style attribute there is no prose to confuse it with.
+//      `style={{ border: "1px solid #fff" }}`. Inside a style attribute there is no prose to confuse
+//      it with.
 //
-// Verified against the tree at the time of writing: zero matches. Every existing `style` passes either
-// a number or a `var(--token)` reference, which is the shape this rule is steering towards.
+// BOTH SHAPES MATCH `Literal` AND `TemplateElement`, and the second half of that is not decoration.
+// An earlier version anchored only on `Literal`, so the backtick spelling walked straight through:
+//
+//   const gap = `4px`;  const brand = `#fff`;  <div style={{ gap, color: brand }} />
+//
+// Neither template element is syntactically inside the `style` attribute, so the descendant selector
+// could not see them either, and eslint exited 0 on exactly that file. Found in review; the fixture
+// now carries it.
+//
+// Verified against the tree: zero matches. Every existing `style` passes either a number or a
+// `var(--token)` reference, which is the shape this rule steers towards.
+const HEX_BODY = "#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})";
+const PX_BODY = "-?[0-9]+(?:\\.[0-9]+)?px";
+// Unanchored, for use inside a `style` attribute where a multi-value declaration is ordinary.
+const LOOSE_VALUE = "[0-9]px|#[0-9a-fA-F]{3}";
+
 const rawHexAnywhereSelector =
-  "Literal[value=/^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/]";
-const rawPxAnywhereSelector = "Literal[value=/^-?[0-9]+(?:\\.[0-9]+)?px$/]";
+  `Literal[value=/^${HEX_BODY}$/], TemplateElement[value.raw=/^${HEX_BODY}$/]`;
+const rawPxAnywhereSelector =
+  `Literal[value=/^${PX_BODY}$/], TemplateElement[value.raw=/^${PX_BODY}$/]`;
 const rawValueInStyleSelector =
-  "JSXAttribute[name.name='style'] Literal[value=/[0-9]px|#[0-9a-fA-F]{3}/], " +
-  "JSXAttribute[name.name='style'] TemplateElement[value.raw=/[0-9]px|#[0-9a-fA-F]{3}/]";
+  `JSXAttribute[name.name='style'] Literal[value=/${LOOSE_VALUE}/], ` +
+  `JSXAttribute[name.name='style'] TemplateElement[value.raw=/${LOOSE_VALUE}/]`;
 
 const tokenLayerMessage =
   "Raw hex and raw px belong in web/src/styles/tokens.css, never in a component (canonical §17). " +
