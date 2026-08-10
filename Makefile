@@ -555,8 +555,9 @@ test-authz:
 # just touched internal/ledger or internal/strategy should run both before claiming a task is done.
 
 # The migration suite: fresh-install fingerprint, STRICT and no-guild_id assertions, the
-# snapshot/auto-restore path and the downgrade refusal. Not -short: every one of these applies real
-# migrations to a real database, which is the only way any of them mean anything.
+# snapshot/auto-restore path, the downgrade refusal, and the upgrade of a POPULATED ledger across a
+# table rebuild. Not -short: every one of these applies real migrations to a real database, which is
+# the only way any of them mean anything.
 test-migrations:
 	@$(GO) test -count=1 ./test/migrations/...
 

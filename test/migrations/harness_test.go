@@ -41,6 +41,14 @@ const (
 	// futureFixture is a valid migration a later release would carry, used to stamp a database
 	// above what a given binary understands.
 	futureFixture = "../fixtures/migrations/future/000002_future_table.sql"
+	// ledgerRebuildFixture is a CORRECT SQLite 12-step rebuild of ledger_entry: it re-creates the
+	// table's four indexes AND its two append-only triggers after the rename, as
+	// .claude/rules/migrations.md requires of any rebuild of a table carrying a trigger.
+	ledgerRebuildFixture = "../fixtures/migrations/rebuild/000002_ledger_entry_rebuild.sql"
+	// ledgerRebuildNoTriggersFixture is that same rebuild with the trigger re-creation missing. It
+	// is the negative control: without it, "the triggers still fire after an upgrade" is an
+	// assertion nobody has ever seen fail.
+	ledgerRebuildNoTriggersFixture = "../fixtures/migrations/rebuild/000002_ledger_entry_rebuild_no_triggers.sql"
 )
 
 // snapshotNames lists the snapshot files in dir, sorted. A missing directory is an empty list, not
@@ -190,6 +198,33 @@ func openRaw(tb testing.TB, path string) *sql.DB {
 	handle, err := sql.Open("sqlite", "file:"+path)
 	require.NoError(tb, err, "open %s", path)
 	tb.Cleanup(func() { require.NoError(tb, handle.Close(), "close %s", path) })
+
+	return handle
+}
+
+// openRawFK is openRaw with foreign keys enforced.
+//
+// SQLite defaults foreign_keys OFF per connection, so openRaw's handle will happily insert a
+// ledger_entry pointing at a batch that does not exist. A test that seeds "a real ledger" through
+// that handle is seeding rows the production connection (internal/store/pragma.go turns the pragma
+// on for every connection in both pools) would have rejected, and would keep passing after a
+// migration copied rows in an order that broke the references.
+//
+// The pragma is verified rather than assumed: a typo in the DSN is accepted silently by the driver
+// and leaves the constraints off, which is the one failure this helper exists to rule out.
+func openRawFK(tb testing.TB, path string) *sql.DB {
+	tb.Helper()
+
+	handle, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)")
+	require.NoError(tb, err, "open %s with foreign keys on", path)
+	tb.Cleanup(func() { require.NoError(tb, handle.Close(), "close %s", path) })
+
+	var on int
+	require.NoError(tb, handle.QueryRowContext(context.Background(), `PRAGMA foreign_keys`).Scan(&on),
+		"read back PRAGMA foreign_keys")
+	require.Equal(tb, 1, on,
+		"foreign_keys is OFF on this handle — the DSN did not take, and every FK assertion made "+
+			"through it would pass vacuously")
 
 	return handle
 }

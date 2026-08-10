@@ -92,9 +92,19 @@ partial index attached to the old table — including the append-only triggers, 
 failure mode where the product's trust argument evaporates without a single test going red.
 
 If a rebuild touches a table that carries hand-allowlisted objects, the migration must **re-create
-them after the rename**, in the same file, and a test must assert the trigger still fires. The
-integration test `TestLedger_Update_RaisesTrigger` exists precisely so a rebuild that eats the
-trigger fails CI.
+them after the rename**, in the same file, and a test must assert the trigger still fires.
+
+Two tests cover that, and they cover different halves.
+`TestTriggers_MutatingLedger_Raises` (`internal/ledger/trigger_test.go`) asserts all four
+append-only triggers fire — on a database that applied every migration in one go, so it notices a
+trigger that was never created. `TestMigrate_FullStack_LedgerDataSurvivesUpgrade`
+(`test/migrations/populated_upgrade_test.go`) is the one that notices a trigger that was created and
+then dropped: it seeds a real pool, account, batches and entries with foreign keys enforced, applies
+a fixture migration that rebuilds `ledger_entry`, and requires both the rows and all four triggers
+to survive. Its negative control applies the same rebuild with the trigger re-creation removed and
+proves that the migration still succeeds, `integrity_check` and `foreign_key_check` still pass, and
+the ledger is silently editable afterwards. **That is what "silently" means here** — write the
+rebuild so the first test is the one that describes your migration.
 
 ## Column conventions
 
