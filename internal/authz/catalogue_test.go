@@ -45,9 +45,10 @@ func canonicalConventionsPath(t *testing.T) string {
 // fencedListAfter reads the canonical conventions file and returns the whitespace-separated tokens
 // of the first ``` fenced block whose opening fence follows a line containing marker.
 //
-// The §6 key list and scope list are each a run of space-and-newline-separated tokens inside a fenced
-// block, introduced by a bold sentence ("**Permission keys** are ...", "**PAT scopes** are ..."). We
-// find that sentence, then take the next fenced block and split it on any whitespace.
+// The §6 key list, scope list and capability-floor list are each a run of space-and-newline-separated
+// tokens inside a fenced block, introduced by a bold sentence ("**Permission keys** are ...",
+// "**PAT scopes** are ...", "**As permission keys, that set is exactly:**"). We find that sentence,
+// then take the next fenced block and split it on any whitespace.
 func fencedListAfter(t *testing.T, marker string) []string {
 	t.Helper()
 
@@ -186,6 +187,35 @@ func TestCatalogue_Permissions_KeysAreUnique(t *testing.T) {
 		require.False(t, dup, "permission key %q is declared twice", p.Key)
 		seen[p.Key] = struct{}{}
 	}
+}
+
+// TestCapabilityFloor_MatchesCanonicalConventions compares authz.CapabilityFloor() against the
+// fenced capability-floor list in canonical §6, element by element and in both directions.
+//
+// TestCapabilityFloor_KeysAreInCatalogue below proves every floor key is a real permission, but
+// nothing proved the floor is the RIGHT set of permissions — and the floor is a set only canonical §6
+// gets to define. internal/api's TestArch_ScopeCoverage_MatchesSecurity derives its
+// x-dkp-pat-forbidden expectation from CapabilityFloor(), so an unchecked edit here rewrites what the
+// arch test enforces without any test going red:
+//
+//   - a key ADDED here but not in §6 makes a legitimately PAT-callable operation fail the arch test
+//     permanently, and the fix looks like "mark it pat-forbidden" rather than "revert the floor";
+//   - a key REMOVED here but still in §6 silently lets a PAT reach a step-up-only operation, because
+//     the arch test stops requiring x-dkp-pat-forbidden on it.
+//
+// Neither is theoretical at Phase 2, which adds roughly forty operations to the registry. Both
+// directions are checked for the reason given at the top of this file.
+func TestCapabilityFloor_MatchesCanonicalConventions(t *testing.T) {
+	t.Parallel()
+
+	want := fencedListAfter(t, "**As permission keys, that set is exactly:**")
+
+	require.Equal(t, want, authz.CapabilityFloor(),
+		"authz.CapabilityFloor() must list exactly the canonical §6 capability-floor keys, in order. "+
+			"A key here that §6 does not have makes a PAT-callable operation fail "+
+			"TestArch_ScopeCoverage_MatchesSecurity forever; a §6 key missing here lets a PAT reach a "+
+			"session-and-step-up-only operation. The floor is canonical §6's to define — change it "+
+			"there first.")
 }
 
 // TestCapabilityFloor_KeysAreInCatalogue asserts every capability-floor key is a real permission.
