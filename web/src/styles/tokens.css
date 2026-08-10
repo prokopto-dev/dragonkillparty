@@ -246,4 +246,7 @@
      -2px on .seg-opt, so the ring hugs a bordered control instead of floating off it. */
   --focus-ring: 2px;
   --focus-offset: 2px;
+
+  /* The gap between a link's baseline and its underline. */
+  --underline-offset: 3px;
 }

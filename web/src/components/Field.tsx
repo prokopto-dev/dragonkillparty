@@ -15,6 +15,16 @@ import "./Field.css";
 // control. Requiring the caller to keep an `htmlFor` and an `id` in sync by hand is the single most
 // repeated accessibility defect in a forms-heavy console, and there are ~55 screens of forms coming:
 // the association is the component's job, not the screen author's.
+//
+// `id` IS NOT AN ACCEPTED PROP on Input or TextArea, and that is the whole mechanism. An earlier
+// version took `id ?? fieldId`, which reintroduced exactly the defect this component exists to
+// prevent: `<Field label="Name"><Input id="name" /></Field>` pointed the label at the generated id
+// and the input at "name", so the two were silently unassociated and the component still looked like
+// it had handled it. Omitting the prop makes that combination a compile error rather than a defect a
+// screenshot cannot show. props.test-d.tsx locks it.
+//
+// A control that needs to be referenced from elsewhere — an error message's aria-describedby, say —
+// reads the id through useFieldId rather than supplying one.
 const FieldIdContext = createContext<string | undefined>(undefined);
 
 export function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
@@ -30,18 +40,19 @@ export function Field({ label, children }: { label: ReactNode; children: ReactNo
   );
 }
 
-type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "className">;
-
-export function Input({ id, ...rest }: InputProps) {
-  const fieldId = useContext(FieldIdContext);
-
-  return <input id={id ?? fieldId} className="input" {...rest} />;
+/** The id Field generated for its control, for anything that must point at the control by id. */
+export function useFieldId(): string | undefined {
+  return useContext(FieldIdContext);
 }
 
-type TextAreaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "className">;
+type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "className" | "id">;
 
-export function TextArea({ id, ...rest }: TextAreaProps) {
-  const fieldId = useContext(FieldIdContext);
+export function Input(props: InputProps) {
+  return <input id={useFieldId()} className="input" {...props} />;
+}
 
-  return <textarea id={id ?? fieldId} className="input" {...rest} />;
+type TextAreaProps = Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "className" | "id">;
+
+export function TextArea(props: TextAreaProps) {
+  return <textarea id={useFieldId()} className="input" {...props} />;
 }

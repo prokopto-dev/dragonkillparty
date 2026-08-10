@@ -30,6 +30,9 @@ export type VirtualTableColumn<Row> = {
 // fixes a row height, and adding one would break a wrapping cell.
 const ROW_HEIGHT_ESTIMATE = 32;
 
+// The header row, which occupies aria-rowindex 1 and therefore counts toward aria-rowcount.
+const HEADER_ROWS = 1;
+
 export function VirtualTable<Row>({
   columns,
   rows,
@@ -63,9 +66,14 @@ export function VirtualTable<Row>({
     // tabIndex makes the scroll region reachable by keyboard: a scrollable box that cannot be focused
     // cannot be scrolled without a pointer.
     <div ref={scrollRef} className="virtual-table" style={{ height }} tabIndex={0} role="group">
-      <Table rowCount={rows.length} label={label}>
+      {/*
+        aria-rowcount and aria-rowindex share one 1-based space in which the header is row 1, so the
+        count is the data rows PLUS the header. Passing rows.length made the last of 200 rows announce
+        "row 201 of 200".
+      */}
+      <Table rowCount={rows.length + HEADER_ROWS} label={label}>
         <thead>
-          <tr>
+          <tr aria-rowindex={1}>
             {columns.map((column) => (
               <th key={column.key} scope="col">
                 {column.header}
@@ -81,9 +89,9 @@ export function VirtualTable<Row>({
             return (
               <tr
                 key={rowKey(row)}
-                // aria-rowindex is 1-based and counts the header row, so a virtualised row still
-                // reports its true position in the collection rather than its position in the DOM.
-                aria-rowindex={item.index + 2}
+                // 1-based, past the header, so a virtualised row reports its true position in the
+                // collection rather than its position in the DOM.
+                aria-rowindex={item.index + HEADER_ROWS + 1}
                 data-index={item.index}
                 ref={virtualizer.measureElement}
               >

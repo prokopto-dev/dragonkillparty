@@ -15,6 +15,43 @@
   background: var(--scrim);
 }
 
+/*
+ * Native <dialog> UA resets. Dialog.tsx puts .dialog-backdrop on a real <dialog> so showModal() can
+ * provide focus containment, Escape and focus restoration; these declarations strip the UA's own
+ * chrome (a border, an auto margin, a fit-content box and a max-width of calc(100% - 6px - 2em)) so
+ * the computed result is byte-identical to the source sheet's div-based backdrop.
+ *
+ * This ADDS TO the base class rather than restyling it — every declaration above still applies as
+ * written.
+ */
+dialog.dialog-backdrop {
+  margin: 0;
+  border: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  color: var(--color-text);
+}
+
+/*
+ * The scrim is painted by .dialog-backdrop itself, on the element. ::backdrop must therefore not paint
+ * a second one — some engines default it to a translucent wash, which would darken the Nocturne scrim
+ * by an unpredictable amount.
+ */
+dialog.dialog-backdrop::backdrop {
+  background: transparent;
+}
+
+/*
+ * .dialog-backdrop sets `display: grid` unconditionally, which would override the UA's `display: none`
+ * for a dialog that is rendered but not yet open — one frame of a non-modal overlay before the
+ * showModal() effect runs. Higher specificity, so this wins.
+ */
+dialog.dialog-backdrop:not([open]) {
+  display: none;
+}
+
 .dialog {
   width: min(var(--dialog-width), 100%);
   display: flex;

@@ -217,6 +217,7 @@ const CONTROL_METRIC_TOKENS = [
   "--hairline-fade",
   "--focus-ring",
   "--focus-offset",
+  "--underline-offset",
 ];
 
 // ─── Sample data for the virtualised table ───────────────────────────────────────────────────────
@@ -460,12 +461,12 @@ function DesignSystem() {
             <span className="design-label">seg + seg-opt</span>
             <div>
               <Seg label="Sample filter">
-                <SegOption name="design-seg" defaultChecked>
+                <SegOption defaultChecked>
                   All
                 </SegOption>
-                <SegOption name="design-seg">Open</SegOption>
-                <SegOption name="design-seg">Disputed</SegOption>
-                <SegOption name="design-seg">Finalised</SegOption>
+                <SegOption>Open</SegOption>
+                <SegOption>Disputed</SegOption>
+                <SegOption>Finalised</SegOption>
               </Seg>
             </div>
           </div>
@@ -577,6 +578,9 @@ function DialogDemo() {
       {open && (
         <Dialog
           title="Reverse this batch?"
+          onClose={() => {
+            setOpen(false);
+          }}
           actions={
             <>
               <Button

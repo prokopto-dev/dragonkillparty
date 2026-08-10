@@ -337,6 +337,12 @@ func TestDesignFixture_Route_ImportsEveryComponent(t *testing.T) {
 		if !ok {
 			continue
 		}
+		// *.test-d.tsx holds type-level negative tests (@ts-expect-error blocks that tsc enforces).
+		// They are deliberately imported by nothing — that is what keeps them out of the bundle — so
+		// requiring the fixture to render them would be requiring the opposite of their purpose.
+		if strings.HasSuffix(name, ".test-d") {
+			continue
+		}
 		found++
 		require.Containsf(t, fixture, "@/components/"+name,
 			"%s does not import @/components/%s. Every component belongs on /_design: a component the "+
@@ -476,6 +482,94 @@ func TestDesignSystem_Stylesheets_DeclareNoTransition(t *testing.T) {
 	}))
 
 	require.NotZero(t, checked, "found no stylesheets to check — this check must not pass vacuously")
+}
+
+// The DS001 / DS002 negative fixtures. AGENTS.md: add a test when you add a gate, not when you add a
+// feature — a gate nobody proved can fire is a gate that quietly stops firing.
+//
+// These rules exist because canonical §17 promised them and nothing delivered: it names ESLint as the
+// mechanism, ESLint does not lint CSS, and `web/src/styles/base.css` duly shipped a
+// `text-underline-offset: 3px` that no gate caught. Both directions are asserted in the same run,
+// because a ban-only test passes just as happily against a rule that fires on every stylesheet — and
+// the first person to hit that reaches for `--no-verify` rather than for the rule id.
+
+func TestRepoGates_RawHexInComponentCSS_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "web/src/styles/tokens.css", ":root {\n  --color-accent: #9184d9;\n}\n")
+	writeRepoFile(t, tree, "web/src/components/Rogue.css", `/* A #ff0000 in prose is documentation, not a violation. */
+.rogue {
+  color: #ff0000;
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "the gate accepted a raw hex colour in component CSS\n%s", out)
+	require.Contains(t, out, "[DS001]", "%s", out)
+	require.Contains(t, out, "Rogue.css", "%s", out)
+	require.NotContains(t, out, "in prose is documentation",
+		"DS001 fired on the comment explaining it; CSS comment lines must be stripped\n%s", out)
+}
+
+func TestRepoGates_RawPxInComponentCSS_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "web/src/styles/tokens.css", ":root {\n  --space-1: 2.8px;\n}\n")
+	writeRepoFile(t, tree, "web/src/styles/base.css", `/*
+ * A 1px accent border, described over 48px of prose, is not a violation.
+ */
+a {
+  text-underline-offset: 3px;
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	// base.css is deliberately the fixture: canonical §17 scopes the exemption to the TOKEN LAYER,
+	// which is tokens.css alone. .claude/rules/web.md's looser "outside web/src/styles/" wording is
+	// what let the real slip through, and this assertion is what stops the gate being narrowed to it.
+	require.NotZero(t, code, "the gate accepted a raw px in base.css — the exemption is tokens.css, not all of web/src/styles\n%s", out)
+	require.Contains(t, out, "[DS002]", "%s", out)
+	require.Contains(t, out, "base.css", "%s", out)
+	require.NotContains(t, out, "described over 48px of prose",
+		"DS002 fired on the comment explaining it; CSS comment lines must be stripped\n%s", out)
+}
+
+func TestRepoGates_TokenSheetAndTokenisedCSS_PassGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// The allowlist half, and the half that matters. tokens.css is where every hex and every px in
+	// the product lives; a rule that flagged them would make the design system unimplementable, and
+	// widening DS001/DS002 to "every stylesheet" would satisfy both fixtures above.
+	writeRepoFile(t, tree, "web/src/styles/tokens.css", `:root {
+  --color-bg: #161826;
+  --space-1: 2.8px;
+  --hairline: 1px;
+  --shadow-sm: 0 0 0 1px #3f424d;
+}
+`)
+	writeRepoFile(t, tree, "web/src/components/Card.css", `.card {
+  background: var(--color-bg);
+  padding: var(--space-1);
+  border: var(--hairline) solid transparent;
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.Zero(t, code, "the gate rejected a correctly tokenised sheet\n%s", out)
+	require.NotContains(t, out, "[DS001]", "%s", out)
+	require.NotContains(t, out, "[DS002]", "%s", out)
 }
 
 // sortedKeys returns a map's keys in a stable order, so a failure names the same token every run.

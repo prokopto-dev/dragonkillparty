@@ -78,7 +78,7 @@ p {
 
 a {
   color: var(--color-accent);
-  text-underline-offset: 3px;
+  text-underline-offset: var(--underline-offset);
 }
 
 img {
