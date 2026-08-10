@@ -249,21 +249,21 @@ func lastMigrationCheck(t *testing.T, constraint, column string) (expr, file str
 	return expr, file
 }
 
-// TestLedgerKinds_StrategyReversalKind_IsInCatalogue closes the one place a kind is still written as
-// a literal outside the catalogue.
+// TestLedgerKinds_StrategyReversalKind_IsInCatalogue guards the one kind the strategy package names
+// on its own.
 //
-// internal/strategy cannot import internal/ledger — the purity law forbids reaching internal/store,
-// transitively (law 3) — so strategy.KindReversal, which Negated stamps onto every reversal
-// proposal, has to be its own constant. This asserts the two agree, which is the whole guarantee a
-// shared constant would have given.
+// `strategy.KindReversal = kinds.KindReversal` is an ALIAS now, so the two agreeing is a compile-time
+// fact and asserting it would be a tautology. What is still worth a test is the edit that undoes
+// that: a future change replacing the alias with a literal — the state this package spent three
+// review rounds getting out of — compiles cleanly and fails here instead.
+//
+// The membership check is the honest form of it: whatever strategy stamps onto a reversal batch has
+// to be a value the generated CHECK will accept.
 func TestLedgerKinds_StrategyReversalKind_IsInCatalogue(t *testing.T) {
 	t.Parallel()
 
 	require.Contains(t, kinds.BatchKinds(), strategy.KindReversal,
 		"strategy.KindReversal is stamped on every reversal batch and must be a legal ledger_batch.kind")
-
-	require.Equal(t, kinds.KindReversal, strategy.KindReversal,
-		"the two constants name the same ledger_batch.kind and must not drift apart")
 }
 
 // TestBatchKinds_Values_AreCanonicalEnumValues checks both catalogues against canonical §5's rule for

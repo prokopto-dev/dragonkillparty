@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // fixed_price — the simplest DKP model that is still a real one. Phase 0 PR 10b.
@@ -446,7 +447,7 @@ func (s FixedPrice) PlanAttendance(ctx Ctx, ev AttendanceEvent) (BatchProposal, 
 	// floors by design (a bank that could not go negative could not fund the first tick of a fresh
 	// guild). Declaring a rule that constrains nothing is what
 	// .claude/skills/add-strategy/SKILL.md calls a red flag.
-	return s.propose(ctx, "attendance", ev.EffectiveAt, ev.Reason, entries, []Invariant{
+	return s.propose(ctx, kinds.KindAttendance, ev.EffectiveAt, ev.Reason, entries, []Invariant{
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 	})
 }
@@ -524,7 +525,7 @@ func (s FixedPrice) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		})
 	}
 
-	return s.propose(ctx, "award", ev.EffectiveAt, ev.Reason, entries, invariants)
+	return s.propose(ctx, kinds.KindAward, ev.EffectiveAt, ev.Reason, entries, invariants)
 }
 
 // proceeds turns a price into the credits that balance it, and reports whether the allocator ran.
@@ -638,7 +639,7 @@ func (s FixedPrice) PlanAdjustment(ctx Ctx, ev AdjustmentEvent) (BatchProposal, 
 		{AccountID: counterparty, BalanceKind: BalanceKindDKP, AmountCp: -ev.AmountCp},
 	}
 
-	return s.propose(ctx, "adjustment", ev.EffectiveAt, ev.Reason, entries, []Invariant{
+	return s.propose(ctx, kinds.KindAdjustment, ev.EffectiveAt, ev.Reason, entries, []Invariant{
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
 	})
@@ -756,7 +757,7 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 		AmountCp:    total,
 	})
 
-	return s.propose(ctx, "decay", run.EffectiveAt, "decay "+run.PeriodKey, entries, []Invariant{
+	return s.propose(ctx, kinds.KindDecay, run.EffectiveAt, "decay "+run.PeriodKey, entries, []Invariant{
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
 	})

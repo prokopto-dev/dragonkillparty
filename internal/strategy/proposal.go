@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // The shapes a strategy proposes and the ledger commits. Phase 0 PR 10a.
@@ -54,15 +55,21 @@ var (
 
 // KindReversal is the ledger_batch.kind a Negated proposal carries.
 //
-// The kind vocabulary as a whole lives in internal/ledger/kinds, which canonical §5 makes the one
-// source: `make gen` writes it into db/schema.hcl's CHECK, and adding a kind is still a schema
-// change and a docs page (.claude/rules/ledger-and-strategy.md).
+// DEFINED AS the catalogue's constant, not as a literal that happens to match it. The kind vocabulary
+// lives in internal/ledger/kinds, which canonical §5 makes the one source: `make gen` writes it into
+// db/schema.hcl's CHECK and Commit.validate reads it.
 //
-// This constant is here rather than there because internal/strategy MAY NOT IMPORT internal/ledger —
-// that would reach internal/store transitively and break the purity law. It is the one kind written
-// as a literal outside the catalogue, and TestLedgerKinds_StrategyReversalKind_IsInCatalogue asserts
-// the two agree, which is the guarantee a shared constant would have given.
-const KindReversal = "reversal"
+// Importing that package from here is legal and does not weaken law 3, which is worth stating because
+// an earlier draft of this file assumed the opposite. Go imports PACKAGES, not parent directories:
+// internal/ledger/kinds is a leaf that imports nothing but the standard library, so it reaches
+// internal/store no more than `strings` does. TestArch_Strategy_ImportGraph_HasNoStore walks the real
+// transitive graph and would fail if that ever changed.
+//
+// The alias stays because Negated must name a kind and a literal in that function would be invisible
+// to a reader looking for where reversals are made — but it is now a name for the catalogue's value
+// rather than a second copy of it, so a rename in the catalogue reaches this without a test having to
+// notice.
+const KindReversal = kinds.KindReversal
 
 // Rng is the seeded random source a strategy is given.
 //
