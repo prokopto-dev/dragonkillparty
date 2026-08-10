@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -46,6 +48,13 @@ const (
 	seedEntry2ID    = "0000000000000000000ENTRY02"
 	seedEntry3ID    = "0000000000000000000ENTRY03"
 	seedEntry4ID    = "0000000000000000000ENTRY04"
+	seedUserID      = "0000000000000000000USER001"
+	seedTokenID     = "000000000000000000TOKEN001"
+	seedCharacterID = "0000000000000000000CHAR001"
+	seedItemID      = "0000000000000000000ITEM001"
+	seedAwardID     = "000000000000000000AWARD001"
+	seedRaidID      = "0000000000000000000RAID001"
+	seedTickID      = "0000000000000000000TICK001"
 	seedBalanceKind = "dkp"
 
 	// guildBankAccountID is seeded by 000003_ledger.sql. Referencing it makes the seeded batch
@@ -55,12 +64,18 @@ const (
 )
 
 // Micros (int64 Unix microseconds), fixed rather than derived from the clock: a migration test that
-// took the current time would produce a different database on every run and could not compare
-// whole rows.
+// took the current time would produce a different database on every run and could not compare rows.
+//
+// effective_at and recorded_at differ, and differ per batch. Seeding them equal would make a rebuild
+// that transposed the two columns invisible — which is exactly the class of corruption a projection
+// of "the interesting columns" fails to notice.
 const (
-	seedEffectiveAt  = int64(1_754_784_000_000_000) // 2025-08-10T00:00:00Z
-	seedRecordedAt   = int64(1_754_784_060_000_000)
-	seedEffectiveDay = "2025-08-10"
+	seedBatch1EffectiveAt = int64(1_754_784_000_000_000) // 2025-08-10T00:00:00Z
+	seedBatch1RecordedAt  = int64(1_754_784_060_000_000)
+	seedBatch1Day         = "2025-08-10"
+	seedBatch2EffectiveAt = int64(1_754_870_400_000_000) // 2025-08-11T00:00:00Z
+	seedBatch2RecordedAt  = int64(1_754_870_460_000_000)
+	seedBatch2Day         = "2025-08-11"
 )
 
 // seedHash stands in for a real chain hash. sha256 of a label, so it is 32 bytes, deterministic and
@@ -71,62 +86,139 @@ func seedHash(label string) []byte {
 	return sum[:]
 }
 
-// ledgerEntryRow is the part of a ledger_entry a migration must not disturb.
+// tableSnapshot is every column of every seeded row in one table, keyed by id.
 //
-// Compared whole (go-cmp/require.Equal on the struct, per .claude/rules/go-idioms.md) rather than
-// field by field: asserting three columns survived a table rebuild hides the fourth that did not.
-type ledgerEntryRow struct {
-	ID          string
-	BatchID     string
-	PoolID      string
-	Seq         int64
-	AccountID   string
-	BalanceKind string
-	AmountCP    int64
+// A map of column name to value rather than a struct, and read with SELECT *, because a struct is a
+// PROJECTION and a projection is exactly the wrong oracle here. An earlier version of this test
+// compared 7 of ledger_entry's 13 columns and 8 of ledger_batch's 23: a rebuild could have reset
+// every metadata_json, transposed effective_at and recorded_at, blanked reason and
+// config_snapshot_json, or dropped an unlisted column outright, and the test would have called the
+// ledger intact. Reading the columns the DATABASE reports also means a column added by a future
+// migration is covered from the moment it exists, with nobody remembering to add a field here.
+type tableSnapshot map[string]map[string]any
+
+// ledgerSnapshot is the append-only pair, together.
+type ledgerSnapshot struct {
+	batches tableSnapshot
+	entries tableSnapshot
 }
 
-// ledgerBatchRow is the same idea for the batch header, including the hash chain: prev_hash and
-// hash are the ledger's tamper-evidence, and a rebuild that retyped a blob column or copied the
-// rows through a text round-trip would corrupt them while every count(*) stayed correct.
-type ledgerBatchRow struct {
-	ID          string
-	PoolID      string
-	Seq         int64
-	Kind        string
-	EntryCount  int64
-	NetAmountCP int64
-	PrevHash    []byte
-	Hash        []byte
+// snapshotLedger captures every column of every seeded ledger row.
+func snapshotLedger(tb testing.TB, handle *sql.DB) ledgerSnapshot {
+	tb.Helper()
+
+	snap := ledgerSnapshot{
+		batches: snapshotTable(tb, handle,
+			`SELECT * FROM ledger_batch WHERE pool_id = ? ORDER BY id`, seedPoolID),
+		entries: snapshotTable(tb, handle,
+			`SELECT * FROM ledger_entry WHERE pool_id = ? ORDER BY id`, seedPoolID),
+	}
+
+	// An empty snapshot compares equal to an empty snapshot. Pinning the counts means a migration
+	// that removed every seeded row cannot pass the comparison by leaving nothing to compare.
+	require.Len(tb, snap.batches, 2, "expected the two seeded ledger_batch rows")
+	require.Len(tb, snap.entries, 4, "expected the four seeded ledger_entry rows")
+
+	return snap
 }
 
-// wantEntries and wantBatches are what the seed puts in and what must come back out, unchanged, on
-// the far side of a migration.
-func wantEntries() []ledgerEntryRow {
-	return []ledgerEntryRow{
-		{seedEntry1ID, seedBatch1ID, seedPoolID, 1, seedAccountID, seedBalanceKind, -25_000},
-		{seedEntry2ID, seedBatch1ID, seedPoolID, 1, guildBankAccountID, seedBalanceKind, 25_000},
-		{seedEntry3ID, seedBatch2ID, seedPoolID, 2, seedAccountID, seedBalanceKind, 10_000},
-		{seedEntry4ID, seedBatch2ID, seedPoolID, 2, guildBankAccountID, seedBalanceKind, -10_000},
+// snapshotTable reads whatever columns the table currently has, for the rows the query selects.
+func snapshotTable(tb testing.TB, handle *sql.DB, query string, args ...any) tableSnapshot {
+	tb.Helper()
+
+	rows, err := handle.QueryContext(context.Background(), query, args...)
+	require.NoError(tb, err, "snapshot query: %s", query)
+
+	defer func() { require.NoError(tb, rows.Close()) }()
+
+	columns, err := rows.Columns()
+	require.NoError(tb, err, "read column names for: %s", query)
+	require.NotEmpty(tb, columns, "the table has no columns")
+
+	out := tableSnapshot{}
+
+	for rows.Next() {
+		// Scanned into `any`, so the driver's own type for each column survives into the
+		// comparison: a rebuild that retyped an INTEGER column to TEXT changes int64 to string and
+		// fails, which is the correct outcome for a change that needs a human.
+		values := make([]any, len(columns))
+		targets := make([]any, len(columns))
+
+		for i := range values {
+			targets[i] = &values[i]
+		}
+
+		require.NoError(tb, rows.Scan(targets...), "scan row for: %s", query)
+
+		row := make(map[string]any, len(columns))
+		for i, column := range columns {
+			row[column] = values[i]
+		}
+
+		id, ok := row["id"].(string)
+		require.True(tb, ok, "every snapshotted table needs a TEXT id column; got %T", row["id"])
+
+		out[id] = row
+	}
+
+	require.NoError(tb, rows.Err())
+
+	return out
+}
+
+// requireLedgerUnchanged is the row-survival oracle: every column that existed before a migration
+// still exists after it, on the same rows, holding the same value.
+//
+// Columns the migration ADDED are deliberately not compared — adding a column is what migrations
+// are for, and the fixture rebuild in this file adds one. Columns it REMOVED fail, because dropping
+// a column a user's database already holds is a destructive change that needs a human.
+func requireLedgerUnchanged(tb testing.TB, before, after ledgerSnapshot, stage string) {
+	tb.Helper()
+
+	requireTableUnchanged(tb, "ledger_batch", before.batches, after.batches, stage)
+	requireTableUnchanged(tb, "ledger_entry", before.entries, after.entries, stage)
+}
+
+func requireTableUnchanged(tb testing.TB, table string, before, after tableSnapshot, stage string) {
+	tb.Helper()
+
+	require.Equal(tb, slices.Sorted(maps.Keys(before)), slices.Sorted(maps.Keys(after)),
+		"the set of %s rows changed across %s. The ledger is append-only: a migration may not add, "+
+			"remove or re-key a committed row.", table, stage)
+
+	for _, id := range slices.Sorted(maps.Keys(before)) {
+		was, is := before[id], after[id]
+
+		for _, column := range slices.Sorted(maps.Keys(was)) {
+			require.Contains(tb, is, column,
+				"%s.%s was DROPPED by %s, taking row %s's stored value with it. Removing a column a "+
+					"user's database already holds is a destructive migration: it needs the "+
+					"!destructive-migration label and a human (.claude/rules/migrations.md).",
+				table, column, stage, id)
+			require.Equal(tb, was[column], is[column],
+				"%s.%s changed on row %s across %s. Nothing may rewrite a committed ledger row — not "+
+					"a backfill, not a table rebuild. A correction is a reversal batch, never an edit "+
+					"to history.", table, column, id, stage)
+		}
 	}
 }
 
-func wantBatches() []ledgerBatchRow {
-	return []ledgerBatchRow{
-		{seedBatch1ID, seedPoolID, 1, "adjustment", 2, 0, nil, seedHash("batch-1")},
-		{seedBatch2ID, seedPoolID, 2, "award", 2, 0, seedHash("batch-1"), seedHash("batch-2")},
-	}
-}
-
-// seedLedger writes a real, referentially complete ledger: a pool, a person account, two chained
-// batches and their four entries.
+// seedLedger writes a real, referentially complete ledger: a pool, a person account, a batch and its
+// reversal, and their four entries.
 //
-// It goes through a handle with foreign keys ON (openRawFK) on purpose. Seeding with them off would
-// let this write rows production could never have produced, and the whole point of the test is what
-// a later migration does to rows that are genuinely constrained.
+// Every column is given a DISTINCT, NON-DEFAULT value wherever the schema allows one, and every
+// nullable column appears both NULL and non-NULL across the four entries. That is what makes
+// requireLedgerUnchanged able to fail: a rebuild that reset config_snapshot_json to its '{}' default
+// would be invisible against a row that was already '{}', and a rebuild that turned NULL into ”
+// would be invisible against a row that had no NULLs.
 //
-// Raw SQL rather than internal/ledger for the reason at the top of harness_test.go: a migration
-// test that asked the domain package to write the rows would be asserting that today's writer and
-// today's schema agree, which is not the question.
+// It goes through a handle with foreign keys ON (openRawFK/withRawFK) on purpose. Seeding with them
+// off would let this write rows production could never have produced, and the whole point of the
+// test is what a later migration does to rows that are genuinely constrained.
+//
+// Raw SQL rather than internal/ledger for the reason at the top of harness_test.go: a migration test
+// that asked the domain package to write the rows would be asserting that today's writer and today's
+// schema agree, which is not the question.
 func seedLedger(tb testing.TB, handle *sql.DB) {
 	tb.Helper()
 
@@ -136,8 +228,8 @@ func seedLedger(tb testing.TB, handle *sql.DB) {
 	// would be reported against the seed rather than against the migration under test.
 	_, err := handle.ExecContext(ctx,
 		`INSERT INTO pool (id, name, name_norm, strategy_id, strategy_version, balance_kinds, created_at, updated_at)
-		 VALUES (?, 'Raid Night', 'raidnight', 'zero_sum', '1.0.0', 'dkp', ?, ?)`,
-		seedPoolID, seedEffectiveAt, seedEffectiveAt)
+		 VALUES (?, 'Raid Night', 'raidnight', 'zero_sum', '1.4.2', 'dkp', ?, ?)`,
+		seedPoolID, seedBatch1EffectiveAt, seedBatch1EffectiveAt)
 	require.NoError(tb, err, "seed pool")
 
 	// kind='person' requires person_id NOT NULL and system_key NULL (account_person_shape and
@@ -145,86 +237,75 @@ func seedLedger(tb testing.TB, handle *sql.DB) {
 	_, err = handle.ExecContext(ctx,
 		`INSERT INTO account (id, kind, person_id, system_key, label, created_at, updated_at)
 		 VALUES (?, 'person', ?, NULL, 'Fippy Darkpaw', ?, ?)`,
-		seedAccountID, seedPersonID, seedEffectiveAt, seedEffectiveAt)
+		seedAccountID, seedPersonID, seedBatch1EffectiveAt, seedBatch1EffectiveAt)
 	require.NoError(tb, err, "seed person account")
 
-	insertBatch := func(b ledgerBatchRow, reason string) {
-		_, execErr := handle.ExecContext(ctx,
-			`INSERT INTO ledger_batch (
-				id, pool_id, seq, kind, strategy_id, strategy_version, config_snapshot_json,
-				source, actor_is_beneficiary, reason, effective_at, recorded_at, effective_day,
-				entry_count, net_amount_cp, prev_hash, hash)
-			 VALUES (?, ?, ?, ?, 'zero_sum', '1.0.0', '{}', 'web', 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			b.ID, b.PoolID, b.Seq, b.Kind, reason,
-			seedEffectiveAt, seedRecordedAt, seedEffectiveDay,
-			b.EntryCount, b.NetAmountCP, b.PrevHash, b.Hash)
-		require.NoError(tb, execErr, "seed ledger_batch %s", b.ID)
+	const insertBatch = `
+		INSERT INTO ledger_batch (
+			id, pool_id, seq, kind, strategy_id, strategy_version, config_snapshot_json, rng_seed,
+			source, source_ref, actor_user_id, actor_token_id, actor_is_beneficiary, reason,
+			reverses_batch_id, effective_at, recorded_at, effective_day, idempotency_key,
+			entry_count, net_amount_cp, prev_hash, hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	// A loot charge. rng_seed set, actor is a user, no reversal, genesis of the hash chain.
+	_, err = handle.ExecContext(ctx, insertBatch,
+		seedBatch1ID, seedPoolID, 1, "adjustment", "zero_sum", "1.4.2", `{"decay_bp":250}`, 7_420_147,
+		"web", "eqdkp:seedguild:adjustment:11", seedUserID, nil, 0,
+		"loot charge for Cloak of Flames, seeded by the migration suite",
+		nil, seedBatch1EffectiveAt, seedBatch1RecordedAt, seedBatch1Day, "seed-idem-batch-1",
+		2, 0, nil, seedHash("batch-1"))
+	require.NoError(tb, err, "seed ledger_batch %s", seedBatch1ID)
+
+	// Its reversal. Every nullable column that batch 1 filled is NULL here and vice versa, and
+	// actor_is_beneficiary=1 exercises the ix_batch_selfdeal partial index.
+	_, err = handle.ExecContext(ctx, insertBatch,
+		seedBatch2ID, seedPoolID, 2, "reversal", "zero_sum", "1.4.2", `{"decay_bp":250}`, nil,
+		"api", "eqdkp:seedguild:reversal:12", nil, seedTokenID, 1,
+		"reversal: wrong buyer, seeded by the migration suite",
+		seedBatch1ID, seedBatch2EffectiveAt, seedBatch2RecordedAt, seedBatch2Day, "seed-idem-batch-2",
+		2, 0, seedHash("batch-1"), seedHash("batch-2"))
+	require.NoError(tb, err, "seed ledger_batch %s", seedBatch2ID)
+
+	const insertEntry = `
+		INSERT INTO ledger_entry (
+			id, batch_id, pool_id, seq, account_id, character_id, balance_kind, amount_cp,
+			item_id, item_award_id, raid_id, tick_id, metadata_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	entries := []struct {
+		id, batchID, accountID string
+		seq                    int64
+		characterID            any
+		amountCP               int64
+		itemID, awardID        any
+		raidID, tickID         any
+		metadata               string
+	}{
+		{
+			seedEntry1ID, seedBatch1ID, seedAccountID, 1, seedCharacterID, -25_000,
+			nil, nil, seedRaidID, nil, `{"seeded":"entry-1"}`,
+		},
+		{
+			seedEntry2ID, seedBatch1ID, guildBankAccountID, 1, nil, 25_000,
+			seedItemID, seedAwardID, nil, seedTickID, `{"seeded":"entry-2"}`,
+		},
+		{
+			seedEntry3ID, seedBatch2ID, seedAccountID, 2, seedCharacterID, 25_000,
+			seedItemID, seedAwardID, seedRaidID, seedTickID, `{"seeded":"entry-3"}`,
+		},
+		{
+			seedEntry4ID, seedBatch2ID, guildBankAccountID, 2, nil, -25_000,
+			nil, nil, nil, nil, `{"seeded":"entry-4"}`,
+		},
 	}
 
-	batches := wantBatches()
-	insertBatch(batches[0], "loot charge, seeded by the migration suite")
-	insertBatch(batches[1], "award funded from the guild bank, seeded by the migration suite")
-
-	for _, e := range wantEntries() {
-		_, execErr := handle.ExecContext(ctx,
-			`INSERT INTO ledger_entry (id, batch_id, pool_id, seq, account_id, balance_kind, amount_cp, metadata_json)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, '{}')`,
-			e.ID, e.BatchID, e.PoolID, e.Seq, e.AccountID, e.BalanceKind, e.AmountCP)
-		require.NoError(tb, execErr, "seed ledger_entry %s", e.ID)
+	for _, e := range entries {
+		_, execErr := handle.ExecContext(ctx, insertEntry,
+			e.id, e.batchID, seedPoolID, e.seq, e.accountID, e.characterID, seedBalanceKind,
+			e.amountCP, e.itemID, e.awardID, e.raidID, e.tickID, e.metadata)
+		require.NoError(tb, execErr, "seed ledger_entry %s", e.id)
 	}
-
-	// The seed is only worth anything if it landed. A silently empty ledger satisfies every
-	// "the data survived" assertion below.
-	require.Equal(tb, wantBatches(), readBatches(tb, handle), "the seed did not take")
-	require.Equal(tb, wantEntries(), readEntries(tb, handle), "the seed did not take")
-}
-
-// readBatches reads the batch headers in seq order.
-func readBatches(tb testing.TB, handle *sql.DB) []ledgerBatchRow {
-	tb.Helper()
-
-	rows, err := handle.QueryContext(context.Background(),
-		`SELECT id, pool_id, seq, kind, entry_count, net_amount_cp, prev_hash, hash
-		 FROM ledger_batch WHERE pool_id = ? ORDER BY seq`, seedPoolID)
-	require.NoError(tb, err, "read ledger_batch")
-
-	defer func() { require.NoError(tb, rows.Close()) }()
-
-	var out []ledgerBatchRow
-
-	for rows.Next() {
-		var b ledgerBatchRow
-		require.NoError(tb, rows.Scan(&b.ID, &b.PoolID, &b.Seq, &b.Kind, &b.EntryCount, &b.NetAmountCP, &b.PrevHash, &b.Hash))
-		out = append(out, b)
-	}
-
-	require.NoError(tb, rows.Err())
-
-	return out
-}
-
-// readEntries reads the seeded entries in id order.
-func readEntries(tb testing.TB, handle *sql.DB) []ledgerEntryRow {
-	tb.Helper()
-
-	rows, err := handle.QueryContext(context.Background(),
-		`SELECT id, batch_id, pool_id, seq, account_id, balance_kind, amount_cp
-		 FROM ledger_entry WHERE pool_id = ? ORDER BY id`, seedPoolID)
-	require.NoError(tb, err, "read ledger_entry")
-
-	defer func() { require.NoError(tb, rows.Close()) }()
-
-	var out []ledgerEntryRow
-
-	for rows.Next() {
-		var e ledgerEntryRow
-		require.NoError(tb, rows.Scan(&e.ID, &e.BatchID, &e.PoolID, &e.Seq, &e.AccountID, &e.BalanceKind, &e.AmountCP))
-		out = append(out, e)
-	}
-
-	require.NoError(tb, rows.Err())
-
-	return out
 }
 
 // ledgerTriggerNames lists the triggers currently attached to the ledger's two tables.
@@ -249,6 +330,22 @@ func ledgerTriggerNames(tb testing.TB, handle *sql.DB) []string {
 	require.NoError(tb, rows.Err())
 
 	return out
+}
+
+// ledgerTablesExist reports whether the migrations applied so far have created the ledger.
+//
+// Used to find the seed point by asking the database rather than by hard-coding "after 000003": the
+// number is a fact about the current tree, and a test that restates it acquires a second source of
+// truth that nothing keeps in step.
+func ledgerTablesExist(tb testing.TB, handle *sql.DB) bool {
+	tb.Helper()
+
+	var n int
+	require.NoError(tb, handle.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM sqlite_schema
+		 WHERE type = 'table' AND name IN ('pool', 'account', 'ledger_batch', 'ledger_entry')`).Scan(&n))
+
+	return n == 4
 }
 
 // foreignKeyViolations counts what PRAGMA foreign_key_check finds.
@@ -327,44 +424,25 @@ func requireAppendOnlyTriggersFire(tb testing.TB, handle *sql.DB) {
 	}
 }
 
-// ledgerTablesExist reports whether the migrations applied so far have created the ledger.
-//
-// Used to find the seed point by asking the database rather than by hard-coding "after 000003": the
-// number is a fact about the current tree, and a test that restates it acquires a second source of
-// truth that nothing keeps in step.
-func ledgerTablesExist(tb testing.TB, handle *sql.DB) bool {
-	tb.Helper()
-
-	var n int
-	require.NoError(tb, handle.QueryRowContext(context.Background(),
-		`SELECT count(*) FROM sqlite_schema
-		 WHERE type = 'table' AND name IN ('pool', 'account', 'ledger_batch', 'ledger_entry')`).Scan(&n))
-
-	return n == 4
-}
-
 // requireLedgerIntact is every guarantee a migration must not break, in one call so that it can be
-// made after EVERY migration rather than only at the end.
+// made after EVERY migration rather than only at the end. It returns the post-migration snapshot,
+// which becomes the baseline for the NEXT migration — so a column introduced by migration N is
+// compared across migration N+1.
 //
 // stage names what was just applied, because "the ledger is broken" is a much less useful failure
 // than "the ledger is broken after 000007_add_bid_hold.sql".
-func requireLedgerIntact(tb testing.TB, handle *sql.DB, stage string) {
+func requireLedgerIntact(tb testing.TB, handle *sql.DB, before ledgerSnapshot, stage string) ledgerSnapshot {
 	tb.Helper()
 
-	// Whole rows, not counts: a rebuild that copied the columns in the wrong order produces exactly
-	// the right number of exactly wrong rows.
-	require.Equal(tb, wantEntries(), readEntries(tb, handle),
-		"ledger entries did not survive %s unchanged", stage)
-	require.Equal(tb, wantBatches(), readBatches(tb, handle),
-		"ledger batches did not survive %s unchanged — note prev_hash and hash, which are the "+
-			"tamper-evidence and would be silently mangled by a text round-trip", stage)
+	after := snapshotLedger(tb, handle)
 
-	// The chain still links. Asserted separately from the row comparison because it is the property
-	// a reader cares about, and a message naming it beats a struct diff.
-	batches := readBatches(tb, handle)
-	require.Len(tb, batches, 2)
-	require.Nil(tb, batches[0].PrevHash, "the genesis batch has no predecessor")
-	require.Equal(tb, batches[0].Hash, batches[1].PrevHash,
+	// Every column of every row, not a projection. This is the row-survival oracle.
+	requireLedgerUnchanged(tb, before, after, stage)
+
+	// The chain still links. Implied by the comparison above, but asserted by name because it is
+	// the property a reader cares about and a message naming it beats a map diff.
+	require.Nil(tb, after.batches[seedBatch1ID]["prev_hash"], "the genesis batch has no predecessor")
+	require.Equal(tb, after.batches[seedBatch1ID]["hash"], after.batches[seedBatch2ID]["prev_hash"],
 		"the hash chain is broken after %s: batch 2 no longer points at batch 1", stage)
 
 	require.Equal(tb, 0, foreignKeyViolations(tb, handle),
@@ -373,6 +451,11 @@ func requireLedgerIntact(tb testing.TB, handle *sql.DB, stage string) {
 
 	// The parents the entries hang off are still there. A migration that took a referenced row with
 	// it would show up above as a violation, but naming the rows makes the failure readable.
+	//
+	// Presence only, deliberately: pool and account are NOT append-only. A backfill that populates
+	// name_norm for existing rows is a legitimate migration (.claude/rules/migrations.md case 4), so
+	// asserting their columns never change would fire on correct work. The ledger's two tables get
+	// the strict treatment precisely because nothing may ever rewrite them.
 	var pools, accounts int
 	require.NoError(tb, handle.QueryRowContext(context.Background(),
 		`SELECT count(*) FROM pool WHERE id = ?`, seedPoolID).Scan(&pools))
@@ -400,10 +483,10 @@ func requireLedgerIntact(tb testing.TB, handle *sql.DB, stage string) {
 
 	// And the refused mutations refused: an abort that rolled back cleanly leaves the ledger exactly
 	// as it was. A trigger that fires but lets a partial write through is worse than no trigger.
-	require.Equal(tb, wantEntries(), readEntries(tb, handle),
-		"the ledger changed while the append-only triggers were rejecting mutations")
-	require.Equal(tb, wantBatches(), readBatches(tb, handle),
-		"the ledger changed while the append-only triggers were rejecting mutations")
+	requireLedgerUnchanged(tb, after, snapshotLedger(tb, handle),
+		"the append-only triggers rejecting mutations")
+
+	return after
 }
 
 // TestMigrate_FullStack_LedgerDataSurvivesUpgrade walks a POPULATED ledger forward through every
@@ -412,20 +495,24 @@ func requireLedgerIntact(tb testing.TB, handle *sql.DB, stage string) {
 // The shape, and the order is the whole point:
 //
 //	(a) install the earliest release whose migrations create the ledger — NOT the whole set;
-//	(b) seed a real pool, account, two chained ledger_batch rows and their four ledger_entry rows,
-//	    through a connection with foreign keys enforced;
+//	(b) seed a real pool, account, a batch and its reversal and their four entries, through a
+//	    connection with foreign keys enforced, giving every column a distinct non-default value;
 //	(c) apply each REMAINING REAL migration, one at a time, requiring after every single one that
-//	    the rows, the hash chain, the foreign keys and all four append-only triggers are intact;
+//	    EVERY COLUMN of every ledger row is byte-for-byte what it was before that migration, that
+//	    the hash chain links, that no foreign key dangles, and that all four append-only triggers
+//	    are present and still RAISE(ABORT);
 //	(d) then apply a fixture migration that REBUILDS ledger_entry — SQLite's create/copy/drop/
 //	    rename, which is what any change ALTER TABLE cannot express becomes — and require the same
 //	    things again.
 //
 // (a) and (c) are what make this a gate on FUTURE migrations rather than a story about a fixture.
-// Seeding after the whole set, which is what an earlier draft of this test did, means every real
-// migration runs against an empty database and the fixture in (d) — which re-creates the triggers
-// unconditionally — would REPAIR whatever a future real rebuild had just broken. The test would
-// stay green while the regression it exists to catch shipped. Seeding at the ledger's own migration
-// and checking after each subsequent one removes both halves of that.
+// Seeding after the whole set, which is what an earlier draft did, means every real migration runs
+// against an empty database and the fixture in (d) — which re-creates the triggers unconditionally —
+// would REPAIR whatever a future real rebuild had just broken. The test would stay green while the
+// regression it exists to catch shipped.
+//
+// The baseline for each comparison is the state after the PREVIOUS migration, not the seed, so a
+// column introduced by migration N is covered across migration N+1 without anybody adding it here.
 //
 // (d) is still worth doing separately, because no shipped migration rebuilds a ledger table yet:
 // there is nothing in db/migrations-sqlite/ to point (c) at that exercises the dangerous shape. The
@@ -457,6 +544,7 @@ func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 	release := func(version int) string { return fmt.Sprintf("v0.%d.0", version) }
 
 	var (
+		baseline ledgerSnapshot
 		seededAt int
 		checked  []int
 	)
@@ -484,11 +572,13 @@ func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 				seedLedger(t, handle)
 
 				seededAt = version
+				baseline = snapshotLedger(t, handle)
 
 				return
 			}
 
-			requireLedgerIntact(t, handle, fmt.Sprintf("real migration %06d", version))
+			baseline = requireLedgerIntact(t, handle, baseline,
+				fmt.Sprintf("real migration %06d", version))
 
 			checked = append(checked, version)
 		})
@@ -518,7 +608,14 @@ func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 		"the ledger_entry rebuild failed on a populated database")
 
 	withRawFK(t, dbPath, func(handle *sql.DB) {
-		requireLedgerIntact(t, handle, "the ledger_entry table rebuild")
+		after := requireLedgerIntact(t, handle, baseline, "the ledger_entry table rebuild")
+
+		// The rebuild's whole reason for existing: it ADDS a column. Asserting that it arrived
+		// proves requireLedgerUnchanged tolerated a legitimate addition rather than passing because
+		// the migration did nothing.
+		require.Contains(t, after.entries[seedEntry1ID], "note",
+			"the rebuild fixture did not add its new column, so this step proved nothing about a "+
+				"migration that changes the ledger's shape")
 	})
 }
 
@@ -558,7 +655,12 @@ func TestMigrate_FullStack_ForgetfulRebuildLosesTheTriggers(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, installed.Migrate(t.Context()))
 
-	seedLedger(t, openRawFK(t, dbPath))
+	var baseline ledgerSnapshot
+
+	withRawFK(t, dbPath, func(handle *sql.DB) {
+		seedLedger(t, handle)
+		baseline = snapshotLedger(t, handle)
+	})
 
 	upgraded, err := migrate.New(migrationDir(t, ledgerRebuildNoTriggersFixture), migrate.Config{
 		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.1.0", AutoMigrate: true,
@@ -569,45 +671,44 @@ func TestMigrate_FullStack_ForgetfulRebuildLosesTheTriggers(t *testing.T) {
 			"boot path grew a check that catches this, and the test above should be re-read in that "+
 			"light rather than this one being deleted.")
 
-	handle := openRawFK(t, dbPath)
+	withRawFK(t, dbPath, func(handle *sql.DB) {
+		// The data is fine, every column of it. That is what makes this invisible: nobody loses a row.
+		requireLedgerUnchanged(t, baseline, snapshotLedger(t, handle), "the forgetful rebuild")
+		require.Equal(t, 0, foreignKeyViolations(t, handle))
 
-	// The data is fine. That is what makes this invisible: nobody loses a row.
-	require.Equal(t, wantEntries(), readEntries(t, handle),
-		"the forgetful rebuild also lost data, which would make it a LOUD failure and a poor control")
-	require.Equal(t, 0, foreignKeyViolations(t, handle))
+		// The two triggers on the rebuilt table are gone. The two on ledger_batch, which this
+		// migration never touched, are untouched — so the loss is scoped to the rebuilt table, which
+		// is what makes the positive test's exact four-name assertion the right assertion.
+		require.Equal(t,
+			[]string{"trg_ledger_batch_no_delete", "trg_ledger_batch_no_update"},
+			ledgerTriggerNames(t, handle),
+			"expected DROP TABLE to have taken ledger_entry's two triggers and left ledger_batch's alone")
 
-	// The two triggers on the rebuilt table are gone. The two on ledger_batch, which this migration
-	// never touched, are untouched — so the loss is scoped to the rebuilt table, which is what makes
-	// the positive test's exact four-name assertion the right assertion.
-	require.Equal(t,
-		[]string{"trg_ledger_batch_no_delete", "trg_ledger_batch_no_update"},
-		ledgerTriggerNames(t, handle),
-		"expected DROP TABLE to have taken ledger_entry's two triggers and left ledger_batch's alone")
+		// And the consequence, stated as behaviour rather than as schema. This is the only place in
+		// the repository where a ledger row is mutated, and it is a throwaway database in
+		// t.TempDir() demonstrating the disaster the trigger prevents.
+		res, execErr := handle.ExecContext(t.Context(),
+			`UPDATE ledger_entry SET amount_cp = 999999 WHERE id = ?`, seedEntry1ID)
+		require.NoError(t, execErr,
+			"the UPDATE was refused, so ledger_entry's trigger survived a rebuild that never "+
+				"re-created it — re-read the fixture: it must not contain a CREATE TRIGGER")
 
-	// And the consequence, stated as behaviour rather than as schema. This is the only place in the
-	// repository where a ledger row is mutated, and it is a throwaway database in t.TempDir()
-	// demonstrating the disaster the trigger prevents.
-	res, err := handle.ExecContext(t.Context(),
-		`UPDATE ledger_entry SET amount_cp = 999999 WHERE id = ?`, seedEntry1ID)
-	require.NoError(t, err,
-		"the UPDATE was refused, so ledger_entry's trigger survived a rebuild that never re-created "+
-			"it — re-read the fixture: it must not contain a CREATE TRIGGER")
+		affected, rowsErr := res.RowsAffected()
+		require.NoError(t, rowsErr)
+		require.Equal(t, int64(1), affected, "history was rewritten and the database reported success")
 
-	affected, err := res.RowsAffected()
-	require.NoError(t, err)
-	require.Equal(t, int64(1), affected, "history was rewritten and the database reported success")
+		res, execErr = handle.ExecContext(t.Context(), `DELETE FROM ledger_entry WHERE id = ?`, seedEntry2ID)
+		require.NoError(t, execErr, "the DELETE was refused; see above")
 
-	res, err = handle.ExecContext(t.Context(), `DELETE FROM ledger_entry WHERE id = ?`, seedEntry2ID)
-	require.NoError(t, err, "the DELETE was refused; see above")
+		affected, rowsErr = res.RowsAffected()
+		require.NoError(t, rowsErr)
+		require.Equal(t, int64(1), affected, "a ledger entry was deleted and the database reported success")
 
-	affected, err = res.RowsAffected()
-	require.NoError(t, err)
-	require.Equal(t, int64(1), affected, "a ledger entry was deleted and the database reported success")
-
-	// ledger_batch, whose triggers this migration left alone, still refuses. Proof that the loss is
-	// the rebuild's doing and not something about this test's connection.
-	_, err = handle.ExecContext(t.Context(),
-		`UPDATE ledger_batch SET reason = 'edited' WHERE id = ?`, seedBatch1ID)
-	require.ErrorContains(t, err, "ledger_batch is append-only",
-		"ledger_batch's triggers were never dropped and must still fire")
+		// ledger_batch, whose triggers this migration left alone, still refuses. Proof that the loss
+		// is the rebuild's doing and not something about this test's connection.
+		_, execErr = handle.ExecContext(t.Context(),
+			`UPDATE ledger_batch SET reason = 'edited' WHERE id = ?`, seedBatch1ID)
+		require.ErrorContains(t, execErr, "ledger_batch is append-only",
+			"ledger_batch's triggers were never dropped and must still fire")
+	})
 }

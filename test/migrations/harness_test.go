@@ -245,31 +245,18 @@ func openRaw(tb testing.TB, path string) *sql.DB {
 	return handle
 }
 
-// openRawFK is openRaw with foreign keys enforced.
+// withRawFK is openRaw with foreign keys enforced and a deterministic close.
 //
-// SQLite defaults foreign_keys OFF per connection, so openRaw's handle will happily insert a
-// ledger_entry pointing at a batch that does not exist. A test that seeds "a real ledger" through
-// that handle is seeding rows the production connection (internal/store/pragma.go turns the pragma
-// on for every connection in both pools) would have rejected, and would keep passing after a
-// migration copied rows in an order that broke the references.
-func openRawFK(tb testing.TB, path string) *sql.DB {
-	tb.Helper()
-
-	handle, err := sql.Open("sqlite", fkDSN(path))
-	require.NoError(tb, err, "open %s with foreign keys on", path)
-	tb.Cleanup(func() { require.NoError(tb, handle.Close(), "close %s", path) })
-
-	requireForeignKeysOn(tb, handle)
-
-	return handle
-}
-
-// withRawFK is openRawFK with a DETERMINISTIC close: the handle is gone before the function
-// returns, rather than at the end of the test.
+// Foreign keys, because SQLite defaults the pragma OFF per connection: openRaw's handle will
+// happily insert a ledger_entry pointing at a batch that does not exist. A test that seeds "a real
+// ledger" through that handle is seeding rows the production connection (internal/store/pragma.go
+// turns the pragma on for every connection in both pools) would have rejected, and would keep
+// passing after a migration copied rows in an order that broke the references.
 //
-// Which matters when a test interleaves reads with migrations. The migrator takes a VACUUM INTO
-// snapshot and runs DDL on every step, and leaving one idle handle per step alive until cleanup is
-// how a suite acquires a lock-contention flake that gets blamed on the migration under test.
+// Deterministic close — the handle is gone before this returns, rather than at the end of the test
+// — because the caller interleaves reads with migrations. The migrator takes a VACUUM INTO snapshot
+// and runs DDL on every step, and leaving one idle handle per step alive until cleanup is how a
+// suite acquires a lock-contention flake that gets blamed on the migration under test.
 func withRawFK(tb testing.TB, path string, fn func(handle *sql.DB)) {
 	tb.Helper()
 
