@@ -950,11 +950,22 @@ func TestFixedPrice_Config_RejectsWhatTheSchemaWouldHaveRejected(t *testing.T) {
 		`{"decay_bp": 10001}`,
 		`{"decay_bp": -5}`,
 
-		// The two the SCHEMA rejects and a lax parser would not, both found in review of this PR.
-		// A knob nobody typed correctly and a document that is not an object must not read as "the
-		// defaults" — that is a pool silently running rules its officers did not choose.
+		// The three the SCHEMA rejects and a lax parser would not, all found in review of this PR.
+		// A knob nobody typed correctly, a null knob, and a document that is not an object must not
+		// read as "the defaults" — that is a pool silently running rules its officers did not choose.
 		`{"decay_pb": 1000}`,
 		`null`,
+
+		// The null MEMBERS, which are the subtle ones: encoding/json treats a null decoded into a
+		// non-pointer field as a no-op, so each of these used to read back as the default it was
+		// preloaded with — 100, 0, "guild_bank", 0 — while the schema types admit no null at all.
+		// One per Go kind in the struct, because the no-op is a property of the decode target.
+		`{"tick_award_cp": null}`,
+		`{"decay_bp": null}`,
+		`{"proceeds": null}`,
+		`{"floor_cp": null}`,
+		`{"default_price_cp": 250, "solo_policy": null}`,
+		`{"tick_award_cp":` + "\n" + `   null }`,
 
 		// The rest of the not-an-object family, and the decimal that canonical §1 bans.
 		`[]`,
@@ -1049,15 +1060,98 @@ func TestFixedPrice_Config_AbsentIsTheDefaults_AndTypoedIsNot(t *testing.T) {
 		})
 	}
 
-	// And the near-miss it is contrasted with: one transposed character, which the schema rejects
-	// under additionalProperties: false and which used to leave decay silently off.
-	_, err := strategy.FixedPrice{}.PlanDecay(
-		newCtx(t, 1, 1_000, `{"decay_pb": 1000}`),
-		strategy.DecayRun{PeriodKey: "2024-06", AsOfSeq: 7})
-	require.ErrorIs(t, err, strategy.ErrInvalidConfig)
-	require.ErrorContains(t, err, "decay_pb",
-		"the error must name the key nobody spelled right; 'invalid config' sends an officer to read "+
-			"the whole form")
+	// And the two near-misses it is contrasted with. Both used to read back as the default, and both
+	// must name the knob: "invalid config" sends an officer to read the whole form.
+	t.Run("a transposed knob names itself", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := strategy.FixedPrice{}.PlanDecay(
+			newCtx(t, 1, 1_000, `{"decay_pb": 1000}`),
+			strategy.DecayRun{PeriodKey: "2024-06", AsOfSeq: 7})
+		require.ErrorIs(t, err, strategy.ErrInvalidConfig)
+		require.ErrorContains(t, err, "decay_pb")
+	})
+
+	t.Run("a null knob names itself", func(t *testing.T) {
+		t.Parallel()
+
+		// Two null knobs, so the message is also asserted to be STABLE: the members are reported in
+		// sorted order, and a map range would name whichever key Go visited first.
+		_, err := strategy.FixedPrice{}.PlanAttendance(
+			newCtx(t, 1, 0, `{"tick_award_cp": null, "decay_bp": null}`),
+			strategy.AttendanceEvent{Attendees: shares(1)})
+		require.ErrorIs(t, err, strategy.ErrInvalidConfig)
+		require.ErrorContains(t, err, "decay_bp",
+			"with several null knobs the first in sorted order is named, on every run")
+	})
+}
+
+// TestFixedPrice_ConfigSchema_EveryKnobAgreesWithTheParser derives its cases FROM THE SCHEMA, so a
+// knob added later is covered without anybody remembering to add a row.
+//
+// This exists because the same class of defect was found twice in review of this PR: an unknown key,
+// then a null member, each accepted by the parser while the schema rejects it, each leaving the pool
+// running a default nobody chose. A third hand-written case would have closed the third instance and
+// nothing else. Both directions are asserted, because schema/parser drift has two of them:
+//
+//   - every declared knob REJECTS null — the schema gives each one a type, and null is a value of
+//     none of them. encoding/json decodes a null into a non-pointer field as a no-op, so this is the
+//     failure that looks exactly like "the officer left it alone";
+//   - every declared knob ACCEPTS a legal value of its declared type — a knob the settings form
+//     offers and the planner refuses is the same drift seen from the other side.
+func TestFixedPrice_ConfigSchema_EveryKnobAgreesWithTheParser(t *testing.T) {
+	t.Parallel()
+
+	var schema struct {
+		Properties map[string]struct {
+			Type string   `json:"type"`
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+
+	require.NoError(t, json.Unmarshal(strategy.FixedPrice{}.ConfigSchema(), &schema))
+	require.NotEmpty(t, schema.Properties)
+
+	// plan runs the cheapest planner that parses the config and nothing else of interest.
+	plan := func(t *testing.T, config string) error {
+		t.Helper()
+
+		_, err := strategy.FixedPrice{}.PlanAttendance(
+			newCtx(t, 1, 0, config), strategy.AttendanceEvent{Attendees: shares(1)})
+
+		return err
+	}
+
+	for name, prop := range schema.Properties {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := plan(t, fmt.Sprintf(`{%q: null}`, name))
+			require.ErrorIs(t, err, strategy.ErrInvalidConfig,
+				"knob %q accepts null. The schema types it, so null is not one of its values — and a "+
+					"null decoded into a non-pointer field is a no-op, which means the pool silently "+
+					"runs the default instead.", name)
+			require.ErrorContains(t, err, name, "the rejection must name the knob")
+
+			// A legal value of the declared type. 1 satisfies every integer bound this schema
+			// declares (minimum 0, minimum 1, maximum 10000); an enum takes its first member.
+			var legal string
+
+			switch {
+			case len(prop.Enum) > 0:
+				legal = fmt.Sprintf("%q", prop.Enum[0])
+			case prop.Type == "integer":
+				legal = "1"
+			default:
+				t.Fatalf("knob %q is declared as %q, which this test has no legal value for — add "+
+					"one here in the same change that adds the type", name, prop.Type)
+			}
+
+			require.NoError(t, plan(t, fmt.Sprintf(`{%q: %s}`, name, legal)),
+				"knob %q is declared in the schema but the parser refuses %s, so the settings form "+
+					"offers a control that cannot be set", name, legal)
+		})
+	}
 }
 
 // TestFixedPrice_Planners_PropagateFacadeFailures asserts a failing façade read stops the plan rather

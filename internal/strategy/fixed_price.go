@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/bits"
@@ -206,26 +207,47 @@ func (FixedPrice) config(ctx Ctx) (fixedPriceConfig, error) {
 		return validateFixedPriceConfig(cfg)
 	}
 
-	// STRICTLY, and the two rejections below are the whole reason this is a Decoder rather than
-	// json.Unmarshal. Both were found in review of this PR, and both are the same defect: a document
-	// the SCHEMA rejects that the PARSER accepted, leaving the pool running defaults nobody chose.
+	// STRICTLY, IN TWO PASSES, and the reason for the first one is the whole lesson of this function.
+	// Three rejections below were each found in review of this PR, and all three are the same defect:
+	// a document the SCHEMA rejects that the PARSER accepted, leaving the pool running defaults
+	// nobody chose.
+	//
+	// PASS ONE decodes into a map of RAW MEMBERS, because that is the only representation that
+	// preserves both PRESENCE and NULLNESS — the two facts a struct decode destroys:
+	//
+	//   - A NULL MEMBER. `{"tick_award_cp": null}` is the subtle one. encoding/json treats a JSON
+	//     null decoded into a non-pointer field as a documented NO-OP: no error, field untouched. The
+	//     struct was preloaded with the defaults, so the officer's null reads back as 100 — the
+	//     schema says `"type": "integer"`, which does not admit null, and the pool silently runs a
+	//     tick award nobody typed. DisallowUnknownFields does not help: the key is perfectly known.
+	//     Nothing about a struct decode can distinguish "absent" from "present and null", so the
+	//     check has to happen where the raw member is still visible.
+	//   - A BARE `null` document. Unmarshalling it yields a NIL MAP rather than an error, for the
+	//     same reason — so the same pass catches it, as an absence of the object the schema's
+	//     `"type": "object"` requires.
+	//   - TRAILING CONTENT. `{...}{...}` fails this pass outright, as do an array and a scalar.
+	//
+	// PASS TWO decodes the struct with DisallowUnknownFields, which catches the third:
 	//
 	//   - An UNKNOWN KEY. `{"decay_pb": 1000}` — a transposition of decay_bp — unmarshals without
 	//     error and leaves decay at 0. The officer sets decay, the form shows decay, and no decay is
-	//     ever posted. The schema says additionalProperties: false; DisallowUnknownFields is what
-	//     makes the parser agree.
-	//   - A BARE `null`. json.Unmarshal of `null` into a struct is a documented no-op that returns
-	//     no error, so a config column holding the four characters `null` reads as "the defaults"
-	//     rather than as the invalid document the schema's `type: object` says it is. It cannot be
-	//     caught by the decoder — it is legal JSON for any target — so it is checked by hand.
+	//     ever posted. The schema says additionalProperties: false; this is what makes the parser
+	//     agree.
 	//
-	// The other malformed shapes already fail: an array or a scalar cannot unmarshal into a struct,
-	// a decimal cannot unmarshal into an int64 (which is canonical §1 enforced by the type system),
-	// and trailing content after the object is caught by the More() check below.
-	if raw == "null" {
-		return fixedPriceConfig{}, fmt.Errorf(
-			"%s: config is the JSON literal null, not an object; an unset config is an empty column, "+
-				"not a null document: %w", fixedPriceID, ErrInvalidConfig)
+	// A decimal or a quoted number needs no special handling: it cannot unmarshal into an int64,
+	// which is canonical §1 enforced by the type system rather than by a check.
+	members, err := rawConfigMembers(raw)
+	if err != nil {
+		return fixedPriceConfig{}, err
+	}
+
+	for _, name := range sortedMemberNames(members) {
+		if isJSONNull(members[name]) {
+			return fixedPriceConfig{}, fmt.Errorf(
+				"%s: config knob %q is null; the schema gives it a type, and null is not a value of "+
+					"any of them. Omit the knob to take its default, or give it one: %w",
+				fixedPriceID, name, ErrInvalidConfig)
+		}
 	}
 
 	dec := json.NewDecoder(strings.NewReader(raw))
@@ -235,13 +257,48 @@ func (FixedPrice) config(ctx Ctx) (fixedPriceConfig, error) {
 		return fixedPriceConfig{}, fmt.Errorf("parse %s config: %w: %w", fixedPriceID, ErrInvalidConfig, err)
 	}
 
-	if dec.More() {
-		return fixedPriceConfig{}, fmt.Errorf(
-			"%s: config carries content after the object; only one document is a config: %w",
-			fixedPriceID, ErrInvalidConfig)
+	return validateFixedPriceConfig(cfg)
+}
+
+// rawConfigMembers decodes the config into its top-level members, undecoded.
+//
+// The nil-map check is not defensive: `json.Unmarshal("null", &m)` leaves m nil and returns no
+// error, so a nil map here means the document was the JSON literal null rather than an object, and
+// an empty map means `{}`. Those are different documents and only one of them is legal.
+func rawConfigMembers(raw string) (map[string]json.RawMessage, error) {
+	var members map[string]json.RawMessage
+
+	if err := json.Unmarshal([]byte(raw), &members); err != nil {
+		return nil, fmt.Errorf("parse %s config: %w: %w", fixedPriceID, ErrInvalidConfig, err)
 	}
 
-	return validateFixedPriceConfig(cfg)
+	if members == nil {
+		return nil, fmt.Errorf(
+			"%s: config is the JSON literal null, not an object; an unset config is an empty column, "+
+				"not a null document: %w", fixedPriceID, ErrInvalidConfig)
+	}
+
+	return members, nil
+}
+
+// isJSONNull reports whether a raw member is the literal null, ignoring the whitespace a formatter
+// may have left around it.
+func isJSONNull(member json.RawMessage) bool {
+	return string(bytes.TrimSpace(member)) == "null"
+}
+
+// sortedMemberNames returns the member names in a stable order, so that a config with two bad knobs
+// names the same one on every run. A map range would report whichever key Go happened to visit
+// first, and a test asserting the message would be intermittently red.
+func sortedMemberNames(members map[string]json.RawMessage) []string {
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
 }
 
 // validateFixedPriceConfig applies the bounds the schema declares, to a config that has already
