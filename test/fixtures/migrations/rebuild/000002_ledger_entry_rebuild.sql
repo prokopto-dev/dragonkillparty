@@ -10,8 +10,11 @@
 -- of this file is a hand-edit under case 1 of the rule, and forgetting it is invisible in review.
 --
 -- This fixture DOES re-create them. Its forgetful twin, 000002_ledger_entry_rebuild_no_triggers.sql,
--- is byte-identical except that the two CREATE TRIGGER statements are missing; the two exist as a
--- matched pair so `diff` shows exactly what a real migration would have to get wrong.
+-- is identical except that the two CREATE TRIGGER statements are missing; the two exist as a matched
+-- pair so `diff` shows exactly what a real migration would have to get wrong. That relationship is
+-- enforced by TestFixtures_RebuildPairs_DifferOnlyByTheDeclaredStatements — edit one of these files
+-- and you edit both, in the same commit, or the negative control stops controlling for the same
+-- rebuild and the positive test's assertions stop being about anything.
 --
 -- The rebuild targets ledger_entry, the CHILD of the ledger's two tables, and that is deliberate.
 -- goose runs each migration inside a transaction, and `PRAGMA foreign_keys` is silently ignored
