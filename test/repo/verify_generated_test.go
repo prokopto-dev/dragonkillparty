@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -22,76 +21,81 @@ import (
 //
 // The recipe now chains with `&&`. This test is what stops it from going back.
 
-// TestVerifyGenerated_FailingGenerator_FailsTheTarget runs the real target with a PATH that has no
-// Go on it, which is the cheapest way to make the first generator die before it writes anything.
+// TestVerifyGenerated_FailingGenerator_FailsTheTarget runs the real target with a `go` on PATH that
+// refuses to run, so the first generator dies exactly as it would on a broken toolchain.
 //
 // It runs the REAL Makefile rather than a fixture copy, because the bug was in the recipe's shell
 // punctuation — a fixture reproducing the recipe would be a second copy of the thing under test, and
 // the copy is what would get fixed.
 //
-// Nothing is mutated: scripts/gen-enums.sh is the first step of `make gen` and it exits before
-// touching db/schema.hcl. The digest pass that precedes it only reads.
+// SHADOWING `go` RATHER THAN STRIPPING PATH, and the first version of this test got that wrong in a
+// way only CI could show. Removing every PATH entry holding a `go` binary looks equivalent and is
+// not. The Ubuntu runner carries /usr/bin/go, so the strip removed /usr/bin — taking `awk` with it —
+// and then this Makefile put Go back by itself: `GOTOOLS_BIN := $(shell $(GO) env GOPATH)/bin`
+// evaluates to `/bin` when go cannot run, `export PATH := $(PATH):$(GOTOOLS_BIN)` appends it, and on
+// Ubuntu /bin aliases /usr/bin. The runner's Go 1.24 came back, failed the go.mod floor instead, and
+// the test failed on its own fixture rather than on the target.
+//
+// Prepending one temp directory changes exactly one thing, leaves every coreutil where the platform
+// put it, and cannot be undone by the Makefile's own PATH arithmetic.
 func TestVerifyGenerated_FailingGenerator_FailsTheTarget(t *testing.T) {
 	t.Parallel()
 
 	root := repoRoot(t)
+	schema := filepath.Join(root, "db", "schema.hcl")
+
+	before, err := os.ReadFile(schema)
+	require.NoError(t, err, "read db/schema.hcl before the run")
 
 	cmd := exec.Command("make", "verify-generated")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "PATH="+pathWithoutGo(t))
+	cmd.Env = append(os.Environ(), "PATH="+pathWithStubbedGo(t))
 
-	out, err := cmd.CombinedOutput()
+	out, runErr := cmd.CombinedOutput()
 
-	require.Error(t, err,
+	require.Error(t, runErr,
 		"verify-generated exited 0 with a generator that could not run — the recipe is swallowing "+
 			"`make gen`'s status again, and the required codegen-drift job can now false-green:\n%s", out)
 
 	require.NotContains(t, string(out), "generated files match their sources",
 		"verify-generated claimed the tree was in sync without having regenerated it:\n%s", out)
 
-	// Fail for the RIGHT reason: the generator refused because Go was absent, not because the
-	// target broke some other way.
-	require.Contains(t, string(out), "go is not installed",
-		"expected the first generator to die on the missing toolchain:\n%s", out)
+	// Fail for the RIGHT reason, asserted at both ends. The sentinel proves the go that ran was the
+	// stub — not a real toolchain that failed for its own reasons, which is exactly how the first
+	// version of this fixture went wrong — and the die message proves gen-enums.sh was the step that
+	// carried the failure up. This pair is what caught the fixture being wrong rather than the target.
+	require.Contains(t, string(out), stubGoSentinel,
+		"the go the generator ran was not the stub, so this proves nothing about the recipe:\n%s", out)
+
+	require.Contains(t, string(out), "enumgen failed",
+		"expected scripts/gen-enums.sh to be the step that died:\n%s", out)
+
+	// And the failed run left the schema alone — a generator that dies mid-write would be a worse
+	// bug than the one this test is about.
+	after, err := os.ReadFile(schema)
+	require.NoError(t, err, "read db/schema.hcl after the run")
+	require.Equal(t, string(before), string(after), "a failed verify-generated rewrote db/schema.hcl")
 }
 
-// pathWithoutGo returns the caller's PATH minus every directory that holds a `go` binary, and
-// asserts the result really cannot find one.
+// pathWithStubbedGo returns the caller's PATH with a temp directory prepended that holds a `go`
+// which exits non-zero.
 //
-// Subtracting directories rather than building a curated PATH keeps every other tool the recipe
-// needs — find, sort, xargs, awk, sha256sum or shasum, bash, env — exactly where the platform put
-// them, so this works on both a macOS laptop and the Ubuntu runner without a list of absolute paths
-// that would be wrong on one of them.
-func pathWithoutGo(t *testing.T) string {
+// scripts/gen-enums.sh finds it with `command -v go`, runs `go run ./internal/ledger/enumgen`, gets
+// a failure and dies — which is the state under test: `make gen` returning non-zero without having
+// changed a file, so the before and after digests match and only the recipe's own punctuation
+// decides whether verify-generated reports success.
+func pathWithStubbedGo(t *testing.T) string {
 	t.Helper()
 
-	var kept []string
+	dir := t.TempDir()
 
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if dir == "" {
-			continue
-		}
+	stub := "#!/bin/sh\necho '" + stubGoSentinel + "' >&2\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(stub), 0o755), "write the go stub")
 
-		if info, err := os.Stat(filepath.Join(dir, "go")); err == nil && !info.IsDir() {
-			continue
-		}
-
-		kept = append(kept, dir)
-	}
-
-	stripped := strings.Join(kept, string(filepath.ListSeparator))
-
-	// The assertion that keeps this test honest. If a `go` survives on the stripped PATH the
-	// generator would succeed, verify-generated would pass, and the test would fail for a reason
-	// that has nothing to do with the recipe's punctuation.
-	//
-	// Searched by hand rather than with exec.LookPath, which reads the PROCESS environment and would
-	// need t.Setenv — and t.Setenv panics in a parallel test.
-	for _, dir := range kept {
-		info, err := os.Stat(filepath.Join(dir, "go"))
-		require.True(t, err != nil || info.IsDir(),
-			"stripping PATH left a usable go in %s — the fixture is not hostile", dir)
-	}
-
-	return stripped
+	return dir + string(filepath.ListSeparator) + os.Getenv("PATH")
 }
+
+// stubGoSentinel is what the stub prints, and it is deliberately a string no real toolchain, make
+// recipe or gate script would ever emit — the assertion on it is only worth anything if a passing
+// test cannot be produced by some other program failing.
+const stubGoSentinel = "dkp-test-stub-go: refusing to run, by test fixture"
