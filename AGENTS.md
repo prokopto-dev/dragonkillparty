@@ -131,6 +131,33 @@ one produces silently wrong attendance, which is worse than an error.
 
 If two instructions conflict, the invariant wins and the conflict is a bug: say so.
 
+## Out-of-scope findings: file an issue
+
+Uncertainty about what your change should do stops you and asks. A finding you are *not* uncertain
+about — real, actionable, and genuinely not this PR's job — does not stop anything: **file the issue
+yourself, with `gh issue create`, and carry on.** You are empowered to do that. Do not ask
+permission, do not wait for a human to notice, and do not leave it in a chat transcript nobody reads
+again. A deferral, a latent bug you should not fix here, a doc conflict, an unverified behaviour, a
+follow-up you can already name — each of those is an issue.
+
+- **One issue per distinct actionable item.** Do not bundle unrelated findings into one, and do not
+  split one finding across several. Say what blocks it and roughly what it costs, so triage does not
+  have to re-derive that from the diff.
+- **Use the existing labels** — `bug`, `documentation`, `enhancement` — and the matching form in
+  `.github/ISSUE_TEMPLATE/` where one fits: `parser-bug`, `import-failure`, `parity-gap`,
+  `bug_report`, `feature_request`. There are no phase labels in this repo; do not invent one.
+- **Do not expand the PR to fix it.** Keep the PR scoped and link the issue from the body's
+  **Issues filed** table. A "risks and follow-ups" paragraph does not count on its own — the issue
+  is the durable artefact and the PR body is only the pointer to it.
+- **Filing is expected, not noise.** These get cleared before the next PR or stage boundary, so an
+  issue filed today is looked at soon. Distinguish honestly between "cheap, do before the next
+  boundary" and "needs infrastructure a later phase builds": labelling everything urgent is the same
+  as labelling nothing urgent.
+
+This is the unverified-P99-format rule above, generalised — a golden fixture marked `unverified`
+plus an issue is the same move, and that rule still governs log formats specifically. It is not a
+way to defer work that *is* in scope: the task you were given still gets finished.
+
 ## Do not
 
 - Do not edit generated files (`openapi/openapi.json`, `internal/store/sqlitegen/`,
