@@ -243,7 +243,7 @@ test-property:
 # word count of the list below, so keep it as explicit package paths — a `...` pattern expands to
 # several packages and one word, and the assertion would then be wrong in the safe-looking direction.
 COVERAGE_FLOOR          := 95
-COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/strategy
+COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/strategy
 test-coverage-floor:
 	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
@@ -331,7 +331,7 @@ verify-commands:
 #
 # db/schema.hcl is in the list even though it is hand-authored schema truth, because ONE REGION of
 # it is not: scripts/gen-enums.sh rewrites the ledger enum CHECKs between the GENERATED markers from
-# internal/ledger/kinds.go. Listing the file is what makes a hand-edit of that region fail here with
+# internal/ledger/kinds. Listing the file is what makes a hand-edit of that region fail here with
 # "run make gen" instead of surviving until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
                    db/schema.hcl

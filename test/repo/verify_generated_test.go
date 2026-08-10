@@ -99,3 +99,42 @@ func pathWithStubbedGo(t *testing.T) string {
 // recipe or gate script would ever emit — the assertion on it is only worth anything if a passing
 // test cannot be produced by some other program failing.
 const stubGoSentinel = "dkp-test-stub-go: refusing to run, by test fixture"
+
+// TestGen_EnumGenerator_DependsOnNoGeneratedCode holds the bootstrap property that `make gen` must
+// be able to repair its own artefacts.
+//
+// scripts/gen-enums.sh is the FIRST step of `make gen` and it compiles internal/ledger/enumgen. If
+// that command's dependency graph reaches generated code, a tree whose generated code does not build
+// cannot run the command that regenerates it — the failure mode is circular and the error message
+// points at the wrong file. It is not hypothetical: the catalogue's first home was internal/ledger,
+// which reaches internal/store/sqlitegen through commit.go, so a stale or absent sqlc output would
+// have broken `make gen` until someone hand-repaired the generated package.
+//
+// The fix was to move the catalogue to the leaf package internal/ledger/kinds. This is what stops it
+// drifting back: an innocent-looking import of internal/ledger from the catalogue or the generator
+// would restore the cycle and nothing else in the suite would notice.
+func TestGen_EnumGenerator_DependsOnNoGeneratedCode(t *testing.T) {
+	t.Parallel()
+
+	// The trees AGENTS.md marks GENERATED and `make gen` writes. A generator that imports any of
+	// them cannot be the thing that fixes them.
+	generated := []string{
+		"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen",
+		"github.com/prokopto-dev/dragonkillparty/internal/store/pggen",
+	}
+
+	cmd := exec.Command("go", "list", "-deps", "./internal/ledger/enumgen")
+	cmd.Dir = repoRoot(t)
+
+	out, err := cmd.Output()
+	require.NoError(t, err, "go list -deps ./internal/ledger/enumgen")
+
+	deps := string(out)
+
+	for _, pkg := range generated {
+		require.NotContains(t, deps, pkg,
+			"the first step of `make gen` imports %s, which `make gen` generates — a tree whose "+
+				"generated code does not build can no longer be repaired by running `make gen`. Keep "+
+				"internal/ledger/kinds a leaf; see its package comment", pkg)
+	}
+}

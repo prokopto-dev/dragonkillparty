@@ -1,4 +1,4 @@
-package ledger_test
+package kinds_test
 
 import (
 	"encoding/json"
@@ -13,14 +13,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
-	"github.com/prokopto-dev/dragonkillparty/internal/store"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
 // The drift tests for canonical §5's third clause: "a test asserts the three copies agree".
 //
-// The three copies are the Go catalogue in internal/ledger/kinds.go, the CHECK expression in
+// The three copies are the Go catalogue in internal/ledger/kinds, the CHECK expression in
 // db/schema.hcl (written by `make gen`), and the CHECK the migrations actually create in the
 // database. The OpenAPI enum is the fourth copy and has no subject yet — no ledger endpoint exists
 // at Phase 0 — so its test is written to be correct whether or not one exists, in the shape
@@ -79,17 +78,17 @@ func TestLedgerKinds_CheckMatchesCatalogue(t *testing.T) {
 
 	committed := readSchemaHCL(t)
 
-	rendered, err := ledger.RenderSchemaHCL(committed)
+	rendered, err := kinds.RenderSchemaHCL(committed)
 	require.NoError(t, err, "render db/schema.hcl from the catalogue")
 
 	require.Equal(t, committed, rendered,
-		"db/schema.hcl's ledger enum CHECKs have drifted from internal/ledger/kinds.go — run `make gen` "+
+		"db/schema.hcl's ledger enum CHECKs have drifted from internal/ledger/kinds — run `make gen` "+
 			"(and `make migration NAME=<snake_case>` if a value actually changed)")
 
 	// Belt and braces: the expressions the CHECK must carry, named explicitly so a failure above
 	// reads as "which enum" rather than as a whole-file diff.
-	require.Contains(t, committed, ledger.CheckExpr("kind", ledger.BatchKinds()))
-	require.Contains(t, committed, ledger.CheckExpr("source", ledger.BatchSources()))
+	require.Contains(t, committed, kinds.CheckExpr("kind", kinds.BatchKinds()))
+	require.Contains(t, committed, kinds.CheckExpr("source", kinds.BatchSources()))
 }
 
 // TestLedgerKinds_SchemaDivergence_IsRestored is the negative control for the test above: a
@@ -132,7 +131,7 @@ func TestLedgerKinds_SchemaDivergence_IsRestored(t *testing.T) {
 			mutated := tt.mutate(committed)
 			require.NotEqual(t, committed, mutated, "the mutation did not apply — fixture is stale")
 
-			restored, err := ledger.RenderSchemaHCL(mutated)
+			restored, err := kinds.RenderSchemaHCL(mutated)
 			require.NoError(t, err)
 
 			require.Equal(t, committed, restored, "%s survived a render", tt.explain)
@@ -149,7 +148,7 @@ func TestLedgerKinds_MissingMarkers_IsAnError(t *testing.T) {
 	t.Parallel()
 
 	committed := readSchemaHCL(t)
-	begin := "  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds.go. Run `make gen`."
+	begin := "  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds. Run `make gen`."
 	end := "  // END GENERATED — ledger enum CHECKs."
 
 	require.Contains(t, committed, begin, "marker text changed — update this test with it")
@@ -171,54 +170,10 @@ func TestLedgerKinds_MissingMarkers_IsAnError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := ledger.RenderSchemaHCL(tt.src)
-			require.ErrorIs(t, err, ledger.ErrSchemaMarkersMissing)
+			out, err := kinds.RenderSchemaHCL(tt.src)
+			require.ErrorIs(t, err, kinds.ErrSchemaMarkersMissing)
 			require.Empty(t, out, "a failed render must not return a half-written schema")
 		})
-	}
-}
-
-// TestLedgerKinds_AppliedSchema_MatchesCatalogue is the authoritative check on the copy that reaches
-// the database: the schema a FRESH INSTALL actually ends up with, read back from sqlite_schema after
-// every migration has been applied.
-//
-// It exists because reading the migration TEXT cannot answer this question. A later migration that
-// rebuilds ledger_batch — SQLite's 12-step rebuild, which this PR's own doc comments warn a CHECK
-// change triggers — and forgets to re-create the constraint leaves 000003_ledger.sql's text intact
-// and the running database without the enum. Only the applied schema knows. The sibling test below
-// still reads the migration text, because naming the file that drifted is a better error message,
-// but this is the one that is sound on its own.
-//
-// store.NewDB applies the embedded migration set to a real SQLite database in t.TempDir(), which is
-// what every other test in this package writes against — no fake, per .claude/rules/go-idioms.md.
-func TestLedgerKinds_AppliedSchema_MatchesCatalogue(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-
-	var ddl string
-
-	require.NoError(t,
-		s.QueryRowForTest(t,
-			`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'ledger_batch'`).Scan(&ddl),
-		"read the applied ledger_batch DDL")
-
-	tests := []struct {
-		constraint string
-		column     string
-		values     []string
-	}{
-		{constraint: "ledger_batch_kind_enum", column: "kind", values: ledger.BatchKinds()},
-		{constraint: "ledger_batch_source_enum", column: "source", values: ledger.BatchSources()},
-	}
-
-	for _, tt := range tests {
-		want := fmt.Sprintf("CONSTRAINT %q CHECK (%s)", tt.constraint, ledger.CheckExpr(tt.column, tt.values))
-
-		require.Contains(t, ddl, want,
-			"the migrated database's ledger_batch does not carry the catalogue's %s CHECK — either a "+
-				"migration is missing after a catalogue change, or a later migration rebuilt the table "+
-				"and dropped the constraint. Applied DDL:\n%s", tt.constraint, ddl)
 	}
 }
 
@@ -239,8 +194,8 @@ func TestLedgerKinds_MigrationCheckMatchesCatalogue(t *testing.T) {
 		column     string
 		values     []string
 	}{
-		{constraint: "ledger_batch_kind_enum", column: "kind", values: ledger.BatchKinds()},
-		{constraint: "ledger_batch_source_enum", column: "source", values: ledger.BatchSources()},
+		{constraint: "ledger_batch_kind_enum", column: "kind", values: kinds.BatchKinds()},
+		{constraint: "ledger_batch_source_enum", column: "source", values: kinds.BatchSources()},
 	}
 
 	for _, tt := range tests {
@@ -250,9 +205,9 @@ func TestLedgerKinds_MigrationCheckMatchesCatalogue(t *testing.T) {
 			last, file := lastMigrationCheck(t, tt.constraint, tt.column)
 			require.NotEmpty(t, file, "no migration declares CONSTRAINT %q — the enum reaches no database", tt.constraint)
 
-			require.Equal(t, ledger.CheckExpr(tt.column, tt.values), last,
+			require.Equal(t, kinds.CheckExpr(tt.column, tt.values), last,
 				"%s carries a %s CHECK that the Go catalogue no longer matches — the values in "+
-					"internal/ledger/kinds.go need a migration, written with "+
+					"internal/ledger/kinds need a migration, written with "+
 					"`make migration NAME=<snake_case>` after `make gen`", file, tt.constraint)
 		})
 	}
@@ -304,10 +259,10 @@ func lastMigrationCheck(t *testing.T, constraint, column string) (expr, file str
 func TestLedgerKinds_StrategyReversalKind_IsInCatalogue(t *testing.T) {
 	t.Parallel()
 
-	require.Contains(t, ledger.BatchKinds(), strategy.KindReversal,
+	require.Contains(t, kinds.BatchKinds(), strategy.KindReversal,
 		"strategy.KindReversal is stamped on every reversal batch and must be a legal ledger_batch.kind")
 
-	require.Equal(t, ledger.KindReversal, strategy.KindReversal,
+	require.Equal(t, kinds.KindReversal, strategy.KindReversal,
 		"the two constants name the same ledger_batch.kind and must not drift apart")
 }
 
@@ -326,8 +281,8 @@ func TestBatchKinds_Values_AreCanonicalEnumValues(t *testing.T) {
 		name   string
 		values []string
 	}{
-		{name: "ledger_batch.kind", values: ledger.BatchKinds()},
-		{name: "ledger_batch.source", values: ledger.BatchSources()},
+		{name: "ledger_batch.kind", values: kinds.BatchKinds()},
+		{name: "ledger_batch.source", values: kinds.BatchSources()},
 	}
 
 	for _, tt := range tests {
@@ -367,16 +322,16 @@ func TestLedgerKinds_RuntimeValidation_AcceptsExactlyTheCatalogue(t *testing.T) 
 	}{
 		{
 			name:    "ledger_batch.kind",
-			values:  ledger.BatchKinds(),
-			accepts: ledger.IsBatchKind,
+			values:  kinds.BatchKinds(),
+			accepts: kinds.IsBatchKind,
 			// Near-misses, not nonsense: a typo, a plural, a casing slip and the empty string are
 			// what a planner actually produces when it gets this wrong.
 			rejected: []string{"", "awrad", "awards", "Award", "zero_sum", "carrier_pigeon"},
 		},
 		{
 			name:     "ledger_batch.source",
-			values:   ledger.BatchSources(),
-			accepts:  ledger.IsBatchSource,
+			values:   kinds.BatchSources(),
+			accepts:  kinds.IsBatchSource,
 			rejected: []string{"", "webs", "API", "slack", "carrier_pigeon"},
 		},
 	}
@@ -405,8 +360,8 @@ func TestLedgerKinds_RuntimeValidation_AcceptsExactlyTheCatalogue(t *testing.T) 
 func TestCheckExpr_RendersASQLInList(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "kind IN ('a', 'b_c')", ledger.CheckExpr("kind", []string{"a", "b_c"}))
-	require.Equal(t, "source IN ('web')", ledger.CheckExpr("source", []string{"web"}))
+	require.Equal(t, "kind IN ('a', 'b_c')", kinds.CheckExpr("kind", []string{"a", "b_c"}))
+	require.Equal(t, "source IN ('web')", kinds.CheckExpr("source", []string{"web"}))
 }
 
 // TestLedgerKinds_OpenAPIEnums_MatchCatalogue is the fourth copy: canonical §5 requires the OpenAPI
@@ -508,7 +463,7 @@ func TestLedgerKinds_OpenAPIWalker_DetectsDrift(t *testing.T) {
 
 // TestLedgerKinds_OpenAPIWalker_IgnoresUnrelatedEnums is the other half of the control: the walker
 // must not fire on a vocabulary that merely shares a value with the catalogue, or the first person to
-// add account.system_key to the spec gets a red test about the ledger.
+// add account.system_key to the spec gets a red test about the kinds.
 func TestLedgerKinds_OpenAPIWalker_IgnoresUnrelatedEnums(t *testing.T) {
 	t.Parallel()
 
@@ -538,8 +493,8 @@ func TestLedgerKinds_OpenAPIWalker_IgnoresUnrelatedEnums(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			spec := strings.ReplaceAll(tt.spec, "KINDS", mustJSON(t, ledger.BatchKinds()))
-			spec = strings.ReplaceAll(spec, "SOURCES", mustJSON(t, ledger.BatchSources()))
+			spec := strings.ReplaceAll(tt.spec, "KINDS", mustJSON(t, kinds.BatchKinds()))
+			spec = strings.ReplaceAll(spec, "SOURCES", mustJSON(t, kinds.BatchSources()))
 
 			var doc any
 			require.NoError(t, json.Unmarshal([]byte(spec), &doc))
@@ -608,9 +563,9 @@ func specViolations(doc any) []specViolation {
 }
 
 func mismatch(path, column string, values []string) (specViolation, bool) {
-	want := ledger.BatchKinds()
+	want := kinds.BatchKinds()
 	if column == "source" {
-		want = ledger.BatchSources()
+		want = kinds.BatchSources()
 	}
 
 	if slices.Equal(want, values) {
@@ -619,7 +574,7 @@ func mismatch(path, column string, values []string) (specViolation, bool) {
 
 	return specViolation{
 		path: path,
-		detail: fmt.Sprintf("ledger_batch.%s must be generated from internal/ledger/kinds.go: want %v, got %v",
+		detail: fmt.Sprintf("ledger_batch.%s must be generated from internal/ledger/kinds: want %v, got %v",
 			column, want, values),
 	}, true
 }

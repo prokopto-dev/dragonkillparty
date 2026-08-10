@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // The generator's own tests. internal/ledger/kinds_test.go proves the RENDERING is right; these
@@ -36,7 +36,7 @@ func fixture(t *testing.T, body string) string {
 func markedSchema(t *testing.T) string {
 	t.Helper()
 
-	current := ledger.SchemaEnumBlock()
+	current := kinds.SchemaEnumBlock()
 
 	stale := strings.Replace(current, "'attendance', ", "", 1)
 	require.NotEqual(t, current, stale, "fixture is stale: the rendered block no longer contains 'attendance'")
@@ -54,12 +54,12 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	require.Contains(t, string(got), ledger.CheckExpr("kind", ledger.BatchKinds()))
-	require.Contains(t, string(got), ledger.CheckExpr("source", ledger.BatchSources()))
+	require.Contains(t, string(got), kinds.CheckExpr("kind", kinds.BatchKinds()))
+	require.Contains(t, string(got), kinds.CheckExpr("source", kinds.BatchSources()))
 
 	// And the rewrite is exactly what a render of the ORIGINAL would produce — no drift between the
 	// generator's write path and the drift test's comparison.
-	want, err := ledger.RenderSchemaHCL(markedSchema(t))
+	want, err := kinds.RenderSchemaHCL(markedSchema(t))
 	require.NoError(t, err)
 	require.Equal(t, want, string(got))
 }
@@ -99,7 +99,7 @@ func TestRun_MissingMarkers_RefusesAndLeavesTheFileAlone(t *testing.T) {
 	path := fixture(t, body)
 
 	err := run(path)
-	require.ErrorIs(t, err, ledger.ErrSchemaMarkersMissing)
+	require.ErrorIs(t, err, kinds.ErrSchemaMarkersMissing)
 
 	got, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)

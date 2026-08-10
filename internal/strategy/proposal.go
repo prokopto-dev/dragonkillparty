@@ -54,7 +54,7 @@ var (
 
 // KindReversal is the ledger_batch.kind a Negated proposal carries.
 //
-// The kind vocabulary as a whole lives in internal/ledger/kinds.go, which canonical §5 makes the one
+// The kind vocabulary as a whole lives in internal/ledger/kinds, which canonical §5 makes the one
 // source: `make gen` writes it into db/schema.hcl's CHECK, and adding a kind is still a schema
 // change and a docs page (.claude/rules/ledger-and-strategy.md).
 //

@@ -215,7 +215,7 @@ only when a named guild asks in an issue. Their invariants (`MonotoneNonDecreasi
 ## Stop and ask if
 
 - You are about to add a `kind` to `ledger_batch` — it is a CHECK constraint, an OpenAPI enum and a
-  docs page in one. The values live in `internal/ledger/kinds.go` (canonical §5's one catalogue) and
+  docs page in one. The values live in `internal/ledger/kinds` (canonical §5's one catalogue) and
   `make gen` writes the CHECK into `db/schema.hcl`; appending there is one line, but the migration
   that follows rebuilds `ledger_batch` and a rebuild drops the append-only triggers unless it
   re-creates them.

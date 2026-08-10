@@ -584,7 +584,7 @@ table "ledger_batch" {
     on_delete   = NO_ACTION
   }
 
-  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds.go. Run `make gen`.
+  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds. Run `make gen`.
   //
   // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
   // enum are generated from one Go catalogue. Adding a value here by hand is drift that

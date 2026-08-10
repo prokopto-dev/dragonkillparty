@@ -1,7 +1,7 @@
 // Command enumgen writes the ledger enum catalogue into db/schema.hcl's generated region.
 //
 // It is the `make gen` half of canonical §5 ("the enum catalogue is a Go const block; make gen
-// writes it into the migration CHECK"): internal/ledger/kinds.go holds the values, this rewrites the
+// writes it into the migration CHECK"): internal/ledger/kinds holds the values, this rewrites the
 // two ledger_batch CHECK constraints from them, and `make migration` turns the resulting schema into
 // SQL. It never writes a migration itself, for the reason scripts/gen-db.sh gives — `make gen` runs
 // reflexively and must not create numbered, permanent, append-only files as a side effect.
@@ -12,6 +12,10 @@
 //
 // It lives beside the catalogue rather than in cmd/dkp because it is dev tooling: cmd/dkp is the
 // product binary and an officer never runs a code generator.
+//
+// It imports internal/ledger/kinds and NOTHING ELSE from this repository. Importing internal/ledger
+// would pull in internal/store/sqlitegen — generated code — and make `make gen` unable to repair a
+// tree whose generated code does not build. See the package comment on internal/ledger/kinds.
 package main
 
 import (
@@ -20,7 +24,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/prokopto-dev/dragonkillparty/internal/ledger"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // defaultSchemaPath is relative to the repo root, which is where `make gen` runs its scripts from.
@@ -50,9 +54,9 @@ func run(path string) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	out, err := ledger.RenderSchemaHCL(string(src))
+	out, err := kinds.RenderSchemaHCL(string(src))
 	if err != nil {
-		if errors.Is(err, ledger.ErrSchemaMarkersMissing) {
+		if errors.Is(err, kinds.ErrSchemaMarkersMissing) {
 			return fmt.Errorf("render %s: %w\n\nthe markers delimit the region this generator owns; "+
 				"without them it cannot tell generated lines from hand-authored schema", path, err)
 		}

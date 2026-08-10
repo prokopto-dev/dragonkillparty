@@ -8,7 +8,8 @@ description: Atlas authors and goose applies; the four cases where hand-editing 
 ## The flow
 
 ```
-internal/ledger/kinds.go         the ledger enum catalogue — canonical §5's one Go const block
+internal/ledger/kinds/          the ledger enum catalogue — canonical §5's one Go const block,
+      │                          a LEAF package so this step compiles before sqlc has run
       │  make gen  (scripts/gen-enums.sh)
       ▼
 db/schema.hcl                    the SINGLE source of schema truth — you edit this, EXCEPT the
@@ -31,7 +32,7 @@ and the applying tool are different tools.
 the committed migration does not match a regeneration from the schema.
 
 The `ledger_batch` enum CHECKs are the one part of `db/schema.hcl` you do not edit: the values are
-`internal/ledger/kinds.go` and `make gen` writes the CHECK expression between the `BEGIN/END
+`internal/ledger/kinds` and `make gen` writes the CHECK expression between the `BEGIN/END
 GENERATED` markers (canonical §5). Add the value in Go, run `make gen`, then
 `make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue` fails on a hand-edit,
 and so does `verify-generated` — `db/schema.hcl` is in `GENERATED_PATHS` for exactly that region.

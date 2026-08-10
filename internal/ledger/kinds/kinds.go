@@ -1,4 +1,4 @@
-package ledger
+package kinds
 
 import (
 	"errors"
@@ -6,8 +6,17 @@ import (
 	"strings"
 )
 
-// The ledger enum catalogue — canonical §5's "one Go catalogue" for ledger_batch.kind and
-// ledger_batch.source.
+// Package kinds is the ledger enum catalogue — canonical §5's "one Go catalogue" for
+// ledger_batch.kind and ledger_batch.source.
+//
+// A LEAF PACKAGE WITH NO IMPORTS BUT THE STANDARD LIBRARY, and that is a hard constraint rather
+// than a tidiness preference. scripts/gen-enums.sh is the FIRST step of `make gen` and runs
+// internal/ledger/enumgen, which imports this. When the catalogue lived in internal/ledger, that
+// command's dependency graph reached internal/store/sqlitegen — GENERATED code — so a tree whose
+// sqlc output was stale, absent or momentarily unbuildable could not run `make gen` to repair
+// itself: the first step failed to compile on the very artefacts the third step regenerates.
+// TestGen_EnumGenerator_DependsOnNoGeneratedCode holds this open. Do not import internal/store,
+// internal/ledger or anything generated from here, however convenient it looks.
 //
 // WHY THIS FILE EXISTS. Before it, the fourteen kinds and six sources were literals in
 // db/schema.hcl and nowhere else. A kind added in Go but absent from the CHECK is a legal write that
@@ -172,7 +181,7 @@ func CheckExpr(column string, values []string) string {
 // engine — the generated block has to be semantically identical to what it replaces or `make gen`
 // would demand a migration on a change that moved no values.
 const (
-	schemaEnumBegin = "  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds.go. Run `make gen`."
+	schemaEnumBegin = "  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds. Run `make gen`."
 	schemaEnumEnd   = "  // END GENERATED — ledger enum CHECKs."
 )
 

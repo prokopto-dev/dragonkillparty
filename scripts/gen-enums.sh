@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # The enum half of `make gen`: db/schema.hcl's ledger CHECK constraints, emitted from the Go
-# catalogue in internal/ledger/kinds.go.
+# catalogue in internal/ledger/kinds.
+#
+# RUNS FIRST, AND COMPILES ONLY A LEAF PACKAGE. internal/ledger/kinds imports nothing but the
+# standard library, deliberately: this step precedes sqlc, so if it reached generated code a tree
+# whose sqlc output did not build could not run `make gen` to repair it.
 #
 # Canonical §5 requires the enum catalogue to be a Go const block that `make gen` writes into the
 # CHECK and the OpenAPI schema, with a test asserting the copies agree. Before this step the
@@ -35,4 +39,4 @@ command -v go >/dev/null 2>&1 || die "go is not installed — see make setup"
 go run ./internal/ledger/enumgen db/schema.hcl \
     || die "enumgen failed — db/schema.hcl was not rewritten"
 
-printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds.go\n'
+printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds\n'
