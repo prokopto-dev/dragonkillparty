@@ -72,8 +72,9 @@ deliverable N is generally not PR N — 10 below is its PR 7. Cite these as "del
 4. `internal/store`: two SQLite pools with the exact pragmas, `store.Tx`, the `sql.Open` grep gate,
    a statement-counting `database/sql` wrapper, template-DB test helper + `TestMain`.
 5. Atlas `db/schema.hcl` → goose migrations → `go:embed` runner; `make gen`; generated-drift gate.
-6. Migrate-on-boot: snapshot → migrate → `PRAGMA integrity_check` → auto-restore on failure →
-   downgrade refusal.
+6. Migrate-on-boot: snapshot → migrate one file at a time → four checks after each (`foreign_keys`
+   restored, `integrity_check`, `foreign_key_check`, append-only survival) → auto-restore on
+   failure → downgrade refusal.
 7. Huma mount, RFC 9457 problem middleware, request-id, `GET /api/v1/meta`, committed
    `openapi/openapi.json` + drift gate, `operationId` uniqueness test, architectural-test harness
    over the Huma registry.

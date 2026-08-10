@@ -10,8 +10,8 @@ agent — must be able to write a failing test, run it, fix it, and re-run insid
 ## Clone to green
 
 ```bash
-git clone https://github.com/dragonkillparty/dkp
-cd dkp
+git clone https://github.com/prokopto-dev/dragonkillparty
+cd dragonkillparty
 make setup      # once — gofumpt, goimports, golangci-lint, govulncheck, sqlc and atlas.
                 #        oasdiff, vale, lychee and the pnpm dependencies arrive with the
                 #        phases that need them; `make setup` prints what is still missing.

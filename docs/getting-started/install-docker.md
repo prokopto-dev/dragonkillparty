@@ -129,7 +129,7 @@ Verify a tag before you run it:
 
 ```bash
 cosign verify ghcr.io/dragonkillparty/dkp:1 \
-  --certificate-identity-regexp 'https://github.com/dragonkillparty/.*' \
+  --certificate-identity-regexp '^https://github\.com/prokopto-dev/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

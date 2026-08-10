@@ -507,6 +507,9 @@ CREATE INDEX ix_person_away   ON person(away_until_at) WHERE away_until_at IS NO
 
 CREATE TABLE account (
   id         TEXT NOT NULL PRIMARY KEY,
+  -- Both live lists are GENERATED from internal/account/kinds into db/schema.hcl (canonical §5);
+  -- this sketch is illustrative and db/schema.hcl is the schema truth. A new system_key also needs
+  -- a seeded row and an id in internal/ledger.SystemAccountIDs, or nothing can resolve it.
   kind       TEXT NOT NULL CHECK (kind IN ('person','system')),
   person_id  TEXT NULL REFERENCES person(id),
   system_key TEXT NULL CHECK (system_key IS NULL OR
@@ -2246,6 +2249,8 @@ CREATE TABLE audit_log (
   resource_kind  TEXT NOT NULL,
   resource_id    TEXT NULL,
   resource_label TEXT NOT NULL DEFAULT '',
+  -- Also GENERATED from internal/audit/kinds; name it as auditkinds.OutcomeDenied, never as a
+  -- literal, when the Phase 2 middleware starts writing 'denied' and 'error'.
   outcome     TEXT NOT NULL CHECK (outcome IN ('success','denied','error')),
   before_json TEXT NULL,                          -- NULL on create
   after_json  TEXT NULL,                          -- NULL on delete

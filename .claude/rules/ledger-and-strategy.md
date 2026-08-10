@@ -144,7 +144,10 @@ Given a debit of P centipoints split over N accounts with weights w_i (Σw = W):
   reject you at commit time, but failing in the planner names the strategy.
 - Degenerate cases route to a **system account**, never to a silent drop: `N = 0` (solo kill) →
   `guild_bank` per `solo_policy`; a rotted item → `write_off`; an unallocatable remainder →
-  `residue`. System accounts are ledger-addressable precisely so `Conserved` stays verifiable.
+  `residue`. System accounts are ledger-addressable precisely so `Conserved` stays verifiable. The
+  keys are `internal/account/kinds` (canonical §5's catalogue for `account.system_key`, from which
+  `make gen` writes the CHECK); name them as `strategy.SystemKeyGuildBank`, never as `"guild_bank"`.
+  A fifth key is a schema change **and** a seed row — see that package's comment.
 
 ## The Invariant vocabulary — executable objects, not prose
 

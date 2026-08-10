@@ -11,7 +11,7 @@
 
 [Unit]
 Description=Dragon Kill Party — DKP and guild management for Project 1999
-Documentation=https://github.com/dragonkillparty/dkp
+Documentation=https://github.com/prokopto-dev/dragonkillparty
 # The database is local; there is no external dependency to order against. `network-online` is here
 # so the listener binds after the interface is up on a fresh boot.
 After=network-online.target

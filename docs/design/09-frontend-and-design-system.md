@@ -202,6 +202,23 @@ Get these wrong and the result is a generic dark theme.
 
    Box outlines, in-control separators and short accent marks stay solid. This is the single most
    identifiable thing in the system.
+
+   **One sanctioned exception: a `thead` under a sticky header gives up the fade.** `position:
+   sticky` on a `<th>` sticks the *cells*, not the row, and the `<tr>` is what paints the fading
+   rule — so a sticky header scrolls out from under its own labels and takes the hairline with it.
+   Where a table's header must stay visible while its body scrolls, the rule moves onto the `<th>`
+   as a solid strip and **does not fade at the ends**: a per-cell strip has no row to fade across.
+   Decided in issue #34 (2026-08-10) against the alternative of a scrolling table with no visible
+   column labels, which standings — 200 characters × 12 columns — hits immediately.
+
+   The exception is **scoped to the scrolling case and nowhere else**: it is written in
+   `web/src/components/VirtualTable.css` under `.virtual-table`, an ordinary non-scrolling `.table`
+   keeps its fading `thead` rule, and every `tbody` row keeps the fade in both. That scoping is what
+   makes it narrow enough to sanction, so it is enforced rather than promised —
+   `test/repo/design_tokens_test.go` diffs the shipped table against `mockups/nocturne/styles.css`
+   with the tokens resolved, and fails on a divergence that is not in its list or not scoped to that
+   viewport. A second sticky-header surface reuses this exception; a *new* place the hairline stops
+   fading is a design decision, not an implementation detail.
 2. **Buttons are outlined, never filled.** The primary action is a 1px accent border on transparent,
    with a `tint(12)` hover and `tint(22)` active. A filled primary button reads as a different
    product.

@@ -34,8 +34,15 @@ wrong by hand.
   backfills.
 - **Runtime applies:** goose v3, embedded via `go:embed`. **Atlas is a development and CI dependency
   only — the user never installs it.**
-- Upgrades snapshot before migrating, auto-restore on failure, run `PRAGMA integrity_check` after each
-  migration, and refuse a downgrade outright.
+- Upgrades snapshot before migrating, auto-restore on failure, and refuse a downgrade outright.
+  **Four** checks run after each migration, not one: `PRAGMA foreign_keys` is put back on (a
+  `NO TRANSACTION` migration can leave it off and silently disarm every later migration in the same
+  boot), then `PRAGMA integrity_check`, then `PRAGMA foreign_key_check` — which `integrity_check`
+  does not cover — and finally append-only survival: a migration that dropped a ledger table or one
+  of its `BEFORE UPDATE OR DELETE` triggers is refused and the snapshot restored, because it passes
+  the other three while handing back a ledger whose history can be rewritten. The full sequence and
+  every message it produces are in
+  [Upgrade and backup](../operations/upgrade-and-backup.md#what-happens-at-boot).
 
 **Enforced by:** a CI convergence check (`atlas schema inspect` after applying the migration set,
 compared against a committed fingerprint) and a **migration round-trip test** — apply all migrations

@@ -68,3 +68,13 @@
 # The SPA bundle-size budget is a one-way ratchet: raising max_gzip_bytes to land an oversized
 # bundle requires a review here, turning a size regression into a decision in the diff.
 /web/bundle-budget.json                     @prokopto-dev
+
+# The only third-party licensed content vendored into the tree, and it ships inside the binary. The
+# licence gate reads the Go module graph, so a font added, swapped or left unattributed here is
+# invisible to every other control (CONTRIBUTING.md:85, the licence firewall).
+# test/repo/web_fonts_test.go proves every committed face is declared and attributed; it cannot
+# judge whether a REPLACEMENT face is licensed at all, and neither can anything else here.
+#
+# LAST ON PURPOSE. The last matching pattern wins, so an entry added below this one that also
+# matches web/src/assets/fonts/ would take the directory over without saying so.
+/web/src/assets/fonts/                      @prokopto-dev

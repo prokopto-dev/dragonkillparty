@@ -10,6 +10,7 @@ description: Atlas authors and goose applies; the four cases where hand-editing 
 ```
 internal/ledger/kinds/          the enum catalogues — canonical §5's one Go const block per
 internal/audit/kinds/            vocabulary, LEAF packages so this step compiles before sqlc has run
+internal/account/kinds/
       │  make gen  (scripts/gen-enums.sh)
       ▼
 db/schema.hcl                    the SINGLE source of schema truth — you edit this, EXCEPT the
@@ -41,18 +42,30 @@ pass `--dev-url` and nothing may pin one: `TestAtlasHCL_DevURL_IsPerInvocation`,
 the committed migration does not match a regeneration from the schema.
 
 The generated enum CHECKs are the parts of `db/schema.hcl` you do not edit: `ledger_batch.kind` and
-`ledger_batch.source` from `internal/ledger/kinds`, and `audit_log.actor_kind` from
-`internal/audit/kinds`. `make gen` writes each CHECK expression between its own `BEGIN/END
+`ledger_batch.source` from `internal/ledger/kinds`, `audit_log.actor_kind` and `audit_log.outcome`
+from `internal/audit/kinds`, and `account.kind` and `account.system_key` from
+`internal/account/kinds`. `make gen` writes each CHECK expression between its own `BEGIN/END
 GENERATED` markers (canonical §5) — the marker text names the catalogue, because a whole-line match
 is how each render finds its region and only its region. Add the value in Go, run `make gen`, then
-`make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue` and
-`TestAuditKinds_CheckMatchesCatalogue` fail on a hand-edit, and so does `verify-generated` —
-`db/schema.hcl` is in `GENERATED_PATHS` for exactly those regions.
+`make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue`,
+`TestAuditKinds_CheckMatchesCatalogue` and `TestAccountKinds_CheckMatchesCatalogue` fail on a
+hand-edit, and so does `verify-generated` — `db/schema.hcl` is in `GENERATED_PATHS` for exactly those
+regions.
 
 A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
 `internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in
-`internal/ledger/enumgen`'s `catalogues()`. Three enums here are still bare literals and have not
-had that done: `account.kind`, `account.system_key` and `audit_log.outcome`.
+`internal/ledger/enumgen`'s `catalogues()`. Every string-enum CHECK in the schema is now generated;
+the next one added has no excuse to be a literal. A **nullable** column's CHECK is rendered by
+`schemaenum.NullableCheckExpr` (`x IS NULL OR x IN (…)`), not by wrapping the plain form at the call
+site — `account.system_key` is the worked example, and the prefix is load-bearing rather than
+decorative: a bare `IN` list is NULL, not true, for a NULL column.
+
+A catalogued value can still reach a database that has no row for it. `account.system_key` is the
+case: the four system accounts are **seed rows** in `000003_ledger.sql`, and a fifth key added to the
+catalogue and to the CHECK resolves to `store.ErrNotFound` on a fresh install until it is seeded and
+paired with a deterministic id in `internal/ledger.SystemAccountIDs`.
+`TestSystemAccountIDs_CoverTheCatalogue` and `TestAccountKinds_SeededSystemAccounts_MatchTheCatalogue`
+are what fail in the meantime.
 
 CI additionally runs `atlas schema inspect` on both dialects after applying both migration sets and
 asserts the normalised logical schemas match a committed fingerprint — that is what keeps the
