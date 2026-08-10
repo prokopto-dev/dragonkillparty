@@ -151,6 +151,52 @@ gate WEB001 "raw fetch/XMLHttpRequest outside web/src/api" \
 gate WEB002 "dangerouslySetInnerHTML" \
     web/src '*.tsx' 'dangerouslySetInnerHTML'
 
+# --- Canonical §17: raw hex and raw px live in the token layer, nowhere else -------------------
+#
+# canonical §17 promises this rule and names ESLint as the mechanism. ESLint does not lint CSS, so
+# the promise went unkept and web/src/styles/base.css shipped a `text-underline-offset: 3px` that
+# nothing caught (found in review of this gate's own PR). A grep does the whole job here and costs no
+# dependency, which is the same argument WEB001 above makes for itself.
+#
+# THE TOKEN LAYER IS tokens.css ALONE, not all of web/src/styles. canonical §17 is normative and says
+# "outside the token layer"; .claude/rules/web.md says "outside web/src/styles/", which is looser.
+# AGENTS.md resolves that conflict in canonical's favour, so this gate implements canonical and the
+# rules file's wording is the thing that needs correcting.
+#
+# SCOPED TO CSS, because canonical §17's rule needs TWO mechanisms and this is the dumb half — the
+# same split law 4 uses above, for the same reason. A grep over *.tsx cannot tell a value from prose:
+# web/src/routes/design.tsx renders the sentences "Base unit 4px x 0.70" and "a 1px accent border on
+# transparent" as visible copy, and both would trip it. So:
+#
+#   this gate          CSS, by grep, in `lint / repo` — no Node toolchain needed
+#   eslint.config.js   TS/TSX, by AST, in `lint / web` — sees `style={{ padding: "4px" }}` and knows
+#                      JSX text is not a string literal
+#
+# Between them the rule holds over all of web/src, which is what §17 states. NEITHER IS SUFFICIENT
+# ALONE and removing either is a §17 regression. The AST half's negative fixture is
+# web/test-fixtures/lint/raw-token-values.tsx.
+#
+# The generic `gate` helper is not used because its comment stripping knows `#` and `//`, not CSS's
+# `/* */`. Every component sheet here documents its own values in prose — "a 1px accent border",
+# "fades over 48px at each end", "a 4000px-tall spacer" — so without stripping CSS comment lines this
+# rule would fire almost entirely on its own documentation.
+if has web/src; then
+    css_lines=$(find web/src -name '*.css' -type f -print0 2>/dev/null \
+        | xargs -0 grep -nE '.' 2>/dev/null \
+        | grep -vE '^web/src/styles/tokens\.css:' \
+        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(/\*|\*|//)' || true)
+
+    hits=$(printf '%s\n' "$css_lines" | grep -E '#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})\b' || true)
+    [ -n "$hits" ] && violation DS001 \
+        "raw hex colour outside web/src/styles/tokens.css — a colour with no named rung is a colour no guild theme can reach (canonical §17)" \
+        "$hits"
+
+    hits=$(printf '%s\n' "$css_lines" | grep -E '[0-9]+(\.[0-9]+)?px' || true)
+    [ -n "$hits" ] && violation DS002 \
+        "raw px outside web/src/styles/tokens.css — a value the scale does not carry gets a named rung, not an inline literal (canonical §17)" \
+        "$hits"
+fi
+
 # --- Migrations are forward-only --------------------------------------------------------------
 gate MIG001 "DDL inside a goose Down block (migrations are forward-only)" \
     db/migrations-sqlite '*.sql' '^\s*(DROP|ALTER)\b'

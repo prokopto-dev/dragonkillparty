@@ -1,0 +1,116 @@
+/*
+ * Layout for the /_design fixture. Reads only from the token layer — no raw hex, no raw px, exactly
+ * like any other consumer. The fixture is held to the system's own rules; a foundation page that
+ * cheated would not prove anything about the foundation.
+ *
+ * Nothing here restyles a base class. Every .btn, .table, .tag and .input on the page is the shipped
+ * class, unmodified, which is the only way looking at this page tells you what the system does.
+ */
+
+.design {
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.design-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+/* The swatch grid. auto-fill against a token rung, so the grid reflows without a media query. */
+.design-swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--space-24), 1fr));
+  gap: var(--space-3);
+}
+
+.design-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* A checkerboard behind every chip, so a token that is a color-mix with transparent — every soft(),
+   every tint(), the divider and the scrim — reads as translucent instead of looking like a flat
+   colour that happens to be dark. */
+.design-chip {
+  height: var(--space-16);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  background-image:
+    linear-gradient(45deg, var(--soft-8) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--soft-8) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--soft-8) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--soft-8) 75%);
+  background-size: var(--space-4) var(--space-4);
+  background-position:
+    0 0,
+    0 var(--space-2),
+    var(--space-2) calc(var(--space-2) * -1),
+    calc(var(--space-2) * -1) 0;
+}
+
+.design-chip-fill {
+  height: 100%;
+  border-radius: var(--radius-sm);
+}
+
+.design-label {
+  font-size: var(--font-size-2xs);
+  font-family: ui-monospace, monospace;
+  color: var(--soft-60);
+  overflow-wrap: anywhere;
+}
+
+/* The metric ruler: token name, then a bar whose width IS the token. */
+.design-metrics {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.design-bar {
+  height: var(--space-3);
+  background: var(--color-accent-700);
+  border-radius: var(--radius-sm);
+  max-width: 100%;
+}
+
+.design-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.design-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+
+.design-box {
+  width: var(--space-24);
+  height: var(--space-16);
+  background: var(--color-surface);
+  display: grid;
+  place-items: center;
+}
+
+.design-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-24) * 3), 1fr));
+  gap: var(--space-4);
+}
+
+.design-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--space-24) * 3), 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}

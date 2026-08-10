@@ -1,0 +1,69 @@
+/*
+ * .table — transcribed from mockups/nocturne/styles.css. Reads only from the token layer.
+ *
+ * THE ROW RULES ARE ROW-LEVEL BACKGROUNDS, NOT CELL BORDERS, and that is the single most
+ * identifiable thing in the system. A hairline fades to transparent over 48px at each end, and a
+ * per-cell border cannot fade across a row — so the rule is painted as a 1px-tall gradient strip on
+ * the <tr>, while transparent cell borders hold the layout. Replacing this with
+ * `border-bottom: 1px solid` produces a generic dark theme.
+ *
+ * The hover tint LAYERS OVER the row rule (two backgrounds, the rule listed second) rather than
+ * replacing it. A single-background hover makes the rule flicker away under the pointer.
+ */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-md);
+}
+
+.table th {
+  text-align: left;
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--soft-60);
+  padding: var(--space-2);
+  /* Keeps the layout; the row paints the fading rule. */
+  border-bottom: var(--hairline) solid transparent;
+}
+
+.table td {
+  padding: var(--space-2);
+  border-bottom: var(--hairline) solid transparent;
+}
+
+.table thead tr {
+  background: linear-gradient(
+      to right,
+      transparent,
+      var(--color-divider) var(--hairline-fade),
+      var(--color-divider) calc(100% - var(--hairline-fade)),
+      transparent
+    )
+    no-repeat bottom / 100% var(--hairline);
+}
+
+.table tbody tr {
+  background: linear-gradient(
+      to right,
+      transparent,
+      var(--soft-8) var(--hairline-fade),
+      var(--soft-8) calc(100% - var(--hairline-fade)),
+      transparent
+    )
+    no-repeat bottom / 100% var(--hairline);
+}
+
+.table tbody tr:hover {
+  background:
+    linear-gradient(var(--soft-4), var(--soft-4)) no-repeat 0 0 / 100% 100%,
+    linear-gradient(
+        to right,
+        transparent,
+        var(--soft-8) var(--hairline-fade),
+        var(--soft-8) calc(100% - var(--hairline-fade)),
+        transparent
+      )
+      no-repeat bottom / 100% var(--hairline);
+}

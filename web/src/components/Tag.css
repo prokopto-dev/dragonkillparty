@@ -1,0 +1,40 @@
+/*
+ * .tag — transcribed from mockups/nocturne/styles.css. Reads only from the token layer.
+ *
+ * Tinted from the ramps: an -800 ground with -100 text, so every tag sits at the same visual weight
+ * whichever role it carries. .tag-accent-2 reads the same as .tag-accent — Nocturne is a mono scheme
+ * and accent-2 is the same role, not a second voice.
+ *
+ * A tag NEVER carries meaning by hue alone. A status tag also carries an icon and a word.
+ */
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.02em;
+  padding: var(--tag-pad-y) var(--control-pad-x);
+  /* The source sheet derives the tag's radius from --radius-md rather than naming a rung. Keep the
+     derivation: a guild that themes the radius scale should move the tag with it. */
+  border-radius: calc(var(--radius-md) * 0.75);
+}
+
+.tag-accent {
+  background: var(--color-accent-800);
+  color: var(--color-accent-100);
+}
+
+.tag-accent-2 {
+  background: var(--color-accent-2-800);
+  color: var(--color-accent-2-100);
+}
+
+.tag-neutral {
+  background: var(--color-neutral-800);
+  color: var(--color-neutral-100);
+}
+
+.tag-outline {
+  border: var(--hairline) solid var(--color-accent);
+  color: var(--color-accent);
+}

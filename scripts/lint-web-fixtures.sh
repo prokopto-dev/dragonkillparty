@@ -69,6 +69,10 @@ check_fixture() {
 
 check_fixture "test-fixtures/lint/bare-fetch.tsx" "no-restricted-globals"
 check_fixture "test-fixtures/lint/useeffect-fetch.tsx" "no-restricted-syntax"
+# Canonical §17's token-layer rule. DS001/DS002 in scripts/repo-gates.sh cover CSS; this is the AST
+# half that covers code, and it is the only half that can tell `style={{ padding: "4px" }}` from a
+# sentence containing "4px".
+check_fixture "test-fixtures/lint/raw-token-values.tsx" "no-restricted-syntax"
 
 if [ "$fail" -ne 0 ]; then
 	printf '\n\033[31mweb lint negative-fixture gate failed\033[0m — a deliberate law-4 violation was not caught.\n' >&2

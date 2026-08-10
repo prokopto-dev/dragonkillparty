@@ -1,0 +1,50 @@
+/*
+ * .radio + .dot — transcribed from mockups/nocturne/styles.css. Reads only from the token layer.
+ *
+ * The native <input type="radio"> is visually hidden but STILL FOCUSABLE and still in the tab order:
+ * position/opacity/zero-size, never `display: none` or `visibility: hidden`, either of which would
+ * remove it from the accessibility tree and from keyboard arrow-key group navigation. The visible
+ * .dot is painted from the input's own :checked and :focus-visible state, so the control keeps every
+ * native semantic.
+ */
+
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--control-gap-lg);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+}
+
+.radio input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.radio .dot {
+  width: var(--radio-dot-size);
+  height: var(--radio-dot-size);
+  flex: none;
+  border-radius: 50%;
+  border: var(--radio-dot-border) solid var(--color-divider);
+}
+
+.radio:hover .dot {
+  border-color: var(--color-accent);
+}
+
+/* An inset ring in the page ground turns the filled circle into a donut — the checked state is a
+   ring of accent, not a flood of it. */
+.radio input:checked + .dot {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  box-shadow: inset 0 0 0 var(--radio-dot-inset) var(--color-bg);
+}
+
+.radio input:focus-visible + .dot {
+  outline: var(--focus-ring) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+}

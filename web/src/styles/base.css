@@ -1,7 +1,10 @@
 /*
- * Base document styles. Everything here reads from tokens.css — no raw hex, no raw px outside the
- * token layer (.claude/rules/design-system.md); a value the scale does not carry gets a named rung
- * in tokens.css, not an inline literal.
+ * Base document styles — the document half of Nocturne, transcribed from
+ * mockups/nocturne/styles.css. Element defaults plus the two document-level utilities (.hr and
+ * .text-muted); every component class lives in its own co-located file under web/src/components/.
+ *
+ * Everything here reads from tokens.css — no raw hex, no raw px (.claude/rules/design-system.md);
+ * a value the scale does not carry gets a named rung in tokens.css, not an inline literal.
  */
 
 @import "./tokens.css";
@@ -23,12 +26,13 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: var(--font-size-base);
   line-height: 1.55;
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
 }
 
+/* Hierarchy is size and space, not weight: never bolden a heading past 500. */
 h1,
 h2,
 h3,
@@ -39,19 +43,96 @@ h6 {
   font-weight: var(--font-heading-weight);
   line-height: 1.12;
   letter-spacing: -0.015em;
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-2);
 }
 
 h1 {
-  font-size: 42px;
+  font-size: var(--font-size-5xl);
+}
+
+h2 {
+  font-size: var(--font-size-4xl);
+}
+
+h3 {
+  font-size: var(--font-size-3xl);
+}
+
+h4 {
+  font-size: var(--font-size-2xl);
+}
+
+h5 {
+  font-size: var(--font-size-lg);
+}
+
+h6 {
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+p {
+  margin: 0 0 var(--space-3);
 }
 
 a {
   color: var(--color-accent);
+  text-underline-offset: var(--underline-offset);
 }
 
-/* Focus is always a 2px accent ring, never the browser default. */
+img {
+  display: block;
+  max-width: 100%;
+}
+
+figure {
+  margin: 0;
+}
+
+figcaption {
+  font-size: var(--font-size-2xs);
+  margin-top: var(--space-1);
+  color: var(--soft-55);
+}
+
+.text-muted {
+  color: var(--soft-55);
+}
+
+/*
+ * Focus is ALWAYS a 2px accent ring, never the browser default. The `:focus { outline: none }` half
+ * is deliberate and paired: it suppresses the UA ring for pointer interaction only, and
+ * :focus-visible immediately restores a stronger one for keyboard interaction. Deleting the second
+ * rule would leave the product with no visible focus at all.
+ */
+:focus {
+  outline: none;
+}
+
 :focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline: var(--focus-ring) solid var(--color-accent);
+  outline-offset: var(--focus-offset);
+}
+
+::selection {
+  background: var(--tint-30);
+}
+
+/*
+ * The fading rule. Present, but discouraged: this system prefers whitespace. Freestanding rules
+ * fade to transparent over 48px at each end; box outlines, in-control separators and short accent
+ * marks stay solid.
+ */
+.hr {
+  height: var(--hairline);
+  border: 0;
+  margin: var(--space-4) 0;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-divider) var(--hairline-fade),
+    var(--color-divider) calc(100% - var(--hairline-fade)),
+    transparent
+  );
 }

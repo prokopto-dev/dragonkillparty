@@ -1,14 +1,28 @@
 /*
  * Nocturne token sheet — the one place a raw hex or a raw px is allowed (.claude/rules/design-system.md).
  *
- * Values are transcribed verbatim from docs/design/09-frontend-and-design-system.md §2, which is
- * itself transcribed from mockups/nocturne/styles.css. Those values are the contract. This scaffold
- * ships the role tokens, the two helpers and the type/space/radius/elevation scale; the ramps and
- * status colours land with the first screen that uses them, not with the scaffold.
+ * Two blocks, and the split is load-bearing:
+ *
+ *   1. THE CONTRACT. Every token in docs/design/09-frontend-and-design-system.md §2, transcribed
+ *      verbatim from that table, which is itself transcribed from mockups/nocturne/styles.css. Those
+ *      values ARE the contract and §2 says so: "a test asserts the shipped sheet still matches this
+ *      table". That test is test/repo/design_tokens_test.go. It also holds the --color-* namespace
+ *      CLOSED against §2 — a colour that is not in the table cannot be added here, which is what
+ *      "one palette" means in practice.
+ *
+ *   2. THE SANCTIONED EXTENSION. The rungs §2/§3 tell us to add: the two helpers as real custom
+ *      properties, and the scale continuation (§3, "The scale needs extending, and that is a
+ *      decision, not a drift"). A value the scale does not carry gets a named rung HERE, never an
+ *      inline literal in a component.
  *
  * Dark only at 1.0. No prefers-color-scheme, no light override, no second accent voice. There are
  * no motion tokens and no `transition` anywhere in Nocturne — hover states snap.
  */
+
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+   1. THE CONTRACT — docs/design/09-frontend-and-design-system.md §2, verbatim.
+   Do not edit a value here without editing §2 in the same commit; the test fails either way round.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
 
 :root {
   /* Roles */
@@ -16,17 +30,89 @@
   --color-surface: #232532;
   --color-text: #e9e9ed;
   --color-accent: #9184d9;
+  /* A mono scheme's machine-derived stand-in: same role as --color-accent, not a second voice. */
   --color-accent-2: #a7a1db;
   /* --color-divider hard-codes the text hex rather than referencing --color-text on purpose:
      re-deriving it would change the value when a guild themes the text colour. */
   --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
 
-  /* Type */
+  /* Ramps — 100 -> 900, generated in OKLCH on one shared lightness scale, so step N of any ramp
+     carries the same visual weight as step N of any other. On this ground: 700-900 for tinted
+     fills, hovers and subtle borders; 500 as the role base; 100-300 for text on those tints.
+
+     --color-accent (#9184d9) is NOT --color-accent-500 (#968ae0). Both exist; do not collapse them. */
+  --color-neutral-100: #f3f5fe;
+  --color-neutral-200: #e4e7f5;
+  --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca;
+  --color-neutral-500: #9397ab;
+  --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c;
+  --color-neutral-800: #3f424d;
+  --color-neutral-900: #292b31;
+
+  --color-accent-100: #f5f4ff;
+  --color-accent-200: #e7e5fe;
+  --color-accent-300: #d2cefd;
+  --color-accent-400: #b5abfc;
+  --color-accent-500: #968ae0;
+  --color-accent-600: #796cbf;
+  --color-accent-700: #5d5294;
+  --color-accent-800: #423a6a;
+  --color-accent-900: #2b2741;
+
+  --color-accent-2-100: #f5f4ff;
+  --color-accent-2-200: #e7e5fe;
+  --color-accent-2-300: #d2cefd;
+  --color-accent-2-400: #b5afe8;
+  --color-accent-2-500: #9690c9;
+  --color-accent-2-600: #7972a9;
+  --color-accent-2-700: #5c5783;
+  --color-accent-2-800: #423e5d;
+  --color-accent-2-900: #2b293a;
+
+  /* Section — DECK SCALE ONLY. Saturated grounds at page scale, sanctioned in exactly two places:
+     the public site's full-bleed stat band and the site-wide quake banner. Nowhere else. */
+  --color-section: #262a60;
+  --color-section-glow: #353b80;
+  --color-section-ghost: #4c5397;
+
+  /* Status colours — ours, not Nocturne's. Derived in OKLCH at the ramps' own lightness steps so
+     they sit in the same family, at a chroma close to the accent's: they read as status rather than
+     decoration. Only the five steps the screens use. -800/-900 ground, -300 text on it, -400 icon,
+     -700 border.
+
+     NEVER use hue alone to carry meaning. Every status also carries an icon and a word, because a
+     red pill and a green pill are the same pill to a large minority of officers. */
+  --color-success-300: oklch(0.862 0.088 150);
+  --color-success-400: oklch(0.776 0.112 150);
+  --color-success-700: oklch(0.487 0.096 150);
+  --color-success-800: oklch(0.383 0.074 150);
+  --color-success-900: oklch(0.283 0.052 150);
+
+  --color-warning-300: oklch(0.862 0.093 75);
+  --color-warning-400: oklch(0.776 0.119 75);
+  --color-warning-700: oklch(0.487 0.101 75);
+  --color-warning-800: oklch(0.383 0.078 75);
+  --color-warning-900: oklch(0.283 0.055 75);
+
+  --color-danger-300: oklch(0.862 0.079 25);
+  --color-danger-400: oklch(0.776 0.104 25);
+  --color-danger-700: oklch(0.487 0.108 25);
+  --color-danger-800: oklch(0.383 0.086 25);
+  --color-danger-900: oklch(0.283 0.061 25);
+
+  /* Type.
+     NOT YET RENDERING AS INTER: §3 requires the faces be loaded self-hosted and no @font-face or font
+     asset exists in this tree yet, so both stacks currently fall through to system-ui. The token values
+     are the §2 contract and are correct; what is missing is the asset. Vendoring it is a dependency
+     decision (SIL OFL 1.1) — proposal and both mechanisms in issue #45. */
   --font-heading: "Inter", system-ui, sans-serif;
   --font-heading-weight: 500;
   --font-body: "Inter", system-ui, sans-serif;
 
-  /* Space — base unit 4px x 0.70; the gaps at 5 and 7 are in the source, not an omission. */
+  /* Space — base unit 4px x 0.70; this system is dense on purpose. There is no --space-5 or
+     --space-7: the gaps are in the source and are not an omission to fix. */
   --space-1: 2.8px;
   --space-2: 5.6px;
   --space-3: 8.4px;
@@ -39,22 +125,132 @@
   --radius-md: 8px;
   --radius-lg: 14px;
 
-  /* Elevation — a hairline ring plus ambient darkness. --shadow-sm has no blur; it IS a ring. */
+  /* Elevation — a hairline ring plus ambient darkness, never a drop shadow. --shadow-sm has no
+     blur at all; it IS a ring. Never stack them. */
   --shadow-sm: 0 0 0 1px #3f424d;
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════════════════════
+   2. THE SANCTIONED EXTENSION — §2's two helpers, and §3's scale continuation.
+   ═══════════════════════════════════════════════════════════════════════════════════════════════ */
+
 /*
- * The two helpers, as real custom properties. Components reference --soft-* / --tint-* rather than
- * inlining the color-mix, which is what keeps 325 uses across the design consistent.
+ * The two helpers, as real custom properties (§2: "Implement them as real helpers in the token
+ * layer"). Components reference --soft-* / --tint-* and never inline the color-mix, which is what
+ * keeps the design's 325 uses consistent — and what lets a guild's token override reach all of them.
  *
- * Only the rungs the scaffold needs are declared; a screen that needs soft(42) adds --soft-42 here,
- * never an inline color-mix in a component.
+ *   soft(p) -> color-mix(in srgb, var(--color-text)   p%, transparent)   muted text, hairlines, fills
+ *   tint(p) -> color-mix(in srgb, var(--color-accent) p%, transparent)   selected, active, highlight
+ *
+ * The mockups use soft() at 3-75% and tint() at 6-26%. Every rung the base layer needs is declared
+ * below; a screen that needs soft(42) adds --soft-42 here, never an inline color-mix in a component.
+ * These are deliberately NOT in the --color-* namespace: that namespace is closed to §2's table.
  */
 :root {
+  --soft-4: color-mix(in srgb, var(--color-text) 4%, transparent);
+  --soft-7: color-mix(in srgb, var(--color-text) 7%, transparent);
   --soft-8: color-mix(in srgb, var(--color-text) 8%, transparent);
-  --soft-16: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --soft-14: color-mix(in srgb, var(--color-text) 14%, transparent);
+  --soft-45: color-mix(in srgb, var(--color-text) 45%, transparent);
+  --soft-50: color-mix(in srgb, var(--color-text) 50%, transparent);
+  --soft-55: color-mix(in srgb, var(--color-text) 55%, transparent);
   --soft-60: color-mix(in srgb, var(--color-text) 60%, transparent);
+  --soft-70: color-mix(in srgb, var(--color-text) 70%, transparent);
+
+  --tint-10: color-mix(in srgb, var(--color-accent) 10%, transparent);
   --tint-12: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  --tint-18: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  --tint-22: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  --tint-30: color-mix(in srgb, var(--color-accent) 30%, transparent);
+
+  /* The dialog backdrop. A neutral-900 mix, so neither a soft() nor a tint() rung — and outside the
+     --color-* namespace for the same reason they are: that namespace is closed to §2's table. */
+  --scrim: color-mix(in srgb, var(--color-neutral-900) 50%, transparent);
+}
+
+/*
+ * §3's scale continuation. "The mockups need spacing and radius rungs the token set does not carry:
+ * radii 7, 9, 10, 11, 999 and roughly twenty spacing values between 8 and 70px. Extend the scale
+ * explicitly in tokens.css rather than scattering one-off pixel values through components."
+ *
+ * The --space-* continuation stays on the 4px x 0.70 grid (rung N = N x 2.8px), and skips 5 and 7
+ * for the same reason the source does. Radii 9/10/11 land with the screen that needs them: a rung
+ * with no consumer is a guess, and §3 names 7 and 999 explicitly.
+ */
+:root {
+  --space-10: 28px;
+  --space-12: 33.6px;
+  --space-16: 44.8px;
+  --space-20: 56px;
+  --space-24: 67.2px;
+
+  --radius-xs: 7px;
+  --radius-pill: 999px;
+}
+
+/*
+ * The type scale as rungs. §3 fixes the element sizes (h1 42 / h2 32 / h3 25 / h4 20 / h5 16 /
+ * h6 13 / body 15) and the base layer's controls carry their own: 10 kicker, 11 tag and table head,
+ * 12 field label, 13 card body and segmented option, 14 button/input/table cell, 17 card title.
+ *
+ * DENSITY MOVES SPACING, NEVER SIZES — a density mode that changes font sizes changes what a table
+ * means. The mockups' fractional sizes (10.5 / 11.5 / 12.5 / 13.5 / 15.5 / 16.5) are deliberate and
+ * land as further rungs with the screens that use them; rounding them changes the density visibly.
+ */
+:root {
+  --font-size-3xs: 10px;
+  --font-size-2xs: 11px;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-base: 15px;
+  --font-size-lg: 16px;
+  --font-size-xl: 17px;
+  --font-size-2xl: 20px;
+  --font-size-3xl: 25px;
+  --font-size-4xl: 32px;
+  --font-size-5xl: 42px;
+}
+
+/*
+ * Control metrics — the base classes' internal sizes, transcribed from mockups/nocturne/styles.css.
+ *
+ * These are deliberately OFF the --space-* grid. Nocturne's controls are drawn on their own metric
+ * (6/10 for an input's padding, 7/12 for a segmented option), not on the layout scale, and rounding
+ * them onto 2.8px rungs would change the look of every control in the product. They are named rungs
+ * rather than component literals because a raw px in a component is a lint failure and a named rung
+ * is a decision.
+ */
+:root {
+  --control-height: 36px;
+  --control-gap: 6px;
+  --control-gap-lg: 8px;
+  --control-pad-y: 6px;
+  --control-pad-x: 10px;
+  --seg-pad-y: 7px;
+  --seg-pad-x: 12px;
+  --tag-pad-y: 3px;
+  --field-label-gap: 5px;
+  --radio-dot-size: 16px;
+  --radio-dot-border: 1.5px;
+  /* The inset ring in the page ground that turns the checked dot into a donut. */
+  --radio-dot-inset: 4px;
+  --textarea-min-height: 90px;
+  --dialog-width: 440px;
+
+  /* The hairline and its 48px end-fade: the single most identifiable thing in the system. One deck
+     baseline unit an end, painted as a row-level gradient so the fade spans the row — a per-cell
+     border cannot fade across one. */
+  --hairline: 1px;
+  --hairline-fade: 48px;
+
+  /* Focus is ALWAYS 2px solid var(--color-accent). The offset is 2px by default, 0 on .input and
+     -2px on .seg-opt, so the ring hugs a bordered control instead of floating off it. */
+  --focus-ring: 2px;
+  --focus-offset: 2px;
+
+  /* The gap between a link's baseline and its underline. */
+  --underline-offset: 3px;
 }
