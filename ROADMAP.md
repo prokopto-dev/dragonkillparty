@@ -595,7 +595,8 @@ becomes a dumb terminal. Server-authoritative bid sessions are a 1.0 item by own
     your behalf, which scopes it holds, revocable in one click.
 
 **Tests that must exist by the end.** Property P4 (double-spend across concurrent sessions) as a
-`rapid` state machine · the concurrency test (two goroutines, exactly one `201`, one `409
+seeded state machine over the bid FSM (`testing/quick`, per docs/design/04-testing.md "On the
+property framework") · the concurrency test (two goroutines, exactly one `201`, one `409
 insufficient_balance`) · Playwright journeys 5 and 12 (two browser contexts plus the polling
 fallback) · a 60-client × 30-minute SSE soak with zero dropped `event_seq` and no goroutine growth ·
 webhook signature and replay-window tests · the `bid.reveal_early` audit assertion.

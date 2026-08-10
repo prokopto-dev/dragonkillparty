@@ -41,8 +41,9 @@ Checked on every proposed batch before it commits. The first four cannot be waiv
 | `Conserved(kind, total)` | The total across all accounts is unchanged |
 
 **Enforced by:** the ledger service validates every proposal against the strategy's declared
-invariants *and* the non-waivable set, inside the committing transaction. Property tests using
-`rapid` drive random award, reversal, suicide and decay sequences and assert the invariants hold
+invariants *and* the non-waivable set, inside the committing transaction. Property tests
+(`testing/quick` with seeded generators — `make test-property`, 200 checks per PR and 20 000
+nightly) drive random award, reversal, suicide and decay sequences and assert the invariants hold
 throughout; a nightly job replays a 100,000-entry synthetic ledger from zero and asserts every
 balance matches the incrementally maintained cache.
 

@@ -923,6 +923,21 @@ table "audit_log" {
 
   // Wall-clock, Micros. The ledger's bitemporal effective_at/recorded_at split does not apply here:
   // an audit row records when an action happened, and an action cannot be backdated.
+  //
+  // ON THE NAME, which breaks a convention on purpose and is reported here rather than fixed.
+  // docs/design/00-canonical-conventions.md §8 says time columns are suffixed `_at`; this column is
+  // named `at`, because docs/design/01-domain-model.md §17 names it `at` and that is the name every
+  // §17 index, query and forensic-screen mock-up already uses. AGENTS.md's rule for exactly this
+  // situation is "if two instructions conflict, the invariant wins and the conflict is a bug: say
+  // so" — so it is said here. THE CONFLICT IS A DOC BUG, not a schema bug: `at` is not a time
+  // column with a missing suffix, it is a column whose whole name is the suffix, and §8's rule was
+  // written for `created_at`/`recorded_at`/`effective_at`, none of which this is.
+  //
+  // Renaming it to `at_at` would be absurd and renaming it to `occurred_at` would silently
+  // invalidate §17 and every document downstream of it — for a table that is append-only, so the
+  // rename would be a 12-step SQLite rebuild of the one table whose triggers must survive. The fix
+  // belongs in §8, which should carve out a bare `at`, and until somebody makes that edit this
+  // comment is the record that the divergence was noticed rather than missed.
   column "at" {
     null = false
     type = integer
@@ -1019,6 +1034,27 @@ table "audit_log" {
       desc   = true
     }
   }
+
+  // THE THREE OTHER §17 INDEXES ARE DEFERRED, DELIBERATELY. docs/design/01-domain-model.md §17
+  // specifies ix_audit_actor, ix_audit_resource and ix_audit_action alongside ix_audit_at, and this
+  // table ships only the last. The reason is the same one that cut this table from twenty-four
+  // columns to eleven: two of the three index columns that would make them useful do not exist yet.
+  //
+  //   ix_audit_actor     (actor_user_id, at DESC) — actor_user_id is a Phase 2 column (app_user).
+  //                      An index on actor_kind instead would be a three-value column on a table
+  //                      where nearly every Phase 0 row says 'system', which SQLite would decline
+  //                      to use anyway.
+  //   ix_audit_resource  (resource_kind, resource_id, at DESC) — buildable today, and useless
+  //                      today: every row is ('ledger_batch', <batch id>), so it answers a question
+  //                      ledger_batch_id already answers through its own foreign key.
+  //   ix_audit_action    (action, at DESC) — buildable today, and the same shape of useless: there
+  //                      is one action ('ledger.batch.commit') until the Phase 2 middleware starts
+  //                      writing audit rows for anything else.
+  //
+  // Adding an index is a cheap forward migration; removing one is not, and an index that is never
+  // chosen still costs a B-tree write on every insert into the table every mutating request touches.
+  // They land with the writers that make them selective — the Phase 2 HTTP middleware — and the
+  // forensic screens that query them, not before.
 
   strict = true
 }

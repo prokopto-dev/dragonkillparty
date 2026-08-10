@@ -184,7 +184,8 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `gen / codegen-drift` — `make gen`, then a clean tree | always | 80 s | required |
 | `gen / spec-drift` — spec properties codegen cannot see | api/go changed | 30 s | required |
 | `test / unit` | go changed | 60 s | required |
-| `test / property` — rapid, seed printed on failure | go changed | 60 s | required |
+| `test / property` — `testing/quick`, base seed printed | go changed | 60 s | required |
+| `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | go changed | 60 s | required |
 | `test / golden` — plus a non-decreasing fixture count | go changed | 45 s | required |
 | `test / integration` — real SQLite, real triggers, goleak | go/db changed | 130 s | required |
 | `test / migrations` — fresh install, N-1, row invariants, auto-restore | db changed \| merge_group | 110 s | required |

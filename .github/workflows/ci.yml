@@ -359,10 +359,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - run: make test-property
-        # rapid, with a seed derived from the run id and PRINTED on failure. Separate from unit
-        # because a property failure is a counterexample to a claimed invariant, not a broken
-        # function, and the triage path is different: shrink, add the case to a table test, fix.
+        # The flagship properties over internal/ledger and internal/strategy: P1 conservation, P2
+        # exact splits, P5 reversal is an exact inverse, P8 determinism, and no float anywhere in a
+        # proposal. 200 checks here, 20 000 in nightly-verify.yml's property-deep job.
+        #
+        # testing/quick plus seeded generators, NOT pgregory.net/rapid. rapid is a new dependency and
+        # AGENTS.md requires a human to approve one, which the design documents assuming it does not
+        # change; internal/ledger/property_test.go records the deviation in full. The base seed is
+        # FIXED and printed, so a counterexample replays with DKP_PROPERTY_SEED=<n> rather than being
+        # gone by the time anybody looks.
+        #
+        # Separate from test / unit because a property failure is a counterexample to a claimed
+        # invariant, not a broken function, and the triage path is different: shrink it by hand from
+        # the printed seed, add the minimised case to a table test, then fix.
       - name: Upload counterexamples
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -370,6 +382,28 @@ jobs:
           name: property-counterexamples
           path: test/property/failures/
           if-no-files-found: ignore
+
+  test-coverage-floor:
+    name: test / coverage-floor
+    needs: [changes, codegen-drift]
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+      - run: make test-coverage-floor
+        # A JOB, not a report — Phase 0 PR 10's acceptance criterion, and the distinction is the
+        # whole point: a coverage number printed in a log is a number nobody reads, and a coverage
+        # number that fails a required check is a floor.
+        #
+        # internal/ledger and internal/strategy at 95%. They are the two packages where an uncovered
+        # branch is a branch that reallocates points across the whole guild the first time it runs,
+        # and they are small enough that 95% is reachable without writing tests for the sake of the
+        # number. The target refuses to pass when it measured fewer packages than it expected, so a
+        # deleted test suite fails here rather than disappearing from the average.
 
   test-golden:
     name: test / golden
@@ -731,6 +765,7 @@ jobs:
       - spec-drift
       - test-unit
       - test-property
+      - test-coverage-floor
       - test-golden
       - test-integration
       - test-migrations

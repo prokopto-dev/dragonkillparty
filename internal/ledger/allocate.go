@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
 // Largest-remainder allocation. Phase 0 PR 10a.
@@ -58,24 +59,22 @@ var (
 	ErrAmountOutOfRange = errors.New("amount is out of allocatable range")
 )
 
-// Share is one account's claim on a split: an account and its non-negative weight.
+// Share and Allocation are ALIASES for the types declared in internal/strategy, not copies.
 //
-// Weight is an int64 count, not a ratio and never a float. An attendance-weighted strategy passes
-// ticks attended; an even split passes 1 for everybody. Expressing the weight as an integer is what
-// lets the quota be computed exactly — a ratio would have to be a float, and there are no floats in
-// this package.
-type Share struct {
-	AccountID core.ULID
-	Weight    int64
-}
-
-// Allocation is one account's resulting share of the split. Allocations with a zero amount are never
-// returned: ledger_entry carries CHECK (amount_cp <> 0), and an entry that moves nothing is noise
-// that breaks entry_count reasoning.
-type Allocation struct {
-	AccountID core.ULID
-	AmountCp  core.Centipoints
-}
+// The allocator's input and output are named by both halves of the split this repository is built
+// around: a strategy PROPOSES a division and the ledger PERFORMS it. internal/strategy may not import
+// this package — law 3 bans internal/store transitively and this package holds it — so the types have
+// to be declared on the pure side, and `strategy.Ctx.Allocate` is how a planner reaches the algorithm
+// below without reaching the database behind it.
+//
+// Aliases rather than a second pair of structs, because "one exported type per concept" is a rule
+// with teeth here: a ledger.Share that was merely field-identical to a strategy.Share would need a
+// conversion loop at every planner call site, and a conversion loop is where a weight silently
+// becomes an amount. `ledger.Share` stays the name this package's callers and tests already use.
+type (
+	Share      = strategy.Share
+	Allocation = strategy.Allocation
+)
 
 // Allocate splits total across shares by largest remainder, returning credits that sum to exactly
 // total.

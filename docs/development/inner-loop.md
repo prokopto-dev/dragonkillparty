@@ -65,7 +65,7 @@ Work at the narrowest level that proves your change, and widen only when it pass
 | Layer | Tool | Covers | Wall time |
 |---|---|---|---|
 | Unit | stdlib `testing`, table-driven | Strategy arithmetic, ledger invariants, parsers, importer transforms | < 3 s |
-| Property | `rapid` | Zero-sum conservation under random award and reversal sequences; positions stay a permutation; largest-remainder always sums to the debit | ~8 s |
+| Property | `testing/quick` + a seeded generator (`make test-property`) | Zero-sum conservation under random award and reversal sequences; positions stay a permutation; largest-remainder always sums to the debit | ~8 s |
 | Golden file | stdlib, `-update` refused in CI | Every Project 1999 parser, one directory per format | < 1 s |
 | Integration | Real SQLite in `t.TempDir()`, full server via `httptest` | Every endpoint, real migrations, real workers, real triggers | ~25 s |
 | Contract | Response-validation middleware across the whole suite, plus `oasdiff` | Every request and response against the spec | folded in |

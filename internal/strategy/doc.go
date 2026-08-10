@@ -2,8 +2,21 @@
 // random number generator of its own (law 3). The clock and a seeded RNG are injected, and
 // the seed is persisted into the batch so that any run can be replayed exactly.
 //
-// Phase 0 PR 10a ships the shared shapes only — BatchProposal, EntryProposal, the declarative
-// Invariant vocabulary, the Rng interface and the deterministic Canonical form, all in proposal.go.
-// The PointStrategy interface and the first implementation (fixed_price) land in PR 10b, written
-// against these shapes rather than alongside them.
+// The division the package exists to hold up: internal/strategy PROPOSES and internal/ledger
+// VALIDATES AND COMMITS. A strategy is a pure function from an event to a BatchProposal; it never
+// touches the database and it never decides whether its own proposal is legal. That is what lets a
+// guild configure its own rules without being able to corrupt the ledger — a misconfigured strategy
+// produces a rejected proposal, not a wrong balance.
+//
+// Three files, three jobs:
+//
+//   - proposal.go — what a strategy PRODUCES: BatchProposal, EntryProposal, the declarative
+//     Invariant vocabulary, the Rng interface and the deterministic Canonical form (PR 10a).
+//   - strategy.go — what a strategy may CONSUME: the events, the read-only Ctx façade, and the
+//     PointStrategy interface that joins the two halves (PR 10b).
+//   - fixed_price.go — the first implementation, and the shape every other strategy varies (PR 10b).
+//
+// Purity is proved rather than promised: arch_test.go walks the import graph transitively for
+// internal/store and directly for the wall clock and math/rand, and scripts/repo-gates.sh carries
+// grep twins of the same three rules.
 package strategy

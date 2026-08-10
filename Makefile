@@ -95,13 +95,14 @@ define notyet
 printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)"
 endef
 
-.PHONY: help setup dev gen test-unit test test-importer lint vet migration seed docker check \
+.PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
+        lint vet migration seed docker check \
         build clean fmt verify-generated verify-commands \
         lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
         install-atlas generated-digest \
         docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
-        test-property test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
+        test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
         upgrade-ladder-enumerate soak-jobs smoke-local nightly-report status \
         fixture-build fixture-seed fixture-capture fixture-verify fixture-manifest \
         fixture-publish fixture-gate release-version release-notes release-image \
@@ -194,6 +195,66 @@ test-unit:
 test:
 	@$(GO) test -race -shuffle=on -count=1 $(PKG)
 
+## test-property: the ledger and strategy properties — 200 checks per PR (budget ~10s)
+# The four flagship properties plus their strategy-level twins: P1 conservation, P2 exact splits,
+# P5 reversal is an exact inverse, P8 determinism, and "no float appears anywhere in a proposal".
+#
+# DKP_PROPERTY_CHECKS is read by the tests themselves and inherited from this recipe's environment;
+# nightly-verify.yml sets it to 20000. A malformed value FAILS the tests rather than falling back to
+# 200 — a typo'd nightly value that quietly ran the PR count would report a deep run that never
+# happened. DKP_PROPERTY_SEED replays a reported counterexample.
+#
+# NO VACUOUS PASS. `-run '^TestProperty_'` exits 0 with "no tests to run" when the filter matches
+# nothing, which is a green report for a suite that did not execute — the same failure mode the
+# licence gate's "matched no packages" check exists for. So the recipe counts the tests that actually
+# ran and fails at zero. `set -o pipefail` is not needed here because the output is captured rather
+# than piped, and the capture's exit status is checked directly.
+test-property:
+	@out=$$($(GO) test -count=1 -shuffle=on -v -run '^TestProperty_' \
+		./internal/ledger/... ./internal/strategy/... 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
+	printf '%s\n' "$$out"; \
+	n=$$(printf '%s\n' "$$out" | grep -cE '^=== RUN[[:space:]]+TestProperty_' || true); \
+	if [ "$$n" -eq 0 ]; then \
+		printf '\033[31m  no property tests ran\033[0m — `-run ^TestProperty_` matched nothing.\n'; \
+		printf '  A property suite that selects zero tests reports green. Check the test names.\n'; \
+		exit 1; \
+	fi; \
+	printf '  \033[32m%s properties\033[0m at %s checks each\n' "$$n" "$${DKP_PROPERTY_CHECKS:-200}"
+
+## test-coverage-floor: fail if internal/ledger or internal/strategy is below 95% covered
+# A JOB, not a report (Phase 0 PR 10's acceptance criterion). The two packages this covers are the
+# ones where a plausible-looking wrong change reallocates points across the whole guild, and an
+# uncovered branch there is a branch nobody has ever watched execute.
+#
+# It is a ONE-WAY RATCHET in intent and a fixed floor in mechanism: raise COVERAGE_FLOOR when the
+# real number has been comfortably above it for a while, never lower it to land a change.
+#
+# The awk asserts it measured the packages it expected to. `go test` prints "[no test files]" rather
+# than a coverage line for a package with no tests, so a package whose tests were deleted would
+# vanish from the output and the floor would pass having checked nothing. The expected count is a
+# word count of the list below, so keep it as explicit package paths — a `...` pattern expands to
+# several packages and one word, and the assertion would then be wrong in the safe-looking direction.
+COVERAGE_FLOOR          := 95
+COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/strategy
+test-coverage-floor:
+	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
+	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
+		/^ok/ && /coverage:/ { \
+			for (i = 1; i <= NF; i++) if ($$i == "coverage:") { pct = $$(i + 1); sub(/%$$/, "", pct) } \
+			seen++; \
+			printf "  %-52s %6.1f%%  (floor %s%%)\n", $$2, pct, floor; \
+			if (pct + 0 < floor + 0) { \
+				printf "\033[31m  %s is below the %s%% coverage floor\033[0m\n", $$2, floor; bad++ } \
+		} \
+		END { \
+			if (seen != want) { \
+				printf "\033[31m  measured %d package(s), expected %d\033[0m — a package with no test\n", seen, want; \
+				printf "  files prints no coverage line, so a deleted suite would pass this silently.\n"; \
+				exit 1 } \
+			if (bad) { exit 1 } \
+			printf "  \033[32mcoverage floor met\033[0m in %d package(s)\n", seen \
+		}'
+
 ## test-importer: EQdkp Plus importer suite — needs Docker (budget ~120s)
 test-importer:
 	@$(call notyet,Phase 5,runs against real EQdkp 2.0.5/2.1.5/2.2.27/2.3.39 fixtures plus the hostile fixture)
@@ -284,7 +345,15 @@ generated-digest:
 	done | $$sum | awk '{ print $$1 }'
 
 ## check: everything CI runs (budget ~60s)
-check: verify-commands lint vet test
+# test-coverage-floor is here because it is a REQUIRED CI job, and a required job that `make check`
+# does not run makes this target's promise false. It re-runs two packages with coverage on, which
+# costs about two seconds; `make test` above has already run them without it.
+#
+# test-property is NOT listed, and its absence is not an omission: the properties are ordinary Go
+# tests in those two packages, so `make test` has already executed all of them at the per-PR count.
+# The separate target and the separate CI job exist so that a property failure names its own category
+# in the checks list and so the nightly lane can re-run just those tests at 20,000 checks.
+check: verify-commands lint vet test test-coverage-floor
 	@printf '\033[32m  make check complete\033[0m\n'
 
 ## status: which targets are still stubbed, and the roadmap phase that fills each in
@@ -478,11 +547,12 @@ verify-postgres:
 test-golden:
 	@$(call notyet,Phase 4,parser golden files)
 
-test-property:
-	@$(call notyet,Phase 1,rapid property suite)
-
 test-authz:
 	@$(call notyet,Phase 2,the authorization matrix)
+
+# test-property and test-coverage-floor used to live down here as stubs. They do real work now and
+# have moved above the divider with the rest of the hand-runnable targets, because an agent that has
+# just touched internal/ledger or internal/strategy should run both before claiming a task is done.
 
 # The migration suite: fresh-install fingerprint, STRICT and no-guild_id assertions, the
 # snapshot/auto-restore path and the downgrade refusal. Not -short: every one of these applies real

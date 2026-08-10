@@ -9,6 +9,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
+	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
 // The four system-account keys (docs/design/01-domain-model.md §6.1). They are the ledger-addressable
@@ -23,11 +24,17 @@ import (
 // These strings are identical to the account.system_key CHECK in db/schema.hcl and to the seed rows
 // in db/migrations-sqlite/000003_ledger.sql. Adding a fifth is a schema change (a new CHECK value),
 // not a constant.
+//
+// They are DEFINED IN internal/strategy and referenced here, rather than the reverse. A planner has
+// to be able to say "route this solo kill to the guild bank" without importing the package that
+// knows what a guild bank's row id is — law 3 bans internal/store transitively and this package
+// holds it — so the vocabulary lives on the pure side and `strategy.Ctx.SystemAccount` is what turns
+// a key into the id below. One definition, referenced twice; not two definitions that agree today.
 const (
-	SystemKeyResidue       = "residue"
-	SystemKeyGuildBank     = "guild_bank"
-	SystemKeyWriteOff      = "write_off"
-	SystemKeyImportOpening = "import_opening"
+	SystemKeyResidue       = strategy.SystemKeyResidue
+	SystemKeyGuildBank     = strategy.SystemKeyGuildBank
+	SystemKeyWriteOff      = strategy.SystemKeyWriteOff
+	SystemKeyImportOpening = strategy.SystemKeyImportOpening
 )
 
 // The deterministic ULIDs the migration seeds these rows with, and the default pool's id. This block

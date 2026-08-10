@@ -125,8 +125,12 @@ Example tests prove the case you thought of. Properties prove the cases you did 
 | Determinism | Same inputs + same seed → byte-identical `BatchProposal` |
 | No float appears anywhere in the proposal | All planners |
 
-Use `rapid`. Budget: **200 checks per PR, 20 000 nightly.** Coverage floor for
-`internal/strategy` is **95%** and it is a one-way ratchet.
+Use **`testing/quick`**, not `rapid` — rapid is an unapproved dependency, and inside
+`internal/strategy` importing `math/rand` trips gate PURE002 anyway, so draw cases from the injected
+seeded `Rng` and print the base seed. `internal/strategy/fixed_price_test.go` is the worked example;
+copy it. Budget: **200 checks per PR, 20 000 nightly** (`make test-property`). Coverage floor for
+`internal/strategy` is **95%**, enforced by `make test-coverage-floor` as a required CI job, and it
+is a one-way ratchet.
 
 Add a golden `BatchProposal` file per planner, compared as canonical JSON so the *whole* proposal is
 asserted rather than three cherry-picked fields. Goldens live under `test/golden/` and are

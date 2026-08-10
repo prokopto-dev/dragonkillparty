@@ -151,6 +151,14 @@ func TestMigrate_EventOutbox_NeverReusesASequence(t *testing.T) {
 func TestMigrate_AuditAndOutbox_DidNotRebuildTheLedgerTables(t *testing.T) {
 	t.Parallel()
 
+	// The text half below needs no database, but the trigger-count half calls migratedDB, so the
+	// whole test carries the same guard every other test in this package does. Without it a
+	// `make test-unit` run — which is budgeted under five seconds — silently pays for a full
+	// migration set, and the budget is what keeps the inner loop worth using.
+	if testing.Short() {
+		t.Skip("applies real migrations to a real database; run `make test` or `make check`")
+	}
+
 	// Read from the EMBEDDED set rather than from disk: that is the artefact the binary ships and
 	// applies, and a test that read db/migrations-sqlite/ directly would keep passing if go:embed
 	// ever stopped picking the file up.

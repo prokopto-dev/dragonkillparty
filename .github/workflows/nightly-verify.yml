@@ -89,6 +89,41 @@ jobs:
         # The importer default is --dry-run; this suite never passes --commit.
 
   # ---------------------------------------------------------------------------------------------
+  # property-deep — the same properties PR CI runs, at a hundred times the case count.
+  #
+  # 200 checks per PR keeps the inner loop under ten seconds and finds the counterexamples that are
+  # dense in the input space. 20,000 finds the ones that are not: a largest-remainder split where
+  # every quota ties, an int64 sum that wraps only for a price above 2^60, a reversal whose
+  # provenance pointers matter only when four of them are set at once. Those are exactly the shapes
+  # nobody writes a table test for, and exactly the shapes that reallocate points silently.
+  #
+  # It belongs here rather than in ci.yml by this file's own rule: the failure is not deterministic
+  # given a PR's diff. A 20,000-case run explores inputs the PR author never chose, so blocking their
+  # merge on it would be blocking them on somebody else's arithmetic.
+  #
+  # The seed is FIXED (DKP_PROPERTY_SEED defaults in the test), so a nightly counterexample replays
+  # exactly: the printed seed plus DKP_PROPERTY_CHECKS=1 reproduces the single failing case.
+  # ---------------------------------------------------------------------------------------------
+  property-deep:
+    name: property / 20k
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+      - env:
+          DKP_PROPERTY_CHECKS: "20000"
+        run: make test-property
+        # One env var and no second code path. A nightly suite that COMPILED differently from the
+        # per-PR suite is a nightly suite that can go green while the real one is broken, so the
+        # count is read at runtime and a malformed value fails the tests rather than falling back to
+        # 200 — a typo'd 2O000 that quietly ran the PR count would report a deep run that never
+        # happened.
+
+  # ---------------------------------------------------------------------------------------------
   # postgres — convergence only, not a supported engine in 1.0. Ninety nightly seconds that keep
   # the post-1.0 door open at zero PR-time cost.
   # ---------------------------------------------------------------------------------------------
@@ -258,6 +293,7 @@ jobs:
     needs:
       - guard
       - importer
+      - property-deep
       - postgres-convergence
       - river-soak
       - upgrade-ladder-enumerate
