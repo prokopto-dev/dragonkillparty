@@ -1,21 +1,27 @@
-// Command enumgen writes the ledger enum catalogue into db/schema.hcl's generated region.
+// Command enumgen writes every enum catalogue into db/schema.hcl's generated regions.
 //
 // It is the `make gen` half of canonical §5 ("the enum catalogue is a Go const block; make gen
-// writes it into the migration CHECK"): internal/ledger/kinds holds the values, this rewrites the
-// two ledger_batch CHECK constraints from them, and `make migration` turns the resulting schema into
-// SQL. It never writes a migration itself, for the reason scripts/gen-db.sh gives — `make gen` runs
-// reflexively and must not create numbered, permanent, append-only files as a side effect.
+// writes it into the migration CHECK"): internal/ledger/kinds holds ledger_batch's kind and source,
+// internal/audit/kinds holds audit_log's actor_kind, this rewrites their CHECK constraints from them,
+// and `make migration` turns the resulting schema into SQL. It never writes a migration itself, for
+// the reason scripts/gen-db.sh gives — `make gen` runs reflexively and must not create numbered,
+// permanent, append-only files as a side effect.
 //
-// A GENERATOR, NOT A GATE. It rewrites and says nothing; the drift assertion is
-// TestLedgerKinds_CheckMatchesCatalogue and `make verify-generated`. Keeping the two apart is what
-// lets `make gen` be the fix rather than another thing to interpret.
+// A GENERATOR, NOT A GATE. It rewrites and says nothing; the drift assertions are
+// TestLedgerKinds_CheckMatchesCatalogue, TestAuditKinds_CheckMatchesCatalogue and
+// `make verify-generated`. Keeping the two apart is what lets `make gen` be the fix rather than
+// another thing to interpret.
 //
-// It lives beside the catalogue rather than in cmd/dkp because it is dev tooling: cmd/dkp is the
-// product binary and an officer never runs a code generator.
+// It lives beside the ledger catalogue rather than in cmd/dkp because it is dev tooling: cmd/dkp is
+// the product binary and an officer never runs a code generator. It stays here, rather than moving
+// somewhere neutral now that it serves two catalogues, because moving a command renames the path in
+// scripts/gen-enums.sh, the Makefile and test/repo/verify_generated_test.go to buy tidiness and
+// nothing else — and its name, not its parent directory, is what a reader looks up.
 //
-// It imports internal/ledger/kinds and NOTHING ELSE from this repository. Importing internal/ledger
-// would pull in internal/store/sqlitegen — generated code — and make `make gen` unable to repair a
-// tree whose generated code does not build. See the package comment on internal/ledger/kinds.
+// It imports the two catalogues and NOTHING ELSE from this repository. Importing internal/ledger or
+// internal/audit's future service package would pull in internal/store/sqlitegen — generated code —
+// and make `make gen` unable to repair a tree whose generated code does not build. See the package
+// comment on internal/ledger/kinds.
 package main
 
 import (
@@ -24,7 +30,9 @@ import (
 	"os"
 	"path/filepath"
 
+	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
+	"github.com/prokopto-dev/dragonkillparty/internal/schemaenum"
 )
 
 // defaultSchemaPath is relative to the repo root, which is where `make gen` runs its scripts from.
@@ -42,26 +50,57 @@ func main() {
 	}
 }
 
-// run reads path, re-renders its generated region from the catalogue and writes it back only when
-// the bytes actually change.
+// catalogue is one enum catalogue: its import path, for the error message, and the render that
+// rewrites its region of db/schema.hcl.
+type catalogue struct {
+	name   string
+	render func(string) (string, error)
+}
+
+// catalogues returns every generated region of db/schema.hcl and the render that owns it, in the
+// order run applies them.
+//
+// Each render touches only its own marked region and is idempotent, so composing them is ordinary
+// function application and the order is not load-bearing — it is fixed only so that a failure reports
+// the same catalogue on every run. A FUNCTION rather than a package-level slice, for the reason the
+// catalogues' own accessors are functions: .claude/rules/go-idioms.md bans package-level mutable
+// state.
+//
+// ADDING A CATALOGUE IS ONE ROW HERE. That is the whole extension point; nothing below this line
+// knows how many regions exist.
+func catalogues() []catalogue {
+	return []catalogue{
+		{name: "internal/ledger/kinds", render: kinds.RenderSchemaHCL},
+		{name: "internal/audit/kinds", render: auditkinds.RenderSchemaHCL},
+	}
+}
+
+// run reads path, re-renders every generated region from its catalogue and writes the result back
+// only when the bytes actually change.
 //
 // The write is skipped on a no-op so that `make gen` on an up-to-date tree leaves mtimes alone —
 // touching the single source of schema truth on every run would make every `make` in the repository
-// look like the schema had moved.
+// look like the schema had moved. It is skipped ONCE, after every render: a per-render write would
+// rewrite the file for a change to a region that came later anyway.
 func run(path string) error {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	out, err := kinds.RenderSchemaHCL(string(src))
-	if err != nil {
-		if errors.Is(err, kinds.ErrSchemaMarkersMissing) {
-			return fmt.Errorf("render %s: %w\n\nthe markers delimit the region this generator owns; "+
-				"without them it cannot tell generated lines from hand-authored schema", path, err)
-		}
+	out := string(src)
 
-		return fmt.Errorf("render %s: %w", path, err)
+	for _, c := range catalogues() {
+		out, err = c.render(out)
+		if err != nil {
+			if errors.Is(err, schemaenum.ErrMarkersMissing) {
+				return fmt.Errorf("render %s from %s: %w\n\nthe markers delimit the region that catalogue "+
+					"owns; without them it cannot tell generated lines from hand-authored schema",
+					path, c.name, err)
+			}
+
+			return fmt.Errorf("render %s from %s: %w", path, c.name, err)
+		}
 	}
 
 	if out == string(src) {
