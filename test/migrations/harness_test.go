@@ -41,6 +41,14 @@ const (
 	// futureFixture is a valid migration a later release would carry, used to stamp a database
 	// above what a given binary understands.
 	futureFixture = "../fixtures/migrations/future/000002_future_table.sql"
+	// ledgerRebuildFixture is a CORRECT SQLite 12-step rebuild of ledger_entry: it re-creates the
+	// table's four indexes AND its two append-only triggers after the rename, as
+	// .claude/rules/migrations.md requires of any rebuild of a table carrying a trigger.
+	ledgerRebuildFixture = "../fixtures/migrations/rebuild/000002_ledger_entry_rebuild.sql"
+	// ledgerRebuildNoTriggersFixture is that same rebuild with the trigger re-creation missing. It
+	// is the negative control: without it, "the triggers still fire after an upgrade" is an
+	// assertion nobody has ever seen fail.
+	ledgerRebuildNoTriggersFixture = "../fixtures/migrations/rebuild/000002_ledger_entry_rebuild_no_triggers.sql"
 )
 
 // snapshotNames lists the snapshot files in dir, sorted. A missing directory is an empty list, not
@@ -92,6 +100,22 @@ func realMigrations(tb testing.TB) fs.FS {
 func migrationDir(tb testing.TB, extra ...string) fs.FS {
 	tb.Helper()
 
+	return migrationDirUpTo(tb, 0, extra...)
+}
+
+// migrationDirUpTo is migrationDir truncated to the real migrations at or below maxVersion. A
+// maxVersion of 0 means all of them, which is what migrationDir asks for.
+//
+// It exists so a test can stand a database up at an INTERMEDIATE release, put data in it, and then
+// walk the remaining real migrations forward one at a time. Every other test in this package
+// applies the whole set to an empty database, which is the fresh-install path; the upgrade path is
+// a different question and it is the one that has to hold on a populated ledger.
+//
+// Non-migration files (atlas.sum, which versionOf reports as 0) are copied whatever the cap is:
+// they are not migrations and truncating them would change what the directory means.
+func migrationDirUpTo(tb testing.TB, maxVersion int, extra ...string) fs.FS {
+	tb.Helper()
+
 	dir := tb.TempDir()
 
 	entries, err := fs.ReadDir(realMigrations(tb), ".")
@@ -99,7 +123,12 @@ func migrationDir(tb testing.TB, extra ...string) fs.FS {
 	require.NotEmpty(tb, entries, "the embedded migration set is empty — db/migrations-sqlite/ has no .sql files")
 
 	var highest int
+
 	for _, entry := range entries {
+		if v := versionOf(entry.Name()); maxVersion > 0 && v > maxVersion {
+			continue
+		}
+
 		body, err := fs.ReadFile(realMigrations(tb), entry.Name())
 		require.NoError(tb, err, "read embedded migration %s", entry.Name())
 		require.NoError(tb, os.WriteFile(filepath.Join(dir, entry.Name()), body, 0o644),
@@ -118,6 +147,28 @@ func migrationDir(tb testing.TB, extra ...string) fs.FS {
 	}
 
 	return os.DirFS(dir)
+}
+
+// realMigrationVersions lists the versions in the embedded set, lowest first. Non-migration files
+// are excluded.
+func realMigrationVersions(tb testing.TB) []int {
+	tb.Helper()
+
+	entries, err := fs.ReadDir(realMigrations(tb), ".")
+	require.NoError(tb, err, "read the embedded migration set")
+
+	var versions []int
+
+	for _, entry := range entries {
+		if v := versionOf(entry.Name()); v > 0 {
+			versions = append(versions, v)
+		}
+	}
+
+	require.NotEmpty(tb, versions, "the embedded migration set contains no numbered migrations")
+	sort.Ints(versions)
+
+	return versions
 }
 
 // versionOf extracts the numeric version prefix from a migration filename, or 0 if it has none
@@ -192,6 +243,47 @@ func openRaw(tb testing.TB, path string) *sql.DB {
 	tb.Cleanup(func() { require.NoError(tb, handle.Close(), "close %s", path) })
 
 	return handle
+}
+
+// withRawFK is openRaw with foreign keys enforced and a deterministic close.
+//
+// Foreign keys, because SQLite defaults the pragma OFF per connection: openRaw's handle will
+// happily insert a ledger_entry pointing at a batch that does not exist. A test that seeds "a real
+// ledger" through that handle is seeding rows the production connection (internal/store/pragma.go
+// turns the pragma on for every connection in both pools) would have rejected, and would keep
+// passing after a migration copied rows in an order that broke the references.
+//
+// Deterministic close — the handle is gone before this returns, rather than at the end of the test
+// — because the caller interleaves reads with migrations. The migrator takes a VACUUM INTO snapshot
+// and runs DDL on every step, and leaving one idle handle per step alive until cleanup is how a
+// suite acquires a lock-contention flake that gets blamed on the migration under test.
+func withRawFK(tb testing.TB, path string, fn func(handle *sql.DB)) {
+	tb.Helper()
+
+	handle, err := sql.Open("sqlite", fkDSN(path))
+	require.NoError(tb, err, "open %s with foreign keys on", path)
+
+	defer func() { require.NoError(tb, handle.Close(), "close %s", path) }()
+
+	requireForeignKeysOn(tb, handle)
+	fn(handle)
+}
+
+// fkDSN is the one place the foreign-keys DSN is spelled.
+func fkDSN(path string) string { return "file:" + path + "?_pragma=foreign_keys(1)" }
+
+// requireForeignKeysOn verifies the pragma rather than assuming it: a typo in the DSN is accepted
+// silently by the driver and leaves the constraints off, which is the one failure these helpers
+// exist to rule out.
+func requireForeignKeysOn(tb testing.TB, handle *sql.DB) {
+	tb.Helper()
+
+	var on int
+	require.NoError(tb, handle.QueryRowContext(context.Background(), `PRAGMA foreign_keys`).Scan(&on),
+		"read back PRAGMA foreign_keys")
+	require.Equal(tb, 1, on,
+		"foreign_keys is OFF on this handle — the DSN did not take, and every FK assertion made "+
+			"through it would pass vacuously")
 }
 
 // schemaFingerprint is the normalised SHA-256 of everything in sqlite_schema.
