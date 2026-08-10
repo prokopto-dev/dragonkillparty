@@ -27,12 +27,16 @@ curl -s "$DKP_URL/api/v1/ledger/batches?pool=01JZ0PNMAN0000000000000001&limit=20
 curl -s "$DKP_URL/api/v1/ledger/batches?cursor=$NEXT" -H "Authorization: Bearer $DKP_TOKEN"
 ```
 
-**The cursor is opaque, signed and versioned.** It encodes the sort key values, a ULID tiebreak and a
-hash of the filter and sort, then HMACs the lot. Consequences you can rely on:
+**The cursor is opaque, signed and versioned.** It encodes the sort key values, a ULID tiebreak, a
+hash of the filter and sort, and the class of the principal it was issued to, then HMACs the lot.
+Consequences you can rely on:
 
 - Reusing a cursor with different filters or a different sort returns
   `400 cursor_filter_mismatch` rather than silently wrong results.
 - A tampered or truncated cursor returns `400 cursor_invalid`.
+- **A cursor is not portable between principals.** One issued to a token of one class and replayed
+  under another returns `400 cursor_invalid` — including where the two principals can both see the
+  collection. If your bot switches tokens mid-scan, restart the scan.
 - Cursors survive a server restart. They do not survive a change to the cursor format, which is why
   they carry a version — and why you should treat "cursor rejected" as "start over", not as fatal.
 
