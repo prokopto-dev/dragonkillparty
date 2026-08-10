@@ -125,8 +125,15 @@ type RaidTickOutput struct {
 ```
 
 `limit` default 50, max 200. `has_more` is authoritative; `next_cursor` is `null` at the end. The
-cursor is base64url of `{v, k, id, f}`, HMAC-signed — build it with the helper so tamper detection
-and `cursor_filter_mismatch` come for free.
+cursor is base64url of `{v, k, id, f, pc}`, HMAC-signed — build it with the helper so tamper
+detection and `cursor_filter_mismatch` come for free.
+
+`pc` is the principal class the cursor was minted for, and it is a **named signed field, not
+something you fold into the filter fingerprint**. `core.Cursor.PrincipalClass` is required:
+`Encode` refuses to mint a cursor without one and `Decode(token, wantPrincipal, wantFilter)`
+rejects a cursor from another class as `cursor_invalid` — checked before the filter, so crossing an
+authorization boundary never gets the softer `cursor_filter_mismatch`. Pass the resolved
+principal's class; do not put a principal, a member id or a scope set into `FilterFingerprint`.
 
 `?since_seq=` is valid **only** on `/ledger/*`, `/audit` and `/events/replay` (canonical §4). Every
 other collection uses the opaque ULID cursor. The outbox sequence is `event_seq`, never `seq`.

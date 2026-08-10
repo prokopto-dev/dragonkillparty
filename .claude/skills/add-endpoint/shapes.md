@@ -115,9 +115,30 @@ authoritative; `next_cursor` is `null` at the end. Offset is not offered anywher
 concurrent inserts and is the source of the duplicate-and-skip bugs in every bot that has ever polled
 EQdkp.
 
-The cursor is base64url of `{v, k:[sort keys], id:[tiebreak ULID], f:[hash of filter+sort]}`,
-HMAC-signed. Changing filters while reusing a cursor → `400 cursor_filter_mismatch`, never silently
-wrong results.
+The cursor is base64url of
+`{v, k:[sort keys], id:[tiebreak ULID], f:[hash of filter+sort], pc:[principal class]}`, HMAC-signed.
+Changing filters while reusing a cursor → `400 cursor_filter_mismatch`, never silently wrong results.
+
+`pc` binds the cursor to the class of the principal it was issued to, so one cannot be replayed
+across an authorization boundary. It is a signed field, **not** something you fold into `f`:
+
+```go
+// Minting: PrincipalClass is required — Encode refuses to issue an unbound cursor.
+next, err := codec.Encode(core.Cursor{
+    Key: last.SortKey, ID: last.ID,
+    Filter:         core.FilterFingerprint(canonicalFilters),
+    PrincipalClass: principal.Class(),
+})
+
+// Reading: pass the CURRENT request's class and filter. Decode checks both, class first.
+cur, err := codec.Decode(in.Cursor, principal.Class(), core.FilterFingerprint(canonicalFilters))
+// → ErrCursorInvalid (`cursor_invalid`) for another class or a tampered token
+// → ErrCursorFilterMismatch (`cursor_filter_mismatch`) for a real cursor aimed at another query
+```
+
+Never put a principal, a member id or a scope set into `FilterFingerprint`. The class is the
+cursor's business; row-level scoping stays in your `WHERE` clause, which the server re-applies on
+every page.
 
 ## Wire-format rules
 
