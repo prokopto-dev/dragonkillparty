@@ -2,7 +2,8 @@
 // renderer and the marked-region rewrite that `make gen` applies to db/schema.hcl.
 //
 // The VALUES live in the catalogue that owns the table — internal/ledger/kinds for ledger_batch,
-// internal/audit/kinds for audit_log — and nothing in here knows a single enum value. The split is
+// internal/audit/kinds for audit_log, internal/account/kinds for account — and nothing in here knows
+// a single enum value. The split is
 // what lets a second catalogue exist at all: before it, CheckExpr and the region rewrite lived in
 // internal/ledger/kinds, so audit_log's catalogue would have had to either import the ledger's (a
 // dependency from audit to ledger that no reader could justify) or copy the formatter. A second copy
@@ -51,6 +52,25 @@ func CheckExpr(column string, values []string) string {
 	}
 
 	return fmt.Sprintf("%s IN (%s)", column, strings.Join(quoted, ", "))
+}
+
+// NullableCheckExpr renders the body of a SQL CHECK constraint restricting a NULLABLE column to
+// values:
+//
+//	system_key IS NULL OR system_key IN ('guild_bank', 'residue', …)
+//
+// The second form the committed schema actually uses, and the reason it is here rather than at the
+// one call site: a bare CheckExpr on a nullable column is a CHECK that REJECTS NULL — `x IN (…)` is
+// NULL, not true, when x is NULL, and SQLite admits a row only when a CHECK is not false. So the
+// nullable form is not decoration around the same constraint, it is the difference between a person
+// account being storable and not, and the shape of that difference belongs beside the formatter it
+// wraps rather than in whichever catalogue needed it first.
+//
+// It is built FROM CheckExpr rather than formatting its own list, so the ", " separator that makes a
+// regenerated expression byte-identical to the shipped one still has exactly one definition. See
+// CheckExpr.
+func NullableCheckExpr(column string, values []string) string {
+	return fmt.Sprintf("%s IS NULL OR %s", column, CheckExpr(column, values))
 }
 
 // Region is one generated region of db/schema.hcl: the two marker lines and the subject named when
