@@ -108,6 +108,7 @@ endef
         fixture-publish fixture-gate release-version release-notes release-image \
         release-manifest release-sign release-sbom release-smoke release-promote \
         release-promote-rc release-refdb release-failure-issue \
+        shipped-lock-seal release-shipped-lock \
         eval-example-endpoint third-party-notices image-size
 
 ## help: list every target with its description
@@ -635,6 +636,31 @@ release-smoke:
 
 release-promote:
 	@bash scripts/release-promote.sh
+
+# db/migrations-sqlite/SHIPPED.lock — the append-only record of which migrations have already run on
+# a user's database. Two halves, and they ask different questions on purpose:
+#
+#   shipped-lock-seal      appends a row for every migration not yet listed. Run when preparing a
+#                          release, so the manifest is sealed IN the Release PR and reviewed by the
+#                          human who merges it. CI cannot write it: nothing pushes to main, so the
+#                          release job verifies rather than seals.
+#   release-shipped-lock   the release-path gate, called by release.yml's `prepare` job before any
+#                          image, binary or tag exists. Every listed hash must still match AND every
+#                          migration present at the tag must be listed — at a tag, everything present
+#                          ships, so an unsealed manifest is a hole in the record and fails here.
+#
+# The per-PR half is MIG003 in scripts/repo-gates.sh, which runs the same script WITHOUT --complete:
+# a migration added on a feature branch has not shipped and must not be listed yet.
+#
+# `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
+# its negative fixtures can run against a fabricated tree in t.TempDir(), and a value leaking in
+# from a developer's shell would otherwise verify some other directory's manifest while printing
+# that it passed.
+shipped-lock-seal:
+	@env -u DKP_REPO_ROOT bash scripts/shipped-lock.sh seal
+
+release-shipped-lock:
+	@env -u DKP_REPO_ROOT bash scripts/shipped-lock.sh verify --complete
 
 # Regenerate THIRD_PARTY_NOTICES.txt from the runtime dependency graph. NOTICE promises this file and
 # .goreleaser.yaml attaches it to every release archive; TestThirdPartyNotices_* asserts it covers the

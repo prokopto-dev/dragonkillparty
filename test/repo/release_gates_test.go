@@ -202,6 +202,39 @@ func TestImageSize_ReleaseEnforcesBudget(t *testing.T) {
 		"the MODE=enforce measurement must run AFTER the image is pushed, so it measures a real image")
 }
 
+// TestReleaseWorkflow_PrepareVerifiesShippedLock keeps the shipped-migration manifest wired into the
+// release, and wired in at the only place where a failure is still free.
+//
+// db/migrations-sqlite/SHIPPED.lock records which migrations have run on a user's database. Every
+// migration present at a tag ships with that tag, so the release must assert the manifest already
+// lists them all — an unsealed one leaves a hole nobody notices until somebody edits that file two
+// releases later and MIG003, which only checks the rows that ARE there, says fine.
+//
+// Three things have to hold together, and each is a line a refactor could drop without breaking
+// anything visible: the step runs in `prepare` (before any image, binary, attestation or moving tag
+// exists), the Makefile target passes --complete (without it the release runs the per-PR check and
+// the completeness assertion silently disappears), and the script's --complete branch actually
+// fails. The middle one is the laundering risk: `verify` alone still prints a reassuring green line.
+func TestReleaseWorkflow_PrepareVerifiesShippedLock(t *testing.T) {
+	t.Parallel()
+
+	rel := readRepoFile(t, ".github/workflows/release.yml")
+
+	prepare := jobBlock(t, rel, "prepare:")
+	require.Contains(t, prepare, "make release-shipped-lock",
+		"the prepare job must verify db/migrations-sqlite/SHIPPED.lock before anything is published")
+
+	mk := readRepoFile(t, "Makefile")
+	require.Regexp(t, regexp.MustCompile(`release-shipped-lock:\n\t@[^\n]*shipped-lock\.sh verify --complete`), mk,
+		"`make release-shipped-lock` must run the manifest check with --complete; plain `verify` is "+
+			"the per-PR gate and would pass a release whose manifest was never sealed")
+
+	script := readRepoFile(t, "scripts/shipped-lock.sh")
+	require.Contains(t, script, "--complete) complete=1",
+		"shipped-lock.sh must honour --complete; without it the flag is cosmetic and the release "+
+			"gate is a laundered no-op")
+}
+
 // jobBlock extracts the text of a top-level workflow job, from its `name:` key to the next
 // top-level job key (a line indented by exactly two spaces ending in `:`), so an assertion about one
 // job cannot accidentally match text in another.

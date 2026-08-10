@@ -39,6 +39,21 @@ linters:
   #   enough cross-package error flow for it to find something a reviewer would not.
 
   settings:
+    # errcheck runs with DEFAULT settings, which means check-blank stays off. That is a decision, not
+    # an oversight, and it was re-examined in the Phase 0 review that found AGENTS.md claiming
+    # `_ = err` was an errcheck failure (it never was, in either configuration).
+    #
+    # check-blank reports `_ = f()`. Turning it on flags 56 sites here, 28 of them in production —
+    # every deferred `Close` on a read-only body, every `w.Write` on a response whose header is
+    # already sent, every `tx.Rollback` in a cleanup path. None of those has an action available at
+    # the call site, so clearing them means either inventing error handling that cannot do anything
+    # or writing `//nolint`, and this file's header bans the second. It would also still not catch
+    # the thing the rule is actually about: a bare `_ = err` on an error already in hand is an
+    # identifier, not a call, so errcheck does not see it with check-blank on either.
+    #
+    # So the boundary is: errcheck owns "an error return that was never assigned at all", and the
+    # blank assignment is the explicit, greppable, reviewable waiver. AGENTS.md §"Error handling" and
+    # .claude/rules/go-idioms.md state it in those terms; do not turn this on without changing both.
     depguard:
       rules:
         main:

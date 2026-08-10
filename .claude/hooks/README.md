@@ -37,6 +37,7 @@ Reads `.tool_input.file_path` from stdin and matches it against the repo-relativ
 | Path | Decision | Reason given to the agent |
 |---|---|---|
 | `db/migrations-*/…` whose basename is in `db/migrations-sqlite/SHIPPED.lock` | **deny** | It shipped in a tagged release; write a new migration |
+| `db/migrations-sqlite/SHIPPED.lock` | **deny** | Append-only record; rows are appended by `make shipped-lock-seal`, never edited |
 | `openapi/openapi.json` | **deny** | Huma derives it from the Go types in `internal/api/` |
 | `internal/store/sqlitegen/**`, `internal/store/pggen/**` | **deny** | sqlc output; edit `db/queries/*.sql` |
 | `web/src/api/**`, `clients/ts/**`, `clients/python/**` | **deny** | Generated from `openapi/openapi.json` |

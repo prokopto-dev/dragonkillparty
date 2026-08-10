@@ -365,6 +365,113 @@ func TestCommit_ReversalBelowTheFloor_IsAcceptedWhenNoFloorIsDeclared(t *testing
 	})
 }
 
+// TestCommit_DefaultReversalOfAFlooredAward_CommitsAndStillConserves is the same scenario as the test
+// above, driven through the DEFAULT reversal instead of a hand-built one.
+//
+// The test above proves the ENGINE does the right thing with each declaration. This proves the
+// DECLARATION a strategy gets for free is the right one — which is the half that decides whether a
+// guild's correction path works, because a planner that calls BatchProposal.Negated and commits the
+// result is the shortest correct-looking way to write a reversal and is what the next strategy author
+// will write.
+//
+// Before this, Negated carried the original's invariant set forward verbatim. An award declaring
+// NonNegative — which every award SHOULD declare, because an award's counterparty is a spend — handed
+// its floor to its own reversal, and the third batch below was rejected. The mistake in batch 1 would
+// then have been permanently uncorrectable: the ledger is append-only, so there is no UPDATE, no
+// DELETE and no repair primitive other than the batch the floor just refused. FixedPrice.PlanReversal
+// avoided it by replacing the set rather than inheriting it; nothing made the next strategy do the
+// same.
+//
+// The second subtest is what keeps the first from being a licence to drop invariants: the same
+// default reversal, with one entry perturbed, must still be REJECTED. Dropping the floor buys back
+// the correction path; it does not buy the right to mint a centipoint.
+func TestCommit_DefaultReversalOfAFlooredAward_CommitsAndStillConserves(t *testing.T) {
+	t.Parallel()
+
+	floor := core.Centipoints(0)
+
+	// flooredAward is the award a well-written strategy declares: zero-sum AND floored, because the
+	// floor is what refuses an overdraft on the spend side.
+	flooredAward := func(payer core.ULID, credits []ledger.Allocation) strategy.BatchProposal {
+		p := award(payer, credits)
+		p.Invariants = append(p.Invariants, strategy.Invariant{
+			Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor,
+		})
+
+		return p
+	}
+
+	// setUp commits the erroneous credit and Alice's spend, and returns the erroneous PROPOSAL as well
+	// as its batch id — the proposal is what a reversal planner negates.
+	setUp := func(t *testing.T) (*ledger.Service, *store.Store, strategy.BatchProposal, core.ULID, core.ULID) {
+		t.Helper()
+
+		svc, s := newService(t)
+		accounts := seedPersonAccounts(t, s, 1)
+
+		erroneous := flooredAward(ledger.AccountIDGuildBank,
+			[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 500}})
+
+		receipt, err := svc.Commit(t.Context(), request(erroneous))
+		require.NoError(t, err)
+
+		_, err = svc.Commit(t.Context(), request(flooredAward(accounts[0],
+			[]ledger.Allocation{{AccountID: ledger.AccountIDGuildBank, AmountCp: 500}})))
+		require.NoError(t, err)
+		require.Equal(t, int64(0), balanceOf(t, s, accounts[0]))
+
+		return svc, s, erroneous, receipt.BatchID, accounts[0]
+	}
+
+	t.Run("the default reversal commits and the debt is visible", func(t *testing.T) {
+		t.Parallel()
+
+		svc, s, erroneous, target, alice := setUp(t)
+
+		reversal, err := erroneous.Negated(target)
+		require.NoError(t, err)
+		reversal.EffectiveAt = core.FromTime(fixedNow)
+
+		require.Equal(t,
+			[]strategy.Invariant{{Kind: strategy.InvariantSumZero, BalanceKind: "dkp"}},
+			reversal.Invariants,
+			"the default reversal keeps the conservation rule and drops the floor; inheriting the "+
+				"floor would make the batch below — the only repair primitive there is — illegal")
+
+		_, err = svc.Commit(t.Context(), request(reversal))
+		require.NoError(t, err,
+			"an append-only ledger has no repair primitive other than a reversal; a default that "+
+				"refuses this one leaves the original mistake permanently uncorrectable")
+
+		require.Equal(t, int64(-500), balanceOf(t, s, alice),
+			"the debt is the correct outcome and is meant to be seen: Alice spent points she was "+
+				"never owed, and the ledger says so")
+		require.Equal(t, int64(3), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
+	})
+
+	t.Run("the same default reversal, perturbed, is still refused by SumZero", func(t *testing.T) {
+		t.Parallel()
+
+		svc, s, erroneous, target, alice := setUp(t)
+
+		perturbed, err := erroneous.Negated(target)
+		require.NoError(t, err)
+		perturbed.EffectiveAt = core.FromTime(fixedNow)
+		perturbed.Entries[1].AmountCp++
+
+		_, err = svc.Commit(t.Context(), request(perturbed))
+
+		var invErr *ledger.InvariantError
+		require.ErrorAs(t, err, &invErr,
+			"dropping the floor from a reversal must not drop conservation with it: a reversal that "+
+				"returns one centipoint more than the original took is minting points")
+		require.Equal(t, "SumZero", invErr.Invariant)
+
+		require.Equal(t, int64(0), balanceOf(t, s, alice))
+		require.Equal(t, int64(2), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
+	})
+}
+
 // TestCommit_ReversalOfABatchThatDoesNotExist_IsRejected covers the reversal-linkage lookup missing
 // its target.
 //
