@@ -748,6 +748,10 @@ func TestCommit_MalformedRequest_IsRejectedBeforeTheTransaction(t *testing.T) {
 		{"no actor kind", func(r *ledger.CommitRequest) { r.Actor.Kind = "" }},
 		{"unknown actor kind", func(r *ledger.CommitRequest) { r.Actor.Kind = "wizard" }},
 		{"no batch kind", func(r *ledger.CommitRequest) { r.Proposal.Kind = "" }},
+		// A kind that is valid Go and not in the catalogue. Without the membership check it reaches
+		// INSERT and fails the CHECK from inside the transaction — the production failure the
+		// generated enum exists to prevent, one layer out.
+		{"unknown batch kind", func(r *ledger.CommitRequest) { r.Proposal.Kind = "awrad" }},
 		{"no strategy id", func(r *ledger.CommitRequest) { r.Proposal.StrategyID = "" }},
 		// A present-but-empty key is worse than none: ux_batch_idem is partial on
 		// `idempotency_key IS NOT NULL`, so "" is a real value and the second batch to use it would

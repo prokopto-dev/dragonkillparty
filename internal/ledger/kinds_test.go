@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -297,6 +298,56 @@ func TestBatchKinds_Values_AreCanonicalEnumValues(t *testing.T) {
 	}
 }
 
+// TestLedgerKinds_RuntimeValidation_AcceptsExactlyTheCatalogue is the drift test for the RUNTIME
+// copy: what Commit.validate accepts must be what the generated CHECK accepts, value for value.
+//
+// Before this, internal/ledger/commit.go carried its own `validSources` map. Two lists meant two
+// failure modes: add a source to the catalogue and the database accepts a value the validator
+// refuses as ErrInvalidRequest; add it only to the map and the validator waves through a value the
+// database rejects mid-transaction. Deriving both from the catalogue removes the second list, and
+// this asserts the derivation actually holds rather than trusting that it does.
+func TestLedgerKinds_RuntimeValidation_AcceptsExactlyTheCatalogue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		values   []string
+		accepts  func(string) bool
+		rejected []string
+	}{
+		{
+			name:    "ledger_batch.kind",
+			values:  ledger.BatchKinds(),
+			accepts: ledger.IsBatchKind,
+			// Near-misses, not nonsense: a typo, a plural, a casing slip and the empty string are
+			// what a planner actually produces when it gets this wrong.
+			rejected: []string{"", "awrad", "awards", "Award", "zero_sum", "carrier_pigeon"},
+		},
+		{
+			name:     "ledger_batch.source",
+			values:   ledger.BatchSources(),
+			accepts:  ledger.IsBatchSource,
+			rejected: []string{"", "webs", "API", "slack", "carrier_pigeon"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, v := range tt.values {
+				require.True(t, tt.accepts(v),
+					"%q is in the catalogue and the generated CHECK, so the validator must accept it", v)
+			}
+
+			for _, v := range tt.rejected {
+				require.False(t, tt.accepts(v),
+					"%q is not in the catalogue, so the validator must refuse it before the transaction", v)
+			}
+		})
+	}
+}
+
 // TestCheckExpr_RendersASQLInList pins the rendering, because the generator and this test file are
 // two callers that have to agree with the committed schema byte for byte — including the ", "
 // separator, which is what makes the generated expression identical to the one that shipped and
@@ -316,15 +367,28 @@ func TestCheckExpr_RendersASQLInList(t *testing.T) {
 // internal/core/openapi_contract_test.go's shape, so that it becomes load-bearing the instant the
 // first ledger DTO lands rather than being remembered then.
 //
-// THE TRIGGER IS A MARKER VALUE, not a subset match. An enum sharing 'import' or 'write_off' with
-// this catalogue may legitimately be a different vocabulary — account.system_key carries 'write_off'
-// too — so an enum is only judged against the catalogue when it carries a value that belongs to
-// nothing else in the schema.
+// TWO INDEPENDENT TRIGGERS, because either alone has a hole:
+//
+//   - BY LOCATION: an enum on a `kind` or `source` property of a schema named for a ledger batch is
+//     judged whatever its values are. This is what catches a DTO exposing only the kinds a strategy
+//     implements today ('attendance', 'award', 'adjustment', 'decay', 'reversal') or a source list
+//     shortened to 'web' and 'api' — subsets that carry no marker value at all.
+//   - BY MARKER VALUE: an enum carrying a value unique to this catalogue is judged wherever it
+//     appears, however the schema is named. This is what catches the same list on a property called
+//     something else entirely.
+//
+// A subset match is deliberately NOT a trigger: 'import' and 'write_off' belong to other
+// vocabularies — account.system_key carries 'write_off' — so judging on shared values alone would
+// fail unrelated enums.
+//
+// The residual gap, stated rather than papered over: a DTO named for neither a batch nor carrying a
+// marker (say `PointsHistoryEntry.kind`) with a marker-free subset is still invisible here. Closing
+// that needs the enum GENERATED at the DTO instead of asserted about, which is the first ledger
+// endpoint's work — .claude/rules/api-endpoints.md now says so.
 func TestLedgerKinds_OpenAPIEnums_MatchCatalogue(t *testing.T) {
 	t.Parallel()
 
-	root := repoRoot(t)
-	path := filepath.Join(root, "openapi", "openapi.json")
+	path := filepath.Join(repoRoot(t), "openapi", "openapi.json")
 
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err, "read %s", path)
@@ -332,30 +396,106 @@ func TestLedgerKinds_OpenAPIEnums_MatchCatalogue(t *testing.T) {
 	var doc any
 	require.NoError(t, json.Unmarshal(raw, &doc), "parse openapi.json")
 
-	assertEnumsMatchCatalogue(t, doc)
+	for _, v := range specViolations(doc) {
+		require.Fail(t, "ledger enum drift in the committed spec", "%s: %s", v.path, v.detail)
+	}
 }
 
-// TestLedgerKinds_OpenAPIWalker_DetectsAPartialEnum is the negative control: a synthetic spec whose
-// batch-kind enum is missing a value must be caught by the same walker. Without it, the test above is
-// indistinguishable from one that never checks anything.
-func TestLedgerKinds_OpenAPIWalker_DetectsAPartialEnum(t *testing.T) {
+// TestLedgerKinds_OpenAPIWalker_DetectsDrift is the negative control, and it runs the SAME
+// specViolations the test above runs — a control that reimplements the check proves nothing about
+// the check.
+//
+// The first two cases are the false negatives a marker-only trigger had: a partial kind list and a
+// shortened source list, neither carrying a marker. The last two are the cases that must stay quiet,
+// because a test that fires on everything is as useless as one that fires on nothing.
+func TestLedgerKinds_OpenAPIWalker_DetectsDrift(t *testing.T) {
 	t.Parallel()
 
-	partial := ledger.BatchKinds()[:len(ledger.BatchKinds())-1]
+	tests := []struct {
+		name       string
+		spec       string
+		wantDetail string
+	}{
+		{
+			name: "kind enum missing a value",
+			spec: `{"components":{"schemas":{"LedgerBatchDTO":{"properties":{
+			  "kind":{"type":"string","enum":["attendance","award","adjustment","decay","reversal"]}}}}}}`,
+			wantDetail: "ledger_batch.kind",
+		},
+		{
+			name: "source enum shortened to the two obvious values",
+			spec: `{"components":{"schemas":{"LedgerBatchDTO":{"properties":{
+			  "source":{"type":"string","enum":["web","api"]}}}}}}`,
+			wantDetail: "ledger_batch.source",
+		},
+		{
+			name: "kind list under a schema named for something else, caught by its marker",
+			spec: `{"components":{"schemas":{"Whatever":{"properties":{
+			  "flavour":{"type":"string","enum":["zero_sum_credit","award"]}}}}}}`,
+			wantDetail: "ledger_batch.kind",
+		},
+		{
+			name: "batch schema exposes kind as a free string with no enum",
+			spec: `{"components":{"schemas":{"LedgerBatchDTO":{"properties":{
+			  "kind":{"type":"string"}}}}}}`,
+			wantDetail: "no enum",
+		},
+	}
 
-	var doc any
-	require.NoError(t, json.Unmarshal([]byte(fmt.Sprintf(`{
-	  "components": { "schemas": { "LedgerBatchDTO": { "properties": {
-	    "kind": { "type": "string", "enum": %s }
-	  } } } }
-	}`, mustJSON(t, partial))), &doc))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	found := collectEnums(doc, "$")
-	require.Len(t, found, 1, "the walker must find the one enum in the fixture")
+			var doc any
+			require.NoError(t, json.Unmarshal([]byte(tt.spec), &doc))
 
-	for _, e := range found {
-		require.True(t, isBatchKindEnum(e.values), "the marker value must classify this as a kind enum")
-		require.NotEqual(t, ledger.BatchKinds(), e.values, "the fixture is meant to be short one value")
+			found := specViolations(doc)
+			require.NotEmpty(t, found, "the walker missed drift it must catch")
+			require.Contains(t, found[0].detail, tt.wantDetail)
+		})
+	}
+}
+
+// TestLedgerKinds_OpenAPIWalker_IgnoresUnrelatedEnums is the other half of the control: the walker
+// must not fire on a vocabulary that merely shares a value with the catalogue, or the first person to
+// add account.system_key to the spec gets a red test about the ledger.
+func TestLedgerKinds_OpenAPIWalker_IgnoresUnrelatedEnums(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		spec string
+	}{
+		{
+			name: "account system keys, which share write_off",
+			spec: `{"components":{"schemas":{"AccountDTO":{"properties":{
+			  "system_key":{"type":"string","enum":["guild_bank","residue","write_off","import_opening"]}}}}}}`,
+		},
+		{
+			name: "a bid state machine, which shares nothing",
+			spec: `{"components":{"schemas":{"BidSessionDTO":{"properties":{
+			  "state":{"type":"string","enum":["draft","open","extended","closing","resolved"]}}}}}}`,
+		},
+		{
+			name: "a correct batch DTO",
+			spec: `{"components":{"schemas":{"LedgerBatchDTO":{"properties":{
+			  "kind":{"type":"string","enum":KINDS},
+			  "source":{"type":"string","enum":SOURCES}}}}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := strings.ReplaceAll(tt.spec, "KINDS", mustJSON(t, ledger.BatchKinds()))
+			spec = strings.ReplaceAll(spec, "SOURCES", mustJSON(t, ledger.BatchSources()))
+
+			var doc any
+			require.NoError(t, json.Unmarshal([]byte(spec), &doc))
+
+			require.Empty(t, specViolations(doc), "the walker fired on an unrelated vocabulary")
+		})
 	}
 }
 
@@ -366,19 +506,160 @@ type enumSite struct {
 	values []string
 }
 
-func assertEnumsMatchCatalogue(t *testing.T, doc any) {
-	t.Helper()
+// specViolation is one disagreement between the spec and the catalogue.
+type specViolation struct {
+	path   string
+	detail string
+}
 
-	for _, e := range collectEnums(doc, "$") {
-		switch {
-		case isBatchKindEnum(e.values):
-			require.Equal(t, ledger.BatchKinds(), e.values,
-				"%s is a ledger_batch.kind enum and must be generated from internal/ledger/kinds.go", e.path)
-		case isBatchSourceEnum(e.values):
-			require.Equal(t, ledger.BatchSources(), e.values,
-				"%s is a ledger_batch.source enum and must be generated from internal/ledger/kinds.go", e.path)
+// specViolations returns every place the decoded spec disagrees with the catalogue.
+//
+// A function returning findings rather than one that calls t.Fatal, so the negative controls can
+// assert it FIRES on drift using the same code the real test uses to assert it does not.
+func specViolations(doc any) []specViolation {
+	var found []specViolation
+
+	// By location: a ledger-batch schema's kind/source property must carry the catalogue, and must
+	// carry an enum at all — a free-form string is drift that no value comparison would ever see.
+	for _, p := range batchProperties(doc, "$") {
+		if p.values == nil {
+			found = append(found, specViolation{
+				path:   p.path,
+				detail: "a ledger_batch." + p.column + " property with no enum — the vocabulary must be declared",
+			})
+
+			continue
+		}
+
+		if v, ok := mismatch(p.path, p.column, p.values); ok {
+			found = append(found, v)
 		}
 	}
+
+	// By marker value: an enum carrying a value unique to this catalogue, wherever it lives.
+	for _, e := range collectEnums(doc, "$") {
+		column := ""
+
+		switch {
+		case isBatchKindEnum(e.values):
+			column = "kind"
+		case isBatchSourceEnum(e.values):
+			column = "source"
+		default:
+			continue
+		}
+
+		if v, ok := mismatch(e.path, column, e.values); ok && !alreadyReported(found, v.path) {
+			found = append(found, v)
+		}
+	}
+
+	return found
+}
+
+func mismatch(path, column string, values []string) (specViolation, bool) {
+	want := ledger.BatchKinds()
+	if column == "source" {
+		want = ledger.BatchSources()
+	}
+
+	if slices.Equal(want, values) {
+		return specViolation{}, false
+	}
+
+	return specViolation{
+		path: path,
+		detail: fmt.Sprintf("ledger_batch.%s must be generated from internal/ledger/kinds.go: want %v, got %v",
+			column, want, values),
+	}, true
+}
+
+func alreadyReported(found []specViolation, path string) bool {
+	for _, v := range found {
+		if v.path == path {
+			return true
+		}
+	}
+
+	return false
+}
+
+// batchProperty is a `kind` or `source` property on a schema named for a ledger batch. values is nil
+// when the property declares no enum, which is itself a finding.
+type batchProperty struct {
+	path   string
+	column string
+	values []string
+}
+
+// batchProperties finds the kind/source properties of every ledger-batch-ish schema in the document.
+//
+// The schema-name match is normalised (lowercased, underscores dropped) so LedgerBatch, ledger_batch
+// and LedgerBatchDTO all count. Matching on the name is what makes this independent of the VALUES —
+// which is the entire point, since a subset carries no marker to match on.
+func batchProperties(node any, path string) []batchProperty {
+	var found []batchProperty
+
+	switch n := node.(type) {
+	case map[string]any:
+		for _, k := range sortedKeys(n) {
+			child := n[k]
+
+			if isLedgerBatchName(k) {
+				found = append(found, batchPropertiesOfSchema(child, path+"."+k)...)
+			}
+
+			found = append(found, batchProperties(child, path+"."+k)...)
+		}
+	case []any:
+		for i, v := range n {
+			found = append(found, batchProperties(v, fmt.Sprintf("%s[%d]", path, i))...)
+		}
+	}
+
+	return found
+}
+
+// batchPropertiesOfSchema reads the kind/source properties directly off one schema object.
+func batchPropertiesOfSchema(schema any, path string) []batchProperty {
+	obj, ok := schema.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	props, ok := obj["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	var found []batchProperty
+
+	for _, column := range []string{"kind", "source"} {
+		prop, present := props[column].(map[string]any)
+		if !present {
+			continue
+		}
+
+		p := batchProperty{path: path + ".properties." + column, column: column}
+
+		if raw, hasEnum := prop["enum"].([]any); hasEnum {
+			if values, allStrings := stringSlice(raw); allStrings {
+				p.values = values
+			}
+		}
+
+		found = append(found, p)
+	}
+
+	return found
+}
+
+// isLedgerBatchName reports whether a schema name denotes a ledger batch. Normalised so the casing
+// and separator choices a future DTO makes cannot slip past.
+func isLedgerBatchName(name string) bool {
+	normalised := strings.ToLower(strings.ReplaceAll(name, "_", ""))
+
+	return strings.Contains(normalised, "ledgerbatch")
 }
 
 // isBatchKindEnum reports whether values carry a marker that belongs to no other vocabulary in the
@@ -427,14 +708,7 @@ func collectEnums(node any, path string) []enumSite {
 			}
 		}
 
-		keys := make([]string, 0, len(n))
-		for k := range n {
-			keys = append(keys, k)
-		}
-
-		sort.Strings(keys)
-
-		for _, k := range keys {
+		for _, k := range sortedKeys(n) {
 			found = append(found, collectEnums(n[k], path+"."+k)...)
 		}
 	case []any:
@@ -444,6 +718,19 @@ func collectEnums(node any, path string) []enumSite {
 	}
 
 	return found
+}
+
+// sortedKeys returns a map's keys in a stable order, so a walk reports the same first violation on
+// every run rather than whichever one Go's map iteration happened to reach.
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	return keys
 }
 
 func stringSlice(raw []any) ([]string, bool) {

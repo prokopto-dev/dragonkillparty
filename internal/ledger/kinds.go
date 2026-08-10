@@ -81,6 +81,36 @@ func BatchSources() []string {
 	}
 }
 
+// IsBatchKind reports whether v is a legal ledger_batch.kind.
+//
+// This is the RUNTIME half of the catalogue and the reason it is worth having one: Commit.validate
+// calls it before opening a transaction, so a kind that is not in the CHECK is refused by a Go error
+// naming the field and the legal values, rather than by SQLite naming a constraint from inside the
+// single write connection. Without it the catalogue would generate a CHECK that only the database
+// ever consults — which is the failure this whole file exists to remove, moved one layer out.
+//
+// A linear scan over fourteen values, called once per batch. A package-level set would be
+// package-level mutable state (.claude/rules/go-idioms.md) to save nothing measurable.
+func IsBatchKind(v string) bool {
+	return contains(BatchKinds(), v)
+}
+
+// IsBatchSource reports whether v is a legal ledger_batch.source. The runtime half of BatchSources,
+// for the reason IsBatchKind is.
+func IsBatchSource(v string) bool {
+	return contains(BatchSources(), v)
+}
+
+func contains(values []string, v string) bool {
+	for _, candidate := range values {
+		if candidate == v {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CheckExpr renders the body of a SQL CHECK constraint restricting column to values:
 //
 //	kind IN ('attendance', 'award', …)

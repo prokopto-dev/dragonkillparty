@@ -157,6 +157,14 @@ Do not add an `enum` struct tag to `ProblemDetail.Code`. `Code` implements `huma
 supplies its own schema from `AllCodes()`, so the published enum is derived rather than copied — a
 tag would reintroduce the hand-maintained second list that removal was the point of.
 
+**The same rule binds `ledger_batch.kind` and `ledger_batch.source`.** Their catalogue is
+`internal/ledger/kinds.go` — `make gen` writes it into the CHECK and `Commit.validate` reads it
+(canonical §5) — so the first DTO to expose either field derives its schema from `ledger.BatchKinds()`
+/ `ledger.BatchSources()` through `huma.SchemaProvider`, exactly as `Code` does. Never an `enum`
+struct tag. `TestLedgerKinds_OpenAPIEnums_MatchCatalogue` catches a hand-written list on a schema
+named for a batch, and a partial list anywhere that carries a distinctive value — but a hand-written
+enum is drift whether or not that test happens to see it.
+
 Codes you will reach for most: `validation_failed` (422, populate `errors[]` with
 `location`/`code`/`message`/`suggestions`), `not_found`, `permission_denied`, `insufficient_scope`
 (always name `meta.required_scopes`), `precondition_required` (428), `precondition_failed` (412,
