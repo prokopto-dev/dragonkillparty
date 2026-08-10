@@ -608,7 +608,19 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 			continue
 		}
 
-		total += amount
+		sum, ok := addCentipoints(total, amount)
+		if !ok {
+			// Checked rather than accumulated, even though propose's own balance assertion would
+			// catch the consequence. A wrapped total lands on the BANK's entry, so the failure would
+			// surface as "the batch sums to some enormous number" with no indication that a roster
+			// of large balances was the cause — and the roster is what the officer would have to
+			// look at.
+			return BatchProposal{}, fmt.Errorf(
+				"%s: the decay for period %s sums past int64 at account %s: %w",
+				fixedPriceID, run.PeriodKey, a.ID, ErrInvalidEvent)
+		}
+
+		total = sum
 
 		debits = append(debits, EntryProposal{
 			AccountID:   a.ID,

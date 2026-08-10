@@ -1100,6 +1100,30 @@ func TestFixedPrice_PlanAdjustment_UnnegatableAmount_IsRefused(t *testing.T) {
 	require.ErrorContains(t, err, "sum past int64")
 }
 
+// TestFixedPrice_PlanDecay_TotalOverflow_IsRefused covers the decay accumulator running out of int64.
+//
+// Every individual balance fits and every individual decay amount fits; it is the total credited back
+// to the bank that does not. A wrapped total would land on the bank's entry, so the batch would
+// either be rejected with an arithmetic message that named no cause, or — with a different sign
+// pattern — balance. Refusing here names the period and the account the accumulator gave out on.
+func TestFixedPrice_PlanDecay_TotalOverflow_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 3, 0, `{"decay_bp": 10000}`) // 100%: each account's whole balance decays
+
+	const nearlyHalf = core.Centipoints(4_600_000_000_000_000_000)
+
+	for i := range 3 {
+		ctx.balances[acct(i)] = nearlyHalf
+	}
+
+	_, err := strategy.FixedPrice{}.PlanDecay(ctx, strategy.DecayRun{
+		PeriodKey: "2024-06", AsOfSeq: 7, EffectiveAt: fixedNow,
+	})
+	require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+	require.ErrorContains(t, err, "2024-06")
+}
+
 // TestFixedPrice_PlanAttendance_RejectsABadShare covers the share validation on the attendance path.
 // It is the same helper the award path uses, and "the same helper" is a claim that stops being true
 // the first time somebody inlines one of them.
