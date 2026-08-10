@@ -1,10 +1,17 @@
+-- dkp:fixture deliberately-broken — never repair this file.
+--
 -- The FORGETFUL twin of 000002_ledger_entry_rebuild.sql. Test fixture only; it must never be moved
 -- into db/migrations-sqlite/.
 --
--- Byte-identical to that file except that the two CREATE TRIGGER statements at the bottom are
--- missing — which is precisely the mistake a real migration makes, because Atlas cannot see a
--- trigger, does not emit one, and therefore never reminds anyone. Diff the two files: the whole of
--- the append-only guarantee is the part that is absent here.
+-- Identical to that file except that the two CREATE TRIGGER statements at the bottom are missing —
+-- which is precisely the mistake a real migration makes, because Atlas cannot see a trigger, does
+-- not emit one, and therefore never reminds anyone. Diff the two files: the whole of the append-only
+-- guarantee is the part that is absent here.
+--
+-- "Identical except" is enforced, not asserted in prose:
+-- TestFixtures_RebuildPairs_DifferOnlyByTheDeclaredStatements (test/repo/fixture_pairs_test.go)
+-- strips those two statements from the correct file and requires the remainder to equal this one,
+-- statement for statement. The comments differ and are meant to; nothing else may.
 --
 -- It exists to be the NEGATIVE CONTROL for
 -- TestMigrate_FullStack_LedgerDataSurvivesUpgrade. A test that asserts "the triggers still fire
