@@ -1,0 +1,10 @@
+# SHIPPED.lock — migrations that have shipped in a tagged release. APPEND-ONLY.
+#
+# One "<filename> <sha256>" row per migration, in the order they shipped. A row here means the file
+# has already run on somebody's database: it is frozen, and correcting it means writing a NEW
+# migration, never editing this one. Rows are appended by "make shipped-lock-seal" when a release
+# is prepared, and are never rewritten or removed.
+#
+# Enforced by MIG003 in scripts/repo-gates.sh on every PR (every listed hash must still match) and
+# by "make release-shipped-lock" at tag time (every migration present must also be listed).
+# Blank lines and lines starting with # are ignored.
