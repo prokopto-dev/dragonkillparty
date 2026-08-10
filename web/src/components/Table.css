@@ -9,6 +9,11 @@
  *
  * The hover tint LAYERS OVER the row rule (two backgrounds, the rule listed second) rather than
  * replacing it. A single-background hover makes the rule flicker away under the pointer.
+ *
+ * Nothing in this file diverges from the source sheet, and test/repo/design_tokens_test.go proves it
+ * declaration by declaration with the tokens resolved. The system's one sanctioned break with the
+ * fading rule — a sticky header, which gives it up on the thead — lives in VirtualTable.css scoped
+ * through `.virtual-table`, precisely so an ordinary `.table` keeps it (docs/design/09 §4, issue #34).
  */
 
 .table {

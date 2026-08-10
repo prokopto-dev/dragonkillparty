@@ -7,6 +7,12 @@
  * a value the scale does not carry gets a named rung in tokens.css, not an inline literal.
  */
 
+/*
+ * fonts.css FIRST, and not only because CSS requires every @import at the top of the sheet: the
+ * @font-face rules must be known before the first element resolves --font-body, or the first paint
+ * is the system fallback the self-hosting exists to remove.
+ */
+@import "./fonts.css";
 @import "./tokens.css";
 
 *,

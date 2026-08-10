@@ -28,7 +28,10 @@ before you write it.** Copying a worked example beats recalling an intent.
 1. **Hairlines fade to transparent over 48px at each end** — freestanding rules, `thead`, and every
    `tbody` row. Painted as a *row-level* background gradient with transparent cell borders holding
    the layout; a per-cell border cannot fade across a row. This is the most identifiable thing in the
-   system.
+   system. **One sanctioned exception** (§4, issue #34): a sticky header sticks the `<th>`, not the
+   `<tr>` that paints the rule, so a scrolling table moves the rule onto the `<th>` and gives up the
+   end-fade — scoped through `.virtual-table`, so an ordinary `.table` keeps it. A *second* place the
+   hairline stops fading is a design decision, not an implementation detail.
 2. **Buttons are outlined, never filled.** Primary is a 1px accent border on transparent, `tint(12)`
    hover, `tint(22)` active.
 3. **Elevation is a hairline ring plus ambient darkness.** `--shadow-sm` has no blur — it *is* a

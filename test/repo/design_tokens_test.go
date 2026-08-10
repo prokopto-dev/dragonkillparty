@@ -661,6 +661,190 @@ func TestDesignSystem_VirtualTableSpacer_OutSpecifiesTheBaseRowRule(t *testing.T
 	require.Equal(t, len(spacerBaseRules), checked, "every spacer rule must be checked")
 }
 
+// The var-resolving fidelity diff, and the one divergence it sanctions.
+//
+// Every component sheet in this system opens with "transcribed from mockups/nocturne/styles.css".
+// That claim was prose until here: this compares the SHIPPED `.table` rules against the source
+// sheet's, declaration by declaration, with `var(--token)` resolved on both sides — ours through
+// web/src/styles/tokens.css, the mockup's through its own `:root`. A transcription is faithful when
+// the resolved declarations are equal, which is the only sense in which one sheet full of tokens can
+// be "the same" as another sheet full of different tokens.
+//
+// `.table` is the scope, and deliberately: it is the surface issue #34 changed. Extending the diff to
+// every transcribed component sheet is worth doing and is tracked separately — a check that grew to
+// cover everything at once would have to grandfather whatever it found, which is the opposite of what
+// this one is for.
+//
+// THE DIVERGENCE IS THE POINT. docs/design/09 §4 sanctions exactly one break with the fading
+// hairline: a sticky header sticks the <th> and not the <tr> that paints the rule, so a scrolling
+// table moves the rule onto the cell and gives up the 48px end-fade. §4 also scopes it — to the
+// virtualised viewport and nowhere else — and a scoped exception is only worth the name if something
+// fails when it spreads. These two tests are that something:
+//
+//	1. Table.css still matches the source sheet exactly, so the ORDINARY table did not quietly pay
+//	   for the scrolling one;
+//	2. every rule in VirtualTable.css that overrides a `.table` rule is in the list below, with a
+//	   reason, and is scoped through `.virtual-table`.
+//
+// A new override fails (1) or (2) until someone writes down why it exists. That is the difference
+// between a sanctioned divergence and a surprise diff.
+
+const mockupSheetRel = "docs/design/mockups/nocturne/styles.css"
+
+// sanctionedTableDivergences: every place the shipped table deliberately disagrees with Nocturne.
+//
+// The key is the selector as VirtualTable.css writes it; the value is the reason, which is here so a
+// reader of the failure does not have to go and find it. Both entries implement the single decision
+// recorded in docs/design/09 §4 and issue #34 — they are one exception in two rules, because
+// suppressing the row's paint and painting the cell instead is one move.
+var sanctionedTableDivergences = map[string]string{
+	".virtual-table .table thead th": "docs/design/09 §4, issue #34: the sticky header carries the rule, " +
+		"as a solid strip that cannot fade at the ends, plus the opaque ground the data rows scroll under. " +
+		"The source sheet has no scrolling table and so has nothing to say here.",
+	".virtual-table .table thead tr": "docs/design/09 §4, issue #34: the row's own fading rule is suppressed " +
+		"because a sticky <th> leaves its <tr> behind — the hairline would scroll away from the labels it " +
+		"belongs to, and two hairlines a scroll apart is worse than the one that never fades.",
+}
+
+// varRefRe matches a `var(--token)` reference. No declaration in either sheet uses the fallback form,
+// so a fallback is a change worth failing on rather than quietly resolving.
+var varRefRe = regexp.MustCompile(`var\(\s*(--[a-z0-9-]+)\s*\)`)
+
+// resolveVars expands every var() reference against a token map, repeatedly, because tokens reference
+// tokens — `--soft-8` is a color-mix over `--color-text`.
+//
+// An unresolvable reference is left as written: it then fails the comparison naming the token, which
+// is a better failure than a silent empty string. The depth bound is a cycle backstop; the real
+// nesting here is two.
+func resolveVars(value string, tokens map[string]string) string {
+	for depth := 0; depth < 8 && strings.Contains(value, "var("); depth++ {
+		replaced := varRefRe.ReplaceAllStringFunc(value, func(ref string) string {
+			name := varRefRe.FindStringSubmatch(ref)[1]
+			if resolved, ok := tokens[name]; ok {
+				return resolved
+			}
+
+			return ref
+		})
+
+		if replaced == value {
+			break
+		}
+
+		value = replaced
+	}
+
+	return value
+}
+
+// normaliseDeclaration collapses the spelling differences between two hand-written sheets — the
+// mockup packs declarations onto one line, ours is prettier-formatted — so the comparison is about
+// the VALUE. Same normalisation as normaliseTokenValue: whitespace is not a difference.
+func normaliseDeclaration(value string) string {
+	return normaliseTokenValue(value)
+}
+
+// tableRulesBySelector indexes a sheet's rules that target `.table`, keyed by selector.
+func tableRulesBySelector(rules []cssRule) map[string]cssRule {
+	out := map[string]cssRule{}
+
+	for _, rule := range rules {
+		if strings.Contains(rule.selector, ".table") {
+			out[rule.selector] = rule
+		}
+	}
+
+	return out
+}
+
+func TestDesignSystem_TableCSS_ResolvesToTheSourceSheet(t *testing.T) {
+	t.Parallel()
+
+	ourTokens, _ := cssCustomProperties(readRepoFile(t, tokensCSSRel))
+	mockup := readRepoFile(t, mockupSheetRel)
+	mockupTokens, _ := cssCustomProperties(mockup)
+
+	ours := tableRulesBySelector(cssRules("Table.css", readRepoFile(t, componentsRel+"/Table.css")))
+	theirs := tableRulesBySelector(cssRules("nocturne", mockup))
+
+	// The source sheet's six .table rules. A floor rather than an equality, so a mockup that gains a
+	// rule does not fail this test — but a parser that matched nothing cannot pass it either.
+	require.GreaterOrEqual(t, len(theirs), 6,
+		"parsed only %d .table rules out of %s — the sheet moved or cssRules is broken", len(theirs), mockupSheetRel)
+
+	for _, selector := range sortedKeys(theirs) {
+		theirRule := theirs[selector]
+
+		ourRule, ok := ours[selector]
+		require.Truef(t, ok,
+			"Table.css declares no %q, which %s does. The class is transcribed from that sheet: reproduce the "+
+				"rule, or record the omission in docs/design/09 §4 and in sanctionedTableDivergences.",
+			selector, mockupSheetRel)
+
+		for _, property := range sortedKeys(theirRule.props) {
+			want := normaliseDeclaration(resolveVars(theirRule.props[property], mockupTokens))
+
+			got, declared := ourRule.props[property]
+			require.Truef(t, declared,
+				"Table.css `%s` does not declare %s, which %s sets to %q", selector, property, mockupSheetRel,
+				theirRule.props[property])
+
+			require.Equalf(t, want, normaliseDeclaration(resolveVars(got, ourTokens)),
+				"Table.css `%s { %s }` does not resolve to what %s paints.\n  ours:   %s\n  source: %s\n"+
+					"The tokens differ by design; the resolved value must not. If this divergence is intended it "+
+					"belongs in docs/design/09 §4 and in sanctionedTableDivergences, not in a passing diff.",
+				selector, property, mockupSheetRel, got, theirRule.props[property])
+		}
+	}
+
+	// The fading thead rule specifically, because it is the thing issue #34's exception gives up and
+	// the assertion above would still pass if BOTH sheets lost it.
+	thead, ok := ours[".table thead tr"]
+	require.True(t, ok, "Table.css no longer declares `.table thead tr` — the ordinary table's fading rule is gone")
+	require.Contains(t, thead.props["background"], "var(--hairline-fade)",
+		"`.table thead tr` no longer fades over var(--hairline-fade). The sticky-header exception is scoped to "+
+			"`.virtual-table` precisely so the ORDINARY table keeps this (docs/design/09 §4).")
+}
+
+func TestDesignSystem_VirtualTable_DivergesOnlyWhereSanctioned(t *testing.T) {
+	t.Parallel()
+
+	virtual := cssRules("VirtualTable.css", readRepoFile(t, componentsRel+"/VirtualTable.css"))
+
+	found := map[string]bool{}
+
+	for _, rule := range virtual {
+		// The spacer rules suppress a base rule for a row that carries no data; they are covered by
+		// TestDesignSystem_VirtualTableSpacer_OutSpecifiesTheBaseRowRule and are not a look divergence.
+		if !strings.Contains(rule.selector, ".table") || strings.Contains(rule.selector, "virtual-table-spacer") {
+			continue
+		}
+
+		_, sanctioned := sanctionedTableDivergences[rule.selector]
+		require.Truef(t, sanctioned,
+			"VirtualTable.css `%s` overrides a `.table` rule that %s paints, and nothing records why. "+
+				"Nocturne's fading hairline has exactly one sanctioned exception (docs/design/09 §4, issue #34). "+
+				"Add this one to §4 and to sanctionedTableDivergences with its reason, or scope the rule so the "+
+				"base table's look is unchanged.",
+			rule.selector, mockupSheetRel)
+
+		found[rule.selector] = true
+	}
+
+	for _, selector := range sortedKeys(sanctionedTableDivergences) {
+		require.Truef(t, found[selector],
+			"sanctionedTableDivergences lists `%s`, which VirtualTable.css no longer declares. A divergence list "+
+				"that outlives its divergence is how the next one gets waved through: delete the entry, and delete "+
+				"the exception from docs/design/09 §4 if this was the last of it.", selector)
+
+		// Scope is the exception, not a detail of it. `.virtual-table` is the scroll viewport; a rule
+		// that reached a `.table` outside one would take the end-fade off every table in the product.
+		require.Truef(t, strings.HasPrefix(selector, ".virtual-table "),
+			"sanctionedTableDivergences lists `%s`, which is not scoped through `.virtual-table`. §4 sanctions "+
+				"the exception for the SCROLLING case only; unscoped, it applies to every table there is.", selector)
+	}
+}
+
 // The DS001 / DS002 negative fixtures. AGENTS.md: add a test when you add a gate, not when you add a
 // feature — a gate nobody proved can fire is a gate that quietly stops firing.
 //

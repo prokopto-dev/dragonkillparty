@@ -24,11 +24,27 @@ The name "Dragon Kill Party" and the project logo are NOT licensed under the
 Apache License and are not granted by it. Apache-2.0 section 6 grants no
 trademark rights. See TRADEMARK.md.
 
-No third-party source is vendored into this repository. A CI licence gate
+No third-party source code is vendored into this repository. A CI licence gate
 (scripts/licence-gate.sh) fails the build on any GPL, AGPL, LGPL or CC BY-NC
 licence in the runtime dependency graph. Release artifacts will ship a
-THIRD_PARTY_NOTICES.txt generated from that graph; the release train that
-attaches it has not landed yet, so no published artifact carries one today.
+THIRD_PARTY_NOTICES.txt generated from that graph, plus the vendored assets
+below; the release train that attaches it has not landed yet, so no published
+artifact carries one today.
+
+One third-party ASSET is vendored, and it is embedded in the binary:
+
+    Inter 4.1 — Copyright (c) 2016 The Inter Project Authors
+    (https://github.com/rsms/inter), licensed under the SIL Open Font License,
+    Version 1.1. Vendored byte-for-byte at web/src/assets/fonts/ as
+    Inter-Regular.woff2 (weight 400) and Inter-Medium.woff2 (weight 500). The
+    full licence text is committed beside them as web/src/assets/fonts/OFL.txt
+    and reproduced in THIRD_PARTY_NOTICES.txt; provenance and checksums are in
+    web/src/assets/fonts/README.md.
+
+The OFL requires the copyright notice and licence to travel with the font, which
+is why they travel with the binary rather than only with the source tree. The
+licence gate above cannot see this: it reads the Go module graph, and a font is
+not a module. test/repo/web_fonts_test.go is the gate that does.
 
 Dragon Kill Party is a clean-room reimplementation. It contains no source code,
 schema text, language strings, or assets from EQdkp Plus, which is licensed
