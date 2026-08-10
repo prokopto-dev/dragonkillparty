@@ -62,8 +62,14 @@ than by CI because nothing pushes to `main`, and a record written by the job tha
 a record.
 
 From that commit on, those files are frozen: `MIG003` in `make lint-repo` fails on every PR that
-edits or deletes one. A migration that ships without a row is not "unrecorded" — it is a file
-everyone's tooling will happily let the next contributor edit, on databases that have already run it.
+edits or deletes one, and on any PR that rewrites a row rather than appending — it compares the
+manifest against its merge-base version. A migration that ships without a row is not "unrecorded" —
+it is a file everyone's tooling will happily let the next contributor edit, on databases that have
+already run it.
+
+This is the one PR where `SHIPPED.lock` legitimately changes, so it is the one PR where the diff on
+it deserves reading line by line. Appended rows only; anything else is a rewrite the gate will
+reject on every subsequent PR.
 
 If `make release-shipped-lock` fails at tag time, the release stops in `prepare`, before any image,
 binary or moving tag exists. That is the gate working; seal the manifest and re-tag.

@@ -55,6 +55,50 @@ func writeShippedLock(tb testing.TB, tree string, nameBodyPairs ...string) {
 	require.NoError(tb, os.WriteFile(filepath.Join(dir, "SHIPPED.lock"), []byte(b.String()), 0o644))
 }
 
+// sealFixtureBase turns a fixture tree into a git repository whose `origin/main` is its current
+// contents, so the append-only half of MIG003 has a real merge base to compare against.
+//
+// A REAL repository rather than an injected "pretend this was the base" knob, deliberately. The
+// check reads history through git, and an env var that hands it a base instead would be both a new
+// way to weaken the gate and a second code path that CI never executes — the two properties that
+// make a gate stop meaning anything. Everything after this call is "the working tree of a PR".
+func sealFixtureBase(tb testing.TB, tree string) {
+	tb.Helper()
+
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "fixture@example.invalid"},
+		{"config", "user.name", "fixture"},
+		{"config", "commit.gpgsign", "false"},
+		{"add", "-A"},
+		{"commit", "-q", "--no-verify", "-m", "base"},
+		// The default base ref. No remote exists, so the remote-tracking ref is written directly.
+		{"update-ref", "refs/remotes/origin/main", "HEAD"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tree
+
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(tb, err, "git %v in the fixture tree: %s", args, out)
+	}
+}
+
+// requireOnlyMIG003 asserts the other migration rules stayed silent.
+//
+// A MIG003 fixture has to hold a MODIFIED migration, and the obvious way to write the modification
+// — appending an `ALTER TABLE` — also trips MIG001, which greps the whole file for DDL rather than
+// only the Down block. The MIG003 assertion would then pass on a run that went red for an unrelated
+// reason, which is the failure the whole `test/repo` package exists to make impossible.
+func requireOnlyMIG003(t *testing.T, out string) {
+	t.Helper()
+
+	for _, rule := range []string{"MIG001", "MIG002"} {
+		require.NotContainsf(t, out, rule,
+			"the fixture tripped %s as well as MIG003, so the MIG003 assertion proves nothing — "+
+				"the modified migration must be clean under every other rule\n%s", rule, out)
+	}
+}
+
 // runShippedLock runs scripts/shipped-lock.sh against tree with the given arguments.
 //
 // runGateScript cannot be reused: it passes no arguments, and the release path is exactly the
@@ -85,14 +129,29 @@ func runShippedLock(t *testing.T, tree string, args ...string) (output string, e
 	return "", 0
 }
 
-// A migration body that passes every other migration gate, so a MIG003 fixture fails for the
-// reason under test and not because of a backtick or a Down-block DROP.
-const cleanMigration = `-- +goose Up
+// Two migration bodies that pass every OTHER migration gate, so a MIG003 fixture fails for the
+// reason under test and not because of a backtick or a stray DDL keyword.
+//
+// tamperedMigration is what an edit to a shipped migration looks like: different bytes, therefore a
+// different hash, and nothing else wrong with it. Writing the edit as an appended `ALTER TABLE`
+// would be the natural choice and is a trap — MIG001 greps the whole file for `DROP`/`ALTER`, not
+// just the Down block, so the fixture would trip two rules and every MIG003 assertion below would
+// pass while proving nothing. The tests assert MIG001 and MIG002 stay silent for that reason.
+const (
+	cleanMigration = `-- +goose Up
 CREATE TABLE "thing" ("id" text NOT NULL PRIMARY KEY) STRICT;
 
 -- +goose Down
 SELECT RAISE(ABORT, 'DKP migrations are forward-only');
 `
+
+	tamperedMigration = `-- +goose Up
+CREATE TABLE "thing" ("id" text NOT NULL PRIMARY KEY, "smuggled" text) STRICT;
+
+-- +goose Down
+SELECT RAISE(ABORT, 'DKP migrations are forward-only');
+`
+)
 
 // TestRepoGates_BacktickedMigration_FailsGate proves MIG002 fires.
 //
@@ -190,14 +249,13 @@ func TestRepoGates_ModifiedShippedMigration_FailsGate(t *testing.T) {
 	script := scriptPath(t, "repo-gates.sh")
 	tree := t.TempDir()
 
-	const shipped = `-- +goose Up
-CREATE TABLE "ledger_entry" ("id" text NOT NULL PRIMARY KEY, "amount_cp" integer NOT NULL) STRICT;
-`
+	// The state that shipped: the migration, and a manifest recording its bytes.
+	writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
+	writeMigration(t, tree, "000001_init.sql", cleanMigration)
+	sealFixtureBase(t, tree)
 
-	// The lock records the bytes that shipped; the tree holds a file that no longer matches them.
-	writeShippedLock(t, tree, "000001_init.sql", shipped)
-	writeMigration(t, tree, "000001_init.sql", shipped+
-		`ALTER TABLE "ledger_entry" ADD COLUMN "note" text;`+"\n")
+	// The change under test edits the migration and leaves the manifest alone.
+	writeMigration(t, tree, "000001_init.sql", tamperedMigration)
 
 	out, code := runGateScript(t, script, tree)
 
@@ -208,6 +266,7 @@ CREATE TABLE "ledger_entry" ("id" text NOT NULL PRIMARY KEY, "amount_cp" integer
 		"MIG003 must name the migration whose hash no longer matches\n%s", out)
 	require.Contains(t, out, "MODIFIED",
 		"MIG003 must say which way the manifest and the tree disagree\n%s", out)
+	requireOnlyMIG003(t, out)
 	require.NotContains(t, out, tree,
 		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
 }
@@ -224,8 +283,13 @@ func TestRepoGates_DeletedShippedMigration_FailsGate(t *testing.T) {
 	script := scriptPath(t, "repo-gates.sh")
 	tree := t.TempDir()
 
-	// Listed, and absent from the tree — the shape a `git rm` of a shipped migration leaves behind.
 	writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
+	writeMigration(t, tree, "000001_init.sql", cleanMigration)
+	sealFixtureBase(t, tree)
+
+	// The shape a `git rm` of a shipped migration leaves behind: still listed, no longer there.
+	require.NoError(t, os.Remove(
+		filepath.Join(tree, "db", "migrations-sqlite", "000001_init.sql")))
 
 	out, code := runGateScript(t, script, tree)
 
@@ -253,6 +317,8 @@ func TestRepoGates_UnchangedShippedMigration_PassesGate(t *testing.T) {
 
 	writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
 	writeMigration(t, tree, "000001_init.sql", cleanMigration)
+	sealFixtureBase(t, tree)
+
 	writeMigration(t, tree, "000002_add_thing.sql", cleanMigration)
 
 	out, code := runGateScript(t, script, tree)
@@ -263,6 +329,92 @@ func TestRepoGates_UnchangedShippedMigration_PassesGate(t *testing.T) {
 	require.Contains(t, out, "1 shipped migration(s) unchanged",
 		"MIG003 must report how many rows it checked — a manifest that parsed to nothing would "+
 			"otherwise pass silently\n%s", out)
+}
+
+// TestRepoGates_RewrittenManifest_FailsGate is the bypass that hashing alone cannot see, and it is
+// the reason MIG003 compares the manifest against its own history rather than only against the tree.
+//
+// SHIPPED.lock ships in the same commit as the migration it protects. So a change that touches BOTH
+// halves leaves a perfectly self-consistent tree: edit the migration and rewrite its recorded hash,
+// or simply delete the row and leave the file unlisted. Every hash matches, nothing is missing, and
+// a migration that has already run on somebody's database is quietly editable again.
+//
+// Nothing else in the repository closes this. `atlas.sum` is re-hashed by `make gen` and re-hashing
+// is what makes the edit legitimate to it; the guard-protected-paths hook is a local editor guard
+// that CI never runs; and CODEOWNERS cannot freeze the file outright because the Release PR must
+// legitimately append to it. The manifest can only be trusted against the merge base.
+func TestRepoGates_RewrittenManifest_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		// mutate rewrites the fixture the way the bypass would, after the base is sealed.
+		mutate func(tb testing.TB, tree string)
+	}{
+		{
+			// Both halves changed together. read_lock alone sees a tree that agrees with itself.
+			name: "hash rewritten to match an edited migration",
+			mutate: func(tb testing.TB, tree string) {
+				writeMigration(tb, tree, "000001_init.sql", tamperedMigration)
+				writeShippedLock(tb, tree, "000001_init.sql", tamperedMigration)
+			},
+		},
+		{
+			// The quieter one: drop the row and the file is simply not a shipped migration any more.
+			name: "row deleted so the migration is no longer listed",
+			mutate: func(tb testing.TB, tree string) {
+				writeMigration(tb, tree, "000001_init.sql", tamperedMigration)
+				writeShippedLock(tb, tree)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			script := scriptPath(t, "repo-gates.sh")
+			tree := t.TempDir()
+
+			writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
+			writeMigration(t, tree, "000001_init.sql", cleanMigration)
+			sealFixtureBase(t, tree)
+
+			tc.mutate(t, tree)
+
+			out, code := runGateScript(t, script, tree)
+
+			require.NotZero(t, code,
+				"rewriting SHIPPED.lock to match an edited migration must fail the gates\n%s", out)
+			require.Contains(t, out, "MIG003",
+				"the gates went red, but not because of the frozen-migration rule\n%s", out)
+			require.Contains(t, out, "REWRITTEN",
+				"MIG003 must say the manifest itself was rewritten, not merely that a hash "+
+					"disagreed — the whole point is that the hashes DO agree\n%s", out)
+			require.Contains(t, out, "000001_init.sql",
+				"MIG003 must name the row that stopped saying what it said\n%s", out)
+			requireOnlyMIG003(t, out)
+		})
+	}
+}
+
+// TestCI_LintRepoJob_FetchesFullHistory pins the CI configuration that keeps the append-only half of
+// MIG003 from becoming a permanent no-op.
+//
+// The check reads the merge base through git, so it SKIPS — loudly, but it skips — when history is
+// not there. `lint / repo` is the job that runs it, and a shallow checkout would turn "manifest
+// rewritten" into a printed note and a green check. Deleting one line of YAML is a much easier
+// accident than deleting a gate, which is exactly why it is asserted here.
+func TestCI_LintRepoJob_FetchesFullHistory(t *testing.T) {
+	t.Parallel()
+
+	ci := readRepoFile(t, ".github/workflows/ci.yml")
+
+	job := jobBlock(t, ci, "lint-repo:")
+	require.Contains(t, job, "fetch-depth: 0",
+		"ci.yml's lint-repo job must check out full history: MIG003 compares "+
+			"db/migrations-sqlite/SHIPPED.lock against its merge-base version, and a shallow "+
+			"checkout silently downgrades that to a skip\n%s", job)
+	require.Contains(t, job, "make lint-repo",
+		"the lint-repo job must actually run the gates\n%s", job)
 }
 
 // TestShippedLock_MalformedManifest_FailsVerify closes the vacuous-pass hole.
@@ -316,6 +468,8 @@ func TestShippedLock_ReleaseMode_RequiresEveryMigrationBeSealed(t *testing.T) {
 
 	writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
 	writeMigration(t, tree, "000001_init.sql", cleanMigration)
+	sealFixtureBase(t, tree)
+
 	writeMigration(t, tree, "000002_add_thing.sql", cleanMigration)
 
 	// The per-PR gate must accept this: 000002 has not shipped.
@@ -346,6 +500,8 @@ func TestShippedLock_Seal_IsAppendOnlyAndRefusesTamperedTrees(t *testing.T) {
 		tree := t.TempDir()
 		writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
 		writeMigration(t, tree, "000001_init.sql", cleanMigration)
+		sealFixtureBase(t, tree)
+
 		writeMigration(t, tree, "000002_add_thing.sql", cleanMigration)
 
 		lockPath := filepath.Join(tree, "db", "migrations-sqlite", "SHIPPED.lock")
@@ -373,6 +529,9 @@ func TestShippedLock_Seal_IsAppendOnlyAndRefusesTamperedTrees(t *testing.T) {
 
 		tree := t.TempDir()
 		writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
+		writeMigration(t, tree, "000001_init.sql", cleanMigration)
+		sealFixtureBase(t, tree)
+
 		writeMigration(t, tree, "000001_init.sql", cleanMigration+"-- tampered\n")
 		writeMigration(t, tree, "000002_add_thing.sql", cleanMigration)
 

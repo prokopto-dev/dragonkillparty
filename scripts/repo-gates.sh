@@ -171,6 +171,20 @@ gate MIG002 "backtick-quoted identifier in a migration (sqlc parses no table and
 # Editing it makes an existing install and a fresh install end up with different schemas, and
 # "works on a fresh install, breaks on upgrade" is the most damaging bug class for this audience.
 #
+# TWO assertions, and the second is the one that makes the first mean anything:
+#
+#   1. Every listed file exists and still hashes to its recorded value.
+#   2. The manifest at the MERGE BASE is an exact byte PREFIX of the manifest now.
+#
+# Without (2), (1) is trivially defeated by changing both halves in the same commit: edit the
+# migration, rewrite its row — or just delete the row, which un-freezes the file entirely — and the
+# tree is self-consistent again. The manifest ships in the same diff as the migration it protects,
+# so it can only be trusted against its own history.
+#
+# (2) needs git history, so it SKIPS loudly when the base cannot be read (a shallow checkout).
+# ci.yml's `lint / repo` job carries `fetch-depth: 0` and TestCI_LintRepoJob_FetchesFullHistory
+# fails if that is removed, which is what stops the skip from becoming the normal case.
+#
 # This is NOT what atlas.sum already covers, and the difference is the reason the gate exists.
 # atlas.sum protects the current set as it is: edit a migration, re-run `atlas migrate hash`, and
 # the checksum agrees again — `make verify-generated` is satisfied because regeneration is

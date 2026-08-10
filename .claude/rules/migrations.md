@@ -78,9 +78,14 @@ and no backup discipline.
 
 - `db/migrations-sqlite/SHIPPED.lock` lists them, one `filename sha256` row per migration. The
   `schema-migration-reviewer` subagent checks the diff against it.
-- **`MIG003` in `scripts/repo-gates.sh` is the machine half**, on every PR: every listed file must
-  still exist and still hash to its recorded value. A shipped migration that is edited or deleted
-  fails `make lint-repo`, which is in `ci-required`.
+- **`MIG003` in `scripts/repo-gates.sh` is the machine half**, on every PR, in `ci-required`. Two
+  assertions, and the second is what makes the first mean anything:
+  1. Every listed file exists and still hashes to its recorded value.
+  2. The manifest at the **merge base** is an exact byte **prefix** of the manifest now.
+  Without (2), (1) is defeated by editing the migration and its row in the same commit — or by
+  deleting the row, which un-freezes the file entirely. The manifest ships in the same diff as the
+  migration it protects, so it is only trustworthy against its own history. (2) reads git, so it
+  skips loudly without one; `lint / repo` carries `fetch-depth: 0` and a test asserts that it does.
 - It is **not** a completeness check, deliberately: a migration added on a feature branch has not
   shipped and must not be listed. Completeness is asserted once, at tag time, by
   `make release-shipped-lock` in `release.yml`'s `prepare` job — at a tag everything present ships,

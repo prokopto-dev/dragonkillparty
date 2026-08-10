@@ -172,6 +172,98 @@ read_lock() {
     done <"$LOCK"
 }
 
+# check_append_only — the manifest at the MERGE BASE must be an exact PREFIX of the manifest now.
+#
+# WHY THIS EXISTS, AND WHY read_lock IS NOT ENOUGH
+# ------------------------------------------------
+# read_lock only proves the manifest and the working tree AGREE. That catches editing a shipped
+# migration, and nothing else — because the manifest is in the same commit as the migration. Change
+# both together, and the tree is self-consistent again:
+#
+#     edit db/migrations-sqlite/000003_ledger.sql
+#     replace its row in SHIPPED.lock with the new hash     -> read_lock passes, MIG003 green
+#     delete its row from SHIPPED.lock entirely             -> the file is simply unlisted, green
+#
+# Both are the exact failure this file exists to prevent, and neither is caught by hashing alone.
+# Nor is either caught elsewhere: the Claude hook is a local editor guard, not a CI control, and the
+# Release PR must legitimately modify this file, so it cannot be CODEOWNERS-frozen outright.
+# The only durable answer is to compare the file against its own history.
+#
+# WHY A PREFIX AND NOT A SET
+# --------------------------
+# A set comparison ("every old row is still present somewhere") permits reordering and re-heading,
+# which is a rewrite with extra steps. The file is append-only in the strict sense: whatever the
+# merge base said, byte for byte, must still be the beginning of what this change says. The only
+# legal edit is more bytes at the end.
+#
+# WHY THE MERGE BASE AND NOT origin/main
+# --------------------------------------
+# A branch cut before a release legitimately lacks the rows that release appended. Comparing against
+# the tip of main would fail it for being behind, which is not what this rule is about, and the fix
+# people would reach for is disabling the check.
+#
+# WHEN THE BASE CANNOT BE READ
+# ----------------------------
+# It SKIPS, loudly, naming why. That is not a hole being waved through: this check runs in ci.yml's
+# `lint / repo` job, which carries `fetch-depth: 0`, and TestCI_LintRepoJob_FetchesFullHistory fails
+# if that is ever removed. Hard-failing instead would break every shallow-checkout job that runs
+# `make lint-repo` through a test, and a gate that red-lights honest jobs gets deleted.
+check_append_only() {
+    local base_ref="${DKP_SHIPPED_LOCK_BASE_REF:-origin/main}" merge_base current base line
+
+    skip_base() {
+        printf '  append-only history NOT checked: %s\n' "$1"
+    }
+
+    if ! command -v git >/dev/null 2>&1; then
+        skip_base "git is not on PATH"
+        return 0
+    fi
+
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        skip_base "this is not a git work tree"
+        return 0
+    fi
+
+    if ! git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
+        skip_base "$base_ref is not available (shallow clone? CI needs fetch-depth: 0; locally, git fetch origin main)"
+        return 0
+    fi
+
+    if ! merge_base="$(git merge-base HEAD "$base_ref" 2>/dev/null)" || [ -z "$merge_base" ]; then
+        skip_base "HEAD and $base_ref have no merge base"
+        return 0
+    fi
+
+    # `<rev>:./<path>` resolves relative to the current directory, so this is correct even when
+    # DKP_REPO_ROOT points somewhere other than the repository root.
+    if ! git cat-file -e "$merge_base:./$LOCK" 2>/dev/null; then
+        printf '  %s does not exist at the merge base — this is the change that introduces it\n' "$LOCK"
+        return 0
+    fi
+
+    current="$(cat "$LOCK")"
+    base="$(git show "$merge_base:./$LOCK")"
+
+    case "$current" in
+    "$base"*) return 0 ;;
+    esac
+
+    problem "$LOCK was REWRITTEN, not appended to. It is the record of what has already run on a"
+    problem "user's database; the only legal change is new rows at the end."
+
+    # Name the rows that stopped saying what they said, so the failure points at a line rather than
+    # at a file. A row that is gone and a row whose hash changed are both "no longer present as
+    # recorded", and both mean the same thing: a shipped migration just became editable.
+    while IFS= read -r line; do
+        case "$line" in
+        '' | '#'*) continue ;;
+        esac
+
+        grep -qxF -- "$line" "$LOCK" || problem "  no longer recorded as it was at the merge base: $line"
+    done <<<"$base"
+}
+
 usage() {
     printf 'usage: shipped-lock.sh [verify [--complete] | seal | init]\n' >&2
     exit 2
@@ -209,6 +301,7 @@ verify)
     fi
 
     read_lock
+    check_append_only
 
     if [ "$complete" -eq 1 ]; then
         # Every migration present at a tag ships with that tag, so every one of them must already
@@ -225,7 +318,7 @@ verify)
     fi
 
     if [ "$fail" -ne 0 ]; then
-        printf '\nshipped-lock: the manifest and the migrations disagree.\n' >&2
+        printf '\nshipped-lock: the manifest disagrees with the migrations, or with its own history.\n' >&2
         printf 'A migration that has shipped is frozen: it has already run on a user'"'"'s database, and\n' >&2
         printf 'editing it makes their schema and a fresh install silently diverge. To change what a\n' >&2
         printf 'shipped migration created, write a NEW migration: make migration NAME=<snake_case>\n' >&2
@@ -245,8 +338,10 @@ seal)
     [ -f "$LOCK" ] || header >"$LOCK"
 
     # Verify BEFORE appending. Sealing on top of a tree where a listed migration was already altered
-    # would launder the alteration into the record, which is the one thing this file must never do.
+    # — or where the manifest itself was rewritten — would launder the alteration into the record,
+    # which is the one thing this file must never do.
     read_lock
+    check_append_only
 
     if [ "$fail" -ne 0 ]; then
         printf '\nshipped-lock: refusing to seal — an already-shipped migration does not match its\n' >&2
