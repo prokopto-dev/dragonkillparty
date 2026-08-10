@@ -137,7 +137,7 @@ Property tests are those invariants driven by generated input rather than hand-p
 | P8 | **Determinism.** The same `(event, config, clock, seed)` produces a byte-identical proposal hash | random events | Map-iteration order; `time.Now` leaking into a planner |
 | P9 | **Decay idempotency.** Two runs for the same `(pool_id, cadence_period)` produce one batch | random cadences and downtime gaps | "Decay ran twice after the box rebooted" |
 | P10 | **Attendance monotonicity.** Adding a raid the member attended never decreases their window percentage; adding one they missed never increases it | random raid histories | Denominator and dedup logic |
-| P11 | **Cursor round-trip and order preservation.** `decode(encode(x)) == x`, and `encode` is monotone with respect to the sort key | random `(sort_key, tiebreak_id)` | Duplicate-and-skip in every polling bot |
+| P11 | **Cursor round-trip and order preservation.** `decode(encode(x)) == x`, and `encode` is monotone with respect to the sort key | random `(sort_key, tiebreak_id, filter_hash, principal_class)` | Duplicate-and-skip in every polling bot |
 | P12 | **Parser totality.** No input panics; every accepted line re-serialises to something the parser re-accepts | `go test -fuzz` + generated strings | Panics on hostile log lines |
 | P13 | **Position permutation** under random insertions, removals and absences — *only if a Suicide Kings variant ships* | a seeded state machine | Ordering corruption no scalar assertion catches |
 | P14 | **Ratio preservation under decay** — *only if `epgp` ships* | random pairs and schedules | The whole point of that model |
