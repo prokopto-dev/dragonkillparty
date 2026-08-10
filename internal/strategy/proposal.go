@@ -321,6 +321,12 @@ func (p BatchProposal) Canonical() ([]byte, error) {
 // backdating it to the original's effective time would silently rewrite every intermediate balance's
 // meaning. The caller supplies the reversal's own effective time; this returns it zero and the
 // ledger stamps it.
+//
+// THE INVARIANT SET IS INHERITED MINUS InvariantNonNegative — see reversalInvariants below for the
+// argument. The floor is dropped BY DEFAULT rather than by each strategy remembering to drop it,
+// because the failure mode of forgetting is a mistake that is provably wrong and permanently
+// unfixable, and a default whose safety depends on every future author having read one other
+// package's doc comment is not a default, it is a trap with documentation.
 func (p BatchProposal) Negated(reverses core.ULID) (BatchProposal, error) {
 	if len(p.Entries) == 0 {
 		return BatchProposal{}, fmt.Errorf("negate batch %s: %w", p.StrategyID, ErrEmptyProposal)
@@ -351,6 +357,64 @@ func (p BatchProposal) Negated(reverses core.ULID) (BatchProposal, error) {
 		Reason:          p.Reason,
 		ReversesBatchID: &reverses,
 		Entries:         entries,
-		Invariants:      p.Invariants,
+		Invariants:      reversalInvariants(p.Invariants),
 	}, nil
+}
+
+// reversalInvariants is the set a default reversal declares: everything the original declared, minus
+// every InvariantNonNegative.
+//
+// A FLOOR ON A REVERSAL DOES NOT PREVENT A DEBT, IT PREVENTS THE CORRECTION. The scenario is an
+// ordinary Tuesday for a volunteer officer:
+//
+//	an officer credits a tick to the wrong raider  ->  Alice +500
+//	Alice spends it on an item                     ->  Alice 0
+//	the officer reverses the erroneous tick        ->  Alice -500  <- below a floor of 0
+//
+// With the floor inherited, the ledger REJECTS that third batch. The ledger is append-only: there is
+// no UPDATE, no DELETE, and a batch carrying reverses_batch_id is the ONLY repair primitive there is
+// (.claude/rules/ledger-and-strategy.md). So the guild is left with a mistake everybody can see and
+// nobody can fix — a strictly worse outcome than a visible negative balance, by every measure that
+// matters. The debt is the correct outcome and it is meant to be seen: Alice is at -500 because she
+// spent points she was never owed, the reversal batch says why, and she works it off. What a floor
+// legitimately guards is a SPEND, where the planner declares it and an overdraft is refused before
+// anything is written.
+//
+// IT IS THE DEFAULT, and that is the whole point of it living here rather than in each planner.
+// FixedPrice.PlanReversal reaches the same set by replacing rather than inheriting, and its doc
+// comment carries the same argument at length — but "correct because every future author read that
+// comment" is not a property the ledger can rest on. Inheriting the floor is the one mistake in this
+// function whose consequence is unfixable, so it is the one the default must not make. A strategy
+// that genuinely wants a floor on a reversal can still declare one; it now has to say so.
+//
+// EVERYTHING ELSE IS INHERITED, INCLUDING THE CONSERVATION RULES. SumZero and
+// LargestRemainderSumsToDebit constrain the batch's ARITHMETIC, not its direction: a reversal is the
+// exact negation of a committed batch, so it can no more mint or destroy a centipoint than the
+// original could. Dropping them alongside the floor would be the easy over-correction and it would
+// leave nothing checking that a reversal actually reverses — a batch returning one centipoint more
+// than the original took is minting points, whichever direction it moves them in.
+//
+// InvariantMonotoneNonDecreasing IS DELIBERATELY NOT FILTERED, though it has the same shape:
+// .claude/rules/ledger-and-strategy.md defines it as "never decreases EXCEPT VIA A REVERSAL", so
+// declaring it on one is definitionally wrong. It is not filtered because the engine does not
+// implement it and fails closed on a declared rule it cannot check (internal/ledger/invariant.go) —
+// so the epgp author who inherits it gets a loud commit failure naming the invariant, not a silent
+// trap. Filtering it here would also be designing for a strategy the rules mark as conditional
+// rather than scheduled. If epgp lands, its checker and this decision land together.
+//
+// The result is a FRESH SLICE even when nothing is dropped. The original set is a strategy's own
+// declaration and may be a package-level value it hands out for every plan; a reversal that shared
+// its backing array could have a later append write through into it.
+func reversalInvariants(declared []Invariant) []Invariant {
+	var kept []Invariant
+
+	for _, inv := range declared {
+		if inv.Kind == InvariantNonNegative {
+			continue
+		}
+
+		kept = append(kept, inv)
+	}
+
+	return kept
 }

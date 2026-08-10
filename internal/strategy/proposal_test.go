@@ -147,6 +147,107 @@ func TestProposal_Negated_IsTheDefaultReversal(t *testing.T) {
 	require.Equal(t, sample(), original)
 }
 
+// TestProposal_Negated_DropsTheNonNegativeFloorAndKeepsConservation is the defect this default
+// exists to prevent, asserted at the level the default lives at.
+//
+// A floor inherited onto a reversal does not prevent a debt — it prevents the CORRECTION:
+//
+//	an officer credits a tick to the wrong raider  ->  Alice +500
+//	Alice spends it on an item                     ->  Alice 0
+//	the officer reverses the erroneous tick        ->  Alice -500  <- below a floor of 0
+//
+// The ledger is append-only and a reversal is the only repair primitive there is, so a strategy that
+// inherited the floor would leave that mistake provably wrong and permanently unfixable.
+// FixedPrice.PlanReversal already reached the right set by replacing rather than inheriting; this
+// pins the DEFAULT, so the next strategy author is safe without having read that one's doc comment.
+//
+// The conservation half of the pair is what stops this being a licence to drop invariants: SumZero
+// and LargestRemainderSumsToDebit constrain the arithmetic rather than the direction, and they
+// survive. Without asserting that, this test would pass against a Negated that returned no
+// invariants at all.
+func TestProposal_Negated_DropsTheNonNegativeFloorAndKeepsConservation(t *testing.T) {
+	t.Parallel()
+
+	floor := core.Centipoints(0)
+	debt := core.Centipoints(-2_000)
+
+	sumZero := strategy.Invariant{Kind: strategy.InvariantSumZero, BalanceKind: "dkp"}
+	exact := strategy.Invariant{Kind: strategy.InvariantLargestRemainderSumsToDebit, BalanceKind: "dkp"}
+
+	cases := []struct {
+		name     string
+		declared []strategy.Invariant
+		want     []strategy.Invariant
+	}{
+		{
+			name: "the fixed_price award set: the floor goes, the conservation rule stays",
+			declared: []strategy.Invariant{
+				sumZero,
+				{Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor},
+			},
+			want: []strategy.Invariant{sumZero},
+		},
+		{
+			name: "a negative floor is a floor: a guild that permits debt to a limit still cannot cap a correction",
+			declared: []strategy.Invariant{
+				{Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &debt},
+				exact,
+			},
+			want: []strategy.Invariant{exact},
+		},
+		{
+			name: "order is preserved and every non-floor rule survives",
+			declared: []strategy.Invariant{
+				sumZero,
+				{Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor},
+				exact,
+				{Kind: strategy.InvariantNonNegative, BalanceKind: "ep", FloorCp: &floor},
+			},
+			want: []strategy.Invariant{sumZero, exact},
+		},
+		{
+			name:     "a set that was nothing but floors reverses with none",
+			declared: []strategy.Invariant{{Kind: strategy.InvariantNonNegative, BalanceKind: "dkp", FloorCp: &floor}},
+			want:     nil,
+		},
+		{
+			name:     "a strategy that declared nothing still declares nothing",
+			declared: nil,
+			want:     nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			original := sample()
+			// A COPY, so that the comparison at the end is against something Negated cannot reach.
+			// Assigning tc.declared directly would make the two share a backing array and the
+			// no-aliasing assertion would hold whatever Negated did.
+			original.Invariants = append([]strategy.Invariant(nil), tc.declared...)
+
+			got, err := original.Negated(core.ULID("0000000000000000000BATCH01"))
+			require.NoError(t, err)
+
+			require.Equal(t, tc.want, got.Invariants,
+				"a reversal inherits every rule that constrains its ARITHMETIC and none that "+
+					"constrains its DIRECTION; a floor on the only repair primitive an append-only "+
+					"ledger has does not prevent a debt, it prevents the correction")
+
+			// Written through, then the original re-checked. A planner may return a package-level set
+			// for every plan, so a reversal sharing its backing array would corrupt every future
+			// award's declaration — and a value comparison alone cannot see that.
+			if len(got.Invariants) > 0 {
+				got.Invariants[0] = strategy.Invariant{Kind: strategy.InvariantPermutation}
+			}
+
+			require.Equal(t, tc.declared, original.Invariants,
+				"Negated must not mutate or alias the set the planner declared")
+		})
+	}
+}
+
 // TestProposal_Negated_RefusesWhatItCannotInvert covers the two inputs with no correct answer.
 //
 // math.MinInt64 is the one int64 with no representable negation, and clamping it would produce a
