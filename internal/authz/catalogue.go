@@ -167,6 +167,26 @@ func Catalogue() []Permission {
 		// Sensitive reads.
 		{Key: "person.pii.read", Category: categorySensitive, Label: "Read PII", Description: "Read personally-identifying information in bulk, such as email addresses."},
 		{Key: "audit.read", Category: categorySensitive, Label: "Read the audit log", Description: "Read the audit log."},
+		// ops.read is SESSION-ONLY BY OMISSION, not session-plus-step-up. It sits in the sensitive
+		// category beside person.pii.read and audit.read, both of which ARE in CapabilityFloor(), and
+		// its absence from that list is the intended answer rather than an oversight — Category is a
+		// display grouping, not a security boundary (see Permission.Category above).
+		//
+		// The floor is defined by what a compromise costs, not by what feels sensitive (canonical §6,
+		// "The capability floor"): it is the operations that alter authentication, authorization or
+		// bulk-export state. ops.read is none of those. It reads job queues, doctor checks and the last
+		// ledger-verify result (docs/design/02-api-design.md) — operational status, carrying neither PII
+		// nor a security-affecting read. Adding it to the floor would put a re-authentication prompt in
+		// front of an officer refreshing a job list, which is the same conflation the admin.settings
+		// paragraph in canonical §6 exists to prevent.
+		//
+		// It is session-only for the ordinary reason: no PAT scope family covers the operational
+		// surface, so an /ops operation declares {"session": {}} with no pat alternative, and declares
+		// NEITHER x-dkp-scopes NOR x-dkp-pat-forbidden — the "session-only by omission" case of the
+		// three-case scope rule (.claude/rules/api-endpoints.md; registerGuild's updateGuild is the
+		// worked example). Declaring x-dkp-pat-forbidden here would assert the floor membership this
+		// comment denies, and TestArch_ScopeCoverage_MatchesSecurity derives that set from
+		// CapabilityFloor(), so it would go red.
 		{Key: "ops.read", Category: categorySensitive, Label: "Read operational status", Description: "Read operational status and diagnostics."},
 	}
 }
