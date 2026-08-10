@@ -104,6 +104,8 @@ Tick these in order. Each one is cheap; the failure they prevent is not.
 - [ ] `Idempotency-Key` required if it is a creating POST.
 - [ ] `If-Match` required if it is a transition or a PATCH; `ETag` emitted on the read.
 - [ ] Collection uses the shared cursor envelope.
+- [ ] Collection passes the request principal's class to `Encode`/`Decode` — not folded into
+      `FilterFingerprint`, and row-level scope still applied in the query on every page.
 - [ ] Returns Huma error types; never touches `http.ResponseWriter`.
 
 **6 — Regenerate**
