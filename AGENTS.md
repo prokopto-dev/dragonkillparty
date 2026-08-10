@@ -17,7 +17,7 @@ is a bug worth reporting.
 | unit tests | `make test-unit` | < 5 s |
 | integration tests (real SQLite in `t.TempDir`) | `make test` | ~30 s |
 | ledger + strategy properties (200 checks; 20 000 nightly) | `make test-property` | ~10 s |
-| coverage floor for `internal/ledger` + `internal/strategy` | `make test-coverage-floor` | ~10 s |
+| coverage floor for the ledger, strategy and enum catalogues | `make test-coverage-floor` | ~10 s |
 | importer suite (needs Docker) | `make test-importer` | ~120 s |
 | lint | `make lint` | ~20 s |
 | build + vet + staticcheck + tsc | `make vet` | ~15 s |
@@ -43,9 +43,10 @@ resolves to a real target, not that every target appears here.)
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
-- `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations. The one
-  region you do not edit is the `ledger_batch` enum CHECKs between the `GENERATED` markers: their
-  values are `internal/ledger/kinds` and `make gen` writes them (canonical §5).
+- `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations. The regions
+  you do not edit are the enum CHECKs between the `GENERATED` markers: the `ledger_batch` pair from
+  `internal/ledger/kinds` and `audit_log.actor_kind` from `internal/audit/kinds`, both written by
+  `make gen` (canonical §5).
 - `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach
   upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.

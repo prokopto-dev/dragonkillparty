@@ -1,22 +1,28 @@
 package kinds
 
 import (
-	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/schemaenum"
 )
 
 // Package kinds is the ledger enum catalogue — canonical §5's "one Go catalogue" for
 // ledger_batch.kind and ledger_batch.source.
 //
-// A LEAF PACKAGE WITH NO IMPORTS BUT THE STANDARD LIBRARY, and that is a hard constraint rather
-// than a tidiness preference. scripts/gen-enums.sh is the FIRST step of `make gen` and runs
-// internal/ledger/enumgen, which imports this. When the catalogue lived in internal/ledger, that
-// command's dependency graph reached internal/store/sqlitegen — GENERATED code — so a tree whose
-// sqlc output was stale, absent or momentarily unbuildable could not run `make gen` to repair
-// itself: the first step failed to compile on the very artefacts the third step regenerates.
-// TestGen_EnumGenerator_DependsOnNoGeneratedCode holds this open. Do not import internal/store,
-// internal/ledger or anything generated from here, however convenient it looks.
+// It holds VALUES. The rendering and the marked-region rewrite are internal/schemaenum's, shared
+// with internal/audit/kinds (audit_log.actor_kind) so that the CHECK expression every catalogue
+// emits comes out of one formatter rather than one per table.
+//
+// A LEAF PACKAGE WITH NO IMPORTS BUT THE STANDARD LIBRARY AND internal/schemaenum, which is itself
+// such a leaf. That is a hard constraint rather than a tidiness preference. scripts/gen-enums.sh is
+// the FIRST step of `make gen` and runs internal/ledger/enumgen, which imports this. When the
+// catalogue lived in internal/ledger, that command's dependency graph reached
+// internal/store/sqlitegen — GENERATED code — so a tree whose sqlc output was stale, absent or
+// momentarily unbuildable could not run `make gen` to repair itself: the first step failed to compile
+// on the very artefacts the third step regenerates. TestGen_EnumGenerator_DependsOnNoGeneratedCode
+// holds this open. Do not import internal/store, internal/ledger or anything generated from here,
+// however convenient it looks.
 //
 // WHY THIS FILE EXISTS. Before it, the fourteen kinds and six sources were literals in
 // db/schema.hcl and nowhere else. A kind added in Go but absent from the CHECK is a legal write that
@@ -44,7 +50,10 @@ import (
 // A sentinel rather than a silent no-op, because the no-op is the dangerous answer: a generator that
 // cannot find its target and exits 0 leaves the CHECK frozen at whatever the file last said while
 // every gate downstream reports success.
-var ErrSchemaMarkersMissing = errors.New("db/schema.hcl generated-region markers not found")
+//
+// It IS schemaenum.ErrMarkersMissing rather than a second sentinel wrapping it: one condition, one
+// value, so `errors.Is` gives the same answer whichever name the caller reaches for.
+var ErrSchemaMarkersMissing = schemaenum.ErrMarkersMissing
 
 // The ledger_batch.kind vocabulary, as the Go const block canonical §5 requires.
 //
@@ -160,30 +169,40 @@ func contains(values []string, v string) bool {
 //
 // Exported because the generator (internal/ledger/enumgen) and the drift test are two callers that
 // must agree byte for byte; a second copy of this formatting in either one is exactly the drift this
-// file exists to remove.
-//
-// It does not escape the values, and deliberately so: an enum value is lowercase snake_case by
-// canonical §5, TestBatchKinds_Values_AreCanonicalEnumValues enforces that, and a quote-escaping
-// path here would be dead code that makes a value containing a quote look supported.
+// file exists to remove. The formatting itself is internal/schemaenum's, shared with every other
+// catalogue for the same reason — see that package's comment.
 func CheckExpr(column string, values []string) string {
-	quoted := make([]string, len(values))
-	for i, v := range values {
-		quoted[i] = "'" + v + "'"
-	}
-
-	return fmt.Sprintf("%s IN (%s)", column, strings.Join(quoted, ", "))
+	return schemaenum.CheckExpr(column, values)
 }
 
-// The markers delimiting the generated region of db/schema.hcl. Everything between them is written
-// by `make gen`; everything outside them is hand-authored schema truth.
+// The markers delimiting this catalogue's generated region of db/schema.hcl. Everything between them
+// is written by `make gen`; everything outside them is hand-authored schema truth.
 //
 // HCL line comments, so Atlas parses the file unchanged and the region is invisible to the diff
 // engine — the generated block has to be semantically identical to what it replaces or `make gen`
 // would demand a migration on a change that moved no values.
+//
+// db/schema.hcl carries more than one generated region now (audit_log's actor_kind CHECK is
+// internal/audit/kinds'), and each is found by an exact whole-line match on ITS OWN markers. That is
+// why the marker text names the catalogue: two regions sharing a marker line would each rewrite the
+// other's.
 const (
 	schemaEnumBegin = "  // BEGIN GENERATED — ledger enum CHECKs, from internal/ledger/kinds. Run `make gen`."
 	schemaEnumEnd   = "  // END GENERATED — ledger enum CHECKs."
 )
+
+// schemaRegion is the marked region this catalogue owns.
+//
+// A FUNCTION rather than a package-level var, for the reason BatchKinds is one: a package-level
+// struct is mutable state (.claude/rules/go-idioms.md), and the value is three strings assembled from
+// constants — there is nothing to cache.
+func schemaRegion() schemaenum.Region {
+	return schemaenum.Region{
+		Begin:   schemaEnumBegin,
+		End:     schemaEnumEnd,
+		Subject: "the two ledger_batch enum CHECKs",
+	}
+}
 
 // SchemaEnumBlock renders the generated region of db/schema.hcl, markers included, indented to sit
 // inside `table "ledger_batch"`.
@@ -207,53 +226,17 @@ func SchemaEnumBlock() string {
 	}, "\n")
 }
 
-// RenderSchemaHCL returns src with the generated region replaced by SchemaEnumBlock(), and is what
-// `make gen` writes back over db/schema.hcl.
+// RenderSchemaHCL returns src with this catalogue's generated region replaced by SchemaEnumBlock(),
+// and is one of the two rewrites `make gen` composes before writing db/schema.hcl back.
 //
 // It rewrites a MARKED REGION rather than pattern-matching the two `expr =` lines, because a regex
 // over a schema file cannot tell the CHECK it means from the next one somebody names similarly, and
 // because the markers are how a reader of schema.hcl learns those lines are generated at all.
 //
-// Idempotent: rendering an already-current file returns it unchanged, which is what lets the drift
-// test be "generating again changes nothing" and lets `make gen` be safe to run at any time.
+// Idempotent, and it touches ONLY this catalogue's region: rendering an already-current file returns
+// it unchanged, which is what lets the drift test be "generating again changes nothing", lets
+// `make gen` be safe to run at any time, and lets internal/audit/kinds' render compose with this one
+// in either order.
 func RenderSchemaHCL(src string) (string, error) {
-	lines := strings.Split(src, "\n")
-
-	begin, end := -1, -1
-
-	for i, line := range lines {
-		switch line {
-		case schemaEnumBegin:
-			if begin >= 0 {
-				return "", fmt.Errorf("%w: begin marker appears twice, at lines %d and %d",
-					ErrSchemaMarkersMissing, begin+1, i+1)
-			}
-
-			begin = i
-		case schemaEnumEnd:
-			if end >= 0 {
-				return "", fmt.Errorf("%w: end marker appears twice, at lines %d and %d",
-					ErrSchemaMarkersMissing, end+1, i+1)
-			}
-
-			end = i
-		}
-	}
-
-	if begin < 0 || end < 0 {
-		return "", fmt.Errorf("%w: expected both\n  %s\n  %s\nrestore them around the two ledger_batch enum CHECKs",
-			ErrSchemaMarkersMissing, schemaEnumBegin, schemaEnumEnd)
-	}
-
-	if end < begin {
-		return "", fmt.Errorf("%w: end marker at line %d precedes begin marker at line %d",
-			ErrSchemaMarkersMissing, end+1, begin+1)
-	}
-
-	out := make([]string, 0, len(lines))
-	out = append(out, lines[:begin]...)
-	out = append(out, SchemaEnumBlock())
-	out = append(out, lines[end+1:]...)
-
-	return strings.Join(out, "\n"), nil
+	return schemaRegion().Replace(src, SchemaEnumBlock())
 }
