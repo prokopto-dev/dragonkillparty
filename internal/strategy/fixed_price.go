@@ -842,6 +842,12 @@ func (s FixedPrice) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) 
 	// rules in force today. Its invariant set is replaced rather than inherited: the original's set
 	// constrained a spend, and this is not one. See the doc comment above for why NonNegative in
 	// particular must not be here.
+	//
+	// BatchProposal.Negated now drops NonNegative from the inherited set by default, so this
+	// assignment is no longer what keeps the floor off a fixed_price reversal — the default is. It
+	// stays because this strategy declares what constrains it rather than inheriting whatever an
+	// earlier version of itself declared, and because a strategy's Invariants are read in review as
+	// the statement of its rules.
 	reversal.Invariants = []Invariant{
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 	}

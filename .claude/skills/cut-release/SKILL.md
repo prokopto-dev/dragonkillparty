@@ -2,7 +2,7 @@
 name: cut-release
 description: Prepare and verify a Dragon Kill Party release. Use when the release-please Release PR is ready to review, when preparing an RC, or when verifying that a published release's images, binaries, attestations and reference database all landed. Every release is an upgrade a volunteer officer must perform.
 argument-hint: "[stable | rc | verify <version>]"
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash(gh *), Bash(git log *), Bash(git diff *), Bash(git tag -l *), Bash(oasdiff *), Bash(docker pull *), Bash(cosign *), Bash(make check)
+allowed-tools: Read, Grep, Glob, Edit, Write, Bash(gh *), Bash(git log *), Bash(git diff *), Bash(git tag -l *), Bash(oasdiff *), Bash(docker pull *), Bash(cosign *), Bash(make check), Bash(make shipped-lock-seal), Bash(make release-shipped-lock)
 ---
 
 # Cut a release
@@ -47,7 +47,34 @@ from any earlier 1.x).
 If release-please's computed bump disagrees with this table, the PR *title* of an earlier merge was
 wrong. Fix the changelog entry and say so; do not silently override the bump.
 
-### 3. Assemble the Upgrade Notes block
+### 3. Seal the shipped-migration manifest
+
+Every migration in the tree ships with this tag, so every one of them must be recorded as shipped
+**before** the tag exists:
+
+```bash
+make shipped-lock-seal      # appends a `filename sha256` row for each migration not yet listed
+make release-shipped-lock   # the assertion release.yml's `prepare` job will make
+```
+
+Commit the `db/migrations-sqlite/SHIPPED.lock` diff **in the Release PR**. It is sealed here rather
+than by CI because nothing pushes to `main`, and a record written by the job that consumes it is not
+a record.
+
+From that commit on, those files are frozen: `MIG003` in `make lint-repo` fails on every PR that
+edits or deletes one, and on any PR that rewrites a row rather than appending — it compares the
+manifest against its merge-base version. A migration that ships without a row is not "unrecorded" —
+it is a file everyone's tooling will happily let the next contributor edit, on databases that have
+already run it.
+
+This is the one PR where `SHIPPED.lock` legitimately changes, so it is the one PR where the diff on
+it deserves reading line by line. Appended rows only; anything else is a rewrite the gate will
+reject on every subsequent PR.
+
+If `make release-shipped-lock` fails at tag time, the release stops in `prepare`, before any image,
+binary or moving tag exists. That is the gate working; seal the manifest and re-tag.
+
+### 4. Assemble the Upgrade Notes block
 
 The GitHub Release body is **assembled, not copied**. `scripts/upgrade-notes.sh` produces it; verify
 each section is present and true:
@@ -64,7 +91,7 @@ each section is present and true:
 A table-rewriting migration with no duration estimate is the single most common cause of "the upgrade
 hung" support threads. Do not ship one unlabelled.
 
-### 4. Verify the API delta by hand
+### 5. Verify the API delta by hand
 
 ```bash
 oasdiff changelog <(git show "v${PREV}:openapi/openapi.json") openapi/openapi.json
@@ -73,13 +100,13 @@ oasdiff changelog <(git show "v${PREV}:openapi/openapi.json") openapi/openapi.js
 Read it as a bot author would. `oasdiff` calls a rename-by-addition "additive"; a human does not.
 Anything that semantically renames a concept belongs in **Breaking changes**, whatever the tool says.
 
-### 5. Hand off the merge
+### 6. Hand off the merge
 
 Say explicitly that a human merges the Release PR. Direct pushes to `main` are forbidden for
 everyone, tags are created by the release App (a tag made with the default `GITHUB_TOKEN` does **not**
 trigger workflows, which is why the App exists), and `git push`/`git tag` are outside your remit.
 
-### 6. For an RC, additionally
+### 7. For an RC, additionally
 
 | Requirement | Value |
 |---|---|
@@ -93,7 +120,7 @@ trigger workflows, which is why the App exists), and `git push`/`git tag` are ou
 shape on, and the binary refuses to downgrade, so an edge tracker can be stranded. Say that in three
 places, every time.
 
-### 7. Verify the published release
+### 8. Verify the published release
 
 After `release.yml` runs, check all of these landed:
 
@@ -107,7 +134,7 @@ After `release.yml` runs, check all of these landed:
       construction generated from this server's spec.
 - [ ] **`ghcr.io/dragonkillparty/dkp-refdb:<version>` exists.**
 
-### 8. Confirm the smoke gate held
+### 9. Confirm the smoke gate held
 
 Moving tags advance **only after** smoke passes. `release.yml` publishes the immutable `:1.5.0`, then
 smoke pulls it on amd64 **and** arm64 runners and runs first boot + `dkp doctor` + `/readyz` + an
@@ -117,7 +144,7 @@ If smoke failed: the immutable tag stays for forensics, the moving tags must **n
 GitHub Release stays a draft, and an issue is filed. Verify that is what happened rather than
 assuming.
 
-### 9. Check the refdb ladder has no hole
+### 10. Check the refdb ladder has no hole
 
 A release that fails after the image step but before the `refdb` job leaves a gap nobody notices
 until an upgrade breaks months later.
@@ -125,7 +152,7 @@ until an upgrade breaks months later.
 `nightly-verify.yml`'s `upgrade-ladder` enumerates GitHub Releases and **fails if any released minor
 lacks a refdb artifact** — confirm it is green, do not just confirm the artifact you expected exists.
 
-### 10. Post-release
+### 11. Post-release
 
 - [ ] `demo.dragonkillparty.org` picks up the new build on its nightly reset.
 - [ ] The in-app update check serves the new version on the `stable` channel (and only there).
