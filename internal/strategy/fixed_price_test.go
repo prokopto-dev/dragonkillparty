@@ -988,8 +988,16 @@ func TestFixedPrice_Config_RejectsWhatTheSchemaWouldHaveRejected(t *testing.T) {
 	}
 }
 
-// everyPlanner returns one minimal, otherwise-legal call per planner. It exists so that a property
-// true of all five — config validation, façade-failure propagation — is asserted over all five.
+// everyPlanner returns one minimal, otherwise-legal call per planner that reads the pool's config or
+// the façade. It exists so that a property true of all of them — config validation, façade-failure
+// propagation — is asserted over all of them rather than over the one somebody remembered.
+//
+// PlanReversal is deliberately ABSENT. It reads neither the current config nor any façade value it
+// could fail on, and that is a property rather than an oversight: a batch must stay reversible
+// whatever the pool looks like today, because an append-only ledger has no other repair primitive.
+// Including it here would assert the opposite, which is what this table used to do — see
+// TestFixedPrice_PlanReversal_IgnoresTodaysPoolConfig, which asserts the correct behaviour and uses
+// these same configs as its control.
 func everyPlanner() map[string]func(ctx strategy.Ctx) error {
 	s := strategy.FixedPrice{}
 
@@ -1024,18 +1032,69 @@ func everyPlanner() map[string]func(ctx strategy.Ctx) error {
 
 			return err
 		},
-		"reversal": func(ctx strategy.Ctx) error {
-			_, err := s.PlanReversal(ctx, strategy.LedgerBatch{
-				ID:         acct(70),
-				StrategyID: "fixed_price",
-				Entries: []strategy.EntryProposal{
-					{AccountID: acct(0), BalanceKind: "dkp", AmountCp: 10},
-					{AccountID: acct(1), BalanceKind: "dkp", AmountCp: -10},
-				},
-			})
+	}
+}
 
-			return err
+// reversalOfATinyBatch plans the reversal of a minimal committed batch. It is NOT part of
+// everyPlanner: a reversal deliberately does not read the pool's current config, so it is the one
+// planner that must SUCCEED where the others fail. See
+// TestFixedPrice_PlanReversal_IgnoresTodaysPoolConfig.
+func reversalOfATinyBatch(ctx strategy.Ctx) (strategy.BatchProposal, error) {
+	return strategy.FixedPrice{}.PlanReversal(ctx, strategy.LedgerBatch{
+		ID:         acct(70),
+		StrategyID: "fixed_price",
+		Entries: []strategy.EntryProposal{
+			{AccountID: acct(0), BalanceKind: "dkp", AmountCp: 10},
+			{AccountID: acct(1), BalanceKind: "dkp", AmountCp: -10},
 		},
+	})
+}
+
+// TestFixedPrice_PlanReversal_IgnoresTodaysPoolConfig is the regression test for a defect found in
+// review of this PR, and it is the direct inverse of the assertion it replaces.
+//
+// PlanReversal used to parse Ctx.ConfigJSON() "to validate", which made reversing a batch depend on
+// a document with nothing to do with it. The façade documents ConfigJSON as the CURRENT config, so a
+// guild that switched strategies — or that added a knob a later version introduced — would have a
+// pool config fixed_price cannot parse, and every fixed_price batch in that pool's history would
+// become unreversible the moment the config changed. History is immutable and the only repair
+// primitive there is must not be contingent on the present.
+//
+// The configs below are the two real shapes of that: another strategy's knobs, and a knob from a
+// future version of this one. Both must reverse cleanly, and the reversal must still carry the
+// ORIGINAL's snapshot rather than today's.
+func TestFixedPrice_PlanReversal_IgnoresTodaysPoolConfig(t *testing.T) {
+	t.Parallel()
+
+	for _, config := range []string{
+		`{"ep_per_tick": 100, "gp_decay_bp": 500}`,
+		`{"decay_bp": 1000, "a_knob_from_a_later_version": true}`,
+		`{`,
+		`null`,
+		`{"decay_bp": null}`,
+	} {
+		t.Run(config, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := newCtx(t, 2, 0, config)
+
+			// The control: every other planner refuses this config, so the reversal's success is a
+			// property of the reversal and not of the config being fine after all.
+			_, err := strategy.FixedPrice{}.PlanAttendance(ctx, strategy.AttendanceEvent{
+				Attendees: shares(2),
+			})
+			require.ErrorIs(t, err, strategy.ErrInvalidConfig,
+				"the config must be one this strategy genuinely cannot parse")
+
+			reversal, err := reversalOfATinyBatch(ctx)
+			require.NoError(t, err,
+				"a batch must stay reversible whatever the pool's config says today; an append-only "+
+					"ledger has no other repair primitive")
+			require.Equal(t, strategy.KindReversal, reversal.Kind)
+			require.Empty(t, reversal.ConfigSnapshotJSON,
+				"the reversal carries the ORIGINAL batch's snapshot — here empty, since the fixture "+
+					"batch had none — and never today's config")
+		})
 	}
 }
 
@@ -1205,10 +1264,6 @@ func TestFixedPrice_Planners_PropagateFacadeFailures(t *testing.T) {
 				t.Parallel()
 
 				for name, plan := range everyPlanner() {
-					if name == "reversal" {
-						continue // a reversal resolves no system account: it negates what it is given
-					}
-
 					t.Run(name, func(t *testing.T) {
 						t.Parallel()
 
@@ -1301,6 +1356,83 @@ func TestFixedPrice_PlanAdjustment_UnnegatableAmount_IsRefused(t *testing.T) {
 	})
 	require.ErrorIs(t, err, strategy.ErrInvalidEvent)
 	require.ErrorContains(t, err, "sum past int64")
+}
+
+// TestFixedPrice_Planners_RejectARepeatedAccount is the regression test for a defect found in review
+// of this PR: a list naming the same account twice was charged, or credited, twice.
+//
+// The decay case is the damaging one. Each occurrence reads the SAME as-of balance and posts a full
+// debit against it, so `[A, A]` takes two periods' decay in one run — and it commits, because both
+// declared invariants still hold: the batch sums to zero and the account stays above its floor. The
+// arithmetic is self-consistent and simply wrong, which is the only kind of wrong that survives an
+// invariant engine.
+//
+// All three list-taking planners are covered, under one rule: an account may appear at most once in
+// an event. A repeat is indistinguishable from a weight — `[{A,1},{A,1}]` and `[{A,2}]` are the same
+// arithmetic — so it is never somebody asking for a bigger share, it is a list that was assembled
+// twice, from two sources or from a join that fanned out.
+func TestFixedPrice_Planners_RejectARepeatedAccount(t *testing.T) {
+	t.Parallel()
+
+	s := strategy.FixedPrice{}
+
+	t.Run("decay", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := newCtx(t, 1, 1_000, `{"decay_bp": 1000}`)
+
+		_, err := s.PlanDecay(ctx, strategy.DecayRun{
+			PeriodKey: "2024-06",
+			AsOfSeq:   7,
+			Accounts: []strategy.AccountRef{
+				{ID: acct(0), Kind: "person"},
+				{ID: acct(0), Kind: "person"},
+			},
+		})
+		require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+		require.ErrorContains(t, err, acct(0).String())
+
+		// The control: the same run with the account named once is legal, so the rejection is about
+		// the repeat and not about the run.
+		single, err := s.PlanDecay(ctx, strategy.DecayRun{
+			PeriodKey: "2024-06",
+			AsOfSeq:   7,
+			Accounts:  []strategy.AccountRef{{ID: acct(0), Kind: "person"}},
+		})
+		require.NoError(t, err)
+		require.Equal(t, core.Centipoints(-100), single.Entries[0].AmountCp,
+			"one occurrence, one period's decay: 10% of 1000")
+	})
+
+	t.Run("attendance", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := s.PlanAttendance(newCtx(t, 2, 0, ""), strategy.AttendanceEvent{
+			Attendees: []strategy.Share{
+				{AccountID: acct(0), Weight: 1},
+				{AccountID: acct(1), Weight: 1},
+				{AccountID: acct(0), Weight: 1},
+			},
+		})
+		require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+		require.ErrorContains(t, err, acct(0).String())
+	})
+
+	t.Run("award beneficiaries", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := s.PlanAward(newCtx(t, 2, 5_000, `{"default_price_cp": 300, "proceeds": "attendees"}`),
+			strategy.AwardEvent{
+				Buyer: strategy.AccountRef{ID: acct(0), Kind: "person"},
+				Item:  strategy.ItemRef{Name: "Cloak of Flames"},
+				Beneficiaries: []strategy.Share{
+					{AccountID: acct(1), Weight: 1},
+					{AccountID: acct(1), Weight: 1},
+				},
+			})
+		require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+		require.ErrorContains(t, err, acct(1).String())
+	})
 }
 
 // TestFixedPrice_PlanDecay_TotalOverflow_IsRefused covers the decay accumulator running out of int64.

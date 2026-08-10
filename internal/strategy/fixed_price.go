@@ -382,9 +382,14 @@ func (s FixedPrice) PlanAttendance(ctx Ctx, ev AttendanceEvent) (BatchProposal, 
 
 	credits := make([]EntryProposal, 0, len(ev.Attendees)+1)
 
+	attendees := sortedShares(ev.Attendees)
+	if err := checkDistinctShares(attendees); err != nil {
+		return BatchProposal{}, err
+	}
+
 	var total core.Centipoints
 
-	for _, a := range sortedShares(ev.Attendees) {
+	for _, a := range attendees {
 		if err := checkShare(a); err != nil {
 			return BatchProposal{}, err
 		}
@@ -541,6 +546,10 @@ func (s FixedPrice) proceeds(
 	}
 
 	shares := sortedShares(ev.Beneficiaries)
+	if err := checkDistinctShares(shares); err != nil {
+		return nil, false, err
+	}
+
 	for _, b := range shares {
 		if err := checkShare(b); err != nil {
 			return nil, false, err
@@ -682,9 +691,14 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 
 	debits := make([]EntryProposal, 0, len(accounts)+1)
 
+	targets := sortedAccounts(accounts)
+	if err := checkDistinctAccounts(targets); err != nil {
+		return BatchProposal{}, err
+	}
+
 	var total core.Centipoints
 
-	for _, a := range sortedAccounts(accounts) {
+	for _, a := range targets {
 		// System accounts are not decayed. They are structurally negative by design — the bank funds
 		// every tick — and decaying a negative balance by a positive rate would GROW the debt.
 		if a.IsSystem() {
@@ -799,13 +813,18 @@ func decayAmount(balance core.Centipoints, bp int64) core.Centipoints {
 //
 // SumZero still holds and is still declared: a reversal is the exact negation of a committed batch,
 // so it can no more mint a point than the original could.
+//
+// IT ALSO DOES NOT READ THE POOL'S CURRENT CONFIG, and that is the same argument one step further
+// out. Found in review of this PR: this used to call s.config(ctx) to validate, which made reversing
+// a batch depend on a document that has nothing to do with it. A guild that switched strategies —
+// or that added a knob this version does not know — has a pool config fixed_price cannot parse, and
+// every fixed_price batch in the pool's history would become unreversible the moment the config
+// changed. History is immutable and the repair primitive must not be contingent on the present.
+//
+// Nothing here needs the config anyway: the floor is gone for the reason above, and the batch
+// carries its own ConfigSnapshotJSON, which LedgerBatch.Reversal copies forward so the reversal
+// records the rules in force for the thing being undone.
 func (s FixedPrice) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) {
-	// The config is parsed and validated but its floor is deliberately unused; a pool whose config
-	// cannot be parsed is a pool whose planner must stop, reversal or not.
-	if _, err := s.config(ctx); err != nil {
-		return BatchProposal{}, err
-	}
-
 	if b.StrategyID != "" && b.StrategyID != fixedPriceID {
 		return BatchProposal{}, fmt.Errorf(
 			"%s cannot reverse batch %s, which was planned by %s; a reversal must be planned by the "+
@@ -964,6 +983,46 @@ func (FixedPrice) effectiveAt(ctx Ctx, supplied core.Micros) core.Micros {
 	}
 
 	return core.FromTime(ctx.Clock().Now())
+}
+
+// checkDistinctShares rejects a list that names the same account twice.
+//
+// A REPEAT IS INDISTINGUISHABLE FROM A WEIGHT, and that is the whole reason this is an error rather
+// than a silent fold. `[{A,1},{A,1}]` and `[{A,2}]` mean the same thing to the arithmetic, so a
+// duplicate is never a caller expressing a bigger share — it is a caller who assembled the list
+// twice, from two sources, or from a join that fanned out. Folding them silently doubles somebody's
+// credit; rejecting names the account and costs one comparison.
+//
+// It relies on the list being SORTED, so only adjacent pairs need comparing. Every caller sorts
+// first because the entry order is hashed into the batch.
+func checkDistinctShares(sorted []Share) error {
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].AccountID == sorted[i-1].AccountID {
+			return fmt.Errorf(
+				"%s: account %s appears twice in the same event; a repeated account is a list that "+
+					"was built twice, not a bigger share — say so with the weight: %w",
+				fixedPriceID, sorted[i].AccountID, ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
+
+// checkDistinctAccounts is checkDistinctShares for a plain account list. A decay run that names an
+// account twice would read the same as-of balance twice and post two full debits — charging the
+// period's decay twice while SumZero and NonNegative both still pass, because the arithmetic is
+// self-consistent and simply wrong.
+func checkDistinctAccounts(sorted []AccountRef) error {
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i].ID == sorted[i-1].ID {
+			return fmt.Errorf(
+				"%s: account %s appears twice in the decay run; each balance decays once per period, "+
+					"and a repeat would post the period's debit twice: %w",
+				fixedPriceID, sorted[i].ID, ErrInvalidEvent)
+		}
+	}
+
+	return nil
 }
 
 // checkShare rejects the two share shapes no planner has a defensible answer for.

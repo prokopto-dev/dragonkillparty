@@ -1,6 +1,8 @@
 package strategy_test
 
 import (
+	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -69,6 +71,25 @@ var (
 func bannedDirect() []string {
 	return []string{"time", randImportPath, randImportPath + "/v2"}
 }
+
+// bannedClockType is the real clock's type name, which no file under internal/strategy may name.
+//
+// AN IMPORT BAN IS NOT ENOUGH, and this is the hole it left — found in review of this PR. A strategy
+// legitimately imports internal/clock, because Ctx.Clock() returns a clock.Clock. Nothing stopped a
+// file in the package then writing
+//
+//	core.FromTime(clock.System{}.Now())
+//
+// which reads the REAL wall clock. It compiles, and it walked past every guard: the direct-import
+// test sees only `internal/clock`, which is allowed; repo gate CLOCK001 greps for `time.Now(`, which
+// this is not; and forbidigo's `^time\.Now$` resolves to a method on clock.System, not to time.Now.
+// Law 3 was enforced by convention at that point rather than mechanically, which is exactly the claim
+// this file exists to make untrue.
+//
+// clock.System is the ONLY real-clock path out of internal/clock — Clock is an interface, Fake is a
+// test double, and System.Now is the one function in the repository that calls time.Now. So banning
+// the identifier here closes it completely rather than narrowing it.
+const bannedClockType = "System"
 
 // purityAudit walks a module's first-party import graph.
 //
@@ -314,6 +335,100 @@ func TestArch_Strategy_Files_DoNotImportTimeOrMathRand(t *testing.T) {
 	}
 }
 
+// realClockUses returns every `<clockpkg>.System` reference in the .go files of dir, as
+// "file:line" strings.
+//
+// It parses the whole file rather than the imports, and it resolves the clock package's LOCAL NAME
+// from the import spec rather than assuming it is `clock` — an aliased import (`import c
+// ".../internal/clock"`) is the first thing anybody reaches for when a grep gate starts complaining,
+// and a check that could be defeated by an alias is a check that teaches people to alias.
+func (a purityAudit) realClockUses(tb testing.TB, dir string) []string {
+	tb.Helper()
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(tb, err, "read package directory %s", dir)
+
+	clockPath := a.module + "/internal/clock"
+
+	var hits []string
+
+	fset := token.NewFileSet()
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+
+		path := filepath.Join(dir, e.Name())
+
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		require.NoError(tb, err, "parse %s", path)
+
+		local := ""
+
+		for _, spec := range file.Imports {
+			imported, err := strconv.Unquote(spec.Path.Value)
+			require.NoError(tb, err)
+
+			if imported != clockPath {
+				continue
+			}
+
+			local = "clock"
+			if spec.Name != nil {
+				local = spec.Name.Name
+			}
+		}
+
+		if local == "" || local == "_" {
+			continue // the file does not import the clock package under a usable name
+		}
+
+		ast.Inspect(file, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != bannedClockType {
+				return true
+			}
+
+			if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == local {
+				hits = append(hits, fmt.Sprintf("%s:%d", path, fset.Position(sel.Pos()).Line))
+			}
+
+			return true
+		})
+	}
+
+	sort.Strings(hits)
+
+	return hits
+}
+
+// TestArch_Strategy_DoesNotConstructTheRealClock closes the gap an import ban cannot: a strategy may
+// import internal/clock, so it could construct clock.System and read the wall clock without ever
+// naming `time`.
+//
+// See bannedClockType for why this is not covered by the import test, by CLOCK001 or by forbidigo.
+// The injected clock arrives through Ctx.Clock() as an INTERFACE VALUE, and a strategy that made its
+// own could not be replayed — the batch's effective time would depend on when the replay ran rather
+// than on when the event happened, which is the whole reason the clock is injected.
+func TestArch_Strategy_DoesNotConstructTheRealClock(t *testing.T) {
+	t.Parallel()
+
+	audit := newAudit(t, repoRoot(t))
+
+	for _, pkg := range audit.packagesUnder(t, filepath.Join("internal", "strategy")) {
+		dir, ok := audit.packageDir(pkg)
+		require.True(t, ok, "package %s did not resolve to a directory", pkg)
+
+		require.Empty(t, audit.realClockUses(t, dir),
+			"law 3: %s constructs the real clock.\n"+
+				"Ctx.Clock() hands the planner an injected clock.Clock; building the system "+
+				"implementation reads the wall clock, and a plan that depends on when it ran cannot "+
+				"be replayed. This is not caught by the import ban (internal/clock is allowed) nor by "+
+				"CLOCK001 (it greps for time.Now).", pkg)
+	}
+}
+
 // TestArch_PurityAudit_FiresOnATaintedTree is the negative fixture: proof that the two assertions
 // above would actually go red.
 //
@@ -346,6 +461,12 @@ func TestArch_PurityAudit_FiresOnATaintedTree(t *testing.T) {
 	writeGo(t, tree, filepath.Join("internal", "strategy", "wallclock.go"),
 		"package strategy\n\nimport (\n\t_ \"time\"\n\t_ \""+randImportPath+"\"\n)\n")
 
+	// The real-clock path, under an ALIASED import — the shape that would defeat a grep and that a
+	// resolved-local-name check must still catch.
+	writeGo(t, tree, filepath.Join("internal", "clock", "clock.go"), "package clock\n\ntype System struct{}\n")
+	writeGo(t, tree, filepath.Join("internal", "strategy", "realclock.go"),
+		"package strategy\n\nimport c \""+module+"/internal/clock\"\n\nvar _ = c."+bannedClockType+"{}\n")
+
 	audit := newAudit(t, tree)
 	require.Equal(t, module, audit.module)
 
@@ -367,11 +488,21 @@ func TestArch_PurityAudit_FiresOnATaintedTree(t *testing.T) {
 				"TestArch_Strategy_Files_DoNotImportTimeOrMathRand is checking nothing", banned)
 	}
 
+	// And the real-clock check fires, on the aliased import.
+	require.Len(t, audit.realClockUses(t, dir), 1,
+		"the real-clock check must see the aliased construction, or an `import c \".../clock\"` "+
+			"walks straight past TestArch_Strategy_DoesNotConstructTheRealClock")
+
 	// The clean half of the fixture: a package that does NOT reach the banned one must report no
-	// chain. Without this the test would pass against an auditor that reported a violation for
-	// everything.
+	// chain, and a package that does not import the clock at all must report no clock use. Without
+	// these the test would pass against an auditor that reported a violation for everything.
 	require.Nil(t, audit.chainTo(t, storePkg, module+"/internal/ledger"),
 		"%s imports nothing in the fixture, so there is no chain to find", storePkg)
+
+	ledgerDir, ok := audit.packageDir(module + "/internal/ledger")
+	require.True(t, ok)
+	require.Empty(t, audit.realClockUses(t, ledgerDir),
+		"the fixture's ledger package does not import the clock, so there is nothing to report")
 }
 
 // writeGo writes one file of the fabricated tree, creating its parent directories.
