@@ -97,7 +97,7 @@ endef
 
 .PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
         lint vet migration seed docker check \
-        build clean fmt verify-generated verify-commands \
+        build clean fmt verify-generated verify-commands labels-sync \
         lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
         install-atlas generated-digest \
         docs-build docs-links verify-spec \
@@ -316,6 +316,16 @@ build:
 ## verify-commands: assert AGENTS.md's command table matches this Makefile
 verify-commands:
 	@env -u DKP_REPO_ROOT bash scripts/verify-commands.sh
+
+## labels-sync: plan the .github/labels.yml -> repo labels sync (ARGS=--apply to write)
+# Deliberately NOT a row in AGENTS.md's canonical command table, and NOT part of `check`: it is a
+# maintainer operation against repository settings that needs an authenticated `gh`, run on the day
+# a label is added and never again. The per-PR half — that no issue form declares a label the
+# manifest does not carry — is test/repo/labels_test.go, which needs no network.
+#
+# Bare, it prints the plan and writes nothing. `make labels-sync ARGS=--apply` writes.
+labels-sync:
+	@bash scripts/sync-labels.sh $(ARGS)
 
 ## verify-generated: fail if generated files drift from their sources
 # Content in, content out: hash the generated trees, regenerate, hash again, compare.
