@@ -49,7 +49,95 @@ const (
 	// is the negative control: without it, "the triggers still fire after an upgrade" is an
 	// assertion nobody has ever seen fail.
 	ledgerRebuildNoTriggersFixture = "../fixtures/migrations/rebuild/000002_ledger_entry_rebuild_no_triggers.sql"
+	// batchRebuildFixture is a correct rebuild of ledger_batch — the PARENT table — done the only
+	// way that works on a populated database: outside goose's transaction, so that the
+	// `PRAGMA foreign_keys = off` Atlas emits is not silently ignored.
+	batchRebuildFixture = "../fixtures/migrations/rebuild/000002_ledger_batch_rebuild.sql"
+	// batchRebuildInTransactionFixture is that same rebuild exactly as Atlas generates it, inside
+	// goose's transaction. It FAILS on any populated database and passes on an empty one, which is
+	// the "works on fresh install, breaks on upgrade" class .claude/rules/migrations.md calls the
+	// most damaging bug this product can ship.
+	batchRebuildInTransactionFixture = "../fixtures/migrations/rebuild/000002_ledger_batch_rebuild_in_transaction.sql"
+	// dropLedgerEntryFixture removes a ledger table and does not put it back. It is the way THROUGH
+	// a trigger check that only counts triggers: a trigger on a table that does not exist is
+	// vacuously present, so this destroys every entry and reports nothing missing.
+	dropLedgerEntryFixture = "../fixtures/migrations/drop/000002_drop_ledger_entry.sql"
 )
+
+// gooseUpStatements returns the executable statements in a migration's Up block.
+//
+// It exists so a test can apply a fixture DIRECTLY to a database, bypassing internal/migrate
+// entirely. That is the only way left to demonstrate what a forgetful rebuild does to SQLITE, as
+// opposed to what the boot path now does about it: once the runner refuses such a migration, running
+// the fixture through the runner can no longer show the state it produces.
+//
+// Comment lines are dropped, including goose's annotations — the caller is not goose and has no
+// transaction to opt out of. BEGIN … END blocks are kept whole, because a trigger body contains
+// semicolons and splitting on them would cut one in half and fail in a way that looked like SQLite's
+// fault.
+func gooseUpStatements(tb testing.TB, path string) []string {
+	tb.Helper()
+
+	body, err := os.ReadFile(path)
+	require.NoError(tb, err, "read migration fixture %s", path)
+
+	var (
+		sql   []string
+		inUp  bool
+		lines = strings.Split(string(body), "\n")
+	)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		switch {
+		case strings.HasPrefix(trimmed, "-- +goose Up"):
+			inUp = true
+
+			continue
+		case strings.HasPrefix(trimmed, "-- +goose Down"):
+			inUp = false
+
+			continue
+		case !inUp, trimmed == "", strings.HasPrefix(trimmed, "--"):
+			continue
+		}
+
+		sql = append(sql, trimmed)
+	}
+
+	require.NotEmpty(tb, sql, "%s has no statements in its Up block", path)
+
+	var (
+		out     []string
+		current strings.Builder
+	)
+
+	for _, line := range sql {
+		if current.Len() > 0 {
+			current.WriteString(" ")
+		}
+
+		current.WriteString(line)
+
+		if !strings.HasSuffix(line, ";") {
+			continue
+		}
+
+		// A statement that opened a BEGIN block is finished by END;, not by the first semicolon.
+		stmt := current.String()
+		if strings.Contains(strings.ToUpper(stmt), " BEGIN ") && !strings.HasSuffix(strings.ToUpper(stmt), "END;") {
+			continue
+		}
+
+		out = append(out, strings.TrimSuffix(stmt, ";"))
+		current.Reset()
+	}
+
+	require.Zero(tb, current.Len(), "%s ends mid-statement: %q", path, current.String())
+
+	return out
+}
 
 // snapshotNames lists the snapshot files in dir, sorted. A missing directory is an empty list, not
 // an error: "no snapshots were taken" is a normal and frequently asserted outcome.
@@ -271,6 +359,27 @@ func withRawFK(tb testing.TB, path string, fn func(handle *sql.DB)) {
 
 // fkDSN is the one place the foreign-keys DSN is spelled.
 func fkDSN(path string) string { return "file:" + path + "?_pragma=foreign_keys(1)" }
+
+// applyStatements executes statements against ONE connection, in order.
+//
+// One connection, not the pool, and that is the whole reason this helper exists rather than a loop
+// over handle.ExecContext. A 12-step rebuild begins with `PRAGMA foreign_keys = off`, and a pragma
+// is CONNECTION state: run through a pool, the pragma can land on one connection and the DROP it
+// was meant to protect on another. The result is a test that passes or fails depending on which
+// connection database/sql happened to hand out, which is the worst kind of migration test.
+func applyStatements(tb testing.TB, handle *sql.DB, statements []string) {
+	tb.Helper()
+
+	conn, err := handle.Conn(context.Background())
+	require.NoError(tb, err, "take a single connection")
+
+	defer func() { require.NoError(tb, conn.Close()) }()
+
+	for _, stmt := range statements {
+		_, execErr := conn.ExecContext(context.Background(), stmt)
+		require.NoError(tb, execErr, "apply statement: %s", stmt)
+	}
+}
 
 // requireForeignKeysOn verifies the pragma rather than assuming it: a typo in the DSN is accepted
 // silently by the driver and leaves the constraints off, which is the one failure these helpers
