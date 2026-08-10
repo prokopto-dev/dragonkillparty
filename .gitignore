@@ -15,6 +15,13 @@ coverage.html
 node_modules/
 .pnpm-store/
 
+# Playwright output. test-results/ holds traces and screenshots (CI uploads it on failure) plus the
+# JSON report scripts/test-e2e.sh reads back to prove the run was not vacuous; .e2e-data/ is the
+# throwaway SQLite directory the harness boots bin/dkp against.
+/web/test-results/
+/web/playwright-report/
+/web/.e2e-data/
+
 # The go:embed target for internal/ui. `make build` copies web/dist here; that real, hashed output
 # is build output and must not be committed. Two committed placeholders are the exception: they are
 # the compile-time fallback that keeps internal/ui buildable and TestEmbed_* runnable with no JS
