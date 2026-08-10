@@ -43,6 +43,14 @@ echo "release-smoke: /healthz ok"
 # /readyz and version, from inside the container.
 docker exec "$name" /usr/local/bin/dkp version || { echo "release-smoke: dkp version failed" >&2; exit 1; }
 
+# The published digest must serve the BUILT SPA, not internal/ui's committed placeholder. "It boots"
+# was the whole of this gate until issue #55, and a placeholder image boots flawlessly — it just
+# serves "web UI not yet built into this binary" to every officer who opens it. Checked here, on the
+# digest, before any moving tag is allowed to point at it.
+port="$(docker port "$name" 8080/tcp | head -1 | sed 's/.*://')"
+[ -n "$port" ] || { echo "release-smoke: could not determine the published port" >&2; exit 1; }
+bash "$(dirname "$0")/smoke-spa.sh" "http://127.0.0.1:${port}"
+
 # --- 2. Verify the supply-chain attestations, with the README's exact commands ----------------
 # A wrong identity regexp in the README is a support burden; running the published command here is
 # what keeps the README honest. ORG is derived from IMAGE (ghcr.io/<org>/dkp).

@@ -97,7 +97,7 @@ endef
 
 .PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
         lint vet migration seed docker check \
-        build clean fmt verify-generated verify-commands labels-sync \
+        build clean fmt web-deps verify-generated verify-commands labels-sync \
         lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
         install-atlas generated-digest \
         docs-build docs-links verify-spec \
@@ -164,11 +164,33 @@ setup:
 	@printf '  the goose CLI is deliberately absent: Atlas authors the migrations and the goose\n'
 	@printf '  LIBRARY applies them from inside the binary, so nothing ever invokes `goose` on PATH.\n'
 
+# web-deps: install the SPA's dependencies. ALWAYS — never guarded on a directory.
+#
+# This used to be `[ -d web/node_modules ] || pnpm install`, in `dev` and in `vet`, and a directory
+# that EXISTS was being read as a directory that is CURRENT. It is not: any merge that adds a web
+# dependency leaves every existing checkout with a stale node_modules, the guard skips the install,
+# and `make check` fails thirty lines deep in tsc with implicit-any errors on files the reader has
+# never opened — one buried `Cannot find module '@playwright/test'` explaining all of them (issue
+# #64). CI never saw it, because a fresh checkout has no node_modules and the guard always fired
+# there; it landed only on laptops and agent worktrees, the population least able to tell it apart
+# from something they broke themselves.
+#
+# `pnpm install --frozen-lockfile` is already idempotent and takes ~0.3 s when the tree matches the
+# lockfile, and by definition it cannot rewrite pnpm-lock.yaml. The guard bought that third of a
+# second at the cost of a misdiagnosable failure — which is the trade this file's own header
+# forbids: a target that CAN do real work must do it unconditionally.
+#
+# Make runs it once per invocation however many targets need it, so `make check` pays for one.
+web-deps:
+	@[ -f web/package.json ] || exit 0; \
+	command -v pnpm >/dev/null 2>&1 || { \
+		printf '\033[31m  pnpm is not installed\033[0m — Node + pnpm are needed for the SPA. See make setup.\n'; \
+		exit 1; }; \
+	printf '  installing web dependencies (frozen, no scripts)\n'; \
+	cd web && pnpm install --frozen-lockfile --ignore-scripts
+
 ## dev: run the dev servers — Go on :8080, Vite on :5173
-dev:
-	@command -v pnpm >/dev/null 2>&1 || { \
-		printf '\033[31m  pnpm is not installed\033[0m — Node + pnpm are needed for the SPA. See make setup.\n'; exit 1; }
-	@[ -d web/node_modules ] || { printf '  installing web dependencies\n'; (cd web && pnpm install --frozen-lockfile --ignore-scripts); }
+dev: web-deps
 	@printf '  Go API on :8080, Vite on :5173 — Ctrl-C stops both\n'
 	@trap 'kill 0' EXIT INT TERM; \
 		( DKP_DB_PATH=$${DKP_DB_PATH:-./data/dev.db} $(GO) run ./cmd/dkp serve --addr :8080 ) & \
@@ -295,10 +317,12 @@ lint: lint-repo licence-gate lint-go lint-web
 ## vet: build + go vet + staticcheck + tsc
 # Runs build + vet, then tsc over the SPA. staticcheck is folded into golangci-lint, so it runs
 # under `make lint`. AGENTS.md documents the composition.
-vet:
+#
+# web-deps installs the SPA's dependencies first, unconditionally — see that target for why the
+# `[ -d web/node_modules ] ||` guard that used to live here was worse than the install it skipped.
+vet: web-deps
 	@$(GO) build $(PKG) && $(GO) vet $(PKG)
 	@if [ -f web/package.json ]; then \
-		[ -d web/node_modules ] || (cd web && pnpm install --frozen-lockfile --ignore-scripts); \
 		(cd web && pnpm run typecheck); \
 	fi
 
@@ -484,7 +508,11 @@ lint-go:
 # bare `eslint .` stays green). `lint:fixtures` is the negative gate: it runs eslint --no-ignore over
 # web/test-fixtures/lint/ and FAILS if a deliberate law-4 violation is NOT caught — the property that
 # keeps the AST-aware half of law 4 from silently going blind. Both run in CI's `lint / web` job.
-lint-web:
+#
+# web-deps for the same reason `vet` has it: eslint and every plugin it loads come out of
+# node_modules, so a merge that adds one would fail here with a module-resolution error against a
+# tree the reader did not change. Make runs the install once for the whole `make check`.
+lint-web: web-deps
 	@if [ -f web/package.json ]; then \
 		cd web && pnpm run lint && pnpm run lint:fixtures; \
 	else $(call notyet,Phase 0 PR 6,web/ is not scaffolded yet); fi

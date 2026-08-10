@@ -1,6 +1,7 @@
-# Keep the build context small and hermetic. The build stage needs the Go module graph and the Go
-# sources; nothing else belongs in the context, and a fat context slows every `docker build` and
-# every layer-cache miss.
+# Keep the build context small and hermetic. The image builds BOTH halves of the product: the `web`
+# stage needs web/ (sources, manifest and lockfile) plus scripts/build-web.sh, and the build stage
+# needs the Go module graph and the Go sources. Nothing else belongs in the context, and a fat
+# context slows every `docker build` and every layer-cache miss.
 #
 # This is an allowlist-by-exclusion: everything below is either already-built output (which the
 # multi-stage build regenerates), tooling that never reaches the binary, or local cruft that would
@@ -17,7 +18,10 @@
 .vscode
 .idea
 
-# Build output. The image builds the binary itself; a stale ./bin from a laptop must not leak in.
+# Build output. The image builds both the SPA and the binary itself; a stale ./bin or a laptop's
+# web/dist must not leak in. The `web` stage regenerates web/dist and stages it over
+# internal/ui/dist, so what the context carries there is only ever the committed placeholder — which
+# the build stage deletes before copying the real output in.
 /bin
 /dist
 web/dist

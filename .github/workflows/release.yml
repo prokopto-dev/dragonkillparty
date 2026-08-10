@@ -200,6 +200,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # Go for the cross-compiles and for `make third-party-notices`, which walks the module
+          # graph — from go.mod, so goreleaser is not compiling with whatever Go the runner image
+          # happens to carry. Node because .goreleaser.yaml's before-hooks now run
+          # scripts/build-web.sh: goreleaser calls `go build` directly, so without the SPA staged
+          # into internal/ui/dist first, every published binary embeds the placeholder (issue #55).
+          go: "true"
+          node: "true"
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
