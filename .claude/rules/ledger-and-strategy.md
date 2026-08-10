@@ -215,7 +215,13 @@ only when a named guild asks in an issue. Their invariants (`MonotoneNonDecreasi
 ## Stop and ask if
 
 - You are about to add a `kind` to `ledger_batch` — it is a CHECK constraint, an OpenAPI enum and a
-  docs page in one.
+  docs page in one. The values live in `internal/ledger/kinds` (canonical §5's one catalogue) and
+  `make gen` writes the CHECK into `db/schema.hcl`; appending there is one line, but the migration
+  that follows rebuilds `ledger_batch` and a rebuild drops the append-only triggers unless it
+  re-creates them. **Planners name kinds through that package** — `kinds.KindAward`, never `"award"`.
+  `internal/ledger/kinds` is a stdlib-only leaf, so importing it from `internal/strategy` reaches
+  `internal/store` no more than `strings` does and law 3 is untouched; the purity audit walks the
+  real graph and would say so if that changed.
 - A correction cannot be expressed as a reversal or a compensating batch.
 - A strategy needs to read something the `Ctx` façade does not expose. Widening the façade is a
   design decision; importing `internal/store` is a law violation.

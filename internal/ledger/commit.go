@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
@@ -74,14 +76,18 @@ const (
 	metaAuditHead        = "audit_head"
 )
 
-// validSources is ledger_batch.source's CHECK enum, restated in Go so a bad value fails with the
-// field name rather than as a constraint violation from inside SQLite. The two lists must agree;
-// db/schema.hcl is the authority and TestCommit_UnknownSource_IsRejected pins that they do.
-var validSources = map[string]bool{
-	"web": true, "api": true, "discord": true, "parser": true, "import": true, "system": true,
-}
+// ledger_batch.kind and ledger_batch.source are NOT restated here. They live in
+// internal/ledger/kinds — the catalogue db/schema.hcl's CHECK is generated from (canonical §5) — and
+// validate below consults it through kinds.IsBatchKind and kinds.IsBatchSource. A second list in
+// this file was exactly the drift the catalogue removes: adding a source in one place and not the
+// other means either the database rejects a legal value or this function accepts an illegal one.
 
-// validActorKinds is audit_log.actor_kind's CHECK enum, restated for the same reason.
+// validActorKinds is audit_log.actor_kind's CHECK enum, restated in Go so a bad value fails with the
+// field name rather than as a constraint violation from inside SQLite.
+//
+// It is a SEPARATE vocabulary from the ledger enums — a different table, a different CHECK — and it
+// has no generated catalogue yet. Giving it one is the same change as this file's ledger half and is
+// not folded in here, because audit_log's schema is not what the ledger enum finding was about.
 var validActorKinds = map[string]bool{
 	"user": true, "service_account": true, "system": true,
 	"boot": true, "import": true, "anonymous": true,
@@ -755,9 +761,9 @@ func validate(req CommitRequest) error {
 		return fmt.Errorf("empty pool id: %w", ErrInvalidRequest)
 	}
 
-	if !validSources[req.Source] {
-		return fmt.Errorf("source %q is not one of web, api, discord, parser, import, system: %w",
-			req.Source, ErrInvalidRequest)
+	if !kinds.IsBatchSource(req.Source) {
+		return fmt.Errorf("source %q is not one of %s: %w",
+			req.Source, strings.Join(kinds.BatchSources(), ", "), ErrInvalidRequest)
 	}
 
 	if !validActorKinds[req.Actor.Kind] {
@@ -768,6 +774,15 @@ func validate(req CommitRequest) error {
 
 	if req.Proposal.Kind == "" {
 		return fmt.Errorf("empty batch kind on the proposal: %w", ErrInvalidRequest)
+	}
+
+	// A planner sets Kind as a string literal, so a typo — or a kind a new strategy invented and
+	// never added to the catalogue — is valid Go all the way to the INSERT, where SQLite rejects it
+	// from inside the transaction. Checking membership here is what turns that into a named error
+	// against a named field, before the write connection is taken.
+	if !kinds.IsBatchKind(req.Proposal.Kind) {
+		return fmt.Errorf("batch kind %q is not one of %s: %w",
+			req.Proposal.Kind, strings.Join(kinds.BatchKinds(), ", "), ErrInvalidRequest)
 	}
 
 	if req.Proposal.StrategyID == "" || req.Proposal.StrategyVersion == "" {

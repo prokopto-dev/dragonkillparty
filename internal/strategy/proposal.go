@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // The shapes a strategy proposes and the ledger commits. Phase 0 PR 10a.
@@ -54,12 +55,21 @@ var (
 
 // KindReversal is the ledger_batch.kind a Negated proposal carries.
 //
-// The kind vocabulary as a whole is a CHECK constraint, an OpenAPI enum and a docs page in one
-// (.claude/rules/ledger-and-strategy.md), so it is not enumerated here as a Go type — adding a kind
-// is a schema change, and a Go enum would offer a second place to add one. This single constant
-// exists because Negated must set it and a literal in that function would be invisible to a reader
-// looking for where reversals are made.
-const KindReversal = "reversal"
+// DEFINED AS the catalogue's constant, not as a literal that happens to match it. The kind vocabulary
+// lives in internal/ledger/kinds, which canonical §5 makes the one source: `make gen` writes it into
+// db/schema.hcl's CHECK and Commit.validate reads it.
+//
+// Importing that package from here is legal and does not weaken law 3, which is worth stating because
+// an earlier draft of this file assumed the opposite. Go imports PACKAGES, not parent directories:
+// internal/ledger/kinds is a leaf that imports nothing but the standard library, so it reaches
+// internal/store no more than `strings` does. TestArch_Strategy_ImportGraph_HasNoStore walks the real
+// transitive graph and would fail if that ever changed.
+//
+// The alias stays because Negated must name a kind and a literal in that function would be invisible
+// to a reader looking for where reversals are made — but it is now a name for the catalogue's value
+// rather than a second copy of it, so a rename in the catalogue reaches this without a test having to
+// notice.
+const KindReversal = kinds.KindReversal
 
 // Rng is the seeded random source a strategy is given.
 //
