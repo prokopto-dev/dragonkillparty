@@ -209,8 +209,9 @@ LIMIT ?;
 
 Cursor only. **Offset is banned on collections**: it drifts under concurrent inserts and is the source
 of the duplicate-and-skip bugs in every bot that has ever polled EQdkp. The cursor is base64 of
-`{sort_key, tiebreak_id}`, opaque, versioned and HMAC-signed. Always include the tiebreak, or rows
-sharing a sort key are silently skipped. SQLite supports row-value comparison (3.15+), so this is one
+`{sort_key, tiebreak_id, filter_hash, principal_class}`, opaque, versioned and HMAC-signed — only the
+first two feed the query below, the other two are what `Decode` verifies before you get them. Always
+include the tiebreak, or rows sharing a sort key are silently skipped. SQLite supports row-value comparison (3.15+), so this is one
 index seek rather than the `a < ? OR (a = ? AND b < ?)` expansion.
 
 ```text

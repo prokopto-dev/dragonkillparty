@@ -29,6 +29,15 @@ func newCodec(t *testing.T) *core.CursorCodec {
 
 const noFilter = "" // the fingerprint of a request with no filters
 
+// principalClasses are the classes the cursor tests mint under. The codec treats a class as an
+// opaque string and the closed set belongs to the auth layer, so these are representative values,
+// not a definition: what the tests need is that two of them are different.
+var principalClasses = []core.PrincipalClass{"anonymous", "member", "officer"}
+
+// someClass is the class used wherever a test needs a valid principal class but the specific value
+// is not what is under test. There is no "unbound" cursor, so every Encode needs one.
+const someClass core.PrincipalClass = "member"
+
 // TestCursor_EncodeDecode_RoundTrip is the first property from the acceptance criteria: a cursor
 // encoded and decoded is unchanged, over 200 random cursors.
 func TestCursor_EncodeDecode_RoundTrip(t *testing.T) {
@@ -36,12 +45,13 @@ func TestCursor_EncodeDecode_RoundTrip(t *testing.T) {
 
 	cc := newCodec(t)
 
-	prop := func(key, id, filter string) bool {
+	prop := func(key, id, filter, class string) bool {
 		in := core.Cursor{
-			Version: 1,
-			Key:     core.ULID(key),
-			ID:      core.ULID(id),
-			Filter:  filter,
+			Version:        1,
+			Key:            core.ULID(key),
+			ID:             core.ULID(id),
+			Filter:         filter,
+			PrincipalClass: core.PrincipalClass(class),
 		}
 
 		token, err := cc.Encode(in)
@@ -49,7 +59,7 @@ func TestCursor_EncodeDecode_RoundTrip(t *testing.T) {
 			return false
 		}
 
-		out, err := cc.Decode(token, filter)
+		out, err := cc.Decode(token, in.PrincipalClass, filter)
 		if err != nil {
 			return false
 		}
@@ -64,6 +74,7 @@ func TestCursor_EncodeDecode_RoundTrip(t *testing.T) {
 			vs[1] = reflect.ValueOf(randomULIDString(rng))
 			// A filter fingerprint is an opaque string; exercise both empty and non-empty.
 			vs[2] = reflect.ValueOf(core.FilterFingerprint(randomULIDString(rng)))
+			vs[3] = reflect.ValueOf(string(principalClasses[rng.Intn(len(principalClasses))]))
 		},
 	}
 
@@ -87,10 +98,16 @@ func TestCursor_OrderPreservation_ForULIDKeys(t *testing.T) {
 			return true // equal keys carry no ordering obligation
 		}
 
-		// Same filter and tie-breaker on both, so the ONLY difference is the key: the property is
-		// about the key's contribution to the token order, not the payload's.
-		ca := core.Cursor{Version: 1, Key: core.ULID(keyA), ID: core.ULID(keyA), Filter: noFilter}
-		cb := core.Cursor{Version: 1, Key: core.ULID(keyB), ID: core.ULID(keyB), Filter: noFilter}
+		// Same filter, tie-breaker and principal class on both, so the ONLY difference is the key:
+		// the property is about the key's contribution to the token order, not the payload's.
+		ca := core.Cursor{
+			Version: 1, Key: core.ULID(keyA), ID: core.ULID(keyA),
+			Filter: noFilter, PrincipalClass: someClass,
+		}
+		cb := core.Cursor{
+			Version: 1, Key: core.ULID(keyB), ID: core.ULID(keyB),
+			Filter: noFilter, PrincipalClass: someClass,
+		}
 
 		ta, err := cc.Encode(ca)
 		if err != nil {
@@ -129,7 +146,10 @@ func TestCursor_TamperedToken_IsRejected(t *testing.T) {
 	cc := newCodec(t)
 
 	key := randomULIDStringDeterministic(1)
-	orig := core.Cursor{Version: 1, Key: core.ULID(key), ID: core.ULID(key), Filter: noFilter}
+	orig := core.Cursor{
+		Version: 1, Key: core.ULID(key), ID: core.ULID(key),
+		Filter: noFilter, PrincipalClass: someClass,
+	}
 
 	token, err := cc.Encode(orig)
 	require.NoError(t, err)
@@ -152,7 +172,7 @@ func TestCursor_TamperedToken_IsRejected(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := cc.Decode(bad, noFilter)
+			_, err := cc.Decode(bad, someClass, noFilter)
 			require.ErrorIs(t, err, core.ErrCursorInvalid, "tampered token must be ErrCursorInvalid")
 			require.NotErrorIs(t, err, core.ErrCursorFilterMismatch,
 				"tampering is not a filter mismatch — the codes must not be conflated")
@@ -173,24 +193,101 @@ func TestCursor_FilterMismatch_IsRejectedDistinctly(t *testing.T) {
 	requestedNow := core.FilterFingerprint("state=closed&sort=-created_at")
 
 	token, err := cc.Encode(core.Cursor{
-		Version: 1,
-		Key:     core.ULID(key),
-		ID:      core.ULID(key),
-		Filter:  mintedUnder,
+		Version:        1,
+		Key:            core.ULID(key),
+		ID:             core.ULID(key),
+		Filter:         mintedUnder,
+		PrincipalClass: someClass,
 	})
 	require.NoError(t, err)
 
-	// Same token, different current filter.
-	_, err = cc.Decode(token, requestedNow)
+	// Same token, same principal, different current filter.
+	_, err = cc.Decode(token, someClass, requestedNow)
 	require.ErrorIs(t, err, core.ErrCursorFilterMismatch)
 	require.NotErrorIs(t, err, core.ErrCursorInvalid,
 		"a filter mismatch is a valid cursor for a different query, not a corrupt one")
 
 	// The same token DOES decode when the filter matches — the positive control, without which the
 	// test above passes against a codec that rejects everything.
-	got, err := cc.Decode(token, mintedUnder)
+	got, err := cc.Decode(token, someClass, mintedUnder)
 	require.NoError(t, err)
 	require.Equal(t, mintedUnder, got.Filter)
+}
+
+// TestCursor_PrincipalClassMismatch_IsRejected is the structural boundary property: a cursor minted
+// for one principal class does not decode under another, and the rejection is ErrCursorInvalid —
+// which the API maps to `cursor_invalid` — never the softer, recoverable filter-mismatch code.
+//
+// This is the test the property hangs on. Before the class became a signed field, "a member cannot
+// hand-craft a cursor that walks past a principal boundary" depended on every future handler author
+// remembering to fold a principal component into the opaque filter fingerprint. Now it is a
+// property of the token, and this is what proves it.
+func TestCursor_PrincipalClassMismatch_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	cc := newCodec(t)
+
+	key := randomULIDStringDeterministic(5)
+	filter := core.FilterFingerprint("sort=-created_at")
+
+	const (
+		mintedFor = core.PrincipalClass("officer")
+		presentBy = core.PrincipalClass("member")
+	)
+
+	token, err := cc.Encode(core.Cursor{
+		Version:        1,
+		Key:            core.ULID(key),
+		ID:             core.ULID(key),
+		Filter:         filter,
+		PrincipalClass: mintedFor,
+	})
+	require.NoError(t, err)
+
+	// The whole point: an officer's cursor replayed by a member, with the filter left identical so
+	// the ONLY thing that changed is who is asking.
+	_, err = cc.Decode(token, presentBy, filter)
+	require.ErrorIs(t, err, core.ErrCursorInvalid,
+		"a cursor minted for another principal class must be rejected as invalid")
+	require.NotErrorIs(t, err, core.ErrCursorFilterMismatch,
+		"crossing a principal boundary is not a recoverable filter change — it must not leak that "+
+			"the token was genuine")
+
+	// Checked BEFORE the filter, so changing the filter too cannot downgrade the answer to the more
+	// informative filter-mismatch code.
+	_, err = cc.Decode(token, presentBy, core.FilterFingerprint("sort=created_at"))
+	require.ErrorIs(t, err, core.ErrCursorInvalid)
+	require.NotErrorIs(t, err, core.ErrCursorFilterMismatch)
+
+	// Positive control: the same token under the class it was minted for still decodes, and carries
+	// the class back out. Without this the test above passes against a codec that rejects anything.
+	got, err := cc.Decode(token, mintedFor, filter)
+	require.NoError(t, err)
+	require.Equal(t, mintedFor, got.PrincipalClass)
+}
+
+// TestCursor_EmptyPrincipalClass_CannotBeMintedOrVerified proves there is no unbound cursor. An
+// empty class must fail at BOTH ends: Encode refuses to issue one, and Decode refuses to verify
+// against one, so a handler that forgets to bind its listing cannot ship an endpoint that works.
+func TestCursor_EmptyPrincipalClass_CannotBeMintedOrVerified(t *testing.T) {
+	t.Parallel()
+
+	cc := newCodec(t)
+
+	key := randomULIDStringDeterministic(6)
+
+	_, err := cc.Encode(core.Cursor{Version: 1, Key: core.ULID(key), ID: core.ULID(key)})
+	require.ErrorIs(t, err, core.ErrEmptyPrincipalClass,
+		"a cursor bound to no principal class must not be mintable")
+
+	token, err := cc.Encode(core.Cursor{
+		Version: 1, Key: core.ULID(key), ID: core.ULID(key), PrincipalClass: someClass,
+	})
+	require.NoError(t, err)
+
+	_, err = cc.Decode(token, "", noFilter)
+	require.ErrorIs(t, err, core.ErrEmptyPrincipalClass,
+		"decoding without a principal class to check against must fail loudly, not fall through")
 }
 
 // TestCursor_ForeignKey_IsRejected proves a cursor minted by one instance's key does not verify
@@ -205,10 +302,12 @@ func TestCursor_ForeignKey_IsRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	key := randomULIDStringDeterministic(3)
-	token, err := theirs.Encode(core.Cursor{Version: 1, Key: core.ULID(key), ID: core.ULID(key)})
+	token, err := theirs.Encode(core.Cursor{
+		Version: 1, Key: core.ULID(key), ID: core.ULID(key), PrincipalClass: someClass,
+	})
 	require.NoError(t, err)
 
-	_, err = mine.Decode(token, noFilter)
+	_, err = mine.Decode(token, someClass, noFilter)
 	require.ErrorIs(t, err, core.ErrCursorInvalid, "a foreign-signed cursor must not verify")
 }
 
@@ -236,7 +335,9 @@ func TestCursor_KeyCopy_IsDefensive(t *testing.T) {
 	require.NoError(t, err)
 
 	ulidKey := randomULIDStringDeterministic(4)
-	token, err := cc.Encode(core.Cursor{Version: 1, Key: core.ULID(ulidKey), ID: core.ULID(ulidKey)})
+	token, err := cc.Encode(core.Cursor{
+		Version: 1, Key: core.ULID(ulidKey), ID: core.ULID(ulidKey), PrincipalClass: someClass,
+	})
 	require.NoError(t, err)
 
 	// Mutate the caller's slice. If the codec held it by reference, verification would now fail.
@@ -244,7 +345,7 @@ func TestCursor_KeyCopy_IsDefensive(t *testing.T) {
 		key[i] ^= 0xFF
 	}
 
-	_, err = cc.Decode(token, noFilter)
+	_, err = cc.Decode(token, someClass, noFilter)
 	require.NoError(t, err, "mutating the caller's key slice must not affect the codec")
 }
 
