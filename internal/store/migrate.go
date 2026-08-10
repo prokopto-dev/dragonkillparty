@@ -254,6 +254,151 @@ func (s *Store) ForeignKeyCheck(ctx context.Context) error {
 	return nil
 }
 
+// RestoreForeignKeyEnforcement puts `PRAGMA foreign_keys` back ON for the write pool and verifies
+// that it took.
+//
+// This exists because of one specific, verified leak. A migration annotated NO TRANSACTION — the only
+// form in which a rebuild of a table that HAS CHILDREN can work, since SQLite ignores
+// `PRAGMA foreign_keys` inside a transaction — runs its statements directly on a connection, and
+// `PRAGMA foreign_keys = off` is CONNECTION state. The write pool is capped at one connection, so a
+// migration that fails between the `off` and the `on`, or simply forgets the `on`, hands the pool
+// back with foreign keys unenforced. Everything that ran afterwards on that connection, including
+// the next migration, would apply with no referential integrity at all — silently, since nothing
+// reports a pragma.
+//
+// Calling this after every migration makes that unrecoverable-by-inspection state impossible rather
+// than merely discouraged. The DSN already sets the pragma for every connection either pool opens
+// (see pragma.go); this restores the same invariant on a connection a migration perturbed.
+//
+// It is a no-op on the overwhelming majority of migrations, which never touch the pragma.
+func (s *Store) RestoreForeignKeyEnforcement(ctx context.Context) error {
+	if _, err := s.write.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("restore foreign key enforcement: %w", err)
+	}
+
+	// Read back rather than trust. A pragma issued inside a transaction is silently ignored, and
+	// "the statement returned no error" is exactly the evidence that failure mode produces.
+	var on int
+	if err := s.write.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&on); err != nil {
+		return fmt.Errorf("read back foreign key enforcement: %w", err)
+	}
+
+	if on != 1 {
+		return errors.New("restore foreign key enforcement: the pragma did not take, so this " +
+			"connection is applying writes with no referential integrity")
+	}
+
+	return nil
+}
+
+// AppendOnlyTrigger names one append-only trigger and the table whose history it protects.
+type AppendOnlyTrigger struct {
+	// Table is the table the trigger is attached to.
+	Table string
+	// Name is the trigger's name in sqlite_schema.
+	Name string
+}
+
+// appendOnlyTriggers is the database half of the append-only invariant, written out.
+//
+// HARD-CODED, and deliberately not derived from the migration set. Deriving it would mean parsing
+// SQL to decide what the SQL was supposed to say, which cannot fail in the one direction that
+// matters: a migration that dropped a trigger would simply produce a smaller expectation and the
+// check would agree with the damage. A literal list is a second, independent statement of what the
+// ledger's guarantee IS, and the whole value of a runtime check is that it disagrees with the
+// database rather than describing it.
+//
+// The cost is that adding a trigger means editing this list. That is not left to memory:
+// TestAppendOnlyTriggers_Catalogue_MatchesAFreshInstall applies the real migration set and requires
+// this list to be exactly the triggers on the ledger's two tables, so a trigger added to a migration
+// and not to this list fails in internal/store rather than silently narrowing the boot check.
+var appendOnlyTriggers = []AppendOnlyTrigger{
+	{Table: "ledger_batch", Name: "trg_ledger_batch_no_delete"},
+	{Table: "ledger_batch", Name: "trg_ledger_batch_no_update"},
+	{Table: "ledger_entry", Name: "trg_ledger_entry_no_delete"},
+	{Table: "ledger_entry", Name: "trg_ledger_entry_no_update"},
+}
+
+// AppendOnlyTriggers returns the catalogue above, sorted by table then name.
+//
+// A copy, because a package-level slice handed out by reference is one append away from being
+// rewritten by a caller — and this particular list is a security guarantee, not a configuration.
+func AppendOnlyTriggers() []AppendOnlyTrigger {
+	out := make([]AppendOnlyTrigger, len(appendOnlyTriggers))
+	copy(out, appendOnlyTriggers)
+
+	return out
+}
+
+// MissingAppendOnlyTriggers returns the catalogued triggers this database does not have, in
+// catalogue order.
+//
+// This is the third question the boot path asks after each migration, alongside integrity_check and
+// foreign_key_check, and it is the one neither of those can answer. SQLite's DROP TABLE takes every
+// trigger attached to the table and re-creates nothing, silently: a migration that rebuilds a ledger
+// table and forgets the trigger re-creation passes both PRAGMAs, loses no row, and leaves a database
+// whose history is editable. "Your ledger cannot be edited" is the product's entire trust argument
+// and this is the only runtime verification of the database half of it.
+//
+// It reports a SET rather than pass/fail because the policy is not this package's to make — this
+// file owns the statements an upgrade runs and internal/migrate owns what to do about the answers.
+// The difference matters here more than usual: what internal/migrate does with this is compare the
+// set before a migration with the set after it, so that a database which ARRIVED degraded can still
+// be upgraded while a migration that degrades one is refused.
+//
+// It is strictly cheaper than integrity_check, which already runs at the same points: one read of
+// sqlite_schema against a whole-file page scan.
+//
+// A trigger whose TABLE does not exist yet is not missing — it is early. The boot path runs this
+// after every migration including the ones that precede the ledger's own, so a check that demanded
+// trg_ledger_entry_no_update on a database that has not yet created ledger_entry would fail every
+// fresh install on migration 1. Presence of the table is what makes its triggers required.
+func (s *Store) MissingAppendOnlyTriggers(ctx context.Context) ([]string, error) {
+	// sqlite_schema rows for the ledger's two tables: the tables themselves and everything attached
+	// to them. One read rather than two, so the table set and the trigger set cannot be observed at
+	// different moments.
+	rows, err := s.write.QueryContext(ctx,
+		`SELECT type, name, tbl_name FROM sqlite_schema
+		 WHERE tbl_name IN ('ledger_batch', 'ledger_entry') AND type IN ('table', 'trigger')`)
+	if err != nil {
+		return nil, fmt.Errorf("read append-only triggers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var (
+		tables  = map[string]bool{}
+		present = map[string]bool{}
+	)
+
+	for rows.Next() {
+		var objType, name, tblName string
+		if err := rows.Scan(&objType, &name, &tblName); err != nil {
+			return nil, fmt.Errorf("scan append-only triggers: %w", err)
+		}
+
+		switch objType {
+		case "table":
+			tables[name] = true
+		case "trigger":
+			present[name] = true
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read append-only triggers: %w", err)
+	}
+
+	var missing []string
+
+	for _, want := range appendOnlyTriggers {
+		if tables[want.Table] && !present[want.Name] {
+			missing = append(missing, want.Name)
+		}
+	}
+
+	return missing, nil
+}
+
 // QuickCheck runs PRAGMA quick_check — integrity_check without the (expensive) index content
 // verification. It is what a restored snapshot is validated with before the process trusts it.
 func (s *Store) QuickCheck(ctx context.Context) error {

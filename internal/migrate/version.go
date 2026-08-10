@@ -106,6 +106,16 @@ func (e *SchemaAheadError) Is(target error) bool { return target == ErrSchemaAhe
 // ErrMigrationFailed is the sentinel for a failed migration that was rolled back.
 var ErrMigrationFailed = errors.New("migration failed and the database was restored")
 
+// ErrAppendOnlyTriggerLost is the sentinel for the third post-migration check: a migration applied
+// cleanly, left every row intact, passed integrity_check and foreign_key_check, and dropped an
+// append-only trigger on the way — so the ledger it handed back can be rewritten.
+//
+// A sentinel rather than a bare string because it is the one migration failure whose meaning is a
+// product guarantee rather than a database fault, and a caller distinguishing "your data is fine but
+// your ledger is no longer protected" from "your database is corrupt" should not have to match on
+// prose. It arrives wrapped in a FailedError, whose Unwrap reaches it.
+var ErrAppendOnlyTriggerLost = errors.New("a migration dropped an append-only ledger trigger")
+
 // FailedError is returned when a migration failed and the snapshot was put back.
 //
 // It carries the snapshot path because that is the single most useful fact for the operator, and
