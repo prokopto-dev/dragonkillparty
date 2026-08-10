@@ -16,6 +16,8 @@ is a bug worth reporting.
 | regenerate ALL generated code | `make gen` | ~15 s |
 | unit tests | `make test-unit` | < 5 s |
 | integration tests (real SQLite in `t.TempDir`) | `make test` | ~30 s |
+| ledger + strategy properties (200 checks; 20 000 nightly) | `make test-property` | ~10 s |
+| coverage floor for `internal/ledger` + `internal/strategy` | `make test-coverage-floor` | ~10 s |
 | importer suite (needs Docker) | `make test-importer` | ~120 s |
 | lint | `make lint` | ~20 s |
 | build + vet + staticcheck + tsc | `make vet` | ~15 s |

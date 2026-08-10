@@ -301,6 +301,65 @@ const balanceQuery = "SELECT total(amount_cp) FROM ledger_entry WHERE account_id
 		"a whole-line comment describing the rule must not trip it\n%s", out)
 }
 
+// TestRepoGates_RealClockInStrategy_FailsGate covers CLOCK002, added in Phase 0 PR 10b to close a
+// hole CLOCK001 could not see.
+//
+// internal/strategy legitimately imports internal/clock, because strategy.Ctx.Clock() returns a
+// clock.Clock. Nothing stopped a strategy from then constructing the real one: `clock.System{}.Now()`
+// reads the wall clock, and CLOCK001 greps for `time.Now(`, which that is not. A plan whose effective
+// time depends on when it ran cannot be replayed, which is the entire reason the clock is injected —
+// so law 3 was enforced by convention there rather than mechanically.
+//
+// The AST twin is TestArch_Strategy_DoesNotConstructTheRealClock in internal/strategy, which also
+// catches an ALIASED import that this grep would miss. Both exist because the grep is the cheap one
+// that runs on every PR and the AST one is the thorough one.
+func TestRepoGates_RealClockInStrategy_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeGo(t, tree, "internal/strategy/decay.go", `package strategy
+
+import "github.com/prokopto-dev/dragonkillparty/internal/clock"
+
+func now() int64 { return clock.System{}.Now().UnixMicro() }
+`)
+
+	// A comment naming the rule must not fire it, and neither must the LEGITIMATE use: the clock is
+	// injected as an interface value, which is the whole point of the ban.
+	writeGo(t, tree, "internal/strategy/doc.go", `package strategy
+
+// clock.System is banned here: the clock arrives through Ctx.Clock() as an injected interface.
+`)
+	writeGo(t, tree, "internal/strategy/ctx.go", `package strategy
+
+import "github.com/prokopto-dev/dragonkillparty/internal/clock"
+
+type Ctx interface{ Clock() clock.Clock }
+`)
+
+	// And cmd/ may construct one: that is where a real clock is supposed to come from.
+	writeGo(t, tree, "cmd/dkp/main.go", `package main
+
+import "github.com/prokopto-dev/dragonkillparty/internal/clock"
+
+var wall = clock.System{}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "constructing the real clock in internal/strategy must fail the gates\n%s", out)
+	require.Contains(t, out, "CLOCK002", "%s", out)
+	require.Contains(t, out, "internal/strategy/decay.go:", "%s", out)
+	require.NotContains(t, out, "internal/strategy/doc.go",
+		"a whole-line comment describing the rule must not trip it\n%s", out)
+	require.NotContains(t, out, "internal/strategy/ctx.go",
+		"depending on the clock.Clock INTERFACE is the sanctioned injection and must not trip it\n%s", out)
+	require.NotContains(t, out, "cmd/dkp/main.go",
+		"CLOCK002 is scoped to internal/strategy; main wiring is where a real clock comes from\n%s", out)
+}
+
 // TestRecipes_TotalIsBanned is the db/*.sql half of the total() ban, and the anchor for the bold note
 // in db/RECIPES.md. The Go half above (TestRepoGates_TotalInGoSQL_FailsGate) proves the ban reaches
 // SQL embedded in Go; this proves it reaches a recipe written the way db/RECIPES.md shows them — a

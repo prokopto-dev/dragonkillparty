@@ -106,6 +106,25 @@ gate PURE002 "math/rand in internal/strategy (use the injected seeded Rng)" \
 gate CLOCK001 "time.Now outside internal/clock (use the injected Clock)" \
     internal '*.go' '\btime\.Now\(' '^internal/clock/'
 
+# CLOCK002 — the hole CLOCK001 cannot see, found in review of Phase 0 PR 10b.
+#
+# internal/strategy legitimately imports internal/clock, because strategy.Ctx.Clock() returns a
+# clock.Clock. Nothing above stops a strategy from then writing `clock.System{}.Now()`, which reads
+# the REAL wall clock: CLOCK001 greps for `time.Now(`, which that is not; the arch test's
+# direct-import ban sees only `internal/clock`, which is allowed; and forbidigo's `^time\.Now$`
+# resolves to a method on clock.System. A plan that depends on when it ran cannot be replayed, which
+# is the entire reason the clock is injected.
+#
+# clock.System is the ONLY real-clock path out of that package — Clock is an interface, Fake is a
+# test double, and System.Now is the one function in the repository that calls time.Now — so banning
+# the identifier closes it rather than narrowing it. Scoped to internal/strategy: cmd/ wiring
+# constructs a System on purpose, which is where a real clock is supposed to come from.
+#
+# The AST twin is TestArch_Strategy_DoesNotConstructTheRealClock, which also catches an ALIASED
+# import (`import c ".../internal/clock"`) that this grep would miss.
+gate CLOCK002 "clock.System in internal/strategy (the clock is injected through Ctx.Clock)" \
+    internal/strategy '*.go' '\bclock\.System\b'
+
 # --- Money is integer centipoints ------------------------------------------------------------
 for tree in internal/ledger internal/strategy; do
     gate MONEY001 "float type in $tree" "$tree" '*.go' '\b(float32|float64)\b'

@@ -198,8 +198,16 @@ func TestCommit_DuplicateIdempotencyKey_ReturnsFirstBatch(t *testing.T) {
 	// Nothing was written the second time — in any of the five tables. Asserting only on the batch
 	// count would miss a replay that skipped the batch but still emitted a duplicate event, which is
 	// the same bug from a subscriber's point of view.
+	//
+	// balance_snapshot is counted with the other four, and it is the one that matters most here. It
+	// is an ADDITIVE upsert: a replay that re-ran it would leave no duplicate row to find, just a
+	// row carrying twice the delta — a doubled balance on /standings with a single correct batch
+	// behind it, which is the hardest kind of discrepancy to explain to a member. A row count alone
+	// cannot see that, so the balance is asserted below as well.
 	require.Equal(t, int64(1), countRow(t, s, `SELECT count(*) FROM ledger_batch`))
 	require.Equal(t, int64(3), countRow(t, s, `SELECT count(*) FROM ledger_entry`))
+	require.Equal(t, int64(3), countRow(t, s, `SELECT count(*) FROM balance_snapshot`),
+		"one row per (account, balance kind): the payer plus the two credited raiders")
 	require.Equal(t, int64(1), countRow(t, s, `SELECT count(*) FROM audit_log`))
 	require.Equal(t, int64(1), countRow(t, s, `SELECT count(*) FROM event_outbox`))
 

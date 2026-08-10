@@ -152,9 +152,17 @@ idempotency key and the hash chain.
 | **Universal, always on** | `NoFloat`, `BatchNonEmpty`, `EntriesReferenceLiveAccounts`, `SeqMonotonic` |
 
 A new strategy that declares no invariants is a red flag — the declared set must actually constrain
-its planner. Every invariant gets a **property test** (`pgregory.net/rapid`), not just an example
-test: `SumZero` under random award/reversal sequences, SK positions remaining a permutation under
-random suicides/insertions/absences, EPGP decay preserving PR within tolerance.
+its planner. Every invariant gets a **property test**, not just an example test: `SumZero` under
+random award/reversal sequences, SK positions remaining a permutation under random
+suicides/insertions/absences, EPGP decay preserving PR within tolerance.
+
+**The framework is `testing/quick` plus a seeded generator, not `pgregory.net/rapid`.** rapid is a
+new dependency and AGENTS.md requires a human to approve one — a rule with no exception for "the
+design document already assumed it". Copy the shape in `internal/ledger/property_test.go` (a
+`quick.Generator` with a chosen, non-uniform distribution) or, inside `internal/strategy` where
+importing `math/rand` trips gate PURE002, the seeded-`Rng` loop in
+`internal/strategy/fixed_price_test.go`. Budget: **200 checks per PR, 20 000 nightly**
+(`make test-property`; `DKP_PROPERTY_CHECKS` and `DKP_PROPERTY_SEED` control both).
 
 ## Purity — the third architectural law
 

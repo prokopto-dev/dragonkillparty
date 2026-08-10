@@ -175,7 +175,8 @@ result is exact integer arithmetic in `Centipoints` (int64) or `Micros` (int64).
 
 ## I. Test coverage of the change
 
-- **A property test per new invariant**, not just example tests. `pgregory.net/rapid`: zero-sum
+- **A property test per new invariant**, not just example tests, written with `testing/quick` and a
+  seeded generator (NOT `pgregory.net/rapid`, which is an unapproved dependency): zero-sum
   conservation under random award/reversal sequences; SK positions remain a permutation under
   random suicides/insertions/absences; EPGP decay preserves PR.
 - Any shrunk counterexample from a previous fix is checked in as a named table case, not left to

@@ -54,7 +54,7 @@ ledger's invariants stop being tested.
 |---|---|---|
 | Runner | stdlib `go test`, always `-shuffle=on -count=1`; `-race` in CI | One runner, one idiom, no config file for an agent to get wrong |
 | Assertions | stdlib `t.Fatalf` + `google/go-cmp` for structs; `testify/require` permitted, **`testify/assert` banned** | `assert` continues after failure and produces cascading noise (`AGENTS.md`). One style, enforced by lint |
-| Property / state machine | `pgregory.net/rapid` | Native Go generators, automatic shrinking, `rapid.Run` state-machine mode for the bid FSM |
+| Property | stdlib **`testing/quick`** with hand-written generators | No new dependency. `pgregory.net/rapid` was the design's choice and is **not** what shipped — see "On the property framework" below |
 | Fuzzing | stdlib `go test -fuzz` | Corpus in `testdata/fuzz/`; crashers auto-persist as golden files |
 | Concurrency and time | **`testing/synctest`** + `go.uber.org/goleak` | Fake clock and deterministic scheduling inside a bubble |
 | HTTP | `net/http/httptest` + the generated Go client where one exists | Tests that call the SDK prove the SDK |
@@ -130,7 +130,7 @@ Property tests are those invariants driven by generated input rather than hand-p
 | P1 | **Zero-sum conservation.** For any random sequence of award / reversal / adjustment batches over a random roster, the sum of balances across all accounts equals a constant at *every* `seq` | roster 1–300, 0–500 batches, 1–10⁶ centipoints | The rounding leak. The flagship property. |
 | P2 | **Largest remainder sums to the debit.** Credits sum to exactly `P`, for all `(P, N)` including `N=1`, `N=2`, `P` prime, `P < N` | `P ∈ [1,10⁹]`, `N ∈ [1,400]` | Per-credit independent rounding — mint/burn |
 | P3 | **Balance equals the sum of the ledger.** The incrementally maintained `balance_snapshot` equals a from-scratch fold, at an arbitrary as-of-`seq` | random ledger + random snapshot cadence | Cache drift — the exact EQdkp failure mode this product exists to fix |
-| P4 | **No bid can exceed balance.** For any interleaving of bids, holds, releases, settlements and decay runs across ≥2 concurrent sessions, no account commits a spend exceeding `balance(seq_at_settle)`, and active holds never exceed the balance | `rapid.Run` state machine over the bid FSM | Double-spend across sessions |
+| P4 | **No bid can exceed balance.** For any interleaving of bids, holds, releases, settlements and decay runs across ≥2 concurrent sessions, no account commits a spend exceeding `balance(seq_at_settle)`, and active holds never exceed the balance | a seeded state machine over the bid FSM (see "On the property framework") | Double-spend across sessions |
 | P5 | **Reversal is an exact inverse.** Applying a batch and then its reversal restores every affected balance and every derived position | any batch from any strategy | The highest-yield property: it exercises every strategy's inverse logic |
 | P6 | **`cap` clamps and is idempotent.** Applying the cap twice produces one batch and never moves a balance past the cap | random balances and caps | Double application after a restart |
 | P7 | **`start_points` applies exactly once per account**, and never to an account that already has ledger history | random rosters with partial history | The "everyone got 1000 points again" ticket |
@@ -138,21 +138,44 @@ Property tests are those invariants driven by generated input rather than hand-p
 | P9 | **Decay idempotency.** Two runs for the same `(pool_id, cadence_period)` produce one batch | random cadences and downtime gaps | "Decay ran twice after the box rebooted" |
 | P10 | **Attendance monotonicity.** Adding a raid the member attended never decreases their window percentage; adding one they missed never increases it | random raid histories | Denominator and dedup logic |
 | P11 | **Cursor round-trip and order preservation.** `decode(encode(x)) == x`, and `encode` is monotone with respect to the sort key | random `(sort_key, tiebreak_id)` | Duplicate-and-skip in every polling bot |
-| P12 | **Parser totality.** No input panics; every accepted line re-serialises to something the parser re-accepts | `go test -fuzz` + rapid strings | Panics on hostile log lines |
-| P13 | **Position permutation** under random insertions, removals and absences — *only if a Suicide Kings variant ships* | `rapid.Run` state machine | Ordering corruption no scalar assertion catches |
+| P12 | **Parser totality.** No input panics; every accepted line re-serialises to something the parser re-accepts | `go test -fuzz` + generated strings | Panics on hostile log lines |
+| P13 | **Position permutation** under random insertions, removals and absences — *only if a Suicide Kings variant ships* | a seeded state machine | Ordering corruption no scalar assertion catches |
 | P14 | **Ratio preservation under decay** — *only if `epgp` ships* | random pairs and schedules | The whole point of that model |
 
 P13 and P14 are conditional: `epgp` and `suicide_kings` ship on pilot-guild request only, and a
 property for a strategy that does not exist is maintenance with no payer.
 
+### On the property framework
+
+**The properties ship on `testing/quick`, not on `pgregory.net/rapid`.** The choice was made in
+Phase 0 PR 10 and is recorded here rather than left as a discrepancy between this document and the
+code. rapid is a **new dependency**, and `AGENTS.md` requires a dependency to be proposed with its
+reason and its licence for a human to decide — a rule with no exception for "the design document
+already assumed it". Every property above is expressible as `quick.Check` plus a generator, which is
+the shape `internal/core`'s properties already used.
+
+What is actually lost is **automatic shrinking**, not coverage: a counterexample arrives at full
+size and is minimised by hand. What is gained, and was not part of the trade, is reproducibility —
+the base seed is fixed and printed (`DKP_PROPERTY_SEED`), where `quick.Check`'s own default and
+rapid both randomise per run, so a nightly failure replays exactly instead of being gone by morning.
+
+Two consequences for the rows above. `rapid.Run`'s **state-machine mode** (P4's bid FSM, P13's
+position permutation) has no `testing/quick` equivalent and those two properties are written as
+explicit interleaving loops when their strategies ship — that is the point at which proposing rapid
+to a human is worth doing, because it is the only place its extra machinery earns its keep. And
+inside `internal/strategy`, importing `math/rand` at all trips repo gate PURE002, so cases there are
+drawn from the injected seeded `Rng`; `internal/strategy/fixed_price_test.go` is the worked example.
+
 Two policies make properties pay off rather than annoy:
 
-1. **Failures become permanent unit tests.** When rapid shrinks a counterexample, the minimised input
+1. **Failures become permanent unit tests.** When a counterexample is minimised, the minimised input
    is checked in as a named table case *in the same PR as the fix*. The property stays; it just no
    longer carries the regression alone. Rerunning with a stored seed is **not** a regression test —
    seeds do not survive generator changes.
-2. **Budgeted in CI, deep overnight.** `rapid.Check` at 200 checks on PRs (~8 s total), 20,000 checks
-   nightly with a longer shrink budget. PR latency stays flat; depth arrives overnight.
+2. **Budgeted in CI, deep overnight.** 200 checks on PRs (~8 s total, `make test-property`), 20,000
+   nightly via `DKP_PROPERTY_CHECKS` — one env var, no second code path, because a nightly suite that
+   compiled differently from the per-PR suite is one that can go green while the real one is broken.
+   PR latency stays flat; depth arrives overnight.
 
 Eight fuzz targets, one per parser family, run seed-corpus-only on PRs and 10 minutes each nightly.
 Crashers land in `testdata/fuzz/` as CODEOWNERS-protected golden files.
@@ -430,7 +453,7 @@ The same shape appears elsewhere and is worth recognising as a pattern:
 | `attendance_rollup` + SQL window functions | the slow Go loop |
 | `balance_snapshot` + bounded delta scan | full replay in `dkp verify-ledger` |
 | The importer's transform | the reconciliation classifier (below) |
-| Hand-written assertions on ledger arithmetic | the twelve-plus rapid properties |
+| Hand-written assertions on ledger arithmetic | the twelve-plus properties |
 | Hand-read query performance | the `EXPLAIN QUERY PLAN` goldens |
 
 An agent that weakens a hand-written assertion still has to get past an oracle it cannot edit without
@@ -787,7 +810,7 @@ proposal goldens, the public-route allowlist, fuzz crashers, and the schema snap
 | **Readable diffs by construction** | Goldens are canonical JSON with sorted keys, one field per line, or line-oriented text. A regeneration that produces a one-line blob diff is itself a bug — an unreviewable format defeats every control above |
 | **Ratchets that move one way** | Coverage floors, statement budgets, perf budgets, the a11y allowlist length, the PAT-parity volatile-field allowlist, the `coverage:ignore` count and the quarantine-tag count each have a committed number and a test asserting the measured value is on the correct side. Moving one is a one-line, unmissable diff |
 | **A test-diff analyser** | A CI job runs `git diff origin/main -- '**/*_test.go' 'test/**'` through an analyser that flags: removed `t.Error`/`t.Fatal`/`require.*` with no replacement; an assertion changed from `Equal` to `Contains`/`NotNil`/`NoError`-only; a `cmp.Diff` gaining `cmpopts.IgnoreFields`/`IgnoreUnexported`; loosened numeric tolerances; new `t.Skip` or build tags; shrunk table-case lists; a lowered coverage floor; a **raised** statement or perf budget; a new parity-allowlist entry. Any hit requires CODEOWNERS review, and the bot posts the before/after assertions side by side. **This does not forbid legitimate loosening; it makes it visible, which is the entire game** |
-| **Separate the oracle from the code** | The rapid properties, the slow reference attendance implementation, the reconciliation classifier, the OpenAPI spec and the `EXPLAIN` goldens are independent statements of intent. Weakening a hand-written assertion still leaves an oracle that cannot be edited inconspicuously |
+| **Separate the oracle from the code** | The properties, the slow reference attendance implementation, the reconciliation classifier, the OpenAPI spec and the `EXPLAIN` goldens are independent statements of intent. Weakening a hand-written assertion still leaves an oracle that cannot be edited inconspicuously |
 | **Commit-shape convention** | Assertion-weakening changes go in their own commit prefixed `test-relax: `. Trivially bypassable by a determined actor, but agents follow local conventions well, and `git log --grep '^test-relax'` is a two-second audit of every assertion ever loosened |
 | **Named in `AGENTS.md`** | Never delete or skip a test to make CI pass; never rewrite anything under `test/golden/` or `test/fixtures/` to go green; never add `cmpopts.Ignore*` to make a diff pass; never raise a budget in the same PR as a feature; never touch the PAT-parity normaliser; never edit `.github/workflows/**` to make a job green. **If a test is wrong, say it is wrong and why, in the PR** |
 
