@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
-# The enum half of `make gen`: db/schema.hcl's ledger CHECK constraints, emitted from the Go
-# catalogue in internal/ledger/kinds.
+# The enum half of `make gen`: db/schema.hcl's generated CHECK constraints, emitted from the Go
+# catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source) and
+# internal/audit/kinds (audit_log.actor_kind).
 #
-# RUNS FIRST, AND COMPILES ONLY A LEAF PACKAGE. internal/ledger/kinds imports nothing but the
-# standard library, deliberately: this step precedes sqlc, so if it reached generated code a tree
-# whose sqlc output did not build could not run `make gen` to repair it.
+# RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Both catalogues and internal/schemaenum, which holds
+# the rendering they share, import nothing but the standard library, deliberately: this step
+# precedes sqlc, so if it reached generated code a tree whose sqlc output did not build could not
+# run `make gen` to repair it.
 #
 # Canonical §5 requires the enum catalogue to be a Go const block that `make gen` writes into the
 # CHECK and the OpenAPI schema, with a test asserting the copies agree. Before this step the
 # fourteen ledger_batch kinds and six sources were literals in db/schema.hcl and nowhere else, so a
 # kind added in Go was a legal write that failed at the database — the failure mode canonical §5
-# exists to remove, and the one internal/authz/catalogue.go already removes for permission keys.
+# exists to remove, and the one internal/authz/catalogue.go already removes for permission keys. The
+# six audit_log actor kinds were worse: a literal in the CHECK AND a second list in
+# internal/ledger/commit.go, which is the same failure with a second way to reach it (#40).
 #
 # RUNS BEFORE gen-db.sh, and the order is load-bearing: gen-db.sh asserts db/schema.hcl and the
 # committed migrations describe the same schema, so it has to see the schema this step just wrote.
 # Reversed, a catalogue change would be reported as clean on the run that introduced it and as a
 # mystery on the next one.
 #
-# It rewrites db/schema.hcl only between the two GENERATED markers; everything else in that file is
-# hand-authored schema truth. Changing a VALUE is therefore a two-command change — `make gen` here,
-# then `make migration NAME=<snake_case>` to author the SQL — because this script deliberately does
-# not write migrations (scripts/gen-db.sh's header explains why no `gen` step may).
+# It rewrites db/schema.hcl only between each catalogue's GENERATED markers; everything else in that
+# file is hand-authored schema truth. Changing a VALUE is therefore a two-command change —
+# `make gen` here, then `make migration NAME=<snake_case>` to author the SQL — because this script
+# deliberately does not write migrations (scripts/gen-db.sh's header explains why no `gen` step may).
 
 set -euo pipefail
 
@@ -34,9 +38,9 @@ die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
 command -v go >/dev/null 2>&1 || die "go is not installed — see make setup"
 
 # The generator writes through a temp file and a rename, and says nothing on success. It is a
-# generator, not a gate: the drift assertion is TestLedgerKinds_CheckMatchesCatalogue and
-# `make verify-generated`.
+# generator, not a gate: the drift assertions are TestLedgerKinds_CheckMatchesCatalogue,
+# TestAuditKinds_CheckMatchesCatalogue and `make verify-generated`.
 go run ./internal/ledger/enumgen db/schema.hcl \
     || die "enumgen failed — db/schema.hcl was not rewritten"
 
-printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds\n'
+printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds, internal/audit/kinds\n'

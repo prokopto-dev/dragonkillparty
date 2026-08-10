@@ -8,12 +8,12 @@ description: Atlas authors and goose applies; the four cases where hand-editing 
 ## The flow
 
 ```
-internal/ledger/kinds/          the ledger enum catalogue — canonical §5's one Go const block,
-      │                          a LEAF package so this step compiles before sqlc has run
+internal/ledger/kinds/          the enum catalogues — canonical §5's one Go const block per
+internal/audit/kinds/            vocabulary, LEAF packages so this step compiles before sqlc has run
       │  make gen  (scripts/gen-enums.sh)
       ▼
 db/schema.hcl                    the SINGLE source of schema truth — you edit this, EXCEPT the
-      │                          region between the GENERATED markers, which make gen owns
+      │                          regions between the GENERATED markers, which make gen owns
       │  make migration NAME=add_bid_hold
       │  → atlas migrate diff --env sqlite    (atlas.hcl declares the dev database)
       ▼
@@ -40,11 +40,19 @@ pass `--dev-url` and nothing may pin one: `TestAtlasHCL_DevURL_IsPerInvocation`,
 `make migration NAME=<snake_case>`, read the generated SQL, commit it. `verify-generated` fails if
 the committed migration does not match a regeneration from the schema.
 
-The `ledger_batch` enum CHECKs are the one part of `db/schema.hcl` you do not edit: the values are
-`internal/ledger/kinds` and `make gen` writes the CHECK expression between the `BEGIN/END
-GENERATED` markers (canonical §5). Add the value in Go, run `make gen`, then
-`make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue` fails on a hand-edit,
-and so does `verify-generated` — `db/schema.hcl` is in `GENERATED_PATHS` for exactly that region.
+The generated enum CHECKs are the parts of `db/schema.hcl` you do not edit: `ledger_batch.kind` and
+`ledger_batch.source` from `internal/ledger/kinds`, and `audit_log.actor_kind` from
+`internal/audit/kinds`. `make gen` writes each CHECK expression between its own `BEGIN/END
+GENERATED` markers (canonical §5) — the marker text names the catalogue, because a whole-line match
+is how each render finds its region and only its region. Add the value in Go, run `make gen`, then
+`make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue` and
+`TestAuditKinds_CheckMatchesCatalogue` fail on a hand-edit, and so does `verify-generated` —
+`db/schema.hcl` is in `GENERATED_PATHS` for exactly those regions.
+
+A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
+`internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in
+`internal/ledger/enumgen`'s `catalogues()`. Three enums here are still bare literals and have not
+had that done: `account.kind`, `account.system_key` and `audit_log.outcome`.
 
 CI additionally runs `atlas schema inspect` on both dialects after applying both migration sets and
 asserts the normalised logical schemas match a committed fingerprint — that is what keeps the
