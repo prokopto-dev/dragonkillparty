@@ -35,7 +35,9 @@ const pinnedCheckoutSHA = "11bd71901bbe5b1630ceea73d27597364c9af683"
 // repoRoot returns the absolute path of the git working tree holding this test. The working
 // directory of a Go test is its own package directory, so it must never be assumed to be the root
 // and an absolute path must never be hardcoded.
-func repoRoot(t *testing.T) string {
+//
+// testing.TB rather than *testing.T because the fixture builders take a TB.
+func repoRoot(t testing.TB) string {
 	t.Helper()
 
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
