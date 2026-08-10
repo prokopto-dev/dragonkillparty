@@ -133,7 +133,7 @@ request contradicts that.
 
 ### How it is loaded
 
-Two faces, byte-for-byte upstream Inter 4.1 (SIL OFL 1.1), committed under
+Two faces — a Latin subset of upstream Inter 4.1 (SIL OFL 1.1) — committed under
 `web/src/assets/fonts/` beside their licence text and a provenance table; `web/src/styles/fonts.css`
 declares the `@font-face` pair at `font-display: swap` and `base.css` imports it before `tokens.css`,
 so `--font-heading` and `--font-body` resolve to real faces rather than to the `system-ui` tail of
@@ -154,10 +154,16 @@ Three things hold that shape, because prose does not:
 - Only 400 and 500 are vendored, which makes "do not bolden a heading past 500" below a fact about
   the shipped bytes rather than a request.
 
-The faces carry Inter's full character set rather than a Latin subset (~225 KB, not ~60 KB): a
-subset would be a binary this repository generated, and the checksums stop meaning anything without
-a reproducible subsetting step. Fonts are assets, so none of it counts against
-`web/bundle-budget.json`, which measures entry JS.
+The faces are a **Latin subset** — 36 KB for the pair rather than 225 KB, and a binary this
+repository generated rather than one it can point at. That trade is only acceptable with the
+provenance intact, so the subsetting is a committed, pinned, byte-reproducible step
+(`scripts/subset-fonts.sh`, `make verify-fonts`) rather than something someone ran on a laptop: the
+same bytes come out across three Python versions, two `fonttools` versions, two `brotli` versions and
+three architectures, and `web/src/assets/fonts/README.md` carries the input hashes, the exact flags
+and the evidence. The range is the Google Fonts `latin` range plus seven symbols the mockups render
+(`→ ← ≥ ≤ ≠ ∞ ⌘`), and `tnum` is retained explicitly — pyftsubset's default feature list drops it,
+and every `font-variant-numeric: tabular-nums` column in this document would stop aligning.
+Fonts are assets, so none of it counts against `web/bundle-budget.json`, which measures entry JS.
 
 | Element | Size | Notes |
 |---|---|---|
