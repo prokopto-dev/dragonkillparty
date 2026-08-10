@@ -24,8 +24,11 @@ wrong by hand.
 **Chosen: D.**
 
 - **Source of truth:** `db/schema.hcl` (Atlas community edition).
-- **CI generates:** `atlas migrate diff --dev-url "sqlite://file?mode=memory"` → versioned `.sql` files
-  in `db/migrations-sqlite/`. Generated migrations are **committed and reviewed** like any other code.
+- **CI generates:** `atlas migrate diff --env sqlite` → versioned `.sql` files in
+  `db/migrations-sqlite/`. Generated migrations are **committed and reviewed** like any other code.
+  The env is `atlas.hcl`, which declares the source, the directory and a throwaway in-memory dev
+  database whose name is fresh per invocation — Atlas locks machine-wide on a name derived from that
+  url, so a fixed one makes concurrent invocations fail rather than queue (#36).
 - **Hand-extended only** for what Atlas cannot express: the append-only triggers
   ([ADR-0002](0002-append-only-ledger.md)), partial unique indexes, `CHECK` constraints, and data
   backfills.

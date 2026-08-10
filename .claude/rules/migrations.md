@@ -15,7 +15,7 @@ internal/ledger/kinds/          the ledger enum catalogue — canonical §5's on
 db/schema.hcl                    the SINGLE source of schema truth — you edit this, EXCEPT the
       │                          region between the GENERATED markers, which make gen owns
       │  make migration NAME=add_bid_hold
-      │  → atlas migrate diff --dev-url "sqlite://file?mode=memory"
+      │  → atlas migrate diff --env sqlite    (atlas.hcl declares the dev database)
       ▼
 db/migrations-sqlite/NNNNNN_add_bid_hold.sql     generated, reviewed, committed
 db/migrations-postgres/…                          generated, compiled in CI only
@@ -26,6 +26,15 @@ goose v3, at boot                 applies. Atlas is a dev/CI dependency the user
 
 Adding Atlas to the runtime would break the single-binary promise, which is why the authoring tool
 and the applying tool are different tools.
+
+**The dev database is named per invocation, and that is about a lock rather than about data.** Atlas
+derives a machine-wide advisory lock name from the dev-url, and invocations that share one do not
+queue — the losers exit 1 with `acquiring database lock: sql/sqlite: lock on "atlas_migrate_diff_…"
+already taken`, which reads as a broken toolchain rather than as a collision, on the change most
+likely to have caused it (#36). `atlas.hcl` computes a fresh name per invocation, so nothing needs to
+pass `--dev-url` and nothing may pin one: `TestAtlasHCL_DevURL_IsPerInvocation`,
+`TestAtlas_FixedDevURL_AppearsNowhere` and `TestAtlas_ConcurrentInvocations_DoNotShareALock` in
+`test/repo/` hold that.
 
 **Never** hand-write a migration from scratch. Change `db/schema.hcl`, run
 `make migration NAME=<snake_case>`, read the generated SQL, commit it. `verify-generated` fails if
