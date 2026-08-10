@@ -127,9 +127,17 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 	_, _ = w.Write(body)
 }
 
-// localCaller reports whether remoteAddr is on the local network: loopback, RFC 1918 / RFC 4193
-// private space, or link-local. Those are the callers docs/design/06-cicd-and-release.md §"Health
-// endpoints" permits to see a /readyz detail.
+// localCaller reports whether remoteAddr is one of the callers
+// docs/design/06-cicd-and-release.md §"Health endpoints" permits to see a /readyz detail: loopback, or
+// private space — RFC 1918 and its IPv6 counterpart RFC 4193, which that document names explicitly
+// because an IPv6-only deployment has no other private range to be reached on.
+//
+// Link-local is NOT on the list, and the omission is deliberate rather than an oversight in the
+// standard library's vocabulary. 169.254/16 and fe80::/10 are reachable by anything sharing a layer-2
+// segment — another tenant's VM on a cloud VLAN, a device on the guild's office wifi — which is not the
+// "has shell access to the box, or is on the network the instance is managed from" audience this
+// exception exists for. An earlier revision of this function admitted them and disclosed which of a
+// guild's ledger protections was missing that little bit more widely than the contract allows.
 //
 // Anything unparseable is treated as PUBLIC. A Unix-socket peer, a proxy protocol string or an empty
 // RemoteAddr all land there, and defaulting an unrecognised caller to "trusted" is the one direction
@@ -154,5 +162,8 @@ func localCaller(remoteAddr string) bool {
 	// ::ffff:10.0.0.1 is an RFC-1918 caller wearing an IPv6 hat; IsPrivate would otherwise say no.
 	ip = ip.Unmap()
 
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	// netip.Addr.IsPrivate is exactly RFC 1918 for IPv4 and RFC 4193 (fc00::/7) for IPv6 — the two
+	// ranges the contract names — and nothing else. It does not include link-local, CGNAT (100.64/10)
+	// or the documentation ranges, and each of those absences is wanted here.
+	return ip.IsLoopback() || ip.IsPrivate()
 }

@@ -692,7 +692,15 @@ one of the four triggers, but a database that *arrived* without one boots anyway
 Reporting it on every probe is the difference between detecting that a guild's ledger became editable
 and somebody finding out.
 
-Detail is disclosed only to loopback and RFC-1918 callers, **with one deliberate exception**: the
+Detail is disclosed only to loopback and RFC-1918 callers — and to the RFC 4193 IPv6 unique-local
+range, which is the same decision and not a widening of it: `fc00::/7` is what an IPv6-only Docker
+network or Kubernetes cluster assigns, so a rule naming only RFC 1918 would be unimplementable there
+and the detail would reach nobody. **Link-local (`169.254/16`, `fe80::/10`) is excluded**, because those
+are reachable by anything sharing a layer-2 segment — another tenant on a cloud VLAN, a device on the
+office wifi — which is not the "has shell access, or is on the network this instance is managed from"
+audience the disclosure is for. CGNAT (`100.64/10`) is excluded for the same reason.
+
+There is **one deliberate exception**: the
 migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public.
 It tells an unauthenticated caller only that the instance is mid-upgrade — which the 503 already
 tells them — and the command it names is in the published documentation. The SPA renders it as a

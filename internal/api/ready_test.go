@@ -228,6 +228,13 @@ func TestReadyz_NoChecker_RouteIsAbsent(t *testing.T) {
 // TestLocalCaller_Classification is the unit test for the address rule, including the cases that are
 // easy to get wrong by writing the obvious prefix check.
 //
+// The allowlist is exactly what docs/design/06-cicd-and-release.md §"Health endpoints" authorises:
+// loopback, RFC 1918, and RFC 4193 unique-local (the IPv6 range an IPv6-only Docker or Kubernetes
+// network assigns, without which the rule could not be satisfied at all there). The rows asserting
+// FALSE are the substance of the test — link-local and CGNAT are each one std-lib predicate away from
+// being admitted by accident, and each would hand the names of a guild's missing ledger protections to
+// anyone sharing a segment or a carrier NAT.
+//
 // Every unparseable form must classify as PUBLIC. That direction is the whole safety property: a
 // RemoteAddr this function does not understand — a Unix socket peer, a proxy-protocol string, an empty
 // value from a handler invoked directly — must not become a disclosure.
@@ -245,10 +252,10 @@ func TestLocalCaller_Classification(t *testing.T) {
 		{name: "rfc1918 ten", addr: "10.4.5.6:9000", local: true},
 		{name: "rfc1918 seventeen-two, the docker bridge", addr: "172.17.0.1:9000", local: true},
 		{name: "rfc1918 one-ninety-two", addr: "192.168.1.20:9000", local: true},
-		{name: "rfc4193 unique local v6", addr: "[fd00::1]:9000", local: true},
-		{name: "link-local v4", addr: "169.254.10.1:9000", local: true},
-		{name: "link-local v6", addr: "[fe80::1]:9000", local: true},
+		{name: "rfc4193 unique local v6, what an IPv6-only docker network assigns", addr: "[fd00::1]:9000", local: true},
 		{name: "v4-mapped rfc1918, an rfc1918 caller in an IPv6 hat", addr: "[::ffff:10.0.0.9]:9000", local: true},
+		{name: "link-local v4 is NOT local: anything on the segment can reach it", addr: "169.254.10.1:9000", local: false},
+		{name: "link-local v6 likewise", addr: "[fe80::1]:9000", local: false},
 		{name: "test-net-1, which httptest defaults to", addr: "192.0.2.1:1234", local: false},
 		{name: "public v4", addr: "203.0.113.7:9000", local: false},
 		{name: "public v6", addr: "[2001:db8::1]:9000", local: false},
