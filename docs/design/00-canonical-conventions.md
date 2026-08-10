@@ -389,7 +389,7 @@ auto-create a person. The award is quarantined, never dropped, and never silentl
 | Endpoint | Touches DB? | Used by |
 |---|---|---|
 | `/healthz` | **No** | The container `HEALTHCHECK`. A DB-touching healthcheck lets Docker kill the container mid-migration. |
-| `/readyz` | Yes — DB reachable, migrations at expected version, worker heartbeat fresh | Load balancers, `dkp doctor`, deploy gates |
+| `/readyz` | Yes — DB reachable, migrations at expected version, the ledger's append-only protection intact, worker heartbeat fresh | Load balancers, `dkp doctor`, deploy gates |
 
 The Dockerfile `HEALTHCHECK` calls `/healthz`, **not** `dkp doctor`.
 

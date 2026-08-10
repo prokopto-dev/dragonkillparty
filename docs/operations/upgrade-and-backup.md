@@ -107,6 +107,28 @@ If it ever disagrees, that is a **bug in this software**, not a data-loss event:
 the cache is derived. `dkp verify-ledger --rebuild` discards and recomputes the cache. Please report
 the drift.
 
+### If `/readyz` reports `ledger_append_only` as `degraded`
+
+```json
+{"check":"ledger_append_only","state":"degraded",
+ "detail":"missing append-only triggers: trg_ledger_entry_no_update. Ledger history can be rewritten…"}
+```
+
+The database-level guarantee that ledger history cannot be edited is **not** in place on this
+database: one of the four triggers that make an `UPDATE` or `DELETE` on `ledger_batch` /
+`ledger_entry` fail is missing. `/readyz` answers `503` for as long as that is true, on every probe,
+so a load balancer takes the instance out of rotation and your monitoring keeps saying so.
+`/healthz` stays green, so nothing kills the container over it.
+
+This binary did not cause it — a migration that drops one of those triggers is refused and rolled
+back — so it arrived from somewhere else: a fork's build, a patched image, or a session with a SQLite
+client against the live file. The upgrade path deliberately still works, and nothing re-creates the
+triggers silently, because a ledger whose history was editable for an unknown period is a
+conversation and not something to paper over. **Please open an issue**, and keep the current backups:
+restoring a snapshot from before the damage is the only action that restores the guarantee *and* what
+it was protecting. The `detail` is shown only to callers on the local network; from anywhere else the
+body carries the verdict without the specifics.
+
 ## A restore drill worth doing once
 
 Twenty minutes, on a laptop, before you need it:

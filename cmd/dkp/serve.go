@@ -70,6 +70,21 @@ const (
 	// readyCheckTimeout bounds one /readyz evaluation. A readiness probe that can hang is a
 	// readiness probe that turns a slow database into an unbounded pile of goroutines.
 	readyCheckTimeout = 5 * time.Second
+
+	// checkMigrations is the `check` value of the schema-version check. It is a wire contract: the
+	// migrations-pending body is specified literally in docs/development/first-ten-prs.md:167 and
+	// docs/design/06-cicd-and-release.md:523, and the SPA renders the command it carries verbatim.
+	checkMigrations = "migrations"
+
+	// checkLedgerAppendOnly is the `check` value of the ledger's database-level append-only guarantee:
+	// the four triggers that make an UPDATE or DELETE on ledger history raise, and the two tables they
+	// are attached to.
+	//
+	// Named for the guarantee rather than for the triggers because it reports both halves, and a
+	// monitoring rule that fires on `check=ledger_append_only` should not have to know that a dropped
+	// TABLE takes its triggers with it — which is exactly the way through a triggers-only check
+	// (internal/store.AppendOnlyState).
+	checkLedgerAppendOnly = "ledger_append_only"
 )
 
 // serveConfig is the resolved configuration for one `dkp serve` invocation.
@@ -94,13 +109,22 @@ type readiness struct{ runner *migrate.Runner }
 
 // Ready answers GET /readyz.
 //
+// It is an ORDERED LADDER over the checks, reporting the first one that is not ready, because the
+// response envelope carries one check (api.ReadyReport) and the migrations body is a wire contract.
+// Migrations therefore come first and that ordering is load-bearing rather than incidental: an
+// instance with pending migrations has to keep answering
+// {"check":"migrations","state":"pending","command":"dkp migrate"} whatever else is true of its
+// database, or the SPA's upgrade banner goes blank for the operator who needs it. A degraded ledger on
+// a pending database is reported as soon as the migration it is waiting for runs, and is logged loudly
+// at every boot in the meantime.
+//
 // A nil runner means the boot path could not build one at all — an unset or unusable DKP_DB_PATH.
 // That reports failed rather than ready: the whole reason /readyz exists separately from /healthz
 // is to be the endpoint that is allowed to say no.
 func (r readiness) Ready() api.ReadyReport {
 	if r.runner == nil {
 		return api.ReadyReport{
-			Check:  "migrations",
+			Check:  checkMigrations,
 			State:  api.ReadyStateFailed,
 			Detail: "no database configured",
 		}
@@ -114,7 +138,7 @@ func (r readiness) Ready() api.ReadyReport {
 	status, err := r.runner.Status(ctx)
 	if err != nil {
 		return api.ReadyReport{
-			Check:  "migrations",
+			Check:  checkMigrations,
 			State:  api.ReadyStateFailed,
 			Detail: err.Error(),
 		}
@@ -125,18 +149,55 @@ func (r readiness) Ready() api.ReadyReport {
 		// This exact body is a contract: docs/development/first-ten-prs.md:167 and
 		// docs/design/06-cicd-and-release.md:523 both specify it, and the SPA renders a banner
 		// containing the command verbatim.
-		return api.ReadyReport{Check: "migrations", State: api.ReadyStatePending, Command: "dkp migrate"}
+		return api.ReadyReport{
+			Check: checkMigrations, State: api.ReadyStatePending, Command: "dkp migrate",
+		}
 	case migrate.StateAhead:
 		return api.ReadyReport{
-			Check:  "migrations",
+			Check:  checkMigrations,
 			State:  api.ReadyStateFailed,
 			Detail: "database schema is newer than this binary",
 		}
 	case migrate.StateUpToDate:
-		return api.ReadyReport{Check: "migrations", State: api.ReadyStateReady}
+		if report, notIntact := appendOnlyReport(status.Protection); notIntact {
+			return report
+		}
+
+		return api.ReadyReport{Check: checkMigrations, State: api.ReadyStateReady}
 	}
 
-	return api.ReadyReport{Check: "migrations", State: api.ReadyStateFailed, Detail: "unknown state"}
+	return api.ReadyReport{Check: checkMigrations, State: api.ReadyStateFailed, Detail: "unknown state"}
+}
+
+// appendOnlyReport is the second rung of the ladder: is the ledger still protected against being
+// rewritten? It reports (report, true) when the answer is anything other than yes.
+//
+// This is the whole of issue #59. The boot path already asks this question and logs the answer — once,
+// at startup, into whatever sink the operator has. A guild whose ledger became editable through a
+// fork's build, a patched image or a support session with a SQLite client would otherwise serve
+// indefinitely, looking entirely normal, with that one message scrolled past during a restart nobody
+// watched. Asking on every probe is what turns a detection into a notification.
+//
+// Degraded rather than failed for real damage, and failed for a read that did not complete: an
+// operator paging on this has to be able to tell "your ledger is unprotected" from "I could not find
+// out". Both answer 503; neither touches /healthz, so Docker will not kill the container over it.
+func appendOnlyReport(p migrate.Protection) (api.ReadyReport, bool) {
+	switch {
+	case p.Err != nil:
+		return api.ReadyReport{
+			Check:  checkLedgerAppendOnly,
+			State:  api.ReadyStateFailed,
+			Detail: p.Err.Error(),
+		}, true
+	case p.Degraded():
+		return api.ReadyReport{
+			Check:  checkLedgerAppendOnly,
+			State:  api.ReadyStateDegraded,
+			Detail: p.Detail(),
+		}, true
+	default:
+		return api.ReadyReport{}, false
+	}
 }
 
 // newServeCmd builds `dkp serve`.

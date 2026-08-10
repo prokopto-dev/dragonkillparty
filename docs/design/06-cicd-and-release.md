@@ -678,9 +678,19 @@ it**, plus a `lint / repo` grep banning those identifiers as `slog` attribute ke
 only a convention is not redaction.
 
 **Health endpoints** follow canonical conventions §13 exactly: `/healthz` never touches the database
-and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, worker
-heartbeat, free disk and outbox lag, and returns 503 with a JSON body naming the failing check *and
-its fix*.
+and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, the ledger's
+append-only protection, worker heartbeat, free disk and outbox lag, and returns 503 with a JSON body
+naming the failing check *and its fix*.
+
+The checks are an **ordered ladder** and the body reports the first one that is not ready, because the
+migrations-pending body below is a wire contract that a pending instance has to keep answering
+whatever else is true of its database. `state` is `pending`, `failed` — the check could not be
+evaluated — or `degraded`: an evaluated check with a bad answer that will keep having that answer
+until a human acts. The ledger's append-only protection is the first `degraded` check
+(`{"check":"ledger_append_only","state":"degraded"}`): the boot path refuses a migration that drops
+one of the four triggers, but a database that *arrived* without one boots anyway, and logs it once.
+Reporting it on every probe is the difference between detecting that a guild's ledger became editable
+and somebody finding out.
 
 Detail is disclosed only to loopback and RFC-1918 callers, **with one deliberate exception**: the
 migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public.
@@ -691,8 +701,12 @@ address would mean the banner is blank for exactly the person who needs it. A `/
 the public internet your schema version, disk state or worker lag is a reconnaissance endpoint, and
 those checks are the ones the redaction is for.
 
-> Landed in Phase 0 PR 3: the migrations check and its public body. The remaining checks and the
-> caller-based redaction land with the code that can fail them.
+> Landed in Phase 0 PR 3: the migrations check and its public body. Landed with the append-only
+> readiness check (#59): the caller-based redaction, applied to every `detail` except the exception
+> above, from `RemoteAddr` and never from `X-Forwarded-For` — a client-supplied header would let anyone
+> unredact this endpoint. Behind a same-host reverse proxy every caller therefore looks like loopback;
+> closing that needs a configured trusted-proxy list, which is filed rather than guessed at. The
+> remaining checks land with the code that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

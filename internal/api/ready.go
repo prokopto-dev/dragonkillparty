@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 )
 
 // ReadyState is what /readyz reports about one check.
@@ -14,6 +16,14 @@ const (
 	ReadyStateReady ReadyState = "ready"
 	// ReadyStatePending — migrations are waiting and DKP_AUTO_MIGRATE is off.
 	ReadyStatePending ReadyState = "pending"
+	// ReadyStateDegraded — the check found real damage that only a human can repair.
+	//
+	// Distinct from failed, which means the check could not be evaluated. This state is an evaluated
+	// check with a bad answer, and one that will keep having that answer for as long as nobody acts:
+	// the append-only protection on the ledger is the first of them (#59). It answers 503 like every
+	// other non-ready state, because a probe that returns 200 with the bad news in the body is a probe
+	// whose bad news nobody's monitoring reads — which is the entire failure this state exists to fix.
+	ReadyStateDegraded ReadyState = "degraded"
 	// ReadyStateFailed — the check could not be evaluated at all.
 	ReadyStateFailed ReadyState = "failed"
 )
@@ -25,6 +35,11 @@ const (
 // exact body {"check":"migrations","state":"pending","command":"dkp migrate"}, and the SPA renders
 // a banner containing that command verbatim. Changing a key here changes what an operator is told
 // to type.
+//
+// It reports ONE check — the first one that is not ready, or the migrations check when everything
+// passed. That is the shape the contract above fixes, so a second check does not widen the envelope
+// into a `checks[]` array; it joins an ordered ladder in the adapter (cmd/dkp/serve.go), with
+// migrations first precisely so the body above is what a pending instance still answers.
 type ReadyReport struct {
 	Check   string     `json:"check"`
 	State   ReadyState `json:"state"`
@@ -34,10 +49,11 @@ type ReadyReport struct {
 
 // ReadyChecker reports whether the instance is ready to serve.
 //
-// Declared here, by the consumer, and satisfied by internal/migrate — so internal/api does not
-// import the migrator and the migrator does not import the API. It is one method because there is
-// one check; the worker heartbeat and the DB-reachability checks canonical §13 also names arrive
-// with the code that can fail them.
+// Declared here, by the consumer, and satisfied by internal/migrate through the adapter in cmd/dkp —
+// so internal/api does not import the migrator and the migrator does not import the API. It stays one
+// method as the checks multiply: the endpoint reports the first check that is not ready, so what the
+// API needs is the answer and not the list. The worker heartbeat, free disk and outbox lag that
+// canonical §13 also names arrive with the code that can fail them.
 type ReadyChecker interface {
 	Ready() ReadyReport
 }
@@ -57,7 +73,8 @@ var readyUnwired = ReadyReport{
 
 // handleReadyz answers the readiness probe.
 //
-// 503 when migrations are pending, 200 when they are not, and — this is the part that matters —
+// 503 whenever a check is not ready — migrations pending, the ledger's append-only protection gone, a
+// check that could not be evaluated — 200 when every check passed, and, this is the part that matters,
 // /healthz continues to answer 200 throughout. Canonical §13 splits them precisely so that a
 // database problem never lets Docker's HEALTHCHECK kill the container, which during a migration is
 // how a guild loses its ledger. A load balancer stops sending traffic; the supervisor does not stop
@@ -71,13 +88,23 @@ var readyUnwired = ReadyReport{
 // names is published documentation. The SPA renders it as a banner for an operator who may not have
 // shell access at that moment.
 //
-// The redaction still has to exist for the checks that genuinely leak shape — worker heartbeat, free
-// disk, outbox lag, raw DB error strings. Those land with the code that can fail them, and `Detail`
-// below is where they will surface, so whoever adds the first one owns adding the caller check.
+// Every OTHER check's detail is redacted for a caller that is not on the local network, which is the
+// obligation the paragraph above handed to whoever added the first such check. That is now the
+// ledger's append-only protection (#59), and it is the sharpest possible example of why the rule
+// exists: its detail names which of the guarantees on this guild's ledger is currently missing, which
+// is reconnaissance handed to precisely the person who would use it. `state` and `check` stay public
+// in every case — an operator's monitoring has to see that something is wrong, and the 503 says that
+// much anyway; what a stranger does not get is WHICH thing and its shape.
 func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) {
 	report := readyUnwired
 	if checker != nil {
 		report = checker.Ready()
+	}
+
+	// Command survives: the migrations-pending body is the documented public exception, and the SPA
+	// renders it for an operator who may have no shell access at that moment. Detail does not.
+	if !localCaller(r.RemoteAddr) {
+		report.Detail = ""
 	}
 
 	status := http.StatusOK
@@ -98,4 +125,34 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+}
+
+// localCaller reports whether remoteAddr is on the local network: loopback, RFC 1918 / RFC 4193
+// private space, or link-local. Those are the callers docs/design/06-cicd-and-release.md §"Health
+// endpoints" permits to see a /readyz detail.
+//
+// Anything unparseable is treated as PUBLIC. A Unix-socket peer, a proxy protocol string or an empty
+// RemoteAddr all land there, and defaulting an unrecognised caller to "trusted" is the one direction
+// that turns a parsing surprise into a disclosure.
+//
+// It reads r.RemoteAddr and NOT X-Forwarded-For, deliberately: that header is client-supplied, so
+// trusting it would let anyone unredact this endpoint with one curl flag. The cost is the real one —
+// behind a reverse proxy on the same host, every caller looks like loopback and the detail is
+// disclosed to whoever the proxy is forwarding for. Closing that needs a configured trusted-proxy
+// list, which is a setting this binary does not have yet and is filed rather than guessed at here.
+func localCaller(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+
+	// ::ffff:10.0.0.1 is an RFC-1918 caller wearing an IPv6 hat; IsPrivate would otherwise say no.
+	ip = ip.Unmap()
+
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
