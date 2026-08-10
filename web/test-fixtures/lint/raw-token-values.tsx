@@ -36,6 +36,11 @@ export function RawValues() {
       <span style={{ border: "1px solid #3f424d" }}>multi-value</span>
       {/* The template-literal spelling. */}
       <span style={{ margin: `0 ${"2"}px 12px` }}>template</span>
+      {/* The NUMERIC spelling. React serialises these as `4px` / `-4px`, so they are the same
+          violation with the unit left implicit — and they were the shape the rule's own comment used
+          to call sanctioned. Both the plain and the unary-minus form must trip. */}
+      <span style={{ padding: 4 }}>numeric length</span>
+      <span style={{ marginTop: -4 }}>negative numeric length</span>
       {/* Prose containing 4px and #ff0000 is NOT a violation — it is JSX text, not a literal. */}
       <span>Base unit 4px x 0.70, accent #ff0000</span>
     </div>

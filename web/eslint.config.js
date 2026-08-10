@@ -58,12 +58,86 @@ const useEffectFetchSelector =
 // could not see them either, and eslint exited 0 on exactly that file. Found in review; the fixture
 // now carries it.
 //
-// Verified against the tree: zero matches. Every existing `style` passes either a number or a
-// `var(--token)` reference, which is the shape this rule steers towards.
+// A NUMBER IN A STYLE OBJECT IS ALSO A RAW px, and an earlier version of this comment wrongly called
+// numbers a sanctioned shape. React serialises `style={{ padding: 4 }}` as `padding: 4px` for every
+// length-valued property, so a bare number is the same violation with the unit left implicit — and it
+// was the one spelling the rule steered authors towards. Found in review.
+//
+// The distinction that has to be preserved is design value vs runtime measurement:
+//
+//   style={{ padding: 4 }}      a design value with the unit hidden        BANNED
+//   style={{ height }}          a measured length from the virtualizer     fine, and load-bearing
+//   style={{ padding: 0 }}      zero needs no unit and no token           fine
+//   style={{ opacity: 0.8 }}    React adds no unit to these properties    fine
+//
+// So the rule bans a non-zero numeric LITERAL, exempts React's own unitless property list, and says
+// nothing about identifiers or expressions — a computed layout measurement is not a design token and
+// there is no rung for it.
 const HEX_BODY = "#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})";
 const PX_BODY = "-?[0-9]+(?:\\.[0-9]+)?px";
 // Unanchored, for use inside a `style` attribute where a multi-value declaration is ordinary.
 const LOOSE_VALUE = "[0-9]px|#[0-9a-fA-F]{3}";
+
+// React's unitless properties, verbatim from its own CSSProperty list. A number here is not a length,
+// so it is not a hidden px. Kept complete rather than trimmed to the ones in use: a partial list would
+// make the rule fire on correct code, and a rule that is sometimes wrong gets disabled.
+const REACT_UNITLESS = [
+  "animationIterationCount",
+  "aspectRatio",
+  "borderImageOutset",
+  "borderImageSlice",
+  "borderImageWidth",
+  "boxFlex",
+  "boxFlexGroup",
+  "boxOrdinalGroup",
+  "columnCount",
+  "columns",
+  "flex",
+  "flexGrow",
+  "flexPositive",
+  "flexShrink",
+  "flexNegative",
+  "flexOrder",
+  "gridArea",
+  "gridRow",
+  "gridRowEnd",
+  "gridRowSpan",
+  "gridRowStart",
+  "gridColumn",
+  "gridColumnEnd",
+  "gridColumnSpan",
+  "gridColumnStart",
+  "fontWeight",
+  "lineClamp",
+  "lineHeight",
+  "opacity",
+  "order",
+  "orphans",
+  "scale",
+  "tabSize",
+  "widows",
+  "zIndex",
+  "zoom",
+  "fillOpacity",
+  "floodOpacity",
+  "stopOpacity",
+  "strokeDasharray",
+  "strokeDashoffset",
+  "strokeMiterlimit",
+  "strokeOpacity",
+  "strokeWidth",
+].join("|");
+
+// Non-zero numeric literal, and its unary-minus spelling (`marginTop: -4` parses as a UnaryExpression,
+// so a Literal-only selector would miss it).
+const numericLengthInStyleSelector =
+  `JSXAttribute[name.name='style'] Property:not([key.name=/^(?:${REACT_UNITLESS})$/]) > Literal[value!=0][raw=/^[0-9]/], ` +
+  `JSXAttribute[name.name='style'] Property:not([key.name=/^(?:${REACT_UNITLESS})$/]) > UnaryExpression[operator='-'] > Literal[value!=0]`;
+
+const numericLengthMessage =
+  "A number in a style object is a raw px — React serialises `padding: 4` as `padding: 4px` " +
+  "(canonical §17). Use var(--rung) from web/src/styles/tokens.css. A measured runtime length may be " +
+  "passed as an identifier or expression; 0 and React's unitless properties are exempt.";
 
 const rawHexAnywhereSelector =
   `Literal[value=/^${HEX_BODY}$/], TemplateElement[value.raw=/^${HEX_BODY}$/]`;
@@ -95,6 +169,7 @@ const lawFourRules = {
     { selector: rawHexAnywhereSelector, message: tokenLayerMessage },
     { selector: rawPxAnywhereSelector, message: tokenLayerMessage },
     { selector: rawValueInStyleSelector, message: tokenLayerMessage },
+    { selector: numericLengthInStyleSelector, message: numericLengthMessage },
   ],
 };
 

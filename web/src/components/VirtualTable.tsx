@@ -53,6 +53,16 @@ export function VirtualTable<Row>({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_HEIGHT_ESTIMATE,
+    // getItemKey is what makes `rowKey` mean anything to the VIRTUALIZER, as opposed to React.
+    //
+    // Without it the virtualizer defaults to the index, so its measurement cache is keyed by POSITION.
+    // This component exists for server-side sort and filter, which is exactly the operation that
+    // re-orders `rows` under stable identities: every measured height would stay attached to the old
+    // index, `getTotalSize()` and the spacer offsets would be computed from heights belonging to other
+    // rows, and the viewport would jump as rows were remeasured — worst for offscreen rows, which are
+    // never remeasured at all. Passing it to the React `<tr key>` alone does not touch that cache; they
+    // are two separate identity maps and both need the same key. Found in review.
+    getItemKey: (index) => rowKey(rows[index]),
     overscan: 8,
   });
 
