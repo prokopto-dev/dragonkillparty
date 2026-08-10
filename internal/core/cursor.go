@@ -23,6 +23,14 @@ import (
 //
 // The codec treats the value as opaque and only compares it for equality: the closed set of classes
 // belongs to the auth layer, not here.
+//
+// The binding is deliberately CLASS-level, not identity-level, matching the property
+// docs/design/03-security.md §4.4 states. Two principals of the same class can present each other's
+// cursors, and that is not a leak: a cursor is a position, not a grant — it contributes a
+// (sort key, tie-breaker) to a WHERE clause, and the handler re-applies its own row-level scope on
+// every page. What the class stops is the boundary that a position alone could cross: a member
+// resuming the listing an officer's wider query produced. Row-level scope is the query's job and
+// this field does not do it for you.
 type PrincipalClass string
 
 // Cursor is an opaque, tamper-evident pagination position (canonical §4, api-endpoints.md).

@@ -34,9 +34,12 @@ Consequences you can rely on:
 - Reusing a cursor with different filters or a different sort returns
   `400 cursor_filter_mismatch` rather than silently wrong results.
 - A tampered or truncated cursor returns `400 cursor_invalid`.
-- **A cursor is not portable between principals.** One issued to a token of one class and replayed
-  under another returns `400 cursor_invalid` — including where the two principals can both see the
-  collection. If your bot switches tokens mid-scan, restart the scan.
+- **A cursor is bound to the principal *class* it was issued to.** Replaying one under a principal
+  of a different class returns `400 cursor_invalid`, including where both could see the collection.
+  It is **not** bound to an individual identity: two principals of the same class share a cursor
+  space, and one can present the other's cursor. That is not a way to see more than you may — a
+  cursor is a *position*, not a grant, and the server re-applies your own authorization to every row
+  of every page. If your bot switches to a token of a different class mid-scan, restart the scan.
 - Cursors survive a server restart. They do not survive a change to the cursor format, which is why
   they carry a version — and why you should treat "cursor rejected" as "start over", not as fatal.
 
