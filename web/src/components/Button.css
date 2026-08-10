@@ -1,0 +1,85 @@
+/*
+ * .btn — transcribed from mockups/nocturne/styles.css. Reads only from the token layer.
+ *
+ * BUTTONS ARE OUTLINED, NEVER FILLED. The primary action is a 1px accent border on transparent with
+ * a tint(12) hover and a tint(22) active. A filled primary button reads as a different product.
+ *
+ * No `transition`: Nocturne has no motion tokens and hover states snap.
+ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--control-gap);
+  cursor: pointer;
+  text-decoration: none;
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  /* Matches .input's size: the pair sits side by side in sign-up rows. */
+  font-size: var(--font-size-md);
+  line-height: 1.2;
+  color: var(--color-text);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
+  border-radius: var(--radius-md);
+}
+
+.btn svg {
+  display: block;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.btn-primary:hover {
+  background: var(--tint-12);
+}
+
+.btn-primary:active {
+  background: var(--tint-22);
+}
+
+.btn-secondary {
+  border-color: var(--color-divider);
+}
+
+.btn-secondary:hover {
+  background: var(--soft-7);
+}
+
+.btn-secondary:active {
+  background: var(--soft-14);
+}
+
+.btn-ghost {
+  color: var(--color-accent);
+  padding-inline: var(--space-1);
+}
+
+.btn-ghost:hover {
+  background: var(--tint-10);
+}
+
+.btn-ghost:active {
+  background: var(--tint-18);
+}
+
+.btn-icon {
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+}
+
+.btn-block {
+  width: 100%;
+  margin-top: var(--space-2);
+}

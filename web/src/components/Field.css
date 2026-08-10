@@ -1,0 +1,44 @@
+/*
+ * .field + label + .input — transcribed from mockups/nocturne/styles.css. Reads only from the token
+ * layer.
+ *
+ * The `.field > label` selector is DIRECT-CHILD on purpose: a label nested deeper (inside a .radio,
+ * inside a .seg-opt) is a control's own label and must not take the field-label treatment.
+ *
+ * Focus on .input has outline-offset 0, not the document default of 2px, so the ring hugs the
+ * bordered control instead of floating off it.
+ */
+
+.field > label {
+  display: block;
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--field-label-gap);
+  color: var(--soft-70);
+}
+
+.input {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: var(--control-pad-y) var(--control-pad-x);
+  font: inherit;
+  font-size: var(--font-size-md);
+  color: var(--color-text);
+  caret-color: var(--color-accent);
+  background: var(--color-surface);
+  border: var(--hairline) solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+
+.input:hover {
+  border-color: var(--soft-45);
+}
+
+.input:focus-visible {
+  border-color: var(--color-accent);
+  outline-offset: 0;
+}
+
+textarea.input {
+  min-height: var(--textarea-min-height);
+  resize: vertical;
+}

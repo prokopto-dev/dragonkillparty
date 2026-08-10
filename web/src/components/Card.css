@@ -1,7 +1,59 @@
-/* Co-located component CSS. Reads only from the token layer — no raw hex, no raw px here. */
+/*
+ * .card — transcribed from mockups/nocturne/styles.css. Reads only from the token layer: no raw
+ * hex, no raw px here (.claude/rules/design-system.md).
+ *
+ * The card is a SURFACE FILL, not an elevated box: it carries no shadow of its own. Elevation is a
+ * separate decision expressed by adding .elev-sm/md/lg, which live here because that is where the
+ * source sheet puts them. Never stack them.
+ */
+
 .card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
   background: var(--color-surface);
-  border-radius: var(--radius-lg);
+}
+
+.card-kicker {
+  font-size: var(--font-size-3xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.card-title {
+  font-family: var(--font-heading);
+  font-weight: var(--font-heading-weight);
+  font-size: var(--font-size-xl);
+  line-height: 1.2;
+}
+
+.card-body {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  opacity: 0.8;
+  flex: 1;
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--control-gap);
+  font-size: var(--font-size-2xs);
+  color: var(--soft-50);
+}
+
+/* Elevation is a hairline ring plus ambient darkness, not a drop shadow. */
+.elev-sm {
   box-shadow: var(--shadow-sm);
-  padding: var(--space-6);
+}
+
+.elev-md {
+  box-shadow: var(--shadow-md);
+}
+
+.elev-lg {
+  box-shadow: var(--shadow-lg);
 }

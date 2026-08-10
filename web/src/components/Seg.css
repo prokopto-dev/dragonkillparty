@@ -1,0 +1,58 @@
+/*
+ * .seg + .seg-opt — transcribed from mockups/nocturne/styles.css. Reads only from the token layer.
+ *
+ * .seg-opt uses :has(input:checked). That is deliberate and documented in
+ * docs/design/09-frontend-and-design-system.md §5: "Either keep that browser floor or restructure
+ * with a state class; do not silently drop the segmented control's keyboard semantics to avoid it."
+ * The alternative — a React-managed `is-selected` class — would let the visual state and the radio
+ * group's real state diverge, so the checked input stays the single source of truth.
+ *
+ * The hidden input follows the same rule as .radio's: visually hidden, still focusable, still in the
+ * tab order and still an arrow-key-navigable radio group.
+ *
+ * Focus offset is -2px so the ring sits INSIDE the segmented control's own border rather than
+ * floating off it.
+ */
+
+.seg {
+  display: inline-flex;
+  overflow: hidden;
+  border: var(--hairline) solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+
+.seg-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--control-gap);
+  padding: var(--seg-pad-y) var(--seg-pad-x);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.seg-opt input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+/* An in-control separator, so it stays solid: only freestanding rules fade. */
+.seg-opt + .seg-opt {
+  border-left: var(--hairline) solid var(--color-divider);
+}
+
+.seg-opt:has(input:checked) {
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 var(--hairline) var(--color-accent);
+}
+
+.seg-opt:not(:has(input:checked)):hover {
+  background: var(--soft-7);
+}
+
+.seg-opt:has(input:focus-visible) {
+  outline: var(--focus-ring) solid var(--color-accent);
+  outline-offset: calc(var(--focus-offset) * -1);
+}
