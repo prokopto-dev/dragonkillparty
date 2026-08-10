@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -326,29 +327,120 @@ func requireAppendOnlyTriggersFire(tb testing.TB, handle *sql.DB) {
 	}
 }
 
-// TestMigrate_FullStack_LedgerDataSurvivesUpgrade migrates a POPULATED ledger across a version
-// boundary and proves the append-only triggers survive a table rebuild.
+// ledgerTablesExist reports whether the migrations applied so far have created the ledger.
 //
-// The shape:
+// Used to find the seed point by asking the database rather than by hard-coding "after 000003": the
+// number is a fact about the current tree, and a test that restates it acquires a second source of
+// truth that nothing keeps in step.
+func ledgerTablesExist(tb testing.TB, handle *sql.DB) bool {
+	tb.Helper()
+
+	var n int
+	require.NoError(tb, handle.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM sqlite_schema
+		 WHERE type = 'table' AND name IN ('pool', 'account', 'ledger_batch', 'ledger_entry')`).Scan(&n))
+
+	return n == 4
+}
+
+// requireLedgerIntact is every guarantee a migration must not break, in one call so that it can be
+// made after EVERY migration rather than only at the end.
 //
-//	(a) apply the real migration set to an empty database;
+// stage names what was just applied, because "the ledger is broken" is a much less useful failure
+// than "the ledger is broken after 000007_add_bid_hold.sql".
+func requireLedgerIntact(tb testing.TB, handle *sql.DB, stage string) {
+	tb.Helper()
+
+	// Whole rows, not counts: a rebuild that copied the columns in the wrong order produces exactly
+	// the right number of exactly wrong rows.
+	require.Equal(tb, wantEntries(), readEntries(tb, handle),
+		"ledger entries did not survive %s unchanged", stage)
+	require.Equal(tb, wantBatches(), readBatches(tb, handle),
+		"ledger batches did not survive %s unchanged — note prev_hash and hash, which are the "+
+			"tamper-evidence and would be silently mangled by a text round-trip", stage)
+
+	// The chain still links. Asserted separately from the row comparison because it is the property
+	// a reader cares about, and a message naming it beats a struct diff.
+	batches := readBatches(tb, handle)
+	require.Len(tb, batches, 2)
+	require.Nil(tb, batches[0].PrevHash, "the genesis batch has no predecessor")
+	require.Equal(tb, batches[0].Hash, batches[1].PrevHash,
+		"the hash chain is broken after %s: batch 2 no longer points at batch 1", stage)
+
+	require.Equal(tb, 0, foreignKeyViolations(tb, handle),
+		"%s left dangling references — PRAGMA integrity_check would still call this database healthy",
+		stage)
+
+	// The parents the entries hang off are still there. A migration that took a referenced row with
+	// it would show up above as a violation, but naming the rows makes the failure readable.
+	var pools, accounts int
+	require.NoError(tb, handle.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM pool WHERE id = ?`, seedPoolID).Scan(&pools))
+	require.Equal(tb, 1, pools, "the seeded pool is gone after %s", stage)
+	require.NoError(tb, handle.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM account WHERE id IN (?, ?)`, seedAccountID, guildBankAccountID).Scan(&accounts))
+	require.Equal(tb, 2, accounts, "a seeded account is gone after %s", stage)
+
+	// The guarantee itself, both halves. The names first, so a missing trigger reports as a missing
+	// trigger rather than as a mutation that unexpectedly succeeded.
+	require.Equal(tb,
+		[]string{
+			"trg_ledger_batch_no_delete",
+			"trg_ledger_batch_no_update",
+			"trg_ledger_entry_no_delete",
+			"trg_ledger_entry_no_update",
+		},
+		ledgerTriggerNames(tb, handle),
+		"a ledger trigger did not survive %s. SQLite's DROP TABLE takes every trigger attached to "+
+			"the table with it and re-creates NOTHING; a migration that rebuilds a ledger table must "+
+			"re-create its triggers after the rename, in the same file "+
+			"(.claude/rules/migrations.md case 1).", stage)
+
+	requireAppendOnlyTriggersFire(tb, handle)
+
+	// And the refused mutations refused: an abort that rolled back cleanly leaves the ledger exactly
+	// as it was. A trigger that fires but lets a partial write through is worse than no trigger.
+	require.Equal(tb, wantEntries(), readEntries(tb, handle),
+		"the ledger changed while the append-only triggers were rejecting mutations")
+	require.Equal(tb, wantBatches(), readBatches(tb, handle),
+		"the ledger changed while the append-only triggers were rejecting mutations")
+}
+
+// TestMigrate_FullStack_LedgerDataSurvivesUpgrade walks a POPULATED ledger forward through every
+// real migration that lands after the ledger exists, and then through a table rebuild.
+//
+// The shape, and the order is the whole point:
+//
+//	(a) install the earliest release whose migrations create the ledger — NOT the whole set;
 //	(b) seed a real pool, account, two chained ledger_batch rows and their four ledger_entry rows,
 //	    through a connection with foreign keys enforced;
-//	(c) apply a later migration that REBUILDS ledger_entry — SQLite's 12-step create/copy/drop/
-//	    rename, which is what any change ALTER TABLE cannot express becomes;
-//	(d) assert the rows are still there and unchanged, the hash chain still links, no foreign key
-//	    dangles, and all four append-only triggers still RAISE(ABORT).
+//	(c) apply each REMAINING REAL migration, one at a time, requiring after every single one that
+//	    the rows, the hash chain, the foreign keys and all four append-only triggers are intact;
+//	(d) then apply a fixture migration that REBUILDS ledger_entry — SQLite's create/copy/drop/
+//	    rename, which is what any change ALTER TABLE cannot express becomes — and require the same
+//	    things again.
 //
-// (c) is the load-bearing step and the reason a fixture is used rather than the real migration set:
-// no shipped migration rebuilds a ledger table yet, so there is nothing in db/migrations-sqlite/ to
-// point this at. The fixture is a faithful copy of what Atlas emits for that change, plus the
-// hand-appended trigger re-creation that .claude/rules/migrations.md case 1 requires — which is
-// precisely the line a real migration will omit, because Atlas cannot see a trigger and so never
-// mentions one.
+// (a) and (c) are what make this a gate on FUTURE migrations rather than a story about a fixture.
+// Seeding after the whole set, which is what an earlier draft of this test did, means every real
+// migration runs against an empty database and the fixture in (d) — which re-creates the triggers
+// unconditionally — would REPAIR whatever a future real rebuild had just broken. The test would
+// stay green while the regression it exists to catch shipped. Seeding at the ledger's own migration
+// and checking after each subsequent one removes both halves of that.
+//
+// (d) is still worth doing separately, because no shipped migration rebuilds a ledger table yet:
+// there is nothing in db/migrations-sqlite/ to point (c) at that exercises the dangerous shape. The
+// fixture is a faithful copy of what Atlas emits for such a change, plus the hand-appended trigger
+// re-creation .claude/rules/migrations.md case 1 requires — which is precisely the line a real
+// migration will omit, because Atlas cannot see a trigger and so never mentions one.
+//
+// This is NOT the N-1 upgrade ladder. That one (`make test-upgrade`) starts from the previous
+// release's published reference database and is Phase 8, blocked on `release-refdb`. This walks the
+// in-repo migration set, which is the part that can be gated today and the part a new migration
+// actually changes.
 //
 // Its negative control lives next door: TestMigrate_FullStack_ForgetfulRebuildLosesTheTriggers
-// applies the same rebuild with that hand-edit removed and watches this test's assertions become
-// false. Without that pair, "the triggers still fire" is an assertion nobody has ever seen fail.
+// applies the same rebuild with that hand-edit removed and watches these assertions become false.
+// Without that pair, "the triggers still fire" is an assertion nobody has ever seen fail.
 func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 	t.Parallel()
 
@@ -359,80 +451,75 @@ func TestMigrate_FullStack_LedgerDataSurvivesUpgrade(t *testing.T) {
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "dkp.db")
 
-	// (a) The release the officer is upgrading FROM.
-	installed, err := migrate.New(migrationDir(t), migrate.Config{
+	// One release per migration. Distinct versions rather than a constant so the snapshot the
+	// migrator takes on each step gets its own name, and so a failure message says which release
+	// the officer was on.
+	release := func(version int) string { return fmt.Sprintf("v0.%d.0", version) }
+
+	var (
+		seededAt int
+		checked  []int
+	)
+
+	for _, version := range realMigrationVersions(t) {
+		// (a)/(c) The set truncated to this release. Each pass has exactly one migration pending,
+		// so the checks below attribute a failure to a single file.
+		runner, err := migrate.New(migrationDirUpTo(t, version), migrate.Config{
+			DBPath: dbPath, DataDir: dataDir, BinaryVersion: release(version), AutoMigrate: true,
+		})
+		require.NoError(t, err)
+		require.NoError(t, runner.Migrate(t.Context()),
+			"migration %06d failed to apply. If the ledger was already seeded at this point, this is "+
+				"the headline failure: a migration that applies to an empty database and not to a "+
+				"real one is the most damaging bug class this product has.", version)
+
+		withRawFK(t, dbPath, func(handle *sql.DB) {
+			if seededAt == 0 {
+				if !ledgerTablesExist(t, handle) {
+					return // Too early to hold an opinion: there is no ledger yet.
+				}
+
+				// (b) Ten years of guild history, in miniature, at the earliest release that can
+				// hold it.
+				seedLedger(t, handle)
+
+				seededAt = version
+
+				return
+			}
+
+			requireLedgerIntact(t, handle, fmt.Sprintf("real migration %06d", version))
+
+			checked = append(checked, version)
+		})
+	}
+
+	require.Positive(t, seededAt,
+		"no migration created pool, account, ledger_batch and ledger_entry, so nothing was seeded "+
+			"and every assertion below is vacuous")
+
+	// Not a style check. If the ledger's own migration is the LAST one, this test seeds and then
+	// checks nothing, and it would have quietly stopped being the upgrade gate it claims to be.
+	// 000003_ledger.sql is shipped and frozen and 000004 already exists, so this can only ever grow.
+	require.NotEmpty(t, checked,
+		"the ledger tables are created by the last real migration, so no real migration was "+
+			"exercised against populated data")
+
+	t.Logf("seeded at migration %06d; checked a populated ledger across real migrations %v", seededAt, checked)
+
+	// (d) The dangerous shape, which no real migration has taken yet. migrationDir renumbers the
+	// fixture to one past the highest real migration, so this stays correct as Phase 1 adds
+	// migrations ahead of it.
+	upgraded, err := migrate.New(migrationDir(t, ledgerRebuildFixture), migrate.Config{
 		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.0.0", AutoMigrate: true,
 	})
 	require.NoError(t, err)
-	require.NoError(t, installed.Migrate(t.Context()), "the real migration set must apply to an empty database")
-
-	// (b) Ten years of guild history, in miniature.
-	seedLedger(t, openRawFK(t, dbPath))
-
-	// (c) The release they are upgrading TO. migrationDir renumbers the fixture to one past the
-	// highest real migration, so this stays correct as Phase 1 adds migrations ahead of it.
-	upgraded, err := migrate.New(migrationDir(t, ledgerRebuildFixture), migrate.Config{
-		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.1.0", AutoMigrate: true,
-	})
-	require.NoError(t, err)
 	require.NoError(t, upgraded.Migrate(t.Context()),
-		"the upgrade failed on a populated database. A migration that applies to an empty database "+
-			"and not to a real one is the most damaging bug class this product has.")
+		"the ledger_entry rebuild failed on a populated database")
 
-	handle := openRawFK(t, dbPath)
-
-	// (d) The data. Whole rows, not counts: a rebuild that copied the columns in the wrong order
-	// produces exactly the right number of exactly wrong rows.
-	require.Equal(t, wantEntries(), readEntries(t, handle),
-		"ledger entries did not survive the rebuild unchanged")
-	require.Equal(t, wantBatches(), readBatches(t, handle),
-		"ledger batches did not survive the rebuild unchanged — note prev_hash and hash, which are "+
-			"the tamper-evidence and would be silently mangled by a text round-trip")
-
-	// The chain still links. Asserted separately from the row comparison because it is the property
-	// a reader cares about, and a message naming it beats a struct diff.
-	batches := readBatches(t, handle)
-	require.Len(t, batches, 2)
-	require.Nil(t, batches[0].PrevHash, "the genesis batch has no predecessor")
-	require.Equal(t, batches[0].Hash, batches[1].PrevHash,
-		"the hash chain is broken: batch 2 no longer points at batch 1")
-
-	require.Equal(t, 0, foreignKeyViolations(t, handle),
-		"the rebuild left dangling references — PRAGMA integrity_check would still call this "+
-			"database healthy")
-
-	// The parents the entries hang off are still there. A rebuild that took a referenced row with
-	// it would show up above as a violation, but naming the rows makes the failure readable.
-	var pools, accounts int
-	require.NoError(t, handle.QueryRowContext(t.Context(),
-		`SELECT count(*) FROM pool WHERE id = ?`, seedPoolID).Scan(&pools))
-	require.Equal(t, 1, pools, "the seeded pool is gone")
-	require.NoError(t, handle.QueryRowContext(t.Context(),
-		`SELECT count(*) FROM account WHERE id IN (?, ?)`, seedAccountID, guildBankAccountID).Scan(&accounts))
-	require.Equal(t, 2, accounts, "a seeded account is gone")
-
-	// The guarantee itself, both halves. The names first, so a missing trigger reports as a missing
-	// trigger rather than as a mutation that unexpectedly succeeded.
-	require.Equal(t,
-		[]string{
-			"trg_ledger_batch_no_delete",
-			"trg_ledger_batch_no_update",
-			"trg_ledger_entry_no_delete",
-			"trg_ledger_entry_no_update",
-		},
-		ledgerTriggerNames(t, handle),
-		"a ledger trigger did not survive the table rebuild. SQLite's DROP TABLE takes every trigger "+
-			"attached to the table with it and re-creates NOTHING; the migration must re-create them "+
-			"after the rename (.claude/rules/migrations.md case 1).")
-
-	requireAppendOnlyTriggersFire(t, handle)
-
-	// And the refused mutations refused: an abort that rolled back cleanly leaves the ledger exactly
-	// as it was. A trigger that fires but lets a partial write through is worse than no trigger.
-	require.Equal(t, wantEntries(), readEntries(t, handle),
-		"the ledger changed while the append-only triggers were rejecting mutations")
-	require.Equal(t, wantBatches(), readBatches(t, handle),
-		"the ledger changed while the append-only triggers were rejecting mutations")
+	withRawFK(t, dbPath, func(handle *sql.DB) {
+		requireLedgerIntact(t, handle, "the ledger_entry table rebuild")
+	})
 }
 
 // TestMigrate_FullStack_ForgetfulRebuildLosesTheTriggers is the negative control for the test above,
