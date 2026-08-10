@@ -176,14 +176,21 @@ dev:
 		wait
 
 ## gen: regenerate ALL generated code — migrations, sqlc, openapi, clients
-# Today: atlas.sum, the schema/migration sync assertion, sqlc, `dkp openapi ->
-# openapi/openapi.json`, and openapi-typescript -> web/src/api/schema.d.ts. openapi-python-client and
-# the SDKs land with the clients/ tree in a later phase; each arrives as another line here.
+# Today: db/schema.hcl's ledger enum CHECKs, atlas.sum, the schema/migration sync assertion, sqlc,
+# `dkp openapi -> openapi/openapi.json`, and openapi-typescript -> web/src/api/schema.d.ts.
+# openapi-python-client and the SDKs land with the clients/ tree in a later phase; each arrives as
+# another line here.
+#
+# gen-enums.sh runs FIRST and the order is load-bearing: it writes the enum CHECKs into
+# db/schema.hcl, and gen-db.sh's next step asserts that db/schema.hcl and the committed migrations
+# describe the same schema. Reversed, a catalogue change would read as clean on the run that
+# introduced it.
 #
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
 # its negative fixtures can run against a tree in t.TempDir(), and a value leaking in from a
 # developer's shell would regenerate somebody else's tree while reporting success here.
 gen:
+	@env -u DKP_REPO_ROOT bash scripts/gen-enums.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
@@ -236,7 +243,7 @@ test-property:
 # word count of the list below, so keep it as explicit package paths — a `...` pattern expands to
 # several packages and one word, and the assertion would then be wrong in the safe-looking direction.
 COVERAGE_FLOOR          := 95
-COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/strategy
+COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/strategy
 test-coverage-floor:
 	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
@@ -321,16 +328,29 @@ verify-commands:
 # CI checkout.
 #
 # `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
-GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api
+#
+# db/schema.hcl is in the list even though it is hand-authored schema truth, because ONE REGION of
+# it is not: scripts/gen-enums.sh rewrites the ledger enum CHECKs between the GENERATED markers from
+# internal/ledger/kinds. Listing the file is what makes a hand-edit of that region fail here with
+# "run make gen" instead of surviving until the CHECK and the Go catalogue disagree in production.
+GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
+                   db/schema.hcl
+#
+# CHAINED WITH `&&`, NOT `;`. A recipe is one shell invocation and make judges it by the LAST
+# command's status, so a `;`-separated version reported success whenever `make gen` failed without
+# writing anything: the two digests were equal because nothing had run, and the final printf exited
+# 0. A generator that dies on a missing tool — which every gen script does deliberately, rather than
+# soft-skipping — is exactly that case, and `codegen-drift` is a required job that would have gone
+# green having generated nothing. TestVerifyGenerated_FailingGenerator_FailsTheTarget holds this.
 verify-generated:
-	@before=$$($(MAKE) --no-print-directory generated-digest); \
-	$(MAKE) --no-print-directory gen; \
-	after=$$($(MAKE) --no-print-directory generated-digest); \
+	@before=$$($(MAKE) --no-print-directory generated-digest) && \
+	$(MAKE) --no-print-directory gen && \
+	after=$$($(MAKE) --no-print-directory generated-digest) && \
 	if [ "$$before" != "$$after" ]; then \
 		printf '\033[31m  generated files are stale — run '"'"'make gen'"'"' and commit\033[0m\n'; \
 		git --no-pager diff --stat -- $(GENERATED_PATHS) 2>/dev/null || true; \
 		exit 1; \
-	fi; \
+	fi && \
 	printf '  \033[32mgenerated files match their sources\033[0m\n'
 
 # A stable digest of every generated file's path and contents. Sorted, so it does not depend on
