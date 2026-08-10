@@ -164,11 +164,37 @@ gate WEB002 "dangerouslySetInnerHTML" \
 # looks wrong on a developer's machine — it only fails on a volunteer's LAN-only server, where the
 # request hangs and the page renders in the wrong face after a three-second block.
 #
-# BANNED: any absolute or protocol-relative asset load. The known font and script CDNs by name, plus
-# the generic shapes — `url(https://…)`, `url(//…)`, an `@import` of a URL, a `<link>` to another
-# origin. The one sanctioned remote call in the SPA is the generated client's, whose base URL comes
-# from the runtime /config.json; that is an API call rather than an asset, and law 4 above already
-# owns it.
+# BANNED: ANY off-origin URL literal — an absolute `https?://host`, or a protocol-relative `//host`.
+# Not a list of asset-bearing shapes.
+#
+# The first version of this rule did enumerate the shapes: `url(…)`, `@import url(…)`, `<link …>`,
+# and the known CDNs by name. It was reviewed and it was wrong — `<script src="https://…">`,
+# `<img src="//…">` and the perfectly valid `@import "https://…";` (the quoted spelling, no `url()`)
+# all walked straight through, and every one of them makes the SPA depend on another origin exactly
+# as much as the shapes that were caught. An enumeration is only ever as complete as the imagination
+# of whoever wrote it, and the failure mode is silent: the gate stays green while the offline
+# contract regresses.
+#
+# So the rule is the invariant itself. The SPA is served from one origin and reaches no other for
+# anything, so a second origin's name has no business appearing in it at all — in an attribute, a
+# stylesheet, a dynamic import, a Worker URL, or a form nobody has thought of yet. Deliberately
+# broader than "assets": an `<a href="https://…">` would trip it too, and that is a decision worth
+# making in a diff rather than a hole to leave open (a link leaks a referrer and a screen full of
+# them is a design change). Nothing in the tree needs one today; the day one does, it is one
+# allowlisted line here.
+#
+# The host must contain a dot. That is what separates `//example.com` from a trailing `//` JS comment
+# or a doubled slash in a path, and it is why the rule can be this broad without being noisy.
+#
+# The named font and script CDNs stay in the pattern even though the generic rule subsumes them:
+# they cost nothing, they name the specific mistake §3 is about, and they still fire on a bare
+# `fonts.googleapis.com` written with no scheme at all.
+#
+# ALLOWED: web/src/api/, the generated client — the same allowlist WEB001 above uses, for a related
+# reason. Those files are generated from openapi/openapi.json; a URL in them is a spec description or
+# a documentation link, a `.d.ts` cannot fetch anything, and the client's own base URL comes from the
+# runtime /config.json rather than a literal. If a real off-origin load ever appears there, the spec
+# is the bug and hand-editing the generated file is not the fix.
 #
 # Comment lines are stripped, in all four spellings the scanned files use. Prose about the rule is
 # not a breach of it: web/src/styles/fonts.css explains what it is NOT doing and why, and a gate
@@ -177,15 +203,17 @@ gate WEB002 "dangerouslySetInnerHTML" \
 # the violation; here, a URL nobody requests is a URL nobody requests.
 #
 # index.html is scanned as well as web/src: it is the document the browser parses first, so a
-# render-blocking <link> in its <head> is the worst version of exactly this bug and the only place
-# it can be written outside src.
+# render-blocking <link> or <script> in its <head> is the worst version of exactly this bug and the
+# only place it can be written outside src.
 if has web/src; then
-    third_party_asset='(fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.bunny\.net|use\.typekit\.net|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com|@import[^;]*url\([^)]*//|url\([[:space:]]*["'"'"']?(https?:)?//|<link[^>]+(https?:)?//)'
+    off_origin='(https?:)?//[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+'
+    third_party_asset="($off_origin|fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.bunny\.net|use\.typekit\.net|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com)"
     hits=$(grep -rnE --include='*.css' --include='*.ts' --include='*.tsx' --include='*.html' \
         "$third_party_asset" web/src web/index.html 2>/dev/null \
+        | grep -vE '^web/src/api/' \
         | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(/\*|\*|//|#|<!--)' || true)
     [ -n "$hits" ] && violation WEB003 \
-        "third-party asset request from the SPA — type and icons are self-hosted so the binary works offline (docs/design/09 §3)" \
+        "off-origin URL in the SPA — type, icons and every other asset are self-hosted so the binary works offline (docs/design/09 §3)" \
         "$hits"
 fi
 

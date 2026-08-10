@@ -142,9 +142,11 @@ them `immutable` for a year, and the SPA makes **no** request off its own origin
 
 Three things hold that shape, because prose does not:
 
-- `WEB003` in `scripts/repo-gates.sh` fails on any Google Fonts or CDN asset reference under
-  `web/src` or in `web/index.html` — the one line of `mockups/nocturne/styles.css` this system does
-  not transcribe.
+- `WEB003` in `scripts/repo-gates.sh` fails on any **off-origin URL** under `web/src` or in
+  `web/index.html` — not a list of asset-bearing shapes, because an enumeration is only as complete
+  as whoever wrote it, and `<script src>`, `<img src="//…">` and the quoted `@import "https://…"`
+  each break the offline contract exactly as much as the Google Fonts line this system declines to
+  transcribe. The generated client under `web/src/api/` is the one exemption.
 - `test/repo/web_fonts_test.go` requires every declared face to resolve to a committed file, every
   committed face to be declared, and the OFL text to be recorded in `NOTICE` and
   `THIRD_PARTY_NOTICES.txt`. The licence gate cannot: it reads the Go module graph and a font is

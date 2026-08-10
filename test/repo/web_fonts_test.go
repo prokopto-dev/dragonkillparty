@@ -273,6 +273,30 @@ func TestRepoGates_ThirdPartyAssetRequest_FailsGate(t *testing.T) {
 			rel:  "web/index.html",
 			body: "<!doctype html>\n<html><head>\n<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">\n</head><body></body></html>\n",
 		},
+		// The four below are the shapes the FIRST version of this gate let through. It enumerated
+		// asset-bearing forms — url(), @import url(), <link> — and every one of these makes the SPA
+		// depend on another origin without matching any of them. They are the reason the rule is now
+		// "no off-origin URL at all" rather than a list.
+		{
+			name: "script tag on another origin",
+			rel:  "web/index.html",
+			body: "<!doctype html>\n<html><head>\n<script src=\"https://example.com/widget.js\"></script>\n</head><body></body></html>\n",
+		},
+		{
+			name: "image tag on another origin",
+			rel:  "web/src/routes/root.tsx",
+			body: "export function Logo() {\n  return <img src=\"//example.com/logo.png\" alt=\"\" />;\n}\n",
+		},
+		{
+			name: "quoted @import with no url()",
+			rel:  "web/src/styles/theme.css",
+			body: "@import \"https://example.com/theme.css\";\n\nbody {\n  color: inherit;\n}\n",
+		},
+		{
+			name: "dynamic import of a remote module",
+			rel:  "web/src/lazy.ts",
+			body: "export const load = () => import(\"https://esm.sh/chart.js\");\n",
+		},
 	}
 
 	for _, tc := range cases {
@@ -309,4 +333,26 @@ func TestRepoGates_SelfHostedFontStylesheet_PassesGate(t *testing.T) {
 	out, code := runGateScript(t, scriptPath(t, "repo-gates.sh"), tree)
 
 	require.Zerof(t, code, "the gates rejected the committed self-hosted font stylesheet:\n%s", out)
+}
+
+// TestRepoGates_UrlInGeneratedClient_PassesGate pins WEB003's one allowlist — web/src/api/, the same
+// exemption WEB001 carries.
+//
+// The rule is deliberately broader than "assets": no off-origin URL anywhere in the SPA. That reach
+// stops at the generated client, which is written by `make gen` from openapi/openapi.json and cannot
+// be hand-edited. A documentation URI in a generated type (`type` in an RFC 9457 problem body points
+// at https://docs.dragonkillparty.org/errors/…) is a string in a `.d.ts`, which fetches nothing —
+// and a gate that turns a spec description into a red build in an unrelated PR gets deleted rather
+// than understood. If a real off-origin load ever appears there, the spec is the bug.
+func TestRepoGates_UrlInGeneratedClient_PassesGate(t *testing.T) {
+	t.Parallel()
+
+	tree := t.TempDir()
+	writeRepoFile(t, tree, "web/src/styles/base.css", "body { color: var(--color-text); }\n")
+	writeRepoFile(t, tree, "web/src/api/schema.d.ts",
+		"export interface Problem {\n  /** @example https://docs.dragonkillparty.org/errors/not_found */\n  type: string;\n}\n")
+
+	out, code := runGateScript(t, scriptPath(t, "repo-gates.sh"), tree)
+
+	require.Zerof(t, code, "WEB003 fired on a URL in the generated client, which is not hand-editable:\n%s", out)
 }
