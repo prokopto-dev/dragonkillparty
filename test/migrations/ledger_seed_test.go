@@ -97,10 +97,19 @@ func TestMigrate_LedgerSeed_PoolAndSystemAccountsExist(t *testing.T) {
 	require.Equal(t, wantKeys, keys, "exactly the four known system accounts must be seeded")
 }
 
-// TestMigrate_LedgerSeed_TriggersInstalled proves the four append-only triggers are present in
-// sqlite_schema after a fresh install. The behavioural test that they FIRE lives in
+// TestMigrate_LedgerSeed_TriggersInstalled proves every append-only trigger is present in
+// sqlite_schema after a fresh install. The behavioural tests that they FIRE live in
 // internal/ledger/trigger_test.go; this one is the schema-level backstop that they EXIST, so a
 // migration that dropped a trigger fails here as well as in the fingerprint.
+//
+// The assertion is an EXACT list over the whole database, and it stays exact. That is where its
+// value is: an exact list notices a trigger that vanished AND a trigger that appeared, and the
+// second half is what would catch a delete trigger being added to audit_log — which would silently
+// make `dkp audit prune` impossible (domain model §17). Narrowing the query to the ledger's two
+// tables would make this test pass without being told about either change.
+//
+// PR 10a added the fifth entry. Adding a trigger means editing this list, in the same change,
+// exactly as it means regenerating the fingerprint.
 func TestMigrate_LedgerSeed_TriggersInstalled(t *testing.T) {
 	t.Parallel()
 
@@ -133,10 +142,14 @@ func TestMigrate_LedgerSeed_TriggersInstalled(t *testing.T) {
 	require.NoError(t, rows.Err())
 
 	want := []string{
+		// audit_log gets an UPDATE trigger and deliberately NO delete trigger: audit rows are
+		// prunable by retention, ledger rows are never removed at all. The asymmetry is asserted in
+		// both directions by TestMigrate_AuditLog_HasAnUpdateTriggerAndNoDeleteTrigger.
+		"trg_audit_log_no_update",
 		"trg_ledger_batch_no_delete",
 		"trg_ledger_batch_no_update",
 		"trg_ledger_entry_no_delete",
 		"trg_ledger_entry_no_update",
 	}
-	require.Equal(t, want, got, "all four append-only triggers must be installed")
+	require.Equal(t, want, got, "every append-only trigger must be installed, and no others")
 }

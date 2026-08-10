@@ -14,6 +14,21 @@ type Account struct {
 	UpdatedAt int64
 }
 
+type AuditLog struct {
+	ID            string
+	Seq           int64
+	At            int64
+	ActorKind     string
+	ActorLabel    string
+	Action        string
+	ResourceKind  string
+	ResourceID    *string
+	Outcome       string
+	LedgerBatchID *string
+	PrevHash      []byte
+	Hash          []byte
+}
+
 type BalanceSnapshot struct {
 	PoolID      string
 	AccountID   string
@@ -28,6 +43,15 @@ type DkpMetum struct {
 	Key       string
 	Value     string
 	UpdatedAt int64
+}
+
+type EventOutbox struct {
+	EventSeq    int64
+	ID          string
+	Topic       string
+	EventType   string
+	ResourceRef string
+	CreatedAt   int64
 }
 
 type Guild struct {

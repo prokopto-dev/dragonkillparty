@@ -36,6 +36,23 @@ type Queries interface {
 	UpsertBalanceSnapshot(ctx context.Context, arg sqlitegen.UpsertBalanceSnapshotParams) error
 	GetAccount(ctx context.Context, id string) (sqlitegen.Account, error)
 	GetSystemAccount(ctx context.Context, systemKey *string) (sqlitegen.Account, error)
+
+	// The ledger WRITE path (Phase 0 PR 10a). These five are called from exactly one place —
+	// ledger.Service.Commit — and all five run inside a single store.Tx together with
+	// UpsertBalanceSnapshot and UpsertMetaValue, because a batch, its entries, the snapshot cache,
+	// the audit row and the outbox event are one economic event and must not be separable.
+	//
+	// There is no UpdateLedgerBatch and no DeleteLedgerEntry on this contract, and there never will
+	// be: the tables are append-only (canonical §10), the database triggers abort a mutation, and a
+	// correction is a reversal batch. A method added here would be a method the Postgres target has
+	// to implement, which is how an invariant becomes a portability requirement by accident.
+	InsertLedgerBatch(ctx context.Context, arg sqlitegen.InsertLedgerBatchParams) error
+	InsertLedgerEntry(ctx context.Context, arg sqlitegen.InsertLedgerEntryParams) error
+	GetBatchByIdempotencyKey(ctx context.Context, arg sqlitegen.GetBatchByIdempotencyKeyParams) (sqlitegen.GetBatchByIdempotencyKeyRow, error)
+	GetLedgerBatch(ctx context.Context, id string) (sqlitegen.GetLedgerBatchRow, error)
+	NextAuditSeq(ctx context.Context) (int64, error)
+	InsertAuditLog(ctx context.Context, arg sqlitegen.InsertAuditLogParams) error
+	InsertOutboxEvent(ctx context.Context, arg sqlitegen.InsertOutboxEventParams) (int64, error)
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

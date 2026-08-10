@@ -2,11 +2,13 @@ package ledger_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
 
 	"github.com/prokopto-dev/dragonkillparty/db"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
 
@@ -63,4 +65,36 @@ func seedBatchWithEntry(tb testing.TB, s *store.Store, poolID, accountID string)
 		entryID, batchID, poolID, accountID)
 
 	return batchID, entryID
+}
+
+// testAccountID builds the deterministic account id for index i.
+//
+// Deterministic AND order-preserving: padID left-pads to a fixed width, so testAccountID(i) sorts
+// before testAccountID(j) exactly when i < j. Both properties are load-bearing —
+// TestAllocate_Tiebreak_IsAccountIDAscending asserts the +1 lands on the LOWEST ids, and it could
+// not do so against ids whose lexical order did not follow their index.
+func testAccountID(i int) core.ULID { return core.ULID(padID("ACCT", int64(i))) }
+
+// seedPersonAccounts inserts n person accounts and returns their ids in index order.
+//
+// The four seeded system accounts are not enough for a commit test: the EntriesReferenceLiveAccounts
+// invariant looks every entry's account up, so a batch crediting forty raiders needs forty accounts
+// that exist. kind='person' requires a non-null person_id (the account_person_shape CHECK); the
+// value is a plain string because `person` is a Phase 1 table and the column carries no foreign key
+// yet.
+func seedPersonAccounts(tb testing.TB, s *store.Store, n int) []core.ULID {
+	tb.Helper()
+
+	ids := make([]core.ULID, n)
+
+	for i := range n {
+		ids[i] = testAccountID(i)
+
+		s.ExecForTest(tb,
+			`INSERT INTO account (id, kind, person_id, system_key, label, created_at, updated_at)
+			 VALUES (?, 'person', ?, NULL, ?, 1704067200000000, 1704067200000000)`,
+			ids[i].String(), padID("PERS", int64(i)), fmt.Sprintf("Raider %d", i))
+	}
+
+	return ids
 }

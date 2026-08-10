@@ -879,3 +879,212 @@ table "balance_snapshot" {
   without_rowid = true
   strict        = true
 }
+
+// audit_log — one row per mutating action: who did this, with what authority, and to what
+// (docs/design/01-domain-model.md §17).
+//
+// It is NOT the ledger and it is not derivable from the ledger. The batch is the *what*; the audit
+// row is the *who/how/from where*. §17.1 tabulates the differences; the one that shapes this table
+// is deletability. A ledger row is never removed, so ledger_batch carries a no-delete trigger. An
+// audit row IS prunable by retention (default 3 years) and pruning leaves an `audit_gap_marker`
+// scar — so audit_log gets an append-only UPDATE trigger and DELIBERATELY no DELETE trigger. A
+// delete trigger here would make `dkp audit prune` impossible without first dropping the guardrail,
+// which is exactly the "rebuild ate the trigger" failure .claude/rules/migrations.md warns about.
+//
+// MINIMAL, and the omissions are deliberate rather than forgotten. The domain-model shape carries
+// twenty-four columns; this ships eleven — the ones a commit can populate truthfully today. Every
+// column left out is either a FK to a Phase 2 table (`actor_user_id` -> app_user,
+// `actor_service_account_id` -> service_account, `actor_token_id` -> api_token, `permission_used`
+// -> permission) or a forensic field whose only writer is the Phase 2 HTTP middleware
+// (`operation_id`, `request_id`, `ip`, `ip_truncated_at`, `user_agent`, `before_json`, `after_json`,
+// `reason`, `resource_label`, `actor_is_beneficiary`). Shipping a column no writer can fill means
+// shipping a column every reader must treat as absent, and the freeze rule cuts the other way:
+// ALTER TABLE ADD COLUMN is a cheap forward migration, while removing one is SQLite's 12-step
+// rebuild (docs/development/phase-0-pr5-decisions.md §U2, applied here for the same reason).
+table "audit_log" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // GAPLESS within the instance, allocated inside the writing transaction exactly as the ledger's
+  // per-pool seq is. Gaplessness is what gives the hash chain below an ordering to hash over: a
+  // chain whose links can be renumbered proves nothing. ux_audit_seq is the guardrail.
+  //
+  // This is instance-wide where ledger_batch.seq is per-pool, and event_outbox.event_seq is a third,
+  // different number. Three sequences answering three questions; sharing a name would guarantee a
+  // bot author mixes them (domain model §15).
+  column "seq" {
+    null = false
+    type = integer
+  }
+
+  // Wall-clock, Micros. The ledger's bitemporal effective_at/recorded_at split does not apply here:
+  // an audit row records when an action happened, and an action cannot be backdated.
+  column "at" {
+    null = false
+    type = integer
+  }
+
+  // CHECK enum. 'system' is what a Phase 0 commit records, because there is no authentication yet
+  // and inventing a user id would be a lie in the one table whose entire value is that it is not.
+  column "actor_kind" {
+    null = false
+    type = text
+  }
+
+  // DENORMALISED actor name, on purpose: it must survive the actor's deletion or erasure. An audit
+  // row that reads "deleted user 01J..." is not an audit trail.
+  column "actor_label" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // The PERMISSION key, verbatim ('ledger.batch.commit'), never a rendered sentence. A rendered
+  // sentence is neither queryable nor diffable — that is EQdkp's `__logs.log_value`, and §17 marks
+  // it as deliberately not copied.
+  column "action" {
+    null = false
+    type = text
+  }
+
+  column "resource_kind" {
+    null = false
+    type = text
+  }
+
+  column "resource_id" {
+    null = true
+    type = text
+  }
+
+  // CHECK enum. A denied or errored action is audited too — the forensic question "who TRIED this?"
+  // is at least as important as "who did it".
+  column "outcome" {
+    null = false
+    type = text
+  }
+
+  // The cross-link. Committing a ledger batch also writes an audit row carrying the batch id, so a
+  // dispute goes from a balance to the actor in one join (§17.1). A real FK: ledger_batch exists.
+  column "ledger_batch_id" {
+    null = true
+    type = text
+  }
+
+  // The instance-wide chain, independent of the ledger's per-pool chains (§9.6). The head lives in
+  // dkp_meta('audit_head'); prev_hash is NULL only at seq = 1. BLOB — a raw 32-byte SHA-256.
+  column "prev_hash" {
+    null = true
+    type = blob
+  }
+
+  column "hash" {
+    null = false
+    type = blob
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "audit_log_batch" {
+    columns     = [column.ledger_batch_id]
+    ref_columns = [table.ledger_batch.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  check "audit_log_actor_kind_enum" {
+    expr = "actor_kind IN ('user', 'service_account', 'system', 'boot', 'import', 'anonymous')"
+  }
+
+  check "audit_log_outcome_enum" {
+    expr = "outcome IN ('success', 'denied', 'error')"
+  }
+
+  // The gaplessness guardrail: two rows cannot claim the same position in the chain.
+  index "ux_audit_seq" {
+    unique  = true
+    columns = [column.seq]
+  }
+
+  // The forensic view's default ordering, newest first.
+  index "ix_audit_at" {
+    on {
+      column = column.at
+      desc   = true
+    }
+  }
+
+  strict = true
+}
+
+// event_outbox — the GLOBAL event sequence that feeds SSE, webhooks and Last-Event-ID
+// (docs/design/01-domain-model.md §15).
+//
+// Written in the SAME transaction as the state change it describes. That is the whole point of an
+// outbox: a subscriber can never see an event for a batch that was rolled back, and can never miss
+// an event for a batch that committed, because there is no second write that could fail on its own.
+//
+// `event_seq` is INTEGER PRIMARY KEY AUTOINCREMENT and the AUTOINCREMENT keyword is load-bearing,
+// not decoration. Without it SQLite reuses the largest freed rowid, so pruning old events would let
+// a NEW event take a number an old event already published — and a client resuming from
+// Last-Event-ID would silently skip everything in between. With it the high-water mark persists in
+// sqlite_sequence and a number is never reused. It is allocated by the INSERT and read back with
+// RETURNING, so no caller has to guess at it.
+//
+// The row carries a resource REFERENCE, never a document: '/api/v1/ledger/batches/<ulid>'. A
+// payload copied into the outbox is a payload that goes stale, and a second place authorisation has
+// to be re-decided; a subscriber fetches the resource and gets whatever it is allowed to see.
+table "event_outbox" {
+  schema = schema.main
+
+  column "event_seq" {
+    null           = false
+    type           = integer
+    auto_increment = true
+  }
+
+  // The event's own ULID, stable across a redelivery. Distinct from event_seq, which is a position.
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // 'guild' | 'pool:<ulid>' | 'bid:<ulid>' — the SSE topic a subscriber filters on.
+  column "topic" {
+    null = false
+    type = text
+  }
+
+  // 'ledger.batch.committed' — the same vocabulary as notification.event_type.
+  column "event_type" {
+    null = false
+    type = text
+  }
+
+  column "resource_ref" {
+    null = false
+    type = text
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.event_seq]
+  }
+
+  // The tailer's read: everything on one topic after a given position, in order.
+  index "ix_outbox_topic" {
+    columns = [column.topic, column.event_seq]
+  }
+
+  strict = true
+}
