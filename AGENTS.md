@@ -114,7 +114,11 @@ resolves to a real target, not that every target appears here.)
 - Public errors are RFC 9457 `application/problem+json` with a stable machine `code` from the closed
   enum in `internal/api/errors.go`. Adding a code is a spec change and needs a docs page.
 - Never return 200 with an error body — EQdkp did that and every bot author suffered.
-- Never swallow an error to make a test pass. Never `_ = err`.
+- Never swallow an error to make a test pass. In production code, do not call and discard: an error
+  is returned, handled, or logged. `errcheck` fires on an error return that is never assigned at
+  all; `_ = f()` is the deliberate, reviewable waiver, reserved for a call whose failure there is
+  nothing to do about — a deferred `Close` on a read-only body, a write to a response already
+  committed — and never for an error you could have returned.
 - Log with `slog`, structured. No secrets, no PATs, no bid amounts before reveal.
 
 ## When you are uncertain

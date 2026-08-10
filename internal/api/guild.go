@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
 )
 
@@ -120,6 +120,19 @@ func (in *UpdateGuildInput) toInput() guild.UpdateInput {
 }
 
 // toDTO maps a domain guild.Guild to the wire GuildDTO, formatting the stored Micros into RFC 3339.
+//
+// The timestamps go out through core.Micros.String(), which is the ONE RFC 3339 layout in the repo
+// (internal/core/micros.go): UTC, an explicit Z, and a fixed six-digit fraction, per canonical §2 and
+// .claude/rules/api-endpoints.md. This file carried a private microsToRFC3339 with the layout spelled
+// out a second time, written before core.Micros existed and marked "until then"; core.Micros exists
+// now, so the copy is gone. A second formatter is a second thing to get wrong — time.RFC3339Nano
+// trims trailing fractional zeros, so the obvious rewrite of either copy silently makes the field
+// variable-width — and one exported type per concept (.claude/rules/go-idioms.md) applies to the
+// function that renders it too.
+//
+// guild.Guild stores CreatedAt/UpdatedAt as a bare int64 (its own comment defers the retype to
+// core.Micros), so the conversion happens here, at the wire boundary, which is where every other
+// shape change in this file already happens.
 func toDTO(g guild.Guild) GuildDTO {
 	return GuildDTO{
 		Name:              g.Name,
@@ -131,21 +144,9 @@ func toDTO(g guild.Guild) GuildDTO {
 		InactiveAfterDays: g.InactiveAfterDays,
 		AutoSetInactive:   g.AutoSetInactive,
 		HideInactive:      g.HideInactive,
-		CreatedAt:         microsToRFC3339(g.CreatedAt),
-		UpdatedAt:         microsToRFC3339(g.UpdatedAt),
+		CreatedAt:         core.Micros(g.CreatedAt).String(),
+		UpdatedAt:         core.Micros(g.UpdatedAt).String(),
 	}
-}
-
-// microsToRFC3339 formats an int64 Unix-microseconds timestamp as an RFC 3339 string in UTC with a
-// Z and FIXED microsecond precision, per canonical §2 and .claude/rules/api-endpoints.md ("RFC 3339
-// with microsecond precision, always Z").
-//
-// The layout is spelled out rather than time.RFC3339Nano because RFC3339Nano trims trailing
-// fractional zeros — it would emit "...:00Z" for a whole second and "...00.001Z" for a millisecond,
-// giving variable-width output where the contract promises a fixed six-digit fraction. PR 8 makes
-// this a method on core.Micros; until then it lives here, at the one wire boundary that needs it.
-func microsToRFC3339(micros int64) string {
-	return time.UnixMicro(micros).UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 }
 
 // registerGuild declares GET and PATCH /api/v1/guild.

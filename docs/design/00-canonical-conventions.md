@@ -245,19 +245,45 @@ editing roles and role assignments, downloading backups, reading PII in bulk, co
 and changing security-affecting instance configuration — identity-provider credentials, MFA and
 session policy, and the outbound-request allowlist.
 
-**As permission keys, that set is exactly:** `token.mint`, `token.revoke`,
-`admin.security.manage`, `admin.roles.manage`, `admin.backup`, `admin.owner`, `person.pii.read`,
-`audit.read`, `import.commit`. This enumeration is normative and supersedes the three different
-lists that [`03-security.md`](03-security.md), [`../api/auth-and-scopes.md`](../api/auth-and-scopes.md)
-and `.claude/agents/api-contract-guardian.md` each carried before Phase 0 PR 5; all three are
-corrected to match. The architectural test derives the `x-dkp-pat-forbidden` set from this list
-rather than from a hand-maintained copy.
+**As permission keys, that set is exactly:**
+
+```
+token.mint token.revoke
+admin.security.manage admin.roles.manage admin.backup admin.owner
+person.pii.read audit.read
+import.commit
+```
+
+This enumeration is normative and supersedes the three different lists that
+[`03-security.md`](03-security.md), [`../api/auth-and-scopes.md`](../api/auth-and-scopes.md) and
+`.claude/agents/api-contract-guardian.md` each carried before Phase 0 PR 5; all three are corrected
+to match. The architectural test derives the `x-dkp-pat-forbidden` set from this list rather than
+from a hand-maintained copy.
+
+The block above is fenced, like the permission-key and PAT-scope lists, because it is **parsed**:
+`TestCapabilityFloor_MatchesCanonicalConventions` compares `authz.CapabilityFloor()` against these
+tokens element by element and in both directions, so the Go function and this section cannot drift
+apart. Keep the order in sync with `CapabilityFloor()` — adding a key here without adding it there
+(or the reverse) is a red test, which is the point.
 
 **`admin.settings` is deliberately NOT in it.** Renaming a guild, adding a server or recomputing a
 pool is session-only because no PAT scope family covers instance configuration — not because it
 alters authentication state. Session-only and session-plus-step-up are different controls, and
 conflating them puts a re-authentication prompt in front of an officer changing the guild's point
 label.
+
+**`ops.read` is deliberately NOT in it either, and its category is why the question comes up.** It is
+grouped under *sensitive reads* beside `person.pii.read` and `audit.read`, which **are** in the floor
+— but the category is a display grouping for the role editor and the matrix, not a security boundary.
+The floor is the set of keys, and membership is decided by what a compromise costs. `ops.read` reads
+job queues, doctor checks and the last ledger-verify result
+([`02-api-design.md`](02-api-design.md)): operational status, carrying neither PII nor a
+security-affecting read, so it fails the "authentication, authorization, or bulk-export state" test
+above. Like `admin.settings` it is **session-only by omission** — no PAT scope family covers the
+operational surface — which means an `/ops` operation declares `{"session": {}}` alone and declares
+**neither** `x-dkp-scopes` **nor** `x-dkp-pat-forbidden`. Marking it pat-forbidden asserts a floor
+membership this paragraph denies, and `TestArch_ScopeCoverage_MatchesSecurity` derives that set from
+`authz.CapabilityFloor()`, so it is a red test rather than a judgement call.
 
 > Supersedes: `admin:*`, `admin:tokens` and `admin:backup` as token scopes. Also deletes the
 > incoherent "a PAT may not self-deal" rule — `dkp:adjust` exists precisely to create adjustments;
