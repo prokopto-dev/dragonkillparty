@@ -1019,10 +1019,23 @@ table "audit_log" {
     on_delete   = NO_ACTION
   }
 
+  // BEGIN GENERATED — audit_log.actor_kind CHECK, from internal/audit/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestAuditKinds_CheckMatchesCatalogue fails on.
   check "audit_log_actor_kind_enum" {
     expr = "actor_kind IN ('user', 'service_account', 'system', 'boot', 'import', 'anonymous')"
   }
+  // END GENERATED — audit_log.actor_kind CHECK.
 
+  // NOT generated, and the asymmetry is deliberate rather than an oversight: `outcome` has no Go
+  // catalogue, so this CHECK is still the only place its three values are written. Nothing in Go
+  // validates it — the one writer passes 'success' as a literal — so there is no second list to
+  // drift from, which is why the actor_kind work above stopped where it did. Giving it a catalogue
+  // is issue #53 — do not hand-add a fourth value here without doing that first, because the Phase 2
+  // middleware that writes 'denied' and 'error' is the change that would otherwise write the second
+  // list.
   check "audit_log_outcome_enum" {
     expr = "outcome IN ('success', 'denied', 'error')"
   }

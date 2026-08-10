@@ -2232,6 +2232,8 @@ CREATE TABLE audit_log (
   id  TEXT NOT NULL PRIMARY KEY,
   seq INTEGER NOT NULL,                           -- GAPLESS within the instance; allocated in-tx
   at  INTEGER NOT NULL,
+  -- The live list is GENERATED from internal/audit/kinds into db/schema.hcl (canonical §5);
+  -- this sketch is illustrative and db/schema.hcl is the schema truth.
   actor_kind TEXT NOT NULL
              CHECK (actor_kind IN ('user','service_account','system','boot','import','anonymous')),
   actor_user_id  TEXT NULL REFERENCES app_user(id),
