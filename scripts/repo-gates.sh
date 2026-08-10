@@ -9,6 +9,10 @@
 # is installed before the code it gates, which is the whole point (ROADMAP sequencing doctrine #1).
 
 set -euo pipefail
+# Resolved BEFORE the cd below, because MIG003 delegates to a sibling script. DKP_REPO_ROOT points
+# at the tree being INSPECTED, which for a negative fixture is a t.TempDir() with no scripts/ in it;
+# the gate implementations always live here, next to this file.
+gates_dir="$(cd "$(dirname "$0")" && pwd)"
 # DKP_REPO_ROOT lets a test point the gates at a tree other than this checkout. It exists so the
 # gates can be *tested rather than trusted*: a test writes a deliberately tainted tree into
 # t.TempDir() — an unpinned action, a stray sql.Open — and requires this script to exit non-zero.
@@ -159,6 +163,51 @@ gate MIG001 "DDL inside a goose Down block (migrations are forward-only)" \
 # way, because "make gen produced an empty sqlitegen package" is not a thing anyone notices.
 gate MIG002 "backtick-quoted identifier in a migration (sqlc parses no table and says so about the query)" \
     db/migrations-sqlite '*.sql' '`'
+
+# MIG003 — a migration that has shipped is frozen.
+#
+# db/migrations-sqlite/SHIPPED.lock records `filename sha256` for every migration that has appeared
+# in a tagged release, so a row in it means that file has ALREADY RUN on somebody's database.
+# Editing it makes an existing install and a fresh install end up with different schemas, and
+# "works on a fresh install, breaks on upgrade" is the most damaging bug class for this audience.
+#
+# TWO assertions, and the second is the one that makes the first mean anything:
+#
+#   1. Every listed file exists and still hashes to its recorded value.
+#   2. The manifest at the MERGE BASE is an exact byte PREFIX of the manifest now.
+#
+# Without (2), (1) is trivially defeated by changing both halves in the same commit: edit the
+# migration, rewrite its row — or just delete the row, which un-freezes the file entirely — and the
+# tree is self-consistent again. The manifest ships in the same diff as the migration it protects,
+# so it can only be trusted against its own history.
+#
+# (2) needs git history, so it SKIPS loudly when the base cannot be read (a shallow checkout).
+# ci.yml's `lint / repo` job carries `fetch-depth: 0` and TestCI_LintRepoJob_FetchesFullHistory
+# fails if that is removed, which is what stops the skip from becoming the normal case.
+#
+# This is NOT what atlas.sum already covers, and the difference is the reason the gate exists.
+# atlas.sum protects the current set as it is: edit a migration, re-run `atlas migrate hash`, and
+# the checksum agrees again — `make verify-generated` is satisfied because regeneration is
+# idempotent, and the edited file ships. SHIPPED.lock records history instead of state, and nothing
+# in this repository is allowed to rewrite it.
+#
+# Deliberately NOT a completeness check. A migration added on a feature branch has not shipped and
+# must not be listed yet, so requiring every file to appear here would fire on the one change the
+# rule is supposed to permit. Completeness is checked once, at tag time, by
+# `make release-shipped-lock` in release.yml's `prepare` job.
+#
+# The check itself lives in scripts/shipped-lock.sh because the release path runs the same code with
+# one more assertion; a second copy here would be a second implementation nobody keeps in step.
+if [ -f db/migrations-sqlite/SHIPPED.lock ]; then
+    if lock_out=$(DKP_REPO_ROOT="$PWD" bash "$gates_dir/shipped-lock.sh" verify 2>&1); then
+        printf '%s\n' "$lock_out"
+    else
+        violation MIG003 "a migration listed in db/migrations-sqlite/SHIPPED.lock was modified or deleted" \
+            "$lock_out"
+    fi
+else
+    note "skip" "[MIG003] db/migrations-sqlite/SHIPPED.lock does not exist yet"
+fi
 
 # --- The golden-file rewrite fence ------------------------------------------------------------
 # Only `run:` lines count. A comment explaining the fence is not a breach of it.
