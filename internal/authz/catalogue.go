@@ -200,6 +200,11 @@ func Catalogue() []Permission {
 // function rather than from a hand-maintained copy, so the three sources cannot drift apart again
 // (decision record §16). A fresh literal, for the same reason Catalogue() is.
 //
+// The order and membership below match the fenced capability-floor block in canonical §6 exactly:
+// TestCapabilityFloor_MatchesCanonicalConventions compares the two element by element and in both
+// directions. Editing this list without editing §6 (or the reverse) is a red test, because the arch
+// test's x-dkp-pat-forbidden expectation follows this function and would otherwise change silently.
+//
 // Every key here is also a key in Catalogue(); TestCapabilityFloor_KeysAreInCatalogue asserts it, so
 // a floor entry that is not a real permission is a red test rather than an unenforceable rule.
 func CapabilityFloor() []string {

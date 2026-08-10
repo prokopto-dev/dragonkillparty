@@ -245,13 +245,26 @@ editing roles and role assignments, downloading backups, reading PII in bulk, co
 and changing security-affecting instance configuration — identity-provider credentials, MFA and
 session policy, and the outbound-request allowlist.
 
-**As permission keys, that set is exactly:** `token.mint`, `token.revoke`,
-`admin.security.manage`, `admin.roles.manage`, `admin.backup`, `admin.owner`, `person.pii.read`,
-`audit.read`, `import.commit`. This enumeration is normative and supersedes the three different
-lists that [`03-security.md`](03-security.md), [`../api/auth-and-scopes.md`](../api/auth-and-scopes.md)
-and `.claude/agents/api-contract-guardian.md` each carried before Phase 0 PR 5; all three are
-corrected to match. The architectural test derives the `x-dkp-pat-forbidden` set from this list
-rather than from a hand-maintained copy.
+**As permission keys, that set is exactly:**
+
+```
+token.mint token.revoke
+admin.security.manage admin.roles.manage admin.backup admin.owner
+person.pii.read audit.read
+import.commit
+```
+
+This enumeration is normative and supersedes the three different lists that
+[`03-security.md`](03-security.md), [`../api/auth-and-scopes.md`](../api/auth-and-scopes.md) and
+`.claude/agents/api-contract-guardian.md` each carried before Phase 0 PR 5; all three are corrected
+to match. The architectural test derives the `x-dkp-pat-forbidden` set from this list rather than
+from a hand-maintained copy.
+
+The block above is fenced, like the permission-key and PAT-scope lists, because it is **parsed**:
+`TestCapabilityFloor_MatchesCanonicalConventions` compares `authz.CapabilityFloor()` against these
+tokens element by element and in both directions, so the Go function and this section cannot drift
+apart. Keep the order in sync with `CapabilityFloor()` — adding a key here without adding it there
+(or the reverse) is a red test, which is the point.
 
 **`admin.settings` is deliberately NOT in it.** Renaming a guild, adding a server or recomputing a
 pool is session-only because no PAT scope family covers instance configuration — not because it
