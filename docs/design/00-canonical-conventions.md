@@ -259,6 +259,19 @@ alters authentication state. Session-only and session-plus-step-up are different
 conflating them puts a re-authentication prompt in front of an officer changing the guild's point
 label.
 
+**`ops.read` is deliberately NOT in it either, and its category is why the question comes up.** It is
+grouped under *sensitive reads* beside `person.pii.read` and `audit.read`, which **are** in the floor
+— but the category is a display grouping for the role editor and the matrix, not a security boundary.
+The floor is the set of keys, and membership is decided by what a compromise costs. `ops.read` reads
+job queues, doctor checks and the last ledger-verify result
+([`02-api-design.md`](02-api-design.md)): operational status, carrying neither PII nor a
+security-affecting read, so it fails the "authentication, authorization, or bulk-export state" test
+above. Like `admin.settings` it is **session-only by omission** — no PAT scope family covers the
+operational surface — which means an `/ops` operation declares `{"session": {}}` alone and declares
+**neither** `x-dkp-scopes` **nor** `x-dkp-pat-forbidden`. Marking it pat-forbidden asserts a floor
+membership this paragraph denies, and `TestArch_ScopeCoverage_MatchesSecurity` derives that set from
+`authz.CapabilityFloor()`, so it is a red test rather than a judgement call.
+
 > Supersedes: `admin:*`, `admin:tokens` and `admin:backup` as token scopes. Also deletes the
 > incoherent "a PAT may not self-deal" rule — `dkp:adjust` exists precisely to create adjustments;
 > self-dealing is controlled by `actor_is_beneficiary` audit flagging, not by blocking the scope.
