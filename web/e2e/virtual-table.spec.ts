@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { openDesignPage } from "./design-page";
+import { openDesignPage, resolveColourToken } from "./design-page";
 
 /*
  * VirtualTable — the row-identity guarantee, and what it tells assistive technology.
@@ -161,6 +161,76 @@ test.describe("VirtualTable", () => {
 
     const firstDataRow = table.locator("tbody tr:not([aria-hidden])").first();
     await expect(firstDataRow).toHaveAttribute("aria-rowindex", "2");
+  });
+
+  /*
+   * The sticky header, and the sanctioned break with docs/design/09 §4 that comes with it.
+   *
+   * test/repo/design_tokens_test.go checks the DECLARATIONS — that the divergence is written down and
+   * scoped to `.virtual-table`. It cannot check that any of it works: `position: sticky` inside a
+   * <table> is exactly the kind of thing that is one browser bug away from doing nothing, and a
+   * header that quietly stopped sticking would leave every declaration in place. So this asserts the
+   * three things the decision actually bought, in a browser.
+   */
+  test("the header sticks, stays opaque, and carries the rule the row gave up", async ({ page }) => {
+    const viewport = page.locator(VIEWPORT);
+    const headerCell = page.locator(`${VIEWPORT} thead th`).first();
+
+    const beforeScroll = await headerCell.boundingBox();
+    expect(beforeScroll).not.toBeNull();
+
+    await page.evaluate((selector) => {
+      const box = document.querySelector(selector);
+      if (box instanceof HTMLElement) {
+        box.scrollTop = box.clientHeight * 3;
+      }
+    }, VIEWPORT);
+
+    // 1. It sticks. Scrolled three viewports down, the labels are still where they started — the
+    //    whole point of the exception, and the thing 200 characters x 12 columns needs.
+    await expect
+      .poll(async () => (await viewport.evaluate((box) => box.scrollTop)) > 0)
+      .toBe(true);
+
+    const afterScroll = await headerCell.boundingBox();
+    expect(afterScroll).not.toBeNull();
+    expect(
+      Math.abs(afterScroll!.y - beforeScroll!.y),
+      "the header moved when the body scrolled: position: sticky on the <th> is not taking effect",
+    ).toBeLessThanOrEqual(1);
+
+    // 2. It is opaque. Data rows scroll UNDERNEATH a sticky header; a translucent one shows them
+    //    through, which looks like a rendering fault rather than a design.
+    await expect(headerCell).toHaveCSS("background-color", await resolveColourToken(page, "--color-bg"));
+
+    // 3. The rule moved. The <th> paints it and the <tr> no longer does — two hairlines a scroll
+    //    apart is the defect the suppression exists to avoid, and it is invisible in a screenshot of
+    //    an unscrolled table.
+    const headerRow = page.locator(`${VIEWPORT} thead tr`);
+    await expect(headerCell).toHaveCSS("background-image", /gradient/);
+    await expect(headerRow).toHaveCSS("background-image", "none");
+  });
+
+  test("an ordinary table keeps the fading thead rule the virtualised one gives up", async ({
+    page,
+  }) => {
+    // The scoping IS the exception (docs/design/09 §4): the end-fade is given up on a scrolling
+    // header and nowhere else. `:not([aria-rowcount])` picks the plain .table, which VirtualTable
+    // sets and an ordinary one omits.
+    const plainHeaderRow = page.locator("table.table:not([aria-rowcount]) thead tr");
+
+    const rule = await plainHeaderRow.evaluate((tr) => getComputedStyle(tr).backgroundImage);
+
+    expect(rule, "the ordinary table's thead lost its rule").toContain("gradient");
+
+    // `transparent` computes to rgba(0, 0, 0, 0), and the fade needs one stop at each end. The 48px
+    // is --hairline-fade, resolved: the distance §4 names as the thing that makes this Nocturne.
+    expect(
+      rule.split("rgba(0, 0, 0, 0)").length - 1,
+      `the ordinary table's thead rule no longer fades to transparent at BOTH ends — the sticky-header ` +
+        `exception is scoped to .virtual-table precisely so this one is unaffected. Computed: ${rule}`,
+    ).toBeGreaterThanOrEqual(2);
+    expect(rule, `the end-fade is no longer --hairline-fade wide. Computed: ${rule}`).toContain("48px");
   });
 
   test("the spacer rows are hidden from assistive technology", async ({ page }) => {
