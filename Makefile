@@ -267,6 +267,21 @@ test-coverage-floor:
 test-importer:
 	@$(call notyet,Phase 5,runs against real EQdkp 2.0.5/2.1.5/2.2.27/2.3.39 fixtures plus the hostile fixture)
 
+## test-e2e: Playwright against the built binary — needs Node (budget ~60s)
+# The browser half of the pyramid. It boots bin/dkp — the SHIPPED binary with the SPA embedded, not
+# a Vite dev server — and drives /_design, which renders every token and every base component class
+# on one page. What it locks are the Nocturne guarantees no other kind of test can see: Escape
+# closing a modal, focus containment, focus RETURNING to the control that opened a dialog (that one
+# has already regressed once), the segmented control's radio semantics, label association, the
+# three focus-ring offsets, the layered row hover, the virtualizer's row-keyed measurement cache,
+# and axe over the whole page.
+#
+# NOT in `check`, deliberately: it downloads a browser and needs a built binary, and
+# docs/design/04-testing.md's inner-loop doctrine is "never run the E2E suite in the inner loop".
+# CI runs it as its own sharded, required job. SHARD ("n/m") selects a shard.
+test-e2e:
+	@bash scripts/test-e2e.sh
+
 ## lint: the repo grep gates, the dependency licence gate, golangci-lint and eslint
 lint: lint-repo licence-gate lint-go lint-web
 
@@ -582,8 +597,10 @@ test-authz:
 test-migrations:
 	@$(GO) test -count=1 ./test/migrations/...
 
-test-e2e:
-	@$(call notyet,Phase 3,Playwright against the built binary)
+# test-e2e used to live here as a stub. It does real work now and has moved above the divider with
+# the rest of the hand-runnable targets, for the same reason test-property and test-coverage-floor
+# did — and because docs/design/04-testing.md says that when E2E earns a local target, the AGENTS.md
+# row ships in the same PR.
 
 # Phase 8, not Phase 0 PR 3, and the correction is deliberate.
 #

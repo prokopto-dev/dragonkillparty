@@ -35,7 +35,7 @@ re-run it against the real schema are recorded as item V4 of
 | Golden-file (parsers, reports, query plans, SDK output) | ~12% (≈250) | ~8% | `make test-unit` | < 1 s |
 | **Integration (real SQLite, real HTTP, real jobs)** | **~45% (≈900)** | **~40%** | **`make test`** | **~30 s** |
 | Importer (real MariaDB containers) | ~3% (≈60) | ~5% | `make test-importer` | ~120 s, tag-gated |
-| E2E (Playwright against the released binary) | ~1% (12 journeys) | ~2% | release workflow | ~3 min |
+| E2E (Playwright against the released binary) | ~1% (12 journeys) | ~2% | `make test-e2e`, sharded in CI | ~3 min |
 
 Percentages are targets to steer by, not quotas to enforce.
 
@@ -603,6 +603,13 @@ three-journey smoke subset; the full matrix runs before release.
 `serious`/`critical` violations on the primary routes**, with a per-route, shrink-only allowlist under
 the same anti-tampering rules as golden files.
 
+That allowlist is `web/e2e/axe-allowlist.json`, and shrink-only is enforced rather than requested:
+`web/e2e/a11y.spec.ts` fails both on a violation that is not listed **and** on a listed violation that
+no longer occurs, so a fix cannot leave its exception behind. Every entry carries an issue number —
+an exception nobody agreed to is a lowered bar, and `test/repo/e2e_gate_test.go` asserts the number
+is there. It holds one entry today (`.card-meta` contrast, issue #58), in the vendored design
+reference itself.
+
 State the limits honestly: axe covers roughly 30–50% of WCAG. Its value here is regression-catching on
 this product's specific risks — form labels on the bid input, **contrast on guild-configurable class
 colours** (an officer *will* pick an unreadable one), header semantics on the standings grid, and
@@ -891,9 +898,14 @@ go test ./internal/strategy/... -run TestZeroSum   # sub-second
 go test ./internal/... -race -shuffle=on           # exactly what CI runs
 ```
 
-E2E, the perf budgets and the mutation ritual have **no Makefile row yet**. They run in the release
-workflow. If they earn a local target (`make test-e2e`, `make test-perf`, `make mutate`), the
-`AGENTS.md` row ships in the same PR.
+E2E has earned its row: `make test-e2e` is in `AGENTS.md`'s table, and CI runs it as a sharded,
+required job on every non-draft PR rather than only before a release. It boots the built binary and
+today drives `/_design` — the design system's own guarantees, which is what the harness was stood up
+for; the twelve journeys land on it from Phase 3.
+
+The perf budgets and the mutation ritual still have **no Makefile row**, and run in the release
+workflow. If they earn a local target (`make test-perf`, `make mutate`), the `AGENTS.md` row ships in
+the same PR.
 
 **Inner-loop doctrine**, stated as a rule an agent can follow:
 

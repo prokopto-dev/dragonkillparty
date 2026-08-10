@@ -19,6 +19,7 @@ is a bug worth reporting.
 | ledger + strategy properties (200 checks; 20 000 nightly) | `make test-property` | ~10 s |
 | coverage floor for `internal/ledger` + `internal/strategy` | `make test-coverage-floor` | ~10 s |
 | importer suite (needs Docker) | `make test-importer` | ~120 s |
+| browser suite (Playwright vs the built binary) | `make test-e2e` | ~60 s |
 | lint | `make lint` | ~20 s |
 | build + vet + staticcheck + tsc | `make vet` | ~15 s |
 | new migration | `make migration NAME=<snake_case>` | — |
