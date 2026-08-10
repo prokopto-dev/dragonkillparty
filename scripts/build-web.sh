@@ -6,8 +6,16 @@
 # its own directory, so the built assets have to be staged beside embed.go.
 #
 # The committed placeholders under internal/ui/dist (index.html, assets/app-placeholder.js) keep the
-# package buildable with no JS toolchain; this script REPLACES them with the real output. That output
-# is gitignored, so a build never dirties the tree.
+# package buildable with no JS toolchain; this script REPLACES them with the real output. The real
+# output is gitignored — but the `rm -rf` below deletes the TRACKED placeholders to make room for it,
+# so a build DOES leave the tree dirty (`git status` shows the placeholders deleted). Restore them
+# with `git checkout -- internal/ui/dist` when you are done.
+#
+# This used to claim "a build never dirties the tree", which was false and actively misleading: the
+# next `make test` failed in internal/ui, and before the fix it failed with a message about a wrong
+# cache header rather than about a missing file. internal/ui/embed_test.go now DISCOVERS an embedded
+# asset instead of naming app-placeholder.js, so the sequence AGENTS.md prescribes — `make build`
+# then `make test` — no longer produces a misleading failure.
 #
 # Fails loudly when pnpm is missing rather than skipping: a `make build` that silently shipped the
 # placeholder SPA would produce a binary that serves "web UI not yet built" to a guild. The one

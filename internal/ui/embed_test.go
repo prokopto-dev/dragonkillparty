@@ -72,6 +72,39 @@ func TestEmbed_APIPath_Returns404(t *testing.T) {
 	}
 }
 
+// embeddedJSAsset returns the path of a .js file under dist/assets, DISCOVERED rather than named.
+//
+// It used to be the literal "/assets/app-placeholder.js", and that coupled the test to build state
+// instead of to the property it asserts. `make build` stages the real Vite output over
+// internal/ui/dist with an `rm -rf` first, which deletes the committed placeholders — so a developer
+// running the sequence AGENTS.md prescribes (`make build`, then `make test`) got a failure claiming
+// the immutable cache header was wrong, when the truth was that the file the test asked for no longer
+// existed and the handler had correctly fallen back to index.html with `no-cache`. The failure named
+// the wrong thing entirely, and CI could not see it because `build / binary` and `test / unit` run in
+// separate jobs from clean checkouts.
+//
+// Discovering the asset makes the assertion true of whatever is embedded — the committed placeholder
+// or a real hashed bundle — which is what "a hashed asset carries the immutable header" always meant.
+func embeddedJSAsset(t *testing.T) string {
+	t.Helper()
+
+	// dist/assets relative to the package directory, which is a Go test's working directory — the same
+	// tree `//go:embed all:dist` compiled in. Read from disk rather than through a new exported
+	// accessor: the embed is not worth widening this package's API for a test.
+	entries, err := os.ReadDir(filepath.Join("dist", "assets"))
+	require.NoError(t, err, "read internal/ui/dist/assets")
+
+	for _, entry := range entries {
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".js" {
+			return "/assets/" + entry.Name()
+		}
+	}
+
+	t.Fatal("no .js asset is embedded under dist/assets — internal/ui has nothing to serve")
+
+	return ""
+}
+
 // TestEmbed_HashedAsset_IsImmutable asserts a real asset (anything that is not index.html) is served
 // with the one-year immutable cache directive. This is the property that lets a browser never
 // revalidate a content-hashed bundle.
@@ -80,7 +113,7 @@ func TestEmbed_HashedAsset_IsImmutable(t *testing.T) {
 
 	h := newHandler(t)
 
-	rec := get(t, h, "/assets/app-placeholder.js")
+	rec := get(t, h, embeddedJSAsset(t))
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "public, max-age=31536000, immutable", rec.Header().Get("Cache-Control"),

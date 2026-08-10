@@ -454,7 +454,14 @@ soft(p)  →  color-mix(in srgb, var(--color-text)   <p>%, transparent)
 tint(p)  →  color-mix(in srgb, var(--color-accent) <p>%, transparent)
 ```
 
-**Enforced by:** an ESLint rule banning raw hex and raw `px` in `web/src` outside the token layer
-(the design system ships its own `_adherence.oxlintrc.json` expressing the same two rules); a unit
-test on the contrast validator; and a test asserting the shipped token names match
-`09-frontend-and-design-system.md`, so a token cannot be renamed without the document moving with it.
+**Enforced by:** two mechanisms banning raw hex and raw `px` in `web/src` outside the token layer,
+because neither covers it alone — `DS001`/`DS002` in `scripts/repo-gates.sh` grep the stylesheets
+(ESLint cannot lint CSS), and `no-restricted-syntax` in `web/eslint.config.js` walks the AST of
+`*.ts`/`*.tsx` (a grep cannot tell a value from prose, and JSX text is not a string literal). The
+AST half also catches the numeric spelling, since React serialises `style={{ padding: 4 }}` as
+`padding: 4px`. Removing either half is a regression against this section. The design system ships
+its own `_adherence.oxlintrc.json` expressing the same two rules. Plus: a unit test on the contrast
+validator; and `test/repo/design_tokens_test.go`, which parses §2 of
+`09-frontend-and-design-system.md` and asserts the shipped sheet matches it — so a token cannot be
+renamed, revalued or added without the document moving with it, and the `--color-*` namespace stays
+closed to that table.

@@ -108,8 +108,11 @@ because a volunteer's Raspberry Pi is the deployment target.
 - Guild-configurable class colours go through the contrast validator — an officer will otherwise
   pick an unreadable one, and there is a unit test. The floor is 3:1 against `--color-bg`, and the
   validator is server-side so a bot setting a theme is held to it too.
-- **No raw hex and no raw `px` outside `web/src/styles/`.** Lint fails on both. A value the scale
-  does not carry gets a named rung in the token sheet, not an inline literal.
+- **No raw hex and no raw `px` outside `web/src/styles/tokens.css`.** Lint fails on both. A value the
+  scale does not carry gets a named rung in the token sheet, not an inline literal. The exemption is
+  the token sheet, **not** all of `web/src/styles/` — this file used to say the latter, and
+  `base.css` duly shipped a `text-underline-offset: 3px` that read as compliant. Canonical §17 is
+  normative and says "outside the token layer".
 - No React component snapshot tests. They are brittle and low-value; the Playwright journeys and the
   integration suite carry the weight.
 - `web/src/dev/` (the "copy as curl" request inspector) is dev-only and must be tree-shaken out of
