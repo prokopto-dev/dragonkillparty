@@ -1,7 +1,8 @@
 /*
  * Base document styles — the document half of Nocturne, transcribed from
- * mockups/nocturne/styles.css. Element defaults plus the two document-level utilities (.hr and
- * .text-muted); every component class lives in its own co-located file under web/src/components/.
+ * mockups/nocturne/styles.css. Element defaults plus the three document-level utilities (.hr,
+ * .text-muted and .label-heading); every component class lives in its own co-located file under
+ * web/src/components/.
  *
  * Everything here reads from tokens.css — no raw hex, no raw px (.claude/rules/design-system.md);
  * a value the scale does not carry gets a named rung in tokens.css, not an inline literal.
@@ -104,6 +105,22 @@ figcaption {
 
 .text-muted {
   color: var(--soft-55);
+}
+
+/*
+ * A group label: h6's TYPE at whatever heading LEVEL the outline actually calls for.
+ *
+ * Nocturne's scale makes h6 the right visual weight for a label above a group of things, which is
+ * why /_design reached for <h6> under an <h2> and skipped four levels doing it (issue #61). A
+ * heading level is structure and is what a screen-reader user navigates by; size is presentation.
+ * So the size moves to a class and the element keeps the level the document needs — <h3
+ * class="label-heading"> under an <h2>. Specificity does the rest: (0,1,0) beats the h1-h6 element
+ * rules at (0,0,1), so this wins on every level without !important or a source-order gamble.
+ */
+.label-heading {
+  font-size: var(--font-size-sm);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /*

@@ -607,8 +607,14 @@ That allowlist is `web/e2e/axe-allowlist.json`, and shrink-only is enforced rath
 `web/e2e/a11y.spec.ts` fails both on a violation that is not listed **and** on a listed violation that
 no longer occurs, so a fix cannot leave its exception behind. Every entry carries an issue number —
 an exception nobody agreed to is a lowered bar, and `test/repo/e2e_gate_test.go` asserts the number
-is there. It holds one entry today (`.card-meta` contrast, issue #58), in the vendored design
-reference itself.
+is there. **It is empty today.** The one entry it ever held — `.card-meta` contrast, issue #58,
+inherited from the vendored design reference — was deleted by the change that raised the rung, which
+is the shrink-only rule doing exactly what it is for.
+
+Two defects get a named test of their own beside the sweep, because the sweep is the wrong instrument
+for each: `.card-meta`'s contrast ratio is measured and stated (a regression then reads "4.25:1,
+floor is 4.5" rather than "a rule fired"), and heading order is asserted directly because axe grades
+it `moderate` and the gate is serious/critical — an outline is not a matter of degree.
 
 State the limits honestly: axe covers roughly 30–50% of WCAG. Its value here is regression-catching on
 this product's specific risks — form labels on the bid input, **contrast on guild-configurable class

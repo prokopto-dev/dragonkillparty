@@ -123,6 +123,33 @@ The mockups call these `soft(p)` and `tint(p)` and use them 325 times — 266 `s
 59 `tint()` at 6–26%. Implement them as real helpers in the token layer. They account for most of the colour
 surface area and are the single biggest lever on whether a screen looks like Nocturne.
 
+### Which soft() rungs are legal as text
+
+`soft()` is a translucent ink, so a rung has no contrast ratio of its own — only a ratio against the
+ground it is layered over. Over `--color-surface`, the harder of the two grounds and the one every
+card, dialog and raised panel uses, the ramp crosses the 4.5:1 WCAG AA floor for normal-size text
+between 50 and 55:
+
+- **soft(45)** ≈ 3.7:1 — decoration only: borders, hairlines, fills. Never text.
+- **soft(50)** ≈ 4.25:1 — **not legal as text**, at any size this product sets.
+- **soft(55)** ≈ 4.85:1 — the floor. `.text-muted`.
+- **soft(60)** ≈ 5.5:1 — small text. `.card-meta` at 11px.
+- **soft(70)** ≈ 6.9:1 — `.field > label`.
+
+Over `--color-bg` each rung is fractionally kinder (soft(50) reaches ≈4.55:1), which is not a licence
+to paint text with it: a class lands on both grounds and the surface is the case that has to hold.
+
+Nocturne itself paints `.card-meta` soft(50), and **this is the one place the shipped sheet
+deliberately diverges from `mockups/nocturne/styles.css`** — at 11px that is ≈4.25:1, under the
+floor (issue #58, found by the axe scan the moment `/_design` was first scanned).
+`web/src/components/Card.css` uses soft(60) and records why. The mockup is not edited: it is vendored
+byte-exact and its byte count is a fingerprint (`docs/design/mockups/README.md`), so a divergence
+belongs here and in the sheet's own comment, not in the reference.
+
+Contrast is asserted where it is painted, not where it is declared: `web/e2e/a11y.spec.ts` measures
+the composited foreground against the composited ground in the browser. A rung name in a stylesheet
+cannot tell you what a translucent ink lands on.
+
 ---
 
 ## 3. Type
@@ -242,6 +269,15 @@ prefers whitespace) · `.text-muted`.
 
 `.seg-opt` uses `:has(input:checked)`. Either keep that browser floor or restructure with a state
 class; do not silently drop the segmented control's keyboard semantics to avoid it.
+
+**`.label-heading` — ours, added here.** h6's type (13px, `0.08em` tracking, uppercase) as a
+size-only utility, so a group label can take the heading **level** its outline needs and h6's
+**look** at the same time. `/_design` shipped `<h6>` group titles under an `<h2>` because h6 was the
+right visual weight for a label — which skipped four levels and handed a screen-reader user a wrong
+map of the page (issue #61). A heading level is structure and is what heading navigation moves
+through; size is presentation. Write `<h3 class="label-heading">`; never pick a level for its size.
+It lives in `base.css` beside `.text-muted` because it is a document utility rather than a component,
+and the first real screen with a labelled group will want it.
 
 **Application component families**, which no library provides and every screen depends on:
 

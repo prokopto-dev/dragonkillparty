@@ -37,12 +37,22 @@
   flex: 1;
 }
 
+/*
+ * ONE DELIBERATE DIVERGENCE FROM THE SOURCE SHEET, and the only one in this file: the mockup paints
+ * this soft(50), which over --color-surface is 4.25:1 — under the 4.5:1 WCAG AA floor for text this
+ * size (issue #58, found by the axe scan in web/e2e/a11y.spec.ts). soft(60) is 5.49:1 and is an
+ * existing rung, so the fix is a step up the same ramp rather than a new colour. See
+ * docs/design/09-frontend-and-design-system.md §2 "Which soft() rungs are legal as text".
+ *
+ * It ends up one rung LIGHTER than .text-muted's soft(55), which is the right way round: this is the
+ * smallest text in the system at 11px, and smaller text needs more contrast, not less.
+ */
 .card-meta {
   display: flex;
   align-items: center;
   gap: var(--control-gap);
   font-size: var(--font-size-2xs);
-  color: var(--soft-50);
+  color: var(--soft-60);
 }
 
 /* Elevation is a hairline ring plus ambient darkness, not a drop shadow. */
