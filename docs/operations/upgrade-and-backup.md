@@ -126,8 +126,13 @@ client against the live file. The upgrade path deliberately still works, and not
 triggers silently, because a ledger whose history was editable for an unknown period is a
 conversation and not something to paper over. **Please open an issue**, and keep the current backups:
 restoring a snapshot from before the damage is the only action that restores the guarantee *and* what
-it was protecting. The `detail` is shown only to callers on the local network; from anywhere else the
-body carries the verdict without the specifics.
+it was protecting.
+
+**If you see the verdict but no `detail`, ask the process directly rather than through your reverse
+proxy** — `curl -s localhost:8080/readyz` on the box, or `docker exec <container> ...`. The names of
+the missing triggers go only to a caller that is both on the local network *and* not being relayed by
+a proxy, because a proxy on the same host makes every caller on the internet look local. The trigger
+names are also in the boot log at error level, every start.
 
 ## A restore drill worth doing once
 

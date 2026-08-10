@@ -22,9 +22,20 @@ func (s stubChecker) Ready() ReadyReport { return s.report }
 func readyz(t *testing.T, checker ReadyChecker, remoteAddr string) (int, string) {
 	t.Helper()
 
+	return readyzWithHeaders(t, checker, remoteAddr, nil)
+}
+
+// readyzWithHeaders is readyz with request headers, for the proxy-evidence cases.
+func readyzWithHeaders(t *testing.T, checker ReadyChecker, remoteAddr string, headers map[string]string) (int, string) {
+	t.Helper()
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	req.RemoteAddr = remoteAddr
+
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
 
 	New(Config{Readiness: checker}).ServeHTTP(rec, req)
 
@@ -131,6 +142,151 @@ func TestReadyz_PublicCaller_DetailIsRedactedAndTheVerdictIsNot(t *testing.T) {
 
 			require.Equal(t, http.StatusServiceUnavailable, status)
 			require.JSONEq(t, tc.want, body)
+		})
+	}
+}
+
+// TestReadyz_ProxiedCaller_DetailIsRedactedEvenFromLoopback is the hole the address test alone leaves,
+// and it is the one that matters in the deployment this project recommends.
+//
+// A reverse proxy on the same host presents 127.0.0.1 for every caller alive; one in a container or in
+// front of a cluster presents an RFC-1918 address. Either way `localCaller` says yes and the whole
+// internet would be handed the names of the ledger protections this instance is missing. So evidence
+// that the request was relayed redacts the detail regardless of how local the peer looks.
+//
+// The header CONTENTS are never read, which is why a forged one cannot be used to unredact anything:
+// the only thing an attacker achieves by adding a header here is a smaller response. Note the
+// X-Forwarded-For value in the third case is a loopback address — the shape that would work if this
+// code believed what it was told.
+func TestReadyz_ProxiedCaller_DetailIsRedactedEvenFromLoopback(t *testing.T) {
+	t.Parallel()
+
+	checker := stubChecker{report: ReadyReport{
+		Check:  "ledger_append_only",
+		State:  ReadyStateDegraded,
+		Detail: "missing append-only triggers: trg_ledger_entry_no_update",
+	}}
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "x-forwarded-for, the ubiquitous one", headers: map[string]string{"X-Forwarded-For": "203.0.113.9"}},
+		{name: "forwarded, RFC 7239", headers: map[string]string{"Forwarded": "for=203.0.113.9;proto=https"}},
+		{name: "a forged local x-forwarded-for buys nothing", headers: map[string]string{"X-Forwarded-For": "127.0.0.1"}},
+		{name: "x-forwarded-proto alone still proves a relay", headers: map[string]string{"X-Forwarded-Proto": "https"}},
+		{name: "x-forwarded-host alone", headers: map[string]string{"X-Forwarded-Host": "dkp.example.org"}},
+		{name: "nginx x-real-ip", headers: map[string]string{"X-Real-Ip": "203.0.113.9"}},
+		{name: "cloudflare", headers: map[string]string{"CF-Connecting-IP": "203.0.113.9"}},
+		{name: "akamai / cloudflare enterprise", headers: map[string]string{"True-Client-IP": "203.0.113.9"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// 127.0.0.1: a same-host reverse proxy, which is the exact deployment the docs recommend.
+			status, body := readyzWithHeaders(t, checker, "127.0.0.1:41000", tc.headers)
+
+			require.Equal(t, http.StatusServiceUnavailable, status)
+			require.JSONEq(t, `{"check":"ledger_append_only","state":"degraded"}`, body,
+				"a request relayed by a proxy was handed the detail because the PEER looked local")
+		})
+	}
+}
+
+// TestReadyz_UnproxiedLoopback_StillSeesTheDetail is the control for the test above.
+//
+// Without it, redacting unconditionally would satisfy every proxy case and quietly remove the
+// operator's only in-band way to see which trigger is missing. Somebody on the box asking the process
+// directly — which is what `curl localhost:8080/readyz` is — must still get the actionable string.
+func TestReadyz_UnproxiedLoopback_StillSeesTheDetail(t *testing.T) {
+	t.Parallel()
+
+	checker := stubChecker{report: ReadyReport{
+		Check:  "ledger_append_only",
+		State:  ReadyStateDegraded,
+		Detail: "missing append-only triggers: trg_ledger_entry_no_update",
+	}}
+
+	// A header a proxy does not set must not trip the check, or every request through any middleware
+	// would lose its detail.
+	status, body := readyzWithHeaders(t, checker, "127.0.0.1:41000",
+		map[string]string{"User-Agent": "curl/8.7.1", "Accept": "*/*"})
+
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.JSONEq(t, `{"check":"ledger_append_only","state":"degraded",`+
+		`"detail":"missing append-only triggers: trg_ledger_entry_no_update"}`, body)
+}
+
+// TestReadyz_ProxiedCaller_TheVerdictAndTheCommandSurvive keeps the redaction from eating the two
+// things that must reach a proxied caller.
+//
+// Monitoring behind a proxy still has to see that the instance is not ready and which check failed —
+// that is the whole point of #59 — and the migrations-pending `command` is the documented public
+// exception the SPA renders as a banner. A redaction that took either would fix a disclosure by
+// breaking the feature.
+func TestReadyz_ProxiedCaller_TheVerdictAndTheCommandSurvive(t *testing.T) {
+	t.Parallel()
+
+	proxied := map[string]string{"X-Forwarded-For": "203.0.113.9", "X-Forwarded-Proto": "https"}
+
+	status, body := readyzWithHeaders(t, stubChecker{report: ReadyReport{
+		Check: "migrations", State: ReadyStatePending, Command: "dkp migrate",
+	}}, "127.0.0.1:41000", proxied)
+
+	require.Equal(t, http.StatusServiceUnavailable, status)
+	require.JSONEq(t, `{"check":"migrations","state":"pending","command":"dkp migrate"}`, body,
+		"the migrations-pending body is public by decision and the SPA renders the command verbatim")
+
+	status, body = readyzWithHeaders(t, stubChecker{report: ReadyReport{
+		Check: "migrations", State: ReadyStateReady,
+	}}, "127.0.0.1:41000", proxied)
+
+	require.Equal(t, http.StatusOK, status)
+	require.JSONEq(t, `{"check":"migrations","state":"ready"}`, body)
+}
+
+// TestViaProxy_Classification pins the evidence list, and the negative rows are the point: an ordinary
+// request must not be mistaken for a relayed one, or the detail becomes unreachable everywhere.
+func TestViaProxy_Classification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+		proxied bool
+	}{
+		{name: "no headers at all", proxied: false},
+		{name: "ordinary client headers", headers: map[string]string{
+			"User-Agent": "Prometheus/2.53", "Accept": "application/json",
+		}, proxied: false},
+		{name: "an empty forwarded header is not evidence", headers: map[string]string{
+			"X-Forwarded-For": "",
+		}, proxied: false},
+		{name: "x-forwarded-for", headers: map[string]string{"X-Forwarded-For": "203.0.113.9"}, proxied: true},
+		{name: "forwarded", headers: map[string]string{"Forwarded": "for=203.0.113.9"}, proxied: true},
+		{name: "x-forwarded-proto", headers: map[string]string{"X-Forwarded-Proto": "https"}, proxied: true},
+		{name: "x-forwarded-host", headers: map[string]string{"X-Forwarded-Host": "dkp.example.org"}, proxied: true},
+		{name: "x-real-ip", headers: map[string]string{"X-Real-Ip": "203.0.113.9"}, proxied: true},
+		{name: "cf-connecting-ip", headers: map[string]string{"CF-Connecting-IP": "203.0.113.9"}, proxied: true},
+		{name: "true-client-ip", headers: map[string]string{"True-Client-IP": "203.0.113.9"}, proxied: true},
+		{
+			name:    "header names are matched case-insensitively, as net/http canonicalises them",
+			headers: map[string]string{"x-forwarded-for": "203.0.113.9"}, proxied: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			header := http.Header{}
+			for name, value := range tc.headers {
+				header.Set(name, value)
+			}
+
+			require.Equal(t, tc.proxied, viaProxy(header))
 		})
 	}
 }

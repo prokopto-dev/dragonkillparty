@@ -711,10 +711,22 @@ those checks are the ones the redaction is for.
 
 > Landed in Phase 0 PR 3: the migrations check and its public body. Landed with the append-only
 > readiness check (#59): the caller-based redaction, applied to every `detail` except the exception
-> above, from `RemoteAddr` and never from `X-Forwarded-For` — a client-supplied header would let anyone
-> unredact this endpoint. Behind a same-host reverse proxy every caller therefore looks like loopback;
-> closing that needs a configured trusted-proxy list, which is filed rather than guessed at. The
-> remaining checks land with the code that can fail them.
+> above. It is **two** tests, because the peer address alone is not a control in a proxied deployment —
+> a same-host reverse proxy presents `127.0.0.1` for every caller alive:
+>
+> 1. the peer is loopback or private space, from `RemoteAddr`; **and**
+> 2. nothing in the request says the peer is relaying somebody else — `Forwarded`, `X-Forwarded-*`,
+>    `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`.
+>
+> Their **presence** is what redacts; their contents are never read. Reading them would invert the
+> control, since a client-supplied header that *grants* disclosure is a header anyone can forge, while
+> one that only *withholds* it buys an attacker nothing but a shorter response. An operator behind a
+> proxy still sees the detail by asking the process directly rather than through the proxy — which is
+> what somebody on the box is doing anyway.
+>
+> Residual gap: a layer-4 proxy, or a layer-7 one configured to add no headers, is invisible to (2).
+> Closing that needs a configured trusted-proxy list plus PROXY-protocol support, filed as #74 rather
+> than guessed at. The remaining checks land with the code that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

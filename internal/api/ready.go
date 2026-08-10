@@ -101,9 +101,14 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 		report = checker.Ready()
 	}
 
-	// Command survives: the migrations-pending body is the documented public exception, and the SPA
-	// renders it for an operator who may have no shell access at that moment. Detail does not.
-	if !localCaller(r.RemoteAddr) {
+	// Two conditions, and BOTH have to hold for a detail to be released: the peer is on the local
+	// network, AND nothing says the peer is relaying somebody else. A same-host reverse proxy — the
+	// recommended deployment — makes every caller in the world present as 127.0.0.1, so the address
+	// test alone is not a control there at all; it would pass the whole internet.
+	//
+	// Command survives either way: the migrations-pending body is the documented public exception, and
+	// the SPA renders it for an operator who may have no shell access at that moment.
+	if viaProxy(r.Header) || !localCaller(r.RemoteAddr) {
 		report.Detail = ""
 	}
 
@@ -127,6 +132,49 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 	_, _ = w.Write(body)
 }
 
+// viaProxy reports whether anything in the request says it was relayed by a proxy.
+//
+// It exists because RemoteAddr answers "who connected", and the disclosure rule needs "who asked". A
+// reverse proxy on the same host presents 127.0.0.1 for every caller alive, and one in a container or
+// in front of a cluster presents an RFC-1918 address — so a public client routed through either would
+// satisfy localCaller and be handed the names of the ledger protections this instance is missing. The
+// address test is not a control in the deployment this project actually recommends unless something
+// notices the relay.
+//
+// PRESENCE ONLY. The contents are never read, and that asymmetry is the entire safety argument: these
+// headers are client-supplied, so believing one that says "the real client is 10.0.0.5" would let
+// anybody unredact this endpoint with one curl flag. Presence is used solely to REFUSE — the direction
+// a forged header cannot exploit, because the worst an attacker achieves by adding one is a response
+// with less in it. An operator behind a proxy still gets the detail by asking the process directly
+// rather than through the proxy, which is what somebody on the box is doing anyway.
+//
+// The list is evidence, not authority, and it is deliberately generous: a header that only says the
+// request was proxied (X-Forwarded-Proto) is as good a signal as one carrying an address. It is still
+// not exhaustive — a layer-4 proxy, or a layer-7 one configured to add nothing, is invisible here, and
+// closing THAT needs a configured trusted-proxy list and PROXY-protocol support. That is filed
+// (#74) rather than guessed at, and until it lands this function is what keeps the default safe.
+func viaProxy(h http.Header) bool {
+	// Local rather than package-level: a package-level slice is mutable state that any caller can
+	// append to, and this one decides who sees a security-relevant string.
+	evidence := []string{
+		"Forwarded",         // RFC 7239, the standard one
+		"X-Forwarded-For",   // the ubiquitous one
+		"X-Forwarded-Proto", // set by Caddy, nginx, Traefik and every cloud ALB
+		"X-Forwarded-Host",
+		"X-Real-Ip",        // nginx's usual proxy_set_header
+		"CF-Connecting-IP", // Cloudflare
+		"True-Client-IP",   // Akamai, Cloudflare Enterprise
+	}
+
+	for _, name := range evidence {
+		if h.Get(name) != "" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // localCaller reports whether remoteAddr is one of the callers
 // docs/design/06-cicd-and-release.md §"Health endpoints" permits to see a /readyz detail: loopback, or
 // private space — RFC 1918 and its IPv6 counterpart RFC 4193, which that document names explicitly
@@ -143,11 +191,10 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 // RemoteAddr all land there, and defaulting an unrecognised caller to "trusted" is the one direction
 // that turns a parsing surprise into a disclosure.
 //
-// It reads r.RemoteAddr and NOT X-Forwarded-For, deliberately: that header is client-supplied, so
-// trusting it would let anyone unredact this endpoint with one curl flag. The cost is the real one —
-// behind a reverse proxy on the same host, every caller looks like loopback and the detail is
-// disclosed to whoever the proxy is forwarding for. Closing that needs a configured trusted-proxy
-// list, which is a setting this binary does not have yet and is filed rather than guessed at here.
+// It answers only "is the PEER local", which on its own is not the question — a proxy peer is local
+// while the person behind it is not. viaProxy is the other half of the test and the two are used
+// together; neither is sufficient. Do not add a forwarded-address lookup here: reading a
+// client-supplied header to GRANT disclosure is the failure viaProxy's comment describes.
 func localCaller(remoteAddr string) bool {
 	host := remoteAddr
 	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
