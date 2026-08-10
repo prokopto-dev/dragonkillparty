@@ -1,0 +1,42 @@
+/*
+ * The faces. Two weights, self-hosted, no third-party request.
+ *
+ * docs/design/09-frontend-and-design-system.md §3: "Inter at 400 (body) and 500 (headings). Loaded
+ * self-hosted, not through the Google Fonts @import the source sheet uses — the binary serves the
+ * SPA offline and a render-blocking third-party request contradicts that." The `@import
+ * url('https://fonts.googleapis.com/…')` at the top of mockups/nocturne/styles.css is the one line
+ * of that sheet this system deliberately does NOT transcribe; scripts/repo-gates.sh WEB003 is what
+ * keeps it out, and it is a gate rather than a note because "just for the mockup parity" is exactly
+ * how it would come back.
+ *
+ * Only 400 and 500 exist. §3 fixes body at 400 and every heading at 500 — "do not bolden a heading
+ * past 500; hierarchy here is size and space, not weight" — so a third weight would be a design
+ * change, not a convenience. There is no italic for the same reason: no mockup uses one, and an
+ * unvendored italic is synthesised by the browser rather than silently missing.
+ *
+ * The files are byte-for-byte upstream Inter 4.1 under the SIL OFL 1.1; provenance, checksums and
+ * the re-vendoring recipe are in ../assets/fonts/README.md, the licence text beside them in
+ * ../assets/fonts/OFL.txt. Vite resolves these url() references at build time and content-hashes
+ * the output, which is what lets internal/ui serve them immutable for a year.
+ *
+ * font-display: swap, deliberately. `block` hides text for up to 3s on a cold cache; `optional`
+ * lets the FIRST paint fall through to system-ui and never swap, which is precisely the
+ * machine-dependent rendering issue #45 was filed about. `swap` is the only value that guarantees
+ * every surface ends up in Inter without ever showing invisible text.
+ */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/Inter-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../assets/fonts/Inter-Medium.woff2") format("woff2");
+}

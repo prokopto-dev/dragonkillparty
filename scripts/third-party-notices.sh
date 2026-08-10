@@ -68,6 +68,58 @@ if [ "$count" -eq 0 ]; then
     exit 1
 fi
 
+# --- Vendored assets ---------------------------------------------------------------------------
+#
+# Third-party content that is NOT a Go module and therefore invisible to everything above: files
+# committed into this tree, built into web/dist by Vite and embedded into the binary by internal/ui.
+# `go list -deps` cannot see a font, and neither can scripts/licence-gate.sh, which reads the same
+# graph. The obligation is identical all the same — Inter's SIL OFL 1.1 requires its copyright notice
+# and licence text to travel with the font, and the font travels inside the binary this file is
+# attached to.
+#
+# One entry per asset: "<label>|<licence file>|<file>[,<file>…]", all paths relative to the repo
+# root. Adding a vendored asset without adding a row here is caught by test/repo/web_fonts_test.go,
+# which requires every committed face to be recorded in NOTICE and in this file.
+VENDORED_ASSETS=(
+    "Inter 4.1 — SIL Open Font License 1.1|web/src/assets/fonts/OFL.txt|web/src/assets/fonts/Inter-Regular.woff2,web/src/assets/fonts/Inter-Medium.woff2"
+)
+
+# The count is taken once and every later expansion of the array is guarded by it: bash 3.2 — the
+# shell on the laptops — treats "${arr[@]}" on an EMPTY array as an unbound variable under `set -u`,
+# and an empty list is a legitimate state (nothing vendored), not a reason to abort.
+asset_count="${#VENDORED_ASSETS[@]}"
+
+# `||` rather than `&&`: under `set -e` a trailing `[ … ] && x=y` whose test FAILS returns non-zero
+# as a whole statement and kills the script. The pluralisation would then be a landmine that goes off
+# on the day a second asset is vendored.
+assets_plural=""
+[ "$asset_count" -eq 1 ] || assets_plural="s"
+
+# NO SILENT SKIP. A missing licence file or a missing asset means the row and the tree disagree, and
+# the failure mode of guessing is shipping an unattributed font — so fail here, where someone is
+# running the generator, rather than in the release archive.
+#
+# The `read -a` split is deliberate over a `while read` fed by a pipe: bash runs the loop body of a
+# pipeline in a subshell, where an `exit 1` ends the subshell and not this script.
+if [ "$asset_count" -gt 0 ]; then
+    for entry in "${VENDORED_ASSETS[@]}"; do
+        lic_path="${entry#*|}"
+        lic_path="${lic_path%%|*}"
+        [ -f "$lic_path" ] || {
+            echo "third-party-notices: vendored asset licence $lic_path does not exist" >&2
+            exit 1
+        }
+
+        IFS=',' read -r -a asset_files <<< "${entry##*|}"
+        for f in "${asset_files[@]}"; do
+            [ -f "$f" ] || {
+                echo "third-party-notices: vendored asset $f does not exist" >&2
+                exit 1
+            }
+        done
+    done
+fi
+
 # find_license <module-dir> — print the path of the licence file, preferring a top-level LICENSE.
 find_license() {
     local dir="$1" f
@@ -83,11 +135,11 @@ find_license() {
 {
     printf 'Third-party notices for Dragon Kill Party\n'
     printf '=========================================\n\n'
-    printf 'This binary statically links the Go modules listed below. Each is reproduced with its\n'
-    printf 'licence text. Generated from the runtime dependency graph (go list -deps, no -test),\n'
-    printf 'unioned across the release platforms, by scripts/third-party-notices.sh. Do not hand-edit:\n'
-    printf 'run `make third-party-notices`.\n\n'
-    printf '%d modules.\n' "$count"
+    printf 'This binary statically links the Go modules listed below, and embeds the vendored assets\n'
+    printf 'listed after them. Each is reproduced with its licence text. Generated from the runtime\n'
+    printf 'dependency graph (go list -deps, no -test), unioned across the release platforms, by\n'
+    printf 'scripts/third-party-notices.sh. Do not hand-edit: run `make third-party-notices`.\n\n'
+    printf '%d modules, %d vendored asset%s.\n' "$count" "$asset_count" "$assets_plural"
 
     while IFS=$'\t' read -r path version dir; do
         printf '\n'
@@ -102,6 +154,33 @@ find_license() {
         fi
         printf '\n'
     done < "$mods_file"
+
+    if [ "$asset_count" -gt 0 ]; then
+        printf '\n'
+        printf -- '================================================================================\n'
+        printf 'Vendored assets — embedded in the binary, not linked as Go modules\n'
+        printf -- '================================================================================\n'
+
+        for entry in "${VENDORED_ASSETS[@]}"; do
+            label="${entry%%|*}"
+            lic_path="${entry#*|}"
+            lic_path="${lic_path%%|*}"
+
+            printf '\n'
+            printf -- '--------------------------------------------------------------------------------\n'
+            printf '%s\n' "$label"
+            printf -- '--------------------------------------------------------------------------------\n\n'
+
+            IFS=',' read -r -a asset_files <<< "${entry##*|}"
+            for f in "${asset_files[@]}"; do
+                printf '%s\n' "$f"
+            done
+            printf '\n'
+
+            cat "$lic_path"
+            printf '\n'
+        done
+    fi
 } > "$OUT"
 
-printf '  wrote %s (%d modules)\n' "$OUT" "$count"
+printf '  wrote %s (%d modules, %d vendored asset%s)\n' "$OUT" "$count" "$asset_count" "$assets_plural"

@@ -151,6 +151,44 @@ gate WEB001 "raw fetch/XMLHttpRequest outside web/src/api" \
 gate WEB002 "dangerouslySetInnerHTML" \
     web/src '*.tsx' 'dangerouslySetInnerHTML'
 
+# --- WEB003: the SPA fetches no asset from a third party --------------------------------------
+#
+# docs/design/09-frontend-and-design-system.md §3: the type is "loaded self-hosted, not through the
+# Google Fonts @import the source sheet uses — the binary serves the SPA offline and a
+# render-blocking third-party request contradicts that". §5 says the same of the icon subset.
+#
+# This is a gate rather than a sentence in a document because the tempting line is already written
+# and sitting in the repository: mockups/nocturne/styles.css opens with
+# `@import url('https://fonts.googleapis.com/...')`, and the mockups are transcribed on purpose.
+# Copying that one line is a single keystroke, it looks like fidelity, and nothing about the result
+# looks wrong on a developer's machine — it only fails on a volunteer's LAN-only server, where the
+# request hangs and the page renders in the wrong face after a three-second block.
+#
+# BANNED: any absolute or protocol-relative asset load. The known font and script CDNs by name, plus
+# the generic shapes — `url(https://…)`, `url(//…)`, an `@import` of a URL, a `<link>` to another
+# origin. The one sanctioned remote call in the SPA is the generated client's, whose base URL comes
+# from the runtime /config.json; that is an API call rather than an asset, and law 4 above already
+# owns it.
+#
+# Comment lines are stripped, in all four spellings the scanned files use. Prose about the rule is
+# not a breach of it: web/src/styles/fonts.css explains what it is NOT doing and why, and a gate
+# that fires on its own documentation is a gate people route around. This is the opposite choice
+# from the AGPL firewall below, which strips nothing — there, the transcription in the comment IS
+# the violation; here, a URL nobody requests is a URL nobody requests.
+#
+# index.html is scanned as well as web/src: it is the document the browser parses first, so a
+# render-blocking <link> in its <head> is the worst version of exactly this bug and the only place
+# it can be written outside src.
+if has web/src; then
+    third_party_asset='(fonts\.googleapis\.com|fonts\.gstatic\.com|fonts\.bunny\.net|use\.typekit\.net|cdn\.jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com|@import[^;]*url\([^)]*//|url\([[:space:]]*["'"'"']?(https?:)?//|<link[^>]+(https?:)?//)'
+    hits=$(grep -rnE --include='*.css' --include='*.ts' --include='*.tsx' --include='*.html' \
+        "$third_party_asset" web/src web/index.html 2>/dev/null \
+        | grep -vE '^[^:]*:[0-9]+:[[:space:]]*(/\*|\*|//|#|<!--)' || true)
+    [ -n "$hits" ] && violation WEB003 \
+        "third-party asset request from the SPA — type and icons are self-hosted so the binary works offline (docs/design/09 §3)" \
+        "$hits"
+fi
+
 # --- Canonical §17: raw hex and raw px live in the token layer, nowhere else -------------------
 #
 # canonical §17 promises this rule and names ESLint as the mechanism. ESLint does not lint CSS, so
