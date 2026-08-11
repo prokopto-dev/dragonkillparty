@@ -15,7 +15,7 @@ docker run -d \
   -p 8080:8080 \
   -v dkp-data:/data \
   --restart unless-stopped \
-  ghcr.io/dragonkillparty/dkp:1
+  ghcr.io/prokopto-dev/dragonkillparty:1
 ```
 
 Then read the bootstrap token out of the logs and open the URL it prints:
@@ -43,7 +43,7 @@ LAN-only install. One process, one container, one volume, one port.
 ```yaml
 services:
   dkp:
-    image: ghcr.io/dragonkillparty/dkp:1
+    image: ghcr.io/prokopto-dev/dragonkillparty:1
     container_name: dkp
     restart: unless-stopped
     ports:
@@ -134,7 +134,7 @@ from your own network, or `local` if you dropped the proxy and publish the port 
 Verify a tag before you run it:
 
 ```bash
-cosign verify ghcr.io/dragonkillparty/dkp:1 \
+cosign verify ghcr.io/prokopto-dev/dragonkillparty:1 \
   --certificate-identity-regexp '^https://github\.com/prokopto-dev/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -142,7 +142,7 @@ cosign verify ghcr.io/dragonkillparty/dkp:1 \
 ## Upgrading
 
 ```bash
-docker pull ghcr.io/dragonkillparty/dkp:1
+docker pull ghcr.io/prokopto-dev/dragonkillparty:1
 docker restart dkp
 ```
 

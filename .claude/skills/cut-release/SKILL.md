@@ -132,7 +132,7 @@ After `release.yml` runs, check all of these landed:
       certificate identity still matches the workflow file **at the tag ref**.
 - [ ] SDKs published in lockstep: `@dragonkillparty/sdk@<version>` and `dkp-client==<version>` are by
       construction generated from this server's spec.
-- [ ] **`ghcr.io/dragonkillparty/dkp-refdb:<version>` exists.**
+- [ ] **`ghcr.io/prokopto-dev/dkp-refdb:<version>` exists.**
 
 ### 9. Confirm the smoke gate held
 

@@ -9,7 +9,7 @@ ten years of guild history.
 ## The short version
 
 ```bash
-docker pull ghcr.io/dragonkillparty/dkp:1
+docker pull ghcr.io/prokopto-dev/dragonkillparty:1
 docker restart dkp
 ```
 
