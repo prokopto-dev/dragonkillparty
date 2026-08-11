@@ -109,7 +109,7 @@ endef
         release-manifest release-sign release-sbom release-smoke release-promote \
         release-promote-rc release-refdb release-failure-issue \
         shipped-lock-seal release-shipped-lock \
-        eval-example-endpoint third-party-notices image-size
+        eval-example-endpoint third-party-notices image-size subset-fonts verify-fonts
 
 ## help: list every target with its description
 help:
@@ -752,6 +752,19 @@ release-shipped-lock:
 # graph. Stdlib + the module cache only — no network, no extra tool. Run it after any go.mod change.
 third-party-notices:
 	@bash scripts/third-party-notices.sh
+
+# Re-cut the vendored Inter faces as a Latin subset, and prove the committed bytes are what the
+# recipe produces. The faces under web/src/assets/fonts/ are DERIVED, so the derivation is pinned —
+# input hashes, flags, fonttools and brotli versions — and byte-reproducible; see
+# web/src/assets/fonts/README.md for the evidence. Both targets need network (a 33 MB upstream
+# archive and two wheels), which is why verify-fonts runs nightly rather than in PR CI, and why
+# neither is in `check`: test/repo/web_fonts_test.go carries the offline half of the gate.
+# DKP_INTER_ZIP=/path/to/Inter-4.1.zip reuses an already-downloaded archive.
+subset-fonts:
+	@bash scripts/subset-fonts.sh
+
+verify-fonts:
+	@bash scripts/subset-fonts.sh --verify
 
 # Advisory measurement of the compressed image against the 30 MB budget (docs/design section 7). The
 # ci.yml build/image step runs this target advisory-by-construction — MODE=advise prints the number,

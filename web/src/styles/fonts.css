@@ -14,10 +14,19 @@
  * change, not a convenience. There is no italic for the same reason: no mockup uses one, and an
  * unvendored italic is synthesised by the browser rather than silently missing.
  *
- * The files are byte-for-byte upstream Inter 4.1 under the SIL OFL 1.1; provenance, checksums and
- * the re-vendoring recipe are in ../assets/fonts/README.md, the licence text beside them in
+ * The files are a LATIN SUBSET of upstream Inter 4.1 under the SIL OFL 1.1 — 36 KB for the pair
+ * rather than 225 KB. They are derived rather than vendored verbatim, so the derivation is a
+ * committed, re-runnable script: scripts/subset-fonts.sh, pinned down to the tool versions and every
+ * flag, regenerating these exact bytes. Provenance, checksums, the reproducibility evidence and the
+ * `-latin` naming are in ../assets/fonts/README.md; the licence text sits beside them in
  * ../assets/fonts/OFL.txt. Vite resolves these url() references at build time and content-hashes
  * the output, which is what lets internal/ui serve them immutable for a year.
+ *
+ * unicode-range is the SAME range the subset was cut to, and test/repo/web_fonts_subset_test.go
+ * asserts the two stay equal. It is not a size optimisation here — every DKP surface is Latin, so
+ * the faces download either way. It is documentation the browser can act on: a character outside it
+ * reaches the system-ui tail of the stack without a pointless download, and the declaration states
+ * in the stylesheet what the bytes actually cover.
  *
  * font-display: swap, deliberately. `block` hides text for up to 3s on a cold cache; `optional`
  * lets the FIRST paint fall through to system-ui and never swap, which is precisely the
@@ -30,7 +39,10 @@
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("../assets/fonts/Inter-Regular.woff2") format("woff2");
+  src: url("../assets/fonts/Inter-Regular-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+2190,
+    U+2192, U+2260, U+2264-2265, U+221E, U+2318;
 }
 
 @font-face {
@@ -38,5 +50,8 @@
   font-style: normal;
   font-weight: 500;
   font-display: swap;
-  src: url("../assets/fonts/Inter-Medium.woff2") format("woff2");
+  src: url("../assets/fonts/Inter-Medium-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+2190,
+    U+2192, U+2260, U+2264-2265, U+221E, U+2318;
 }
