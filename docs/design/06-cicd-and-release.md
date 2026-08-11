@@ -518,7 +518,13 @@ cosign verify ghcr.io/prokopto-dev/dragonkillparty:1.5.0 \
 ```
 
 `release-smoke` runs those exact commands against the published digest, so a wrong README snippet is
-discovered in CI rather than by a user.
+discovered in CI rather than by a user. That half of the script is **opt-in**, on
+`VERIFY_SUPPLY_CHAIN=1`: only a tagged release has a signature and an attestation to check, and the
+`:edge` channel — which runs the same script — has neither. Opted in, a missing `cosign` or `gh` is a
+failure and never a skip, so `release.yml`'s `smoke` job installs cosign and holds
+`attestations: read`. Gating on tool presence instead was issue #107: `gh` is preinstalled on
+GitHub-hosted runners and `cosign` is not, so the check silently skipped on the channel that needed
+it and ran on the channel that could not pass it.
 
 ### Size budgets — `.github/size-budget.json`
 
