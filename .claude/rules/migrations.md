@@ -55,7 +55,17 @@ regions.
 A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
 `internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in
 `internal/ledger/enumgen`'s `catalogues()`. Every string-enum CHECK in the schema is now generated;
-the next one added has no excuse to be a literal. A **nullable** column's CHECK is rendered by
+the next one added has no excuse to be a literal — and **`ENUM001` in `scripts/repo-gates.sh` is the
+machine half of that sentence**, because the three `CheckMatchesCatalogue` tests each compare their
+own region with their own catalogue and none of them can see a seventh vocabulary that has no
+catalogue at all. A `check` block in `db/schema.hcl` whose `expr` lists quoted values and does not
+lie between `BEGIN`/`END GENERATED` markers fails the gate. Boolean CHECKs (`x IN (0, 1)`) and index
+predicates are not string enums and are not caught. The waiver is a `// dkp:enum-literal <reason>`
+comment on the line above the check — with a reason; a bare marker fails — and it belongs in the
+schema rather than in an allowlist inside the script, so the exception appears in the diff a reviewer
+reads. `TestRepoGates_HandWrittenEnumCheck_FailsGate` in `test/repo/` is its negative fixture.
+
+A **nullable** column's CHECK is rendered by
 `schemaenum.NullableCheckExpr` (`x IS NULL OR x IN (…)`), not by wrapping the plain form at the call
 site — `account.system_key` is the worked example, and the prefix is load-bearing rather than
 decorative: a bare `IN` list is NULL, not true, for a NULL column.

@@ -321,6 +321,217 @@ else
     note "skip" "[MIG003] db/migrations-sqlite/SHIPPED.lock does not exist yet"
 fi
 
+# --- ENUM001: a string-enum CHECK comes from a Go catalogue, never from a literal --------------
+#
+# Canonical §5: "both the SQL CHECK constraint and the OpenAPI enum are generated from one Go
+# catalogue". Every string-enum CHECK in db/schema.hcl now is — ledger_batch.kind/source,
+# audit_log.actor_kind/outcome, account.kind/system_key — and each has a test asserting its own
+# region matches its own catalogue. NONE of them says anything about a SEVENTH enum, which is the
+# hole this closes: a brand-new table added with
+#
+#   check "bid_session_state_enum" { expr = "state IN ('draft', 'open', 'extended')" }
+#
+# and no catalogue passes all three of those tests, `make verify-generated` and `make check`. The
+# rule that it should not was prose in .claude/rules/migrations.md and AGENTS.md, and prose is what
+# produced this finding three times already (#29 fixed two enums, #40 a third, #51/#53 the last
+# three).
+#
+# canonical §5 makes bid.tier's DECLARATION ORDER semantic — the resolution ladder — so a literal
+# that agrees with the Go list on values and disagrees on order is a resolver bug that no schema
+# comparison would ever see. That is the expensive version of this defect and it is coming in Phase
+# 1 or 2, in a PR whose author is thinking about bidding rather than about enum plumbing.
+#
+# SCOPED TO `check` BLOCKS, structurally, and to lists containing a QUOTED value:
+#
+#   caught   expr = "state IN ('draft', 'open')"                     the plain form (CheckExpr)
+#   caught   expr = "k IS NULL OR k IN ('a', 'b')"                   the nullable form (NullableCheckExpr)
+#   ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
+#   ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
+#
+# The index-predicate exclusion is deliberate and is #97: a partial index over a SUBSET of a
+# vocabulary is not the vocabulary, so it cannot be rendered from a catalogue as-is and a gate that
+# demanded it would fire on correct work. Tracking the block structure rather than grepping `expr =`
+# lines also means a wrapped or heredoc expression inside a check block is still seen.
+#
+# The waiver is `// dkp:enum-literal <reason>` on the line above the check, the same in-tree marker
+# idiom as `-- dkp:destructive-approved:` and `-- dkp:fixture deliberately-broken`. It lives in the
+# schema rather than in an allowlist here so that an exception is visible in the diff a reviewer
+# reads, and it requires a reason for the same purpose the ADR waiver below does.
+#
+# An UNCLOSED `BEGIN GENERATED` is itself a violation. Without that, one unbalanced marker line
+# exempts every check after it — the whole rest of the file — and the gate stays green while doing
+# nothing.
+if [ -f db/schema.hcl ]; then
+    # Explicit character ranges rather than POSIX classes: this runs under GNU awk on CI and BWK awk
+    # on a laptop, and the class support differs between them.
+    hits=$(awk '
+        index($0, "BEGIN GENERATED") { in_region = 1; begin_line = NR; next }
+        index($0, "END GENERATED")   { in_region = 0; next }
+
+        # Comment lines, in both HCL spellings. A gate that fires on the prose documenting it is a
+        # gate people route around — and db/schema.hcl'"'"'s own header names the enum shape.
+        /^[ \t]*(\/\/|#)/ {
+            if ($0 ~ /dkp:enum-literal[ \t]+[^ \t]+[ \t]*[^ \t]/) { waived = 1 }
+            else if ($0 ~ /dkp:enum-literal/) { waived = 0; bare_waiver = NR }
+            next
+        }
+
+        # Entering a check block. The name is what a reviewer keys a waiver to, so it is carried
+        # into the message.
+        /^[ \t]*check[ \t]+"/ {
+            in_check = 1
+            depth = 0
+            name = $0
+            sub(/^[ \t]*check[ \t]+"/, "", name)
+            sub(/".*$/, "", name)
+            this_waived = waived
+        }
+
+        in_check {
+            if (!in_region && !this_waived && $0 ~ /IN[ \t]*\([^)]*'"'"'/) {
+                printf "db/schema.hcl:%d: check \"%s\": %s\n", NR, name, $0
+            }
+
+            n = gsub(/[{]/, "&"); m = gsub(/[}]/, "&")
+            depth += n - m
+            if (depth <= 0) { in_check = 0 }
+        }
+
+        # A blank line or any other statement ends the waiver'"'"'s reach: it applies to the check
+        # block it sits above, not to the rest of the file.
+        !in_check { waived = 0 }
+
+        END {
+            if (in_region) {
+                printf "db/schema.hcl:%d: unclosed BEGIN GENERATED marker — every check after it is silently exempt\n", begin_line
+            }
+            if (bare_waiver) {
+                printf "db/schema.hcl:%d: dkp:enum-literal with no reason — the reason is the point of the waiver\n", bare_waiver
+            }
+        }
+    ' db/schema.hcl || true)
+    [ -n "$hits" ] && violation ENUM001 \
+        "hand-written string-enum CHECK in db/schema.hcl — the values come from a Go catalogue between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)" \
+        "$hits"
+else
+    note "skip" "[ENUM001] db/schema.hcl does not exist yet"
+fi
+
+# --- ADR001: a change that needs a decision record carries one --------------------------------
+#
+# docs/adr/README.md and docs/design/07-documentation-system.md both said, in bold, that this was
+# enforced in `lint / repo`. It was not (#85), and that is worse than an ordinary stale sentence
+# because of who reads it: an agent reading the README concludes the gate will catch it, and a
+# reviewer reading the same line concludes CI already asked. Neither was true.
+#
+# NEEDS THE PR BODY, which no grep over the tree can see, so the inputs arrive from the environment
+# and ci.yml's `lint / repo` job supplies them:
+#
+#   DKP_ADR_BASE_REF   the PR base sha. UNSET => this is not a pull request; skip, loudly.
+#   DKP_ADR_PR_BODY    the PR body. May legitimately be EMPTY — a PR with no body is a PR that has
+#                      not answered the question, so emptiness must fail rather than skip.
+#
+# Absence of the base ref disables the gate, which makes it fail-open in exactly one direction: a
+# CI job that stopped passing the env would go quietly green. TestCI_LintRepoJob_PassesPullRequestContext
+# is what holds that line, the same way TestCI_LintRepoJob_FetchesFullHistory holds MIG003's
+# fetch-depth. A base ref that IS set and cannot be read is a violation, never a skip: that is the
+# shallow-clone case, and it is the configuration most likely to have it.
+#
+# TRIGGERS — the four in the two documents:
+#
+#   go.mod                a NEW DIRECT requirement, compared against the base blob. A version bump
+#                         or a new indirect does not fire, which is what keeps Renovate quiet.
+#   deploy/Dockerfile     any change. The document says "new port, volume or process"; no grep can
+#   db/schema.hcl         any change. …judge "new table or changed constraint" either.
+#   internal/<pkg>/…      a file added under a top-level package that does not exist at the base.
+#
+# The two path triggers are deliberately BROADER than their parenthetical, and the docs now say so.
+# Over-triggering costs one line in the PR body and is visible; under-triggering is invisible, which
+# is the failure mode this gate exists to end. Same reasoning as WEB003 above.
+#
+# SATISFIED BY either half of what the documents promise: a file ADDED under docs/adr/, or an
+# `adr: n/a — <reason>` line in the body. The reason is required — a bare `adr: n/a` is the box
+# ticked without the thought, and harvesting the reason is the entire point.
+
+# adr_direct_requires — the direct module paths of a go.mod on stdin. `// indirect` first, so it
+# wins over both the block and the single-line spelling.
+adr_direct_requires() {
+    awk '
+        /\/\/ indirect/                          { next }
+        /^require[ \t]*\(/                       { inblock = 1; next }
+        inblock && /^\)/                         { inblock = 0; next }
+        inblock && NF >= 2 && $2 ~ /^v/          { print $1; next }
+        /^require[ \t]+/ && NF >= 3 && $3 ~ /^v/ { print $2 }
+    '
+}
+
+if [ -z "${DKP_ADR_BASE_REF:-}" ]; then
+    note "skip" "[ADR001] DKP_ADR_BASE_REF is unset — no pull-request context to check against"
+elif ! git rev-parse --verify --quiet "${DKP_ADR_BASE_REF}^{commit}" >/dev/null 2>&1; then
+    violation ADR001 "the ADR base revision cannot be read, so the check cannot run" \
+        "${DKP_ADR_BASE_REF} is not in this checkout. The lint / repo job carries fetch-depth: 0
+for this reason; a shallow clone must not turn this gate into a green check."
+else
+    adr_base="${DKP_ADR_BASE_REF}"
+
+    # base -> WORKING TREE, plus untracked files. In CI the tree is clean and this is exactly the
+    # PR's diff; on a laptop it also sees work in progress, including an ADR that has been written
+    # but not yet added. `--diff-filter=A` is what separates "added an ADR" from "touched the index".
+    adr_changed=$( { git diff --name-only "$adr_base" --; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
+    adr_added=$( { git diff --name-only --diff-filter=A "$adr_base" --; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
+
+    adr_triggers=""
+
+    # `[ -f go.mod ]` as well as the changed-path test: deleting go.mod entirely is a change to it,
+    # and reading a file that is no longer there would abort the script rather than report a rule.
+    if [ -f go.mod ] && printf '%s\n' "$adr_changed" | grep -qx 'go\.mod'; then
+        adr_new_dep=$(comm -13 \
+            <(git show "$adr_base:go.mod" 2>/dev/null | adr_direct_requires | sort -u) \
+            <(adr_direct_requires < go.mod | sort -u) || true)
+        [ -n "$adr_new_dep" ] && adr_triggers="$adr_triggers
+go.mod — new direct dependency: $(printf '%s' "$adr_new_dep" | tr '\n' ' ')"
+    fi
+
+    for adr_path in deploy/Dockerfile db/schema.hcl; do
+        printf '%s\n' "$adr_changed" | grep -qxF "$adr_path" &&
+            adr_triggers="$adr_triggers
+$adr_path — changed"
+    done
+
+    for adr_pkg in $(printf '%s\n' "$adr_added" | sed -n 's#^internal/\([^/][^/]*\)/.*#\1#p' | sort -u); do
+        git cat-file -e "$adr_base:internal/$adr_pkg" 2>/dev/null ||
+            adr_triggers="$adr_triggers
+internal/$adr_pkg — new top-level package"
+    done
+
+    if [ -n "$adr_triggers" ]; then
+        adr_new_record=$(printf '%s\n' "$adr_added" | grep -E '^docs/adr/[0-9]' || true)
+
+        # The waiver line: `adr: n/a` plus a reason. Two whitespace-separated tokens after the
+        # marker, so a separator alone ("adr: n/a —") is not a reason.
+        adr_waiver=$(printf '%s\n' "${DKP_ADR_PR_BODY:-}" | awk '
+            tolower($0) !~ /^[ \t]*adr:/ { next }
+            {
+                rest = $0
+                sub(/^[ \t]*[Aa][Dd][Rr]:[ \t]*/, "", rest)
+                if (tolower(rest) !~ /^n\/a/) { next }
+                sub(/^[Nn]\/[Aa]/, "", rest)
+                sub(/^[^a-zA-Z0-9]*/, "", rest)
+                if (rest ~ /[^ \t]+[ \t]+[^ \t]/) { print "ok"; exit }
+            }' || true)
+
+        if [ -z "$adr_new_record" ] && [ -z "$adr_waiver" ]; then
+            violation ADR001 \
+                "this change needs an architecture decision record (docs/adr/README.md, docs/design/07 §ADRs)" \
+                "triggered by:$adr_triggers
+
+Add a file under docs/adr/ in this PR, or put a line in the PR BODY reading
+  adr: n/a — <why this change does not need one>
+A reason is required; the marker on its own is not one."
+        fi
+    fi
+fi
+
 # --- The golden-file rewrite fence ------------------------------------------------------------
 # Only `run:` lines count. A comment explaining the fence is not a breach of it.
 if has .github/workflows; then

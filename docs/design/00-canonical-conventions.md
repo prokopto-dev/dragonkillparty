@@ -114,7 +114,13 @@ Column holding an enum is named for the concept (`state`, `status`, `kind`) and 
 the DDL and the JSON. A resource has **one** of `state` or `status`, never both.
 
 **Enforced by:** the enum catalogue is a Go `const` block; `make gen` writes it into the migration
-CHECK and the OpenAPI schema; a test asserts the three copies agree.
+CHECK and the OpenAPI schema; a test asserts the three copies agree. Those per-vocabulary tests each
+check their own region against their own catalogue and say nothing about a vocabulary that has no
+catalogue at all, so **`ENUM001` in `scripts/repo-gates.sh`** is the half that covers the *next* one:
+a string-enum `CHECK` in `db/schema.hcl` outside the `BEGIN`/`END GENERATED` markers fails the
+`lint / repo` job. Boolean `CHECK`s (`x IN (0, 1)`) are not string enums and are not caught. The
+waiver is a `// dkp:enum-literal <reason>` comment above the check, which puts the exception in the
+schema diff a reviewer reads.
 
 ## 6. Permissions and scopes — one catalogue, generated
 
