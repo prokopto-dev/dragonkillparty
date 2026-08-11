@@ -103,7 +103,7 @@ nothing about the officer whose database has six years of raids in it.
 
 ```bash
 # The reference database published by the last release.
-docker pull ghcr.io/dragonkillparty/dkp-refdb:$(gh release view --json tagName -q .tagName)
+docker pull ghcr.io/prokopto-dev/dkp-refdb:$(gh release view --json tagName -q .tagName)
 ./scripts/upgrade-test.sh "$(gh release view --json tagName -q .tagName)"
 ```
 

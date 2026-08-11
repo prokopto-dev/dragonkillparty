@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-IMAGE="${IMAGE:-ghcr.io/dragonkillparty/dkp}"
+IMAGE="${IMAGE:-ghcr.io/prokopto-dev/dragonkillparty}"
 VERSION="${VERSION:-dev}"
 ref="${IMAGE}:${VERSION}"
 

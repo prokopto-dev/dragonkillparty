@@ -54,7 +54,11 @@ concurrency:
 
 env:
   GOTOOLCHAIN: local
-  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  # The product image is named after the REPOSITORY, not after the binary: `dkp` is what the
+  # executable is called, `dragonkillparty` is what this project is. Every documented `docker pull`
+  # in the tree resolves to this line — test/repo/canonical_repo_test.go ties the two together, so
+  # renaming the image here without sweeping the docs fails the build rather than a user's pull.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dragonkillparty
   REFDB: ghcr.io/${{ github.repository_owner }}/dkp-refdb
 
 jobs:
@@ -215,10 +219,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Separate token: Homebrew mandates a dedicated tap repository, written by goreleaser and
-          # never by a human.
+          # never by a human. It must have write access to the repo named in .goreleaser.yaml's
+          # brews[].repository, or this job fails at the END of a release that has already published
+          # images — the worst place in the pipeline to find out.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         # .goreleaser.yaml produces: linux/darwin/windows on amd64+arm64, deb, rpm, apk, a syft SBOM
-        # per archive, a cosign-signed checksums file, and the homebrew-dkp formula bump. The
+        # per archive, a cosign-signed checksums file, and the homebrew-tap formula bump. The
         # release is created as a DRAFT; `publish` un-drafts it after smoke passes.
 
   # ---------------------------------------------------------------------------------------------
@@ -364,8 +370,8 @@ jobs:
         #   API changes — `oasdiff changelog` between the two tags' specs, in plain language
         #   Configuration changes — diffed from the generated docs/reference/config.json
         #   Breaking changes — every BREAKING CHANGE: trailer, verbatim
-        #   Action required — "None; docker pull ghcr.io/<org>/dkp:1 && docker restart dkp", or a
-        #     numbered list
+        #   Action required — "None; docker pull ghcr.io/prokopto-dev/dragonkillparty:1 &&
+        #     docker restart dkp", or a numbered list
         #   Verify this release — the exact digest, the cosign command, the gh attestation command
 
   # ---------------------------------------------------------------------------------------------

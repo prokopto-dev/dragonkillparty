@@ -20,7 +20,7 @@ GO             ?= go
 PKG            := ./...
 BIN            := dkp
 BUILD_DIR      := ./bin
-IMAGE          ?= ghcr.io/dragonkillparty/dkp
+IMAGE          ?= ghcr.io/prokopto-dev/dragonkillparty
 # Each is filtered to [A-Za-z0-9.+_-] before it reaches -ldflags. A git tag is attacker-influenced
 # in the sense that it is arbitrary text a maintainer can be socially engineered into creating, and
 # these values land inside a double-quoted shell word in the build recipe: a tag containing a quote
@@ -680,10 +680,10 @@ test-migrations:
 # Phase 8, not Phase 0 PR 3, and the correction is deliberate.
 #
 # This target upgrades the PREVIOUS RELEASE's reference database to HEAD. No reference database
-# exists: `release-refdb` below is what publishes ghcr.io/<org>/dkp-refdb:<version>, and it is a
-# Phase 8 stub. Phase 0 PR 3 built the migrator, the snapshot and the auto-restore — it could not
-# build an upgrade test against an artefact no release has ever produced, and saying otherwise here
-# would be the same defect that #5 and #6 were cleanups of.
+# exists: `release-refdb` below is what publishes ghcr.io/prokopto-dev/dkp-refdb:<version>, and it
+# is a Phase 8 stub. Phase 0 PR 3 built the migrator, the snapshot and the auto-restore — it could
+# not build an upgrade test against an artefact no release has ever produced, and saying otherwise
+# here would be the same defect that #5 and #6 were cleanups of.
 #
 # What PR 3 DID land is `test-migrations` above, which proves the forward path and the restore path
 # against a real database. The N-1 ladder is a different guarantee and needs a published refdb.

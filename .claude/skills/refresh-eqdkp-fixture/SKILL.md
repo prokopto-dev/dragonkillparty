@@ -75,7 +75,7 @@ one orphan row, at least one unattributed adjustment, and at least one float-rou
 
 ```bash
 gh workflow run fixtures.yml -f version=2.3.39
-# publishes ghcr.io/dragonkillparty/dkp-fixtures:eqdkp-2.3.39
+# publishes ghcr.io/prokopto-dev/dkp-fixtures:eqdkp-2.3.39
 ```
 
 The package must be **public** so anonymous pulls work from fork PRs. Without that, `test / importer`
