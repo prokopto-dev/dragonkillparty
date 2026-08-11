@@ -269,6 +269,10 @@ jobs:
     needs: [prepare, manifest, refdb]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read # pull the published digest from GHCR
+      attestations: read # gh attestation verify reads the provenance through the API
     strategy:
       fail-fast: false
       matrix:
@@ -279,11 +283,19 @@ jobs:
             arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        # cosign is on no runner image. VERIFY_SUPPLY_CHAIN=1 makes release-smoke.sh FAIL rather
+        # than skip when it is absent, so this step is what keeps the `cosign verify` half of the
+        # gate real — it used to be gated on `command -v cosign`, which quietly skipped it here.
       - env:
           DIGEST: ${{ needs.manifest.outputs.digest }}
           VERSION: ${{ needs.prepare.outputs.version }}
           ARCH: ${{ matrix.arch }}
           GH_TOKEN: ${{ github.token }}
+          # The release channel is the one that signs and attests, so it is the one that verifies.
+          # Off by default in the script (issue #107): edge publishes neither, and tool presence is
+          # a property of the runner image rather than of the channel.
+          VERIFY_SUPPLY_CHAIN: "1"
         run: make release-smoke
         # 1. docker run $IMAGE@$DIGEST on an EMPTY volume: first boot, migrations apply,
         #    /healthz 200, /readyz 200, `dkp doctor` clean, the SPA shell renders.
