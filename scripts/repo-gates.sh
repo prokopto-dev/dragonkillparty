@@ -346,6 +346,7 @@ fi
 #   caught   expr = "state IN ('draft', 'open')"                     the plain form (CheckExpr)
 #   caught   expr = "k IS NULL OR k IN ('a', 'b')"                   the nullable form (NullableCheckExpr)
 #   caught   expr = "state IN (\"draft\", \"open\")"                 SQLite's double-quoted literals
+#   caught   expr = "state in ('draft', 'open')"                     SQL keywords are case-insensitive
 #   ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
 #   ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
 #
@@ -434,11 +435,30 @@ if [ -f db/schema.hcl ]; then
         #
         # Character-wise rather than by regex because the question is about the text BETWEEN the
         # parentheses — `IN (0, 1)` is a boolean and must not match, a quote anywhere in a list is a
-        # vocabulary — and because nesting has to be counted rather than assumed away. The leading
-        # non-word character in the entry pattern keeps JOIN and MIN out.
+        # vocabulary — and because nesting has to be counted rather than assumed away.
+        #
+        # `[Ii][Nn]`, because SQL keywords are case-insensitive: the uppercase the generator emits is
+        # a convention rather than a rule, and a hand-written CHECK — the only kind this gate ever
+        # sees — is written in whatever case its author was typing in. Spelled as a character class
+        # rather than with IGNORECASE, which is a gawk extension and off under --posix. The leading
+        # non-word character keeps JOIN and MIN out and still does: what precedes the keyword decides,
+        # not its case.
+        # The keyword and its parenthesis may also be split across the line break — the same shape as
+        # the case above, one token earlier — so a line ending in the bare keyword arms pending_in and
+        # the next line opening with `(` enters the list. Not covered, and knowingly: a comment
+        # between the two. That is not a shape anybody writes by accident, and the residue is named
+        # here rather than left for a reader to discover.
         function quoted_in_list(s,   i, n, ch, hit) {
             n = length(s)
             i = 1
+
+            if (list_depth == 0 && pending_in && match(s, /^[ \t]*\(/)) {
+                i = RSTART + RLENGTH
+                list_depth = 1
+                reported = 0
+            }
+
+            pending_in = 0
 
             while (i <= n) {
                 if (list_depth > 0) {
@@ -452,7 +472,15 @@ if [ -f db/schema.hcl ]; then
                     continue
                 }
 
-                if (!match(substr(s, i), /(^|[^A-Za-z0-9_])IN[ \t]*\(/)) { break }
+                if (!match(substr(s, i), /(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*\(/)) {
+                    if (match(substr(s, i), /(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*$/)) {
+                        pending_in = 1
+                        list_line = NR
+                        list_text = $0
+                    }
+
+                    break
+                }
 
                 # Just past the opening parenthesis the match ended on.
                 i = i + RSTART + RLENGTH - 1
@@ -502,6 +530,7 @@ if [ -f db/schema.hcl ]; then
             # A list cannot span two check blocks. Clearing it here means an unbalanced parenthesis
             # in one block cannot swallow the next one.
             list_depth = 0
+            pending_in = 0
         }
 
         in_check {
@@ -514,7 +543,7 @@ if [ -f db/schema.hcl ]; then
 
             n = gsub(/[{]/, "&"); m = gsub(/[}]/, "&")
             depth += n - m
-            if (depth <= 0) { in_check = 0; list_depth = 0 }
+            if (depth <= 0) { in_check = 0; list_depth = 0; pending_in = 0 }
         }
 
         # A blank line or any other statement ends the waiver'"'"'s reach: it applies to the check

@@ -1603,6 +1603,24 @@ table "bid_session" {
     SQL
   }
 
+  check "bid_session_tier_enum" {
+    expr = "tier in ('main', 'main_offspec', 'alt', 'anyone')"
+  }
+
+  check "bid_session_sealed_bool" {
+    expr = "sealed in (0, 1)"
+  }
+
+  check "bid_session_lockout_enum" {
+    expr = <<-SQL
+      lockout IN
+      (
+        'none',
+        'shared'
+      )
+    SQL
+  }
+
   index "ux_bid_live" {
     where   = "state IN ('open', 'extended')"
     columns = [column.item_instance_id]
@@ -1677,6 +1695,13 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 			"alone on one line and the values on the next — a line-scoped scan sees no quote on "+
 			"the first and no `IN (` on the rest, so the longest vocabularies, the ones most "+
 			"worth generating, would be the ones that walk through\n%s", out)
+	require.Contains(t, out, "bid_session_tier_enum",
+		"ENUM001 must match `in` case-insensitively. SQL keywords are, and the generator's "+
+			"uppercase is a convention rather than a rule — a hand-written CHECK, which is the "+
+			"only kind this gate ever sees, is written in whatever case its author was typing\n%s", out)
+	require.Contains(t, out, "bid_session_lockout_enum",
+		"ENUM001 must enter a list whose keyword and parenthesis are split across the line break "+
+			"— the wrapped shape one token earlier\n%s", out)
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
 
@@ -1692,6 +1717,9 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.NotContains(t, out, "bid_session_flags_bool",
 		"a boolean stays a boolean when its list is wrapped over several lines. Carrying list "+
 			"state across lines must not turn every multi-line CHECK into a hit\n%s", out)
+	require.NotContains(t, out, "bid_session_sealed_bool",
+		"a boolean stays a boolean in lowercase too — matching the keyword case-insensitively "+
+			"must not widen what counts as a vocabulary\n%s", out)
 	require.NotContains(t, out, "ux_bid_live",
 		"an index predicate is not a CHECK: a partial index over a SUBSET of a vocabulary cannot "+
 			"be rendered from a catalogue as-is, so ENUM001 is scoped to check blocks (#97)\n%s", out)
