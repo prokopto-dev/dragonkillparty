@@ -77,6 +77,10 @@ func TestOpenAPI_ConfigVariation_ProducesIdenticalSpec(t *testing.T) {
 		{},
 		{Version: "9.9.9", Commit: "deadbeef", BuildDate: "2030-01-01T00:00:00Z"},
 		{Version: "dev", Commit: "none", BuildDate: "unknown"},
+		// A runtime value that is not a build stamp. /readyz is not a Huma operation, so its
+		// disclosure policy has no business in the document — but "has no business" is what this test
+		// exists to check rather than assume.
+		{ReadyDetail: ReadyDetailAlways},
 	} {
 		doc, err := NewHumaAPI(cfg).OpenAPI().MarshalJSON()
 		require.NoError(t, err)
