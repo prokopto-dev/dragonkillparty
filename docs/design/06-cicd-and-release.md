@@ -45,7 +45,7 @@ and `.github/workflows/fixtures.yml` publishes the built MariaDB data directorie
 | Repo | Why it is separate |
 |---|---|
 | `dkp-p99-seed` | Different legal posture — P99 wiki content with no declared licence, Darkpaw IP. Core must never take a build- or test-time dependency on it, and `lint / repo` greps for any import or fetch of it from `internal/` or `web/`. |
-| `homebrew-dkp` | Homebrew's tap layout mandates a dedicated repo. Written by goreleaser with a scoped token; humans never touch it. |
+| `homebrew-tap` | Homebrew's tap layout mandates a dedicated repo. Written by goreleaser with a scoped token; humans never touch it. `.goreleaser.yaml`'s `brews[].repository` is the source of truth for its name, and `prokopto-dev/homebrew-tap` is what makes the documented `brew install prokopto-dev/tap/dkp` resolve. |
 | Upstream template PRs (Coolify, Unraid CA) | Somebody else's repo by definition. `deploy/coolify/` and `deploy/unraid/` hold the canonical source; a nightly job diffs the upstream copy and files an issue on drift. |
 
 **Rejected:** a `dkp-api-spec` repo (the spec is a build output, not a source), a `dkp-clients` repo
@@ -473,7 +473,7 @@ boot.**
 ### Signing and attestation — both, because they serve different verifiers
 
 ```
-cosign sign --yes ghcr.io/<org>/dkp@${DIGEST}          # keyless: GH OIDC -> Fulcio -> Rekor
+cosign sign --yes ghcr.io/prokopto-dev/dragonkillparty@${DIGEST}   # keyless: GH OIDC -> Fulcio -> Rekor
 actions/attest-build-provenance  subject-digest=...    # SLSA v1, `gh attestation verify`
 actions/attest-sbom              sbom-path=sbom.spdx.json
 ```
@@ -486,8 +486,8 @@ get wrong: **the certificate identity is the workflow file at the tag ref**, and
 is refactored into a reusable workflow.
 
 ```
-cosign verify ghcr.io/<org>/dkp:1.5.0 \
-  --certificate-identity-regexp '^https://github\.com/<org>/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
+cosign verify ghcr.io/prokopto-dev/dragonkillparty:1.5.0 \
+  --certificate-identity-regexp '^https://github\.com/prokopto-dev/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -581,8 +581,9 @@ renders a banner with the exact command.
 4. **Trigger survival.** A test asserts the append-only `BEFORE UPDATE OR DELETE` triggers on
    `ledger_batch` and `ledger_entry` still fire **after the full migration set**, not merely after the
    migration that created them. Table rebuilds drop triggers; this is how you find out.
-5. **The reference-database ladder.** Every release publishes `ghcr.io/<org>/dkp-refdb:<version>` — a
-   deterministic seeded database, a few MB, produced by booting the just-released binary. Then:
+5. **The reference-database ladder.** Every release publishes
+   `ghcr.io/prokopto-dev/dkp-refdb:<version>` — a deterministic seeded database, a few MB, produced
+   by booting the just-released binary. Then:
    `test / migrations` uses N-1 per PR, `mq / upgrade-from-latest-release` uses the real latest tag in
    the queue, and nightly's `upgrade-ladder` iterates **every published minor to HEAD**. That converts
    "any 1.x upgrades to any later 1.y" from a promise into a nightly-verified property for about ten

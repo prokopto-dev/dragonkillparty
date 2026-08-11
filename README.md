@@ -33,7 +33,7 @@ importer reads your database — it does not transcribe their PHP. See
 ## Quickstart
 
 ```bash
-docker run -d --name dkp -p 8080:8080 -v dkp-data:/data ghcr.io/dragonkillparty/dkp:1
+docker run -d --name dkp -p 8080:8080 -v dkp-data:/data ghcr.io/prokopto-dev/dragonkillparty:1
 ```
 
 Open `http://localhost:8080`. The first run prints a one-time setup URL — there is no default

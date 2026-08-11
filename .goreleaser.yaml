@@ -130,13 +130,21 @@ sboms:
 
 # The Homebrew formula. goreleaser writes it into the dedicated tap repo with HOMEBREW_TAP_TOKEN;
 # humans never touch that repo (Homebrew mandates a separate repository for a tap).
+#
+# This block is the SINGLE SOURCE OF TRUTH for the tap. Homebrew resolves `brew install
+# <owner>/<tap>/<formula>` to the repository `<owner>/homebrew-<tap>`, so the documented command is
+# a restatement of these three fields and nothing else: `prokopto-dev` + `homebrew-tap` + `dkp` is
+# `brew install prokopto-dev/tap/dkp`. They were allowed to disagree once (#71) — this block named
+# the tap after the binary while the docs named it `tap`, under an org that does not exist, so the
+# documented command pointed at a repository nobody would ever write. The gate in
+# test/repo/canonical_repo_test.go now derives the command from here and fails if the two drift.
 brews:
   - name: dkp
     ids:
       - dkp
     repository:
-      owner: dragonkillparty
-      name: homebrew-dkp
+      owner: prokopto-dev
+      name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/prokopto-dev/dragonkillparty
     description: DKP and guild management for Project 1999 EverQuest raiding guilds.

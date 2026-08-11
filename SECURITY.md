@@ -48,8 +48,9 @@ purpose and the notification is loud.
 | Anything older | Unsupported. Upgrade. |
 | `:edge` container tag | Built from `main`, unsupported, not for guilds |
 
-Run the **`:1` rolling tag** — `ghcr.io/dragonkillparty/dkp:1`. It tracks the latest 1.x and is the
-documented default precisely so that `docker pull && docker restart` is the whole upgrade procedure.
+Run the **`:1` rolling tag** — `ghcr.io/prokopto-dev/dragonkillparty:1`. It tracks the latest 1.x
+and is the documented default precisely so that `docker pull && docker restart` is the whole
+upgrade procedure.
 Every 1.x upgrades to any later 1.y; the nightly upgrade ladder tests that from the oldest supported
 refdb to `HEAD`.
 
