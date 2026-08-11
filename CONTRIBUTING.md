@@ -46,7 +46,7 @@ Trunk-based. Branch off `main`, keep it short-lived, squash-merge, delete the br
 | Linear history — squash merge only | Merge commits and rebase-merge disabled at the repo level |
 | One approving review; stale approvals dismissed on push | Branch protection |
 | Owned paths need their owner | `.github/CODEOWNERS` — `internal/ledger/`, `internal/strategy/`, `db/schema.hcl`, `openapi/openapi.json`, `test/golden/`, `test/fixtures/` |
-| Expensive checks run once per merge, not once per push | Merge queue (`merge_group` jobs: arm64 image, full cross-browser e2e, upgrade-from-last-release) |
+| Expensive checks stay off drafts | The `deep` tier in `ci.yml` — a draft runs lint + unit, marking it ready runs the rest |
 
 Today the CODEOWNERS teams contain the same small group of people. The value is the notification and
 the pause, not the gatekeeping.
@@ -162,7 +162,7 @@ Two things follow from that budget, and both are your side of the deal:
   time. Marking ready re-runs the workflow with the expensive jobs enabled — `ready_for_review` is in
   `ci.yml`'s trigger list precisely so that leaving draft defers those jobs rather than skipping them
   (issue #82); before that they could be absent all the way to merge.
-- **Superseded runs are cancelled** on pull requests, never on `main`, tags, or the merge queue.
+- **Superseded runs are cancelled** on pull requests, never on `main` or tags.
 
 ## Docs change in the same PR as the behaviour
 

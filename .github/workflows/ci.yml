@@ -46,6 +46,18 @@ on:
     # merge rather than before it. TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview pins
     # this list.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Kept deliberately, and it gates NOTHING (issue #101). There is no merge queue on this repository
+  # — `required_merge_queue: null` — so this trigger never fires, and no job below may be conditioned
+  # on it: `ci-required` counts `skipped` as success, so a `merge_group`-only job reports as
+  # satisfied on every PR and is indistinguishable in the checks list from one that did the work.
+  # Two such jobs (`mq / image-arm64`, `mq / upgrade-from-latest-release`) and two
+  # `|| github.event_name == 'merge_group'` escape hatches were deleted rather than enabled; #108 and
+  # #109 track the coverage they claimed. TestCIWorkflow_NoJob_IsGatedOnMergeGroup pins that rule.
+  #
+  # The trigger itself is the half with no downside. If a merge queue is ever switched on — a
+  # repository-settings change, not a PR — the whole workflow runs in the queue exactly as it does on
+  # a PR, rather than `ci-required` never reporting and the queue wedging on a check that never
+  # arrives. Adopting the queue means re-adding the expensive tier in the same change.
   merge_group:
   push:
     branches: [main]
@@ -83,6 +95,11 @@ jobs:
       importer: ${{ steps.filter.outputs.importer }}
       docs: ${{ steps.filter.outputs.docs }}
       # deep == "run the expensive jobs". Draft PRs get lint + unit only.
+      #
+      # `merge_group` is a term here for the reason the trigger comment above gives, and it is not an
+      # escape hatch from a path filter — those were removed with the mq jobs (#101). It says a queue
+      # run, should one ever happen, is a deep run and not a draft one; without it a queue run would
+      # skip build / image and test / e2e, and ci-required's DEEP assertion would not fire.
       deep: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -523,7 +540,7 @@ jobs:
   test-migrations:
     name: test / migrations
     needs: [changes, codegen-drift]
-    if: needs.changes.outputs.db == 'true' || github.event_name == 'merge_group'
+    if: needs.changes.outputs.db == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -725,7 +742,7 @@ jobs:
   test-importer:
     name: test / importer
     needs: changes
-    if: (needs.changes.outputs.importer == 'true' && needs.changes.outputs.deep == 'true') || github.event_name == 'merge_group'
+    if: needs.changes.outputs.importer == 'true' && needs.changes.outputs.deep == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -780,48 +797,14 @@ jobs:
         # ```dkp:exec blocks so a documented command that no longer exists fails the build.
 
   # ---------------------------------------------------------------------------------------------
-  # mq — merge-queue only. The merge queue exists here for exactly one reason: it is the only place
-  # to run an expensive check ONCE PER MERGE instead of on every push to every PR. That two-tier
-  # split is what lets PR CI stay under six minutes without weakening the merge gate.
+  # There was an `mq` tier here — `mq / image-arm64` and `mq / upgrade-from-latest-release`, both
+  # `if: github.event_name == 'merge_group'`, described in docs/design/06-cicd-and-release.md §4 as
+  # "required in queue". This repository has no merge queue, so neither ever ran, and because
+  # ci-required counts `skipped` as success both reported satisfied on every PR: a two-tier split
+  # that existed in the checks list and nowhere else. Issue #101 chose deleting them over enabling
+  # the queue. What they claimed to cover is now tracked honestly — #108 for the arm64 image build,
+  # #109 for upgrade-from-latest-release — rather than asserted here.
   # ---------------------------------------------------------------------------------------------
-  mq-image-arm64:
-    name: mq / image-arm64
-    if: github.event_name == 'merge_group'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 6
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - env:
-          PLATFORM: linux/arm64
-        run: make docker
-        # Go CROSS-COMPILES. No QEMU, here or in release.yml. See release.yml's header.
-
-  mq-upgrade-from-latest-release:
-    name: mq / upgrade-from-latest-release
-    if: github.event_name == 'merge_group'
-    needs: build-binary
-    runs-on: ubuntu-24.04
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup-toolchain
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        # Only when build / binary actually produced one. The job still RUNS either way, so the
-        # ci-required anti-silent-skip assertion holds; the make target below is a no-op until
-        # there is something to exercise.
-        if: needs.build-binary.outputs.built == 'true'
-        with:
-          name: dkp-linux-amd64
-          path: bin
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: make test-upgrade
-        # Pulls the real ghcr.io/prokopto-dev/dkp-refdb:<latest tag>, runs HEAD against it, and
-        # asserts: migrations apply, the pre-migration snapshot was written, `dkp verify-ledger` is
-        # clean, /readyz returns 200, protected-table row counts did not decrease, and the
-        # append-only triggers still fire AFTER the full migration set (a table rebuild drops
-        # triggers — this is how you find out).
 
   # ---------------------------------------------------------------------------------------------
   # ci-required — the ONLY check in branch protection, alongside DCO.
@@ -862,8 +845,6 @@ jobs:
       - test-importer
       - bundle-budget
       - docs-build
-      - mq-image-arm64
-      - mq-upgrade-from-latest-release
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
