@@ -285,6 +285,36 @@ jobs:
         # link. The P99 wiki and Discord invite links are the ones that actually rot.
 
   # ---------------------------------------------------------------------------------------------
+  # fonts — the vendored Inter faces are a Latin SUBSET this repository generated
+  # (scripts/subset-fonts.sh), not bytes anyone can download and compare. That trade is only
+  # acceptable while the derivation is reproducible, so this job re-runs it and diffs: pull
+  # Inter-4.1.zip, verify its SHA-256 and the two source faces', re-cut the subset with the pinned
+  # pyftsubset flags, and require the result to be byte-identical to what is committed.
+  #
+  # HERE AND NOT IN ci.yml, by this file's own rule. It downloads 33 MB from a GitHub release and two
+  # wheels from PyPI, so its failure is not deterministic given a PR's diff — blocking a P99 parser
+  # fix on a PyPI outage is exactly the trade the header forbids. The offline half of the gate does
+  # run per PR: test/repo/web_fonts_subset_test.go checks the checksum table against the committed
+  # bytes, the provenance hashes against the script's constants, the stylesheet's unicode-range
+  # against the subset range, and every font-variant-* declaration against the retained features.
+  #
+  # A failure here means the committed faces are not what the recipe produces — hand-edited bytes, a
+  # re-tagged upstream release, or a parameter changed without regenerating. None of those are
+  # things a nightly should fix silently, which is why the job diffs rather than committing.
+  # ---------------------------------------------------------------------------------------------
+  fonts:
+    name: fonts / subset-reproducible
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make verify-fonts
+        # No setup-toolchain: this needs python3 and unzip, both preinstalled on the runner, and no
+        # Go at all. fonttools and brotli are pinned in the script and installed into a throwaway
+        # venv — `make setup` gains nothing and neither does any lockfile.
+
+  # ---------------------------------------------------------------------------------------------
   # File ONE issue for the whole night, not one per job. A nightly that opens six issues gets muted.
   # ---------------------------------------------------------------------------------------------
   nightly-report:
@@ -299,6 +329,7 @@ jobs:
       - upgrade-ladder-enumerate
       - upgrade-ladder
       - links
+      - fonts
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
