@@ -107,7 +107,7 @@ names `proxy_buffering` explicitly if the frames do not arrive.
 | Endpoint | Touches the database | Use it for |
 |---|---|---|
 | `/healthz` | No | The container `HEALTHCHECK` and process supervision |
-| `/readyz` | Yes — database reachable, migrations at the expected version, worker heartbeat fresh | Load balancers and deploy gates |
+| `/readyz` | Yes — database reachable, migrations at the expected version, the ledger's append-only protection intact, worker heartbeat fresh | Load balancers and deploy gates |
 
 The image's `HEALTHCHECK` calls `/healthz`, not `/readyz` and not `dkp doctor`. A health check that
 touches the database lets Docker kill the container part-way through a migration, which is the one

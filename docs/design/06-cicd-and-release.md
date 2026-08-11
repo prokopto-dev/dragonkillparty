@@ -715,11 +715,29 @@ it**, plus a `lint / repo` grep banning those identifiers as `slog` attribute ke
 only a convention is not redaction.
 
 **Health endpoints** follow canonical conventions §13 exactly: `/healthz` never touches the database
-and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, worker
-heartbeat, free disk and outbox lag, and returns 503 with a JSON body naming the failing check *and
-its fix*.
+and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, the ledger's
+append-only protection, worker heartbeat, free disk and outbox lag, and returns 503 with a JSON body
+naming the failing check *and its fix*.
 
-Detail is disclosed only to loopback and RFC-1918 callers, **with one deliberate exception**: the
+The checks are an **ordered ladder** and the body reports the first one that is not ready, because the
+migrations-pending body below is a wire contract that a pending instance has to keep answering
+whatever else is true of its database. `state` is `pending`, `failed` — the check could not be
+evaluated — or `degraded`: an evaluated check with a bad answer that will keep having that answer
+until a human acts. The ledger's append-only protection is the first `degraded` check
+(`{"check":"ledger_append_only","state":"degraded"}`): the boot path refuses a migration that drops
+one of the four triggers, but a database that *arrived* without one boots anyway, and logs it once.
+Reporting it on every probe is the difference between detecting that a guild's ledger became editable
+and somebody finding out.
+
+Detail is disclosed only to loopback and RFC-1918 callers — and to the RFC 4193 IPv6 unique-local
+range, which is the same decision and not a widening of it: `fc00::/7` is what an IPv6-only Docker
+network or Kubernetes cluster assigns, so a rule naming only RFC 1918 would be unimplementable there
+and the detail would reach nobody. **Link-local (`169.254/16`, `fe80::/10`) is excluded**, because those
+are reachable by anything sharing a layer-2 segment — another tenant on a cloud VLAN, a device on the
+office wifi — which is not the "has shell access, or is on the network this instance is managed from"
+audience the disclosure is for. CGNAT (`100.64/10`) is excluded for the same reason.
+
+There is **one deliberate exception**: the
 migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public.
 It tells an unauthenticated caller only that the instance is mid-upgrade — which the 503 already
 tells them — and the command it names is in the published documentation. The SPA renders it as a
@@ -728,8 +746,30 @@ address would mean the banner is blank for exactly the person who needs it. A `/
 the public internet your schema version, disk state or worker lag is a reconnaissance endpoint, and
 those checks are the ones the redaction is for.
 
-> Landed in Phase 0 PR 3: the migrations check and its public body. The remaining checks and the
-> caller-based redaction land with the code that can fail them.
+> Landed in Phase 0 PR 3: the migrations check and its public body. Landed with the append-only
+> readiness check (#59): the caller-based redaction, applied to every `detail` except the exception
+> above. It is **two** tests, because the peer address alone is not a control in a proxied deployment —
+> a same-host reverse proxy presents `127.0.0.1` for every caller alive:
+>
+> 1. the peer is loopback or private space, from `RemoteAddr`; **and**
+> 2. nothing in the request says the peer is relaying somebody else — any `X-Forwarded-*` header
+>    (the whole family by prefix, not three chosen members: `X-Forwarded-Port` alone is the same
+>    fact as `X-Forwarded-For`), or `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`.
+>
+> The **presence of the header key** is what redacts — present-and-empty counts, since a proxy that
+> forwards an empty value has still told you it is a proxy — and the contents are never read. Reading
+> them would invert the control, since a client-supplied header that *grants* disclosure is a header
+> anyone can forge, while one that only *withholds* it buys an attacker nothing but a shorter response.
+> An operator behind a proxy still sees the detail by asking the process directly rather than through
+> the proxy — which is what somebody on the box is doing anyway.
+>
+> Residual gap: a layer-4 proxy, or a layer-7 one configured to add no headers at all, is invisible to
+> (2). Closing that needs `DKP_TRUSTED_PROXIES` — already specified in
+> [`install-docker.md`](../getting-started/install-docker.md), empty by default and ignoring forwarded
+> headers entirely while it is — plus PROXY-protocol support. Filed as #74. Note that implementing it
+> *loosens* (2) deliberately and only for a validated peer: it recovers the real client so a
+> genuinely-local caller behind a proxy sees the detail again. The remaining checks land with the code
+> that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

@@ -104,7 +104,29 @@ What it costs you until it is fixed is the guarantee, not the data: ledger histo
 by anything with direct access to the file, because the triggers that refuse an `UPDATE` or `DELETE`
 are not there to refuse it. The balances are still correct and `dkp verify-ledger` still checks them.
 
+**`/readyz` says so too, on every probe, for as long as it is true** — so this is not a message you can
+miss by not watching a restart:
+
+```json
+{"check":"ledger_append_only","state":"degraded",
+ "detail":"missing append-only triggers: trg_ledger_entry_no_update. Ledger history can be rewritten…"}
+```
+
+It answers `503`, so a load balancer takes the instance out of rotation and your monitoring keeps
+firing. `/healthz` stays green throughout, so nothing kills the container over it — that is the same
+split as everywhere else on this page, and here it matters twice: losing the raid night on top of
+losing the guarantee helps nobody.
+
+If you see the verdict but no `detail`, **ask the process directly rather than through your reverse
+proxy**: `curl -s localhost:8080/readyz` on the box, or `docker exec <container> …`. The trigger names
+go only to a caller that is both on the local network *and* not being relayed by a proxy, because a
+proxy on the same host makes every caller on the internet look local.
+
 Report it with a support bundle and the log line, which names exactly which triggers are missing.
+Keep your current backups while you do: restoring a snapshot from before the damage is the only action
+that puts back the guarantee *and* what it was protecting. Nothing re-creates the triggers silently,
+deliberately — a ledger whose history was editable for an unknown period is a conversation, not
+something to paper over.
 
 **No `down` migrations ship, ever.** A down migration is code that runs exactly once, in an emergency,
 on data you cannot reproduce, written months earlier by someone who never tested it against your
@@ -174,6 +196,11 @@ nightly on its own and its last result appears in `dkp doctor` and at `/ops`.
 If it ever disagrees, that is a **bug in this software**, not a data-loss event: the log is intact and
 the cache is derived. `dkp verify-ledger --rebuild` discards and recomputes the cache. Please report
 the drift.
+
+`dkp verify-ledger` checks the balances, which is a different question from whether the database can
+still refuse an edit. If `/readyz` reports `{"check":"ledger_append_only","state":"degraded"}`, it is
+the second question that has failed: see
+[Your ledger's triggers are missing](#your-ledgers-triggers-are-missing) above.
 
 ## A restore drill worth doing once
 

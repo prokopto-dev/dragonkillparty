@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
 
 // startServe boots `dkp serve` on an ephemeral port and returns its base URL.
@@ -130,6 +132,67 @@ func TestReady_MigrationsApplied_Returns200(t *testing.T) {
 	status, body := get(t, base+"/readyz")
 	require.Equal(t, http.StatusOK, status, "migrate-on-boot ran but /readyz still reports not ready")
 	require.JSONEq(t, `{"check":"migrations","state":"ready"}`, body)
+}
+
+// TestReady_MissingAppendOnlyTrigger_Returns503Degraded is issue #59 end to end, through the real
+// binary, the real migration set and a real HTTP request.
+//
+// The database here is fully migrated and then damaged the way a real one gets damaged: a trigger
+// dropped behind the boot path's back, as a fork's build, a patched image or a support session with a
+// SQLite client would leave it. Nothing else is wrong — integrity_check passes, foreign_key_check
+// passes, no row moved — which is exactly why this was invisible. The boot path logs it once, at error
+// level, and before this change nothing said so again: the site served a ledger with no database-level
+// protection indefinitely, looking entirely normal.
+//
+// Three assertions, and the third is the one that keeps this honest:
+//
+//   - /readyz answers 503 with state `degraded`, so a blackbox monitor that only reads status codes
+//     fires, and keeps firing, for as long as the damage is there.
+//   - the body names the missing trigger, because this request comes from loopback and an operator on
+//     the box is the audience the detail exists for.
+//   - /healthz still answers 200. Canonical §13: Docker's HEALTHCHECK calls /healthz, and a
+//     healthcheck that goes red here would kill the container of a guild whose ledger is already
+//     unprotected — losing the raid night on top of it and fixing nothing.
+//
+// No t.Parallel: t.Setenv panics in a parallel test.
+func TestReady_MissingAppendOnlyTrigger_Returns503Degraded(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "dkp.db")
+
+	t.Setenv(dbPathEnv, dbPath)
+	t.Setenv(dataDirEnv, dataDir)
+	t.Setenv(autoMigrateEnv, "true")
+
+	// Migrate first, so the damage below lands on a database that reports itself fully up to date —
+	// which is the state the check has to be able to disbelieve.
+	runner, err := newMigrator(dbPath, true)
+	require.NoError(t, err)
+	require.NoError(t, runner.Migrate(t.Context()))
+
+	st, err := store.Open(t.Context(), dbPath)
+	require.NoError(t, err)
+
+	st.ExecForTest(t, "DROP TRIGGER trg_ledger_entry_no_update")
+	require.NoError(t, st.Close())
+
+	base := startServe(t)
+
+	status, body := get(t, base+"/readyz")
+	require.Equal(t, http.StatusServiceUnavailable, status,
+		"a database whose ledger history can be rewritten reported itself ready. That is the whole of "+
+			"issue #59: the boot log fires once into a sink nobody watched, and monitoring never hears "+
+			"about it again.")
+	require.Contains(t, body, `"check":"ledger_append_only"`)
+	require.Contains(t, body, `"state":"degraded"`)
+	require.Contains(t, body, "trg_ledger_entry_no_update",
+		"the detail must name the missing trigger for a caller on the local network — that is the "+
+			"actionable content, and this request came from loopback")
+
+	status, body = get(t, base+"/healthz")
+	require.Equal(t, http.StatusOK, status,
+		"/healthz went unhealthy because the ledger lost a trigger — that lets Docker kill the "+
+			"container of a guild that has already lost the guarantee (canonical §13)")
+	require.JSONEq(t, `{"status":"ok"}`, body)
 }
 
 // TestServe_AutoMigrate_AppliesOnBoot asserts the default actually migrates.
