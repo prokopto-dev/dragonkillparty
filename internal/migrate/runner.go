@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -63,7 +64,8 @@ func New(fsys fs.FS, cfg Config) (*Runner, error) {
 	return &Runner{fsys: fsys, cfg: cfg}, nil
 }
 
-// Status reports where the database is relative to this binary, without changing anything.
+// Status reports where the database is relative to this binary, and whether the ledger still has its
+// database-level append-only protection, without changing anything.
 //
 // This is what /readyz reads. It opens and closes its own connection every call, which is
 // affordable because /readyz is polled by a load balancer at human intervals and because the
@@ -108,29 +110,85 @@ func (r *Runner) status(ctx context.Context, s *store.Store) (Status, error) {
 	switch {
 	case applied > latest:
 		st.State = StateAhead
-
-		return st, nil
 	case applied == latest:
 		st.State = StateUpToDate
 	default:
 		st.State = StatePending
 	}
 
-	pending, err := migrator.Pending(ctx)
-	if err != nil {
-		return Status{}, err
+	// A database written by a newer binary is not asked what is pending: this one cannot name
+	// migrations it does not carry, and the answer is not used — StateAhead is fatal at boot and
+	// failed on /readyz.
+	if st.State != StateAhead {
+		pending, pendingErr := migrator.Pending(ctx)
+		if pendingErr != nil {
+			return Status{}, pendingErr
+		}
+
+		st.Pending = pending
+
+		// Pending is authoritative over the version arithmetic above. Out-of-order migration numbers
+		// from a bad branch merge can leave applied == latest with a gap in the middle, and reporting
+		// "up to date" in that situation is how a migration gets skipped forever.
+		if len(pending) > 0 {
+			st.State = StatePending
+		}
 	}
 
-	st.Pending = pending
-
-	// Pending is authoritative over the version arithmetic above. Out-of-order migration numbers
-	// from a bad branch merge can leave applied == latest with a gap in the middle, and reporting
-	// "up to date" in that situation is how a migration gets skipped forever.
-	if len(pending) > 0 {
-		st.State = StatePending
-	}
+	// Read last, because the table half of the answer depends on the state above being final.
+	st.Protection = protection(ctx, s, st.State)
 
 	return st, nil
+}
+
+// protection reads the ledger's database-level append-only guarantee out of sqlite_schema.
+//
+// It never fails. An unreadable answer is reported as Protection.Err, because every caller has to
+// degrade to "unknown" rather than to "intact" or to a refusal: /readyz reports failed, and the boot
+// path warns and starts. Returning an error here instead would make a database nobody can boot out of
+// damage that predates the binary, which is exactly the outcome #39 decided against.
+//
+// The cost is one indexed read of sqlite_schema on a connection Status has already opened — strictly
+// cheaper than the goose bookkeeping queries beside it, which is the property that matters: /readyz is
+// polled forever, so a check that is not cheap is a check that gets removed.
+func protection(ctx context.Context, s *store.Store, state State) Protection {
+	found, err := s.AppendOnlyState(ctx)
+	if err != nil {
+		return Protection{Err: err}
+	}
+
+	p := Protection{MissingTriggers: found.MissingTriggers}
+
+	// The table half is asserted only against a database that has applied everything this binary
+	// carries. Anywhere else an absent ledger table is early rather than gone — see Protection.
+	if state != StateUpToDate {
+		return p
+	}
+
+	for _, table := range ledgerTables() {
+		if !slices.Contains(found.Tables, table) {
+			p.MissingTables = append(p.MissingTables, table)
+		}
+	}
+
+	return p
+}
+
+// ledgerTables is the catalogued ledger tables, in catalogue order.
+//
+// Derived from internal/store's trigger catalogue rather than written out again here: that list is
+// the repository's one independent statement of what the ledger's guarantee IS, and a second copy of
+// it in a second package is a copy that can disagree.
+func ledgerTables() []string {
+	var out []string
+
+	for _, trigger := range store.AppendOnlyTriggers() {
+		if !slices.Contains(out, trigger.Table) {
+			out = append(out, trigger.Table)
+		}
+	}
+
+	return out
 }
 
 // Migrate runs the boot sequence: read the version, refuse a downgrade, snapshot, apply one
@@ -183,14 +241,18 @@ func (r *Runner) Migrate(ctx context.Context) error {
 	}
 
 	// Before anything is applied, and on every boot including the ones with nothing to do: does this
-	// database still have its append-only triggers?
+	// database still have its append-only protection?
 	//
 	// This only warns. Failing here would refuse to start a database that arrived already degraded —
 	// from a past upgrade, a fork's build, or a support session with a SQLite client — and locking
 	// an officer out of their guild's site over damage that is already done helps nobody, least of
 	// all at 1 a.m. What the loop below refuses is a migration that makes it WORSE, which is a thing
 	// this boot did and can undo.
-	r.warnIfTriggersMissing(ctx, s)
+	//
+	// The answer comes from the status read above rather than from a second query, and the same answer
+	// is what /readyz now reports on every probe (#59) — one read, two audiences, no chance of the log
+	// and the endpoint disagreeing.
+	r.warnIfDegraded(ctx, st.Protection)
 
 	if len(st.Pending) == 0 {
 		return r.recordVersion(ctx, s, st.Applied)
@@ -316,8 +378,8 @@ func (r *Runner) Migrate(ctx context.Context) error {
 	return r.recordVersion(ctx, s, final)
 }
 
-// warnIfTriggersMissing reports a database that arrived without its append-only triggers, and does
-// not stop the boot.
+// warnIfDegraded reports a database that arrived without its append-only protection, and does not
+// stop the boot.
 //
 // The asymmetry with the migration loop is the whole design, and it is a decision rather than an
 // oversight. Inside the loop, a missing trigger means a migration THIS boot applied destroyed the
@@ -331,23 +393,33 @@ func (r *Runner) Migrate(ctx context.Context) error {
 // stops the boot: this is a diagnostic on a path that has not been asked to do anything yet. The
 // migration loop reads the same state again as its baseline, and there the read failing IS fatal —
 // see Migrate.
-func (r *Runner) warnIfTriggersMissing(ctx context.Context, s *store.Store) {
-	state, err := s.AppendOnlyState(ctx)
-	if err != nil {
+//
+// This log is no longer the only place the answer appears. /readyz reports the same Protection on
+// every probe, which is what #59 asked for: one line at 1 a.m. is a detection, not a notification.
+func (r *Runner) warnIfDegraded(ctx context.Context, p Protection) {
+	if p.Err != nil {
 		slog.WarnContext(ctx, "could not verify the ledger's append-only triggers",
-			"error", err, "db_path", r.cfg.DBPath)
+			"error", p.Err, "db_path", r.cfg.DBPath)
 
 		return
 	}
 
-	if len(state.MissingTriggers) == 0 {
-		return
+	// Separate from the trigger line below, and not folded into it: "a table is gone" and "a table can
+	// be edited" are different events to whoever reads them, and a single message would have to hedge
+	// about which one happened.
+	if len(p.MissingTables) > 0 {
+		slog.ErrorContext(ctx, "a ledger table is absent from a database that reports itself fully migrated",
+			"missing", p.MissingTables, "db_path", r.cfg.DBPath,
+			"detail", "the rows are gone with the table. This database arrived in this state; this "+
+				"boot did not cause it.")
 	}
 
-	slog.ErrorContext(ctx, "the ledger's append-only triggers are not all present on this database",
-		"missing", state.MissingTriggers, "db_path", r.cfg.DBPath,
-		"detail", "this database arrived in this state; this boot did not cause it. Ledger history "+
-			"can be rewritten until the triggers are restored.")
+	if len(p.MissingTriggers) > 0 {
+		slog.ErrorContext(ctx, "the ledger's append-only triggers are not all present on this database",
+			"missing", p.MissingTriggers, "db_path", r.cfg.DBPath,
+			"detail", "this database arrived in this state; this boot did not cause it. Ledger history "+
+				"can be rewritten until the triggers are restored.")
+	}
 }
 
 // notIn returns the elements of want that do not appear in have.

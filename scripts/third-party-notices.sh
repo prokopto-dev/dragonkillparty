@@ -81,7 +81,7 @@ fi
 # root. Adding a vendored asset without adding a row here is caught by test/repo/web_fonts_test.go,
 # which requires every committed face to be recorded in NOTICE and in this file.
 VENDORED_ASSETS=(
-    "Inter 4.1 — SIL Open Font License 1.1|web/src/assets/fonts/OFL.txt|web/src/assets/fonts/Inter-Regular.woff2,web/src/assets/fonts/Inter-Medium.woff2"
+    "Inter 4.1, Latin subset — SIL Open Font License 1.1|web/src/assets/fonts/OFL.txt|web/src/assets/fonts/Inter-Regular-latin.woff2,web/src/assets/fonts/Inter-Medium-latin.woff2"
 )
 
 # The count is taken once and every later expansion of the array is guarded by it: bash 3.2 — the

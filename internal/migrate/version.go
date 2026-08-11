@@ -15,6 +15,7 @@ package migrate
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
@@ -57,6 +58,80 @@ type Status struct {
 	// a database migrated by a build predating that record, which is why the downgrade message
 	// treats it as optional rather than assuming it.
 	WroteBy string
+	// Protection is the ledger's database-level append-only guarantee as this database stands right
+	// now. Read on every Status call, so /readyz reports it on every probe — see Protection.
+	Protection Protection
+}
+
+// Protection is what remains of the ledger's database-level append-only guarantee: the triggers that
+// make an UPDATE or a DELETE on ledger history raise, and the tables they are attached to.
+//
+// It rides on Status because of the gap #39 left open and #59 named. The boot path refuses a
+// migration that drops an append-only trigger, and a database that ARRIVED without one is logged at
+// error level and boots anyway — deliberately, because refusing there would close an officer's
+// upgrade path permanently over damage no version of this binary can undo. That log fires ONCE, into
+// whatever sink the operator has, during a restart nobody watched. Everything after it looks entirely
+// normal: the site serves, the balances add up, and the ledger can be rewritten.
+//
+// Carrying the same answer on Status is what makes the degraded state continuously visible instead of
+// historically visible. It is the difference between "we detect it" and "somebody finds out".
+type Protection struct {
+	// MissingTriggers are catalogued append-only triggers absent from a ledger table that EXISTS, in
+	// catalogue order. A trigger whose table is not there is not listed — see store.AppendOnlyState,
+	// which owns that exemption and the reason for it.
+	MissingTriggers []string
+	// MissingTables are catalogued ledger tables absent from a database that has applied every
+	// migration this binary carries, in catalogue order.
+	//
+	// Populated only on an up-to-date database, and that restriction is the whole reason this field
+	// can exist at all. Before the migration that creates the ledger has been applied, an absent
+	// ledger table is EARLY rather than gone: a check that could not tell those apart would report
+	// every fresh install as tampered, and a check that cries wolf on first boot is a check operators
+	// learn to ignore. The boot path catches the dropped-mid-upgrade case by comparing the table set
+	// across each migration (see Runner.Migrate); this catches the one it cannot — a table already
+	// missing from a database that says it is fully migrated.
+	MissingTables []string
+	// Err is why the guarantee could not be READ, when it could not be.
+	//
+	// Unknown is a third answer and not a synonym for either of the other two. /readyz reports it as
+	// failed, because a check that could not be evaluated has not passed; the boot path warns and
+	// still starts, which is the same asymmetry Runner.Migrate applies to a missing trigger.
+	Err error
+}
+
+// Degraded reports whether the ledger has lost part of its database-level protection.
+//
+// A read that FAILED is not degraded — it is unknown, and Err carries why. Folding the two together
+// would make an unreachable database indistinguishable from a tampered one in the one place an
+// operator looks.
+func (p Protection) Degraded() bool {
+	return len(p.MissingTriggers) > 0 || len(p.MissingTables) > 0
+}
+
+// Detail is the sentence an operator reads on /readyz when the protection is not intact.
+//
+// It states the consequence in the terms the guarantee was sold in, for the same reason
+// triggersLostError does: "trigger missing" reads as a schema detail, and "ledger history can be
+// rewritten" reads as what it is. Tables come first when both are gone, because a missing table is
+// the louder event — the rows went with it.
+func (p Protection) Detail() string {
+	var parts []string
+
+	if len(p.MissingTables) > 0 {
+		parts = append(parts, "missing ledger tables: "+strings.Join(p.MissingTables, ", "))
+	}
+
+	if len(p.MissingTriggers) > 0 {
+		parts = append(parts, "missing append-only triggers: "+strings.Join(p.MissingTriggers, ", "))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return strings.Join(parts, "; ") + ". Ledger history can be rewritten until this is restored. " +
+		"This boot did not cause it: a migration that drops an append-only trigger is refused and " +
+		"rolled back, so the damage predates this binary and needs a human."
 }
 
 // ErrSchemaAhead is the sentinel for the downgrade refusal. Callers match with errors.Is; the

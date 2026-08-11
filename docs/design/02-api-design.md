@@ -187,7 +187,7 @@ backups; reading PII in bulk; running and committing an import; and exporting th
 | GET | `/parsers` | Log and dump format catalogue with sample lines and per-format capability flags | `raid.read` | `logs:ingest` |
 | GET | `/strategies` | Point-strategy catalogue: id, version, balance kinds, config JSON Schema, declared invariants | `dkp.read` | `dkp:read` |
 | GET | `/healthz` | Liveness. **Touches no database** (canonical §13). Outside `/api/v1`, `Hidden` | `public` | — |
-| GET | `/readyz` | Readiness: DB reachable, migrations at expected version, worker heartbeat fresh. Outside `/api/v1`, `Hidden` | `public` | — |
+| GET | `/readyz` | Readiness: DB reachable, migrations at expected version, the ledger's append-only protection intact, worker heartbeat fresh. Outside `/api/v1`, `Hidden` | `public` | — |
 | GET | `/metrics` | Prometheus. Disabled by default, separate listener, `DKP_METRICS_TOKEN`. **Never gated by a PAT scope** (canonical §14). `Hidden` | `DKP_METRICS_TOKEN` | — |
 
 ### 4.2 Guild and instance configuration

@@ -35,11 +35,14 @@ One third-party ASSET is vendored, and it is embedded in the binary:
 
     Inter 4.1 — Copyright (c) 2016 The Inter Project Authors
     (https://github.com/rsms/inter), licensed under the SIL Open Font License,
-    Version 1.1. Vendored byte-for-byte at web/src/assets/fonts/ as
-    Inter-Regular.woff2 (weight 400) and Inter-Medium.woff2 (weight 500). The
-    full licence text is committed beside them as web/src/assets/fonts/OFL.txt
-    and reproduced in THIRD_PARTY_NOTICES.txt; provenance and checksums are in
-    web/src/assets/fonts/README.md.
+    Version 1.1. Vendored at web/src/assets/fonts/ as Inter-Regular-latin.woff2
+    (weight 400) and Inter-Medium-latin.woff2 (weight 500). These are MODIFIED
+    VERSIONS under the OFL: a Latin subset of the upstream faces, cut by the
+    committed, reproducible scripts/subset-fonts.sh. Inter declares no Reserved
+    Font Name, so the family name is unchanged. The full licence text is
+    committed beside them as web/src/assets/fonts/OFL.txt and reproduced in
+    THIRD_PARTY_NOTICES.txt; the upstream artefact, the subsetting parameters
+    and the checksums of both are in web/src/assets/fonts/README.md.
 
 The OFL requires the copyright notice and licence to travel with the font, which
 is why they travel with the binary rather than only with the source tree. The
