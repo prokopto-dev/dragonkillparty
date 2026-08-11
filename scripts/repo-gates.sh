@@ -358,8 +358,12 @@ fi
 #
 # The index-predicate exclusion is deliberate and is #97: a partial index over a SUBSET of a
 # vocabulary is not the vocabulary, so it cannot be rendered from a catalogue as-is and a gate that
-# demanded it would fire on correct work. Tracking the block structure rather than grepping `expr =`
-# lines also means a wrapped or heredoc expression inside a check block is still seen.
+# demanded it would fire on correct work.
+#
+# The scan tracks the check block STRUCTURALLY and carries an unfinished IN list across lines, so a
+# wrapped or heredoc expression is read as the one expression it is. A line-scoped scan misses that
+# shape entirely — `IN (` alone on its line, then the values on theirs — which would have made the
+# longest vocabularies, the ones most worth generating, the ones that walked through.
 #
 # The waiver is `// dkp:enum-literal <reason>` on the line above the check, the same in-tree marker
 # idiom as `-- dkp:destructive-approved:` and `-- dkp:fixture deliberately-broken`. It lives in the
@@ -412,23 +416,53 @@ if [ -f db/schema.hcl ]; then
             }
         }
 
-        # quoted_in_list — does any IN list on this line hold a quoted value?
+        # quoted_in_list — does an IN list hold a quoted value? Carries an unfinished list ACROSS
+        # LINES, because a wrapped or heredoc expression is a normal way to write a long one:
         #
-        # Scans list by list rather than with one regex, because the question is about the text
-        # BETWEEN the parentheses: `IN (0, 1)` is a boolean and must not match, while a quote
-        # anywhere in a list is a vocabulary. The leading non-word character keeps JOIN and MIN out.
-        function quoted_in_list(s,   rest, shut, seg) {
-            while (match(s, /(^|[^A-Za-z0-9_])IN[ \t]*\(/)) {
-                rest = substr(s, RSTART + RLENGTH)
-                shut = index(rest, ")")
-                seg = (shut > 0) ? substr(rest, 1, shut - 1) : rest
+        #   expr = <<-SQL
+        #     state IN (
+        #       ${SQ}draft${SQ},
+        #       ${SQ}open${SQ}
+        #     )
+        #   SQL
+        #
+        # A line-scoped scanner reads `IN (` with no quote after it, then two value lines with no
+        # `IN (` on them, and finds nothing — which is how the longest vocabularies, the ones most
+        # worth generating, would have been the ones that walked through. list_depth is therefore
+        # file-scoped state: the scan runs character by character, entering a list at `IN (`, and
+        # staying in it until the parenthesis that closes it however many lines later.
+        #
+        # Character-wise rather than by regex because the question is about the text BETWEEN the
+        # parentheses — `IN (0, 1)` is a boolean and must not match, a quote anywhere in a list is a
+        # vocabulary — and because nesting has to be counted rather than assumed away. The leading
+        # non-word character in the entry pattern keeps JOIN and MIN out.
+        function quoted_in_list(s,   i, n, ch, hit) {
+            n = length(s)
+            i = 1
 
-                if (index(seg, SQ) > 0 || index(seg, DQ) > 0) { return 1 }
+            while (i <= n) {
+                if (list_depth > 0) {
+                    ch = substr(s, i, 1)
 
-                s = rest
+                    if (ch == "(") { list_depth++ }
+                    else if (ch == ")") { list_depth-- }
+                    else if (ch == SQ || ch == DQ) { hit = 1 }
+
+                    i++
+                    continue
+                }
+
+                if (!match(substr(s, i), /(^|[^A-Za-z0-9_])IN[ \t]*\(/)) { break }
+
+                # Just past the opening parenthesis the match ended on.
+                i = i + RSTART + RLENGTH - 1
+                list_depth = 1
+                list_line = NR
+                list_text = $0
+                reported = 0
             }
 
-            return 0
+            return hit
         }
 
         index($0, "BEGIN GENERATED") {
@@ -464,16 +498,23 @@ if [ -f db/schema.hcl ]; then
             sub(/^[ \t]*check[ \t]+"/, "", name)
             sub(/".*$/, "", name)
             this_waived = waived
+
+            # A list cannot span two check blocks. Clearing it here means an unbalanced parenthesis
+            # in one block cannot swallow the next one.
+            list_depth = 0
         }
 
         in_check {
-            if (!in_region && !this_waived && quoted_in_list($0)) {
-                printf "db/schema.hcl:%d: check \"%s\": %s\n", NR, name, $0
+            # The list is reported at the line it STARTED on — where the author is looking — and
+            # once, however many quoted values follow it.
+            if (!in_region && !this_waived && quoted_in_list($0) && !reported) {
+                reported = 1
+                printf "db/schema.hcl:%d: check \"%s\": %s\n", list_line, name, list_text
             }
 
             n = gsub(/[{]/, "&"); m = gsub(/[}]/, "&")
             depth += n - m
-            if (depth <= 0) { in_check = 0 }
+            if (depth <= 0) { in_check = 0; list_depth = 0 }
         }
 
         # A blank line or any other statement ends the waiver'"'"'s reach: it applies to the check

@@ -1584,6 +1584,25 @@ table "bid_session" {
     expr = "blind IN (0, 1)"
   }
 
+  check "bid_session_phase_enum" {
+    expr = <<-SQL
+      phase IN (
+        'pull',
+        'engaged',
+        'looting'
+      )
+    SQL
+  }
+
+  check "bid_session_flags_bool" {
+    expr = <<-SQL
+      flags IN (
+        0,
+        1
+      )
+    SQL
+  }
+
   index "ux_bid_live" {
     where   = "state IN ('open', 'extended')"
     columns = [column.item_instance_id]
@@ -1653,6 +1672,11 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 		"ENUM001 must fire on DOUBLE-quoted values too. SQLite treats a double-quoted token that "+
 			"resolves to no column as a string literal, so `IN (\"blind\", \"open\")` is a "+
 			"hand-written vocabulary — changing quote style must not be a way past the gate\n%s", out)
+	require.Contains(t, out, "bid_session_phase_enum",
+		"ENUM001 must carry an IN list ACROSS LINES. A wrapped or heredoc expression puts `IN (` "+
+			"alone on one line and the values on the next — a line-scoped scan sees no quote on "+
+			"the first and no `IN (` on the rest, so the longest vocabularies, the ones most "+
+			"worth generating, would be the ones that walk through\n%s", out)
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
 
@@ -1665,6 +1689,9 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 		"a shape CHECK quoting one value is not a vocabulary; ENUM001 must not fire on it\n%s", out)
 	require.NotContains(t, out, "bid_session_blind_bool",
 		"`IN (0, 1)` is a boolean, not a string enum — no catalogue could generate it\n%s", out)
+	require.NotContains(t, out, "bid_session_flags_bool",
+		"a boolean stays a boolean when its list is wrapped over several lines. Carrying list "+
+			"state across lines must not turn every multi-line CHECK into a hit\n%s", out)
 	require.NotContains(t, out, "ux_bid_live",
 		"an index predicate is not a CHECK: a partial index over a SUBSET of a vocabulary cannot "+
 			"be rendered from a catalogue as-is, so ENUM001 is scoped to check blocks (#97)\n%s", out)
