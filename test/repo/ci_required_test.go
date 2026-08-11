@@ -306,7 +306,7 @@ func TestCIRequired_NeedsList_NamesOnlyRealJobs(t *testing.T) {
 // docs/development/first-ten-prs.md: govulncheck wired into ci-required, not continue-on-error.
 //
 // Being in `needs:` alone is not enough. ci-required treats `skipped` as success by design — that
-// is what stops a path-filtered job from wedging the merge queue — so a supply-chain job that
+// is what stops a path-filtered job from wedging a PR that never merges — so a supply-chain job that
 // acquired an `if:` would silently stop gating anything while still appearing in the needs list.
 // The positive assertion in ci-required's Gate step is what closes that hole, and this test is what
 // keeps the two jobs inside it.
@@ -413,6 +413,50 @@ func TestCIRequired_DeepGatedJobs_AreAssertedNotSkipped(t *testing.T) {
 				"`if [ \"$DEEP\" = \"true\" ]` block. ci-required counts a skip as success, so on a "+
 				"reviewable PR that job can be skipped and merged past. Add it to the assertion in "+
 				".github/workflows/ci.yml.", job)
+	}
+}
+
+// TestCIWorkflow_NoJob_IsGatedOnMergeGroup closes issue #101.
+//
+// This repository has no merge queue — `required_merge_queue` is null on `main` — so `merge_group`
+// never fires and a job conditioned on it never runs. That would be harmless if it read as absent,
+// and it does not: ci-required counts `skipped` as success, so such a job reports satisfied on every
+// PR and is indistinguishable in the checks list from one that did the work. ci.yml carried two of
+// them (`mq / image-arm64`, `mq / upgrade-from-latest-release`), named in ci-required's needs and
+// described in docs/design/06-cicd-and-release.md §4 as "required in queue", plus two
+// `|| github.event_name == 'merge_group'` escape hatches on test-migrations and test-importer that
+// read as "the merge queue catches the rest" while the queue caught nothing. All four are gone;
+// issues #108 and #109 track the coverage they claimed.
+//
+// Two mentions survive on purpose and neither is a job condition: the `on: merge_group:` trigger,
+// and the `merge_group` term in `changes`' `deep` output. Together they mean that if a queue is ever
+// switched on in repository settings — which is not a PR, and so cannot be caught in review here —
+// the workflow runs in it as it does on a PR with the deep tier on, rather than ci-required never
+// reporting and the queue wedging. The `deep` line is the one exception below; the trigger is
+// outside the jobs block and never reaches this scan.
+//
+// The scan is over lines rather than over parsed `if:` keys deliberately: a condition folded across
+// lines with `if: >` is the same defect spelled differently, and would slip past a key-based check.
+//
+// If the merge queue is ever adopted, this test is where that decision gets recorded — re-add the
+// expensive tier and update this assertion in the same change, so §4's table describes checks that
+// run rather than checks that would.
+func TestCIWorkflow_NoJob_IsGatedOnMergeGroup(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+
+	for _, l := range jobsBlock(t, workflow) {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "merge_group") {
+			continue // prose about the rule is not the rule
+		}
+
+		require.Truef(t, strings.HasPrefix(trimmed, "deep:"),
+			"ci.yml conditions a job on `merge_group`:\n\t%s\nThere is no merge queue on this "+
+				"repository, so that never runs — and ci-required counts a skip as success, so it "+
+				"reports green on every PR as though it had. Gate the job on something that fires, or "+
+				"enable the merge queue and say so here (issue #101).", l)
 	}
 }
 

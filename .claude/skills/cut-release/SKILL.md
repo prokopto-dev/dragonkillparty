@@ -20,8 +20,8 @@ upgrade to people with no ops skills.
 
 ### 1. Confirm the trunk is releasable
 
-- [ ] `main` is green on `ci-required`.
-- [ ] The merge queue is empty — a release cut mid-queue tags a commit that later checks never ran on.
+- [ ] `main` is green on `ci-required`. (There is no merge queue to drain first — issue #101 deleted
+      the configuration for one that was never turned on.)
 - [ ] No open PR carries `!breaking-api` that was meant for this release.
 - [ ] `nightly-verify.yml`'s last run is green, including `upgrade-ladder` and the OS matrix
       (`integration-windows`, `integration-macos`). `dkp.exe` is a first-class channel; SQLite file
