@@ -1240,7 +1240,7 @@ contradicted the transparency control this same document relies on in §9.3.*
 | Ecosystem | Control |
 |---|---|
 | Go | `go.mod` + committed `go.sum`; `GOFLAGS=-mod=readonly`; checksum database on; `go mod verify` in CI; toolchain pinned by the `toolchain` directive |
-| npm / pnpm | `pnpm-lock.yaml` committed; `--frozen-lockfile` everywhere including the Dockerfile; **`ignore-scripts=true`** in `.npmrc` (lifecycle scripts are the primary npm attack vector) with a reviewed allowlist if one is genuinely needed; a release-age delay of ~3 days **(assumption:** exact setting name and minimum pnpm version unverified — check at adoption.**)** |
+| npm / pnpm | `pnpm-lock.yaml` committed; `--frozen-lockfile` everywhere including the Dockerfile; **`ignore-scripts=true`** in `.npmrc` (lifecycle scripts are the primary npm attack vector) with a reviewed allowlist if one is genuinely needed; a release-age delay of ~3 days *(not yet configured)*. **Verified at adoption** on pnpm 9.15.9 (issue #87): the setting name is `ignore-scripts`, it suppresses dependency lifecycle hooks but **not** `pnpm run <script>`, and pnpm reads the project `.npmrc` from the directory holding `package.json` **without walking upward** — so `web/.npmrc` is the file that binds and a repository-root one alone would be a decoration. Both are committed; the reviewed allowlist, if ever needed, is a `pnpm.onlyBuiltDependencies` entry naming the one package, never `ignore-scripts=false`. |
 | GitHub Actions | **Pinned to full commit SHAs, never tags.** A tag is mutable; this is the cheapest high-value CI control there is. Renovate keeps SHAs current with a comment naming the version. |
 | Docker base images | Pinned by digest |
 | Runtime image | `FROM scratch` — no base image, therefore no base-image CVE feed |
@@ -1294,7 +1294,7 @@ code it constrains, or it becomes a grandfathering exercise.
 
 | Phase | Controls landing |
 |---|---|
-| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore. *Landed: the grep gates, SHA pinning, the licence gate, the AGPL firewall and `govulncheck`. Outstanding: CI secret scanning, `ignore-scripts`, the image and migrate-on-boot.* |
+| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore. *Landed: the grep gates, SHA pinning, the licence gate, the AGPL firewall, `govulncheck` and `ignore-scripts` (as a committed `.npmrc` default, not only as a flag at each call site). Outstanding: CI secret scanning, the image and migrate-on-boot.* |
 | **1** | Append-only triggers **and the tests that assert they fire**; `actor_is_beneficiary`; mandatory `reason`; strategy purity gate |
 | **2** | argon2id; sessions; **MFA/TOTP enrolment and step-up**; the permission catalogue; the capability floor; the authz matrix; first-run bootstrap; Discord OAuth and OIDC; **`internal/net/safehttp` and its grep gate**; audit hash chain; rate limiting; idempotency |
 | **3** | Security headers and CSP on the server-rendered surfaces; the class-colour contrast validator; the i18n lint rule (no bare strings, so nothing user-facing bypasses escaping later) |

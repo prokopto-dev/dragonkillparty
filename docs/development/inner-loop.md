@@ -23,7 +23,16 @@ a real database in `t.TempDir()`, with no container, no port allocation, no `doc
 teardown. The only target that needs Docker is `make test-importer`, which boots real EQdkp Plus
 fixture databases.
 
-Prerequisites: Go 1.26 and Node 24 via corepack. That is the whole list.
+Prerequisites: Go 1.26, Node 24 via corepack, and **python3 ≥ 3.9**. That is the whole list.
+
+Python is not installed by anything and does not need to be: `make verify-spec` and `make docs-links`
+are Python, the floor is low enough that macOS's stock `/usr/bin/python3` (3.9.6) clears it, and
+`make setup` checks the version rather than letting you find out from a gate. It is checked because
+of what an unchecked floor cost once — the spec gate failing at import on a tree whose spec was
+perfectly fine, which reads as drift in `openapi/openapi.json`, the one file nobody is allowed to
+hand-edit (issue #83). CI is held to a higher floor (3.10) so the runner image's interpreter is a
+declared fact; `test/repo/python_floor_test.go` re-parses every `scripts/*.py` at 3.9 so CI's newer
+Python cannot become a way to land syntax your laptop will not run.
 
 ## The commands
 
@@ -38,6 +47,12 @@ vet` or `make lint-web` runs, and make resolves it once per invocation so a `mak
 existing, which meant a merge that added a web dependency left every existing checkout stale and
 `make check` failed thirty lines into `tsc` with implicit-any errors on files the reader had never
 opened — issue #64. A directory that exists is not a directory that is current.
+
+`--ignore-scripts` is also the committed default: `web/.npmrc` carries `ignore-scripts=true`, so a
+bare `cd web && pnpm install` — the command in every pnpm tutorial, and the one you reach for when a
+make target fails for an unrelated reason — does not execute any dependency's lifecycle scripts
+either (issue #87). It does not affect `pnpm run <script>`; `build`, `lint`, `typecheck` and `dev`
+all still run.
 
 | Task | Command | Budget |
 |---|---|---|

@@ -19,11 +19,42 @@ also where docs/development/first-ten-prs.md's acceptance criteria put it. ci.ym
 corrected in the same change as this file.
 """
 
+# PEP 563. Load-bearing rather than stylistic: an annotation is evaluated when its function is
+# DEFINED, so `-> dict | None` below raises TypeError on 3.9 (PEP 604 landed in 3.10) and the
+# module-level `list[str]` raises on 3.8 (PEP 585 landed in 3.9). Both fail at IMPORT, before the
+# gate reads a single byte of the spec — so what the contributor sees is the SPEC GATE failing on a
+# tree whose spec is fine (issue #83). With this import every annotation is a string nobody
+# evaluates, and the floor below is about the interpreter, not about the type syntax.
+from __future__ import annotations
+
 import json
 import os
 import re
 import subprocess
 import sys
+
+# The floor this script is written to, checked rather than assumed.
+#
+# 3.9 and not 3.10: macOS ships /usr/bin/python3 at 3.9.6, and this gate is deliberately runnable on
+# a laptop's stock interpreter — its header says so, and `make setup` installs no Python. The same
+# number is in the Makefile's PYTHON_REQUIRED and in scripts/subset-fonts.sh, and
+# test/repo/python_floor_test.go fails if the three disagree or if any scripts/*.py stops parsing at
+# it. CI is held to a HIGHER floor (3.10, asserted by .github/actions/setup-toolchain) so the runner
+# image's interpreter is a checked fact; the parse gate is what keeps CI's newer Python from
+# accepting syntax the floor cannot run.
+MINIMUM_PYTHON = (3, 9)
+
+if sys.version_info < MINIMUM_PYTHON:
+    # %-formatting, not an f-string: this branch has to survive being read by whatever interpreter is
+    # first on PATH, and a message that is itself a SyntaxError explains nothing. Exit 2 rather than
+    # 1 — 1 means "the spec is wrong", which is the confusion this whole guard exists to end.
+    sys.stderr.write(
+        "verify-spec.py needs Python %d.%d or newer; this is Python %d.%d.%d (%s).\n"
+        "The spec is not what failed here. Re-run with a newer interpreter, e.g.\n"
+        "  python3.12 scripts/verify-spec.py\n"
+        % (MINIMUM_PYTHON + sys.version_info[:3] + (sys.executable or "python3",))
+    )
+    sys.exit(2)
 
 # Rule ids, in the shape scripts/repo-gates.sh uses. Tests assert on the id in the output rather than
 # on the exit code, so a gate that fires for the wrong reason is distinguishable from one that fires

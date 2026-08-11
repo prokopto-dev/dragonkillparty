@@ -28,6 +28,20 @@ import re
 import sys
 from pathlib import Path
 
+# The repository's Python floor. See scripts/verify-spec.py for why it is 3.9 and not 3.10;
+# test/repo/python_floor_test.go asserts every scripts/*.py declares the same number and still
+# parses at it. This file already had the future import above, which is what kept it off the list of
+# scripts issue #83 was about — the guard is here so the floor is declared everywhere it applies.
+MINIMUM_PYTHON = (3, 9)
+
+if sys.version_info < MINIMUM_PYTHON:
+    sys.stderr.write(
+        "dc-publish.py needs Python %d.%d or newer; this is Python %d.%d.%d (%s).\n"
+        "No page was written. Re-run `make mockup-site` with a newer interpreter.\n"
+        % (MINIMUM_PYTHON + sys.version_info[:3] + (sys.executable or "python3",))
+    )
+    sys.exit(2)
+
 VOID = {
     "area", "base", "br", "col", "embed", "hr", "img", "input",
     "link", "meta", "param", "source", "track", "wbr",

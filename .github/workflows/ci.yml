@@ -32,6 +32,20 @@ name: ci
 
 on:
   pull_request:
+    # ALL FOUR ARE LOAD-BEARING. Declaring `types:` REPLACES the default
+    # [opened, synchronize, reopened] rather than extending it, so dropping one here silently stops
+    # CI running on that event — `synchronize` in particular is every push to an open PR.
+    #
+    # `ready_for_review` is the one that was missing (issue #82). `deep` below reads
+    # `github.event.pull_request.draft`, and the whole draft tier assumes leaving draft
+    # re-evaluates it. It does not, unless the workflow listens for the event that clears the gate:
+    # a PR opened as a draft, marked ready and merged with no further push reached `main` with
+    # `test / e2e`, `test / importer` and `build / image` never having run, and `ci-required` green
+    # the whole way — which is exactly the flow CONTRIBUTING.md documents. There is no merge queue
+    # (`required_merge_queue: null`), so `merge_group` is not a fallback, and `push` is after the
+    # merge rather than before it. TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview pins
+    # this list.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   push:
     branches: [main]
@@ -115,6 +129,46 @@ jobs:
               # githooks_test runs .githooks/pre-commit and pre-push under `make test`, so a
               # hooks-only change must reach `test / integration` to exercise that gate.
               - '.githooks/**'
+              # The web and design-doc INPUTS of test/repo, pinned to `go` for the same reason as
+              # the three blocks above — issue #94. test/repo runs under `make test-unit` and
+              # `make test`, both gated on `go`, but five of its suites read their inputs from
+              # web/ and docs/design/ instead:
+              #
+              #   design_tokens_test.go  tokens.css, base.css, web/src/routes/design.*,
+              #                          web/src/components/*.css, docs/design/09 section 2, and
+              #                          the Nocturne mockup sheet it diffs .table against
+              #   e2e_gate_test.go       web/e2e/axe-allowlist.json, web/playwright.config.ts
+              #   web_fonts_test.go      fonts.css, web/src/assets/fonts/**, NOTICE
+              #   web_fonts_subset_test  the vendored subsets and THIRD_PARTY_NOTICES.txt
+              #   npmrc_test.go          .npmrc and web/.npmrc
+              #
+              # Without these lines a web-only PR selects `web` and not `go`, every job that runs
+              # test/repo is SKIPPED, and ci-required counts a skip as success — so an untokenised
+              # colour, a dropped /_design swatch, a `transition` in a component, a Table.css
+              # divergence from the mockup, an axe allowlist entry with no issue behind it, or a
+              # font landing with no licence record all report green. PR #91 changed five of these
+              # files and ran none of the tests that police them.
+              #
+              # The cost is a Go test run on web-only PRs; none of the jobs it adds is on the
+              # critical path (changes -> build / binary -> test / e2e), so the wall-clock budget in
+              # the header is unaffected.
+              - 'web/src/**'
+              - 'web/e2e/**'
+              - 'web/playwright.config.ts'
+              - '.npmrc'
+              - 'web/.npmrc'
+              - 'docs/design/09-frontend-and-design-system.md'
+              - 'docs/design/mockups/nocturne/styles.css'
+              - 'NOTICE'
+              - 'THIRD_PARTY_NOTICES.txt'
+              # The image definition, on the `go` filter for the same reason and found the same way.
+              # deploy/** was in NO filter at all, yet release_gates_test.go polices the Dockerfile's
+              # hardening (FROM scratch, USER 65532, VOLUME /data, the HEALTHCHECK that must not
+              # touch the database) and spa_pipeline_test.go polices the web stage and the context
+              # allowlist — so a Dockerfile-only PR ran none of them. `build / image` covers whether
+              # the image BUILDS; these cover whether it is the image the design specifies.
+              - 'deploy/**'
+              - '.dockerignore'
             web:
               - *build
               - 'web/**'
@@ -332,10 +386,14 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
         with:
-          # scripts/verify-spec.py itself needs only python3, which the runner has. Go is here
-          # because the gate is worthless against a stale committed spec, and `make gen` needs a
-          # compiler to regenerate one.
+          # scripts/verify-spec.py needs only python3 — but "which the runner has" is what this line
+          # used to say, and issue #83 is what that cost: the script needed an interpreter nothing
+          # declared, so on an older one the gate died at import and read as SPEC DRIFT on a tree
+          # whose spec was fine. `python: "true"` asserts the runner clears CI's floor instead of
+          # assuming it. Go is here because the gate is worthless against a stale committed spec, and
+          # `make gen` needs a compiler to regenerate one.
           go: "true"
+          python: "true"
       - run: make verify-spec
         # Asserts properties of openapi/openapi.json that codegen-drift cannot see because they are
         # true of any regenerated file: every operation has an explicit lowerCamelCase operationId,
@@ -461,6 +519,10 @@ jobs:
           # and the gate would go unexercised in CI — the exact "green build that ran nothing" this
           # repo's test-the-gate ethos exists to prevent.
           tools: "golangci-lint gofumpt"
+          # test/repo's spec-gate fixtures exec python3 against scripts/verify-spec.py, and
+          # python_floor_test.go re-parses every scripts/*.py at the declared floor. Both are gated
+          # out of the -short unit run and execute here.
+          python: "true"
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
@@ -721,6 +783,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # `make docs-links` is scripts/check-links.py. Same reason as gen / spec-drift: a Python
+          # gate whose interpreter nobody declared fails as if the CORPUS were broken (issue #83).
+          python: "true"
       - run: make docs-build
         # Builds the site AND the embed.FS the binary serves at /docs, so a docs page that 404s in
         # the container fails here rather than in a guild's install.
@@ -820,6 +886,7 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           DEEP: ${{ needs.changes.outputs.deep }}
+          IMPORTER: ${{ needs.changes.outputs.importer }}
         run: |
           set -euo pipefail
 
@@ -847,6 +914,12 @@ jobs:
 
           # 3. Positive assertion — on a ready PR or in the merge queue, the deep jobs must not
           #    have been silently skipped by a mis-scoped path filter.
+          #
+          #    EVERY job gated on `deep` must be named in this block. That is the invariant issue
+          #    #82 broke from the other side — the gate held, but the event that clears it was not
+          #    listened for — and TestCIRequired_DeepGatedJobs_AreAssertedNotSkipped keeps the two
+          #    lists in step: a new `deep`-gated job that is not named below is a job whose skip is
+          #    indistinguishable from a correct path filter.
           if [ "$DEEP" = "true" ]; then
             skipped=$(jq -rn --argjson r "$RESULTS" '
               ["build-image","test-e2e"]
@@ -854,6 +927,17 @@ jobs:
             if [ -n "$skipped" ]; then
               echo "::error::ci-required: deep jobs were skipped on a non-draft run: ${skipped}"
               exit 1
+            fi
+
+            # test-importer is deep AND path-filtered, so unlike the two above it is legitimately
+            # skipped when the importer did not change — but a skip when it DID change is the same
+            # defect, and until now nothing said so.
+            if [ "$IMPORTER" = "true" ]; then
+              result=$(jq -rn --argjson r "$RESULTS" '$r["test-importer"].result')
+              if [ "$result" = "skipped" ]; then
+                echo "::error::ci-required: test-importer was skipped on a non-draft run that changed the importer"
+                exit 1
+              fi
             fi
           fi
 
