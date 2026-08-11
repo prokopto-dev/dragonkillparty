@@ -47,6 +47,26 @@ ledger history and nothing will refuse it.
 Report it with a support bundle. The log line names exactly which triggers are absent, which is what
 tells us how the database got there.
 
+## `/readyz` says `degraded` but will not tell me what is wrong
+
+```json
+{"check":"ledger_append_only","state":"degraded"}
+```
+
+Working as configured. `check` and `state` go to everyone; the `detail` that names the missing
+trigger is withheld until you ask for it, because behind a reverse proxy this instance cannot tell
+your request from a stranger's — both arrive from `127.0.0.1`.
+
+The fault is already in your logs, at error level, on every boot. To get it in the response as well,
+set `DKP_READYZ_DETAIL` — `local` if the binary is exposed directly with no proxy in front, `always`
+if `/readyz` is not reachable from the internet. See
+[Configuration](configuration.md#health-and-readiness).
+
+If you set it and still see no `detail`: with `local`, any forwarded header on the request withholds
+it — a proxy announcing itself means the peer address is not the caller — so ask the process directly
+rather than through the proxy, or use `always`. A value the binary does not recognise logs a warning
+at startup and behaves as `never`.
+
 ## Everyone is logged out, or nobody can log in
 
 | Symptom | Cause | Fix |

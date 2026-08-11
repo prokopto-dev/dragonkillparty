@@ -105,6 +105,32 @@ the exact command to run, and the web UI shows a banner containing that command.
 maintenance window; leave it on otherwise. The migration path snapshots first and auto-restores on
 failure — see [Upgrade and backup](upgrade-and-backup.md).
 
+## Health and readiness
+
+| Variable | Default | Secret | What it does |
+|---|---|---|---|
+| `DKP_READYZ_DETAIL` | `never` | no | Who may see the `detail` field of a `/readyz` response: `never`, `local` or `always`. |
+
+`/readyz` always reports `check` and `state`, to everyone — your monitoring has to be able to see that
+something is wrong. `detail` is the actionable string that goes with it ("missing append-only
+triggers: trg_ledger_entry_no_update"), and it is withheld from every caller until you say otherwise.
+
+That default is deliberate and it is not paranoia about the string itself: the recommended deployment
+is this binary behind a reverse proxy on the same host, and there *every* request arrives from
+`127.0.0.1`. Nothing in the process can tell your laptop from the public internet, so it does not
+guess.
+
+| Value | Who sees `detail` | Use it when |
+|---|---|---|
+| `never` | nobody | The default. Read the fault out of the logs instead — the boot path logs the same thing at error level. |
+| `local` | a loopback or RFC-1918/RFC-4193 peer, **and** only when nothing in the request claims to be relaying somebody (`Forwarded`, any `X-Forwarded-*`, `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`) | The binary is exposed directly — `docker run -p 8080:8080`, no proxy. If a proxy *is* in front and strips its own headers, this discloses through it. |
+| `always` | every caller | `/readyz` is not reachable from the internet — a private network, or a proxy that does not expose it — and you want the string from your monitoring. |
+
+An unrecognised value logs a warning and behaves as `never`; it does not stop the server. The
+migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public
+under every value, because the web UI renders that command as an upgrade banner for an operator who
+may have no shell access at that moment.
+
 ## Jobs
 
 | Variable | Default | Secret | What it does |

@@ -38,6 +38,14 @@ const (
 	// real base without rebuilding the bundle — the capability that proves the SPA is a client.
 	apiBaseEnv = "DKP_API_BASE"
 
+	// readyDetailEnv names who may see a /readyz `detail`: never (the default), local, or always.
+	//
+	// It is the explicit signal #74 needed. The peer address cannot supply one behind the reverse
+	// proxy this project recommends — every caller arrives from 127.0.0.1 there — so the endpoint
+	// discloses nothing until an operator, who knows their own topology, says otherwise. Parsed by
+	// api.ParseReadyDetailPolicy; an unrecognised value logs and falls back to never.
+	readyDetailEnv = "DKP_READYZ_DETAIL"
+
 	// readHeaderTimeout bounds how long a client may take to send its request headers. Required:
 	// an http.Server without it is a Slowloris target and a gosec G112 failure.
 	readHeaderTimeout = 10 * time.Second
@@ -98,6 +106,26 @@ type serveConfig struct {
 	// autoMigrate is DKP_AUTO_MIGRATE. False means pending migrations are reported through /readyz
 	// rather than applied.
 	autoMigrate bool
+
+	// readyDetail is DKP_READYZ_DETAIL, resolved and already failed closed.
+	readyDetail api.ReadyDetailPolicy
+}
+
+// readyDetailPolicy resolves DKP_READYZ_DETAIL.
+//
+// A value this binary does not understand is a misconfiguration, not a reason to refuse to boot:
+// canonical §13 wants /healthz answering whatever else is wrong, and crash-looping over a typo in an
+// optional disclosure setting is the opposite of that. So it logs the value and the accepted set — an
+// operator who set it and sees no detail needs to be told why — and returns the policy
+// ParseReadyDetailPolicy failed closed to.
+func readyDetailPolicy(ctx context.Context) api.ReadyDetailPolicy {
+	policy, err := api.ParseReadyDetailPolicy(os.Getenv(readyDetailEnv))
+	if err != nil {
+		slog.WarnContext(ctx, "unrecognised readiness detail policy; withholding every /readyz detail",
+			"error", err, "env", readyDetailEnv, "policy", policy)
+	}
+
+	return policy
 }
 
 // readiness adapts the migrator to api.ReadyChecker.
@@ -214,7 +242,9 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 		Short: "Run the Dragon Kill Party HTTP server",
 		Long: "Run the HTTP server. It serves the public API, the embedded web UI and the\n" +
 			"container healthcheck endpoint /healthz.\n\n" +
-			"DKP_DB_PATH selects the SQLite database file.",
+			"DKP_DB_PATH selects the SQLite database file.\n" +
+			"DKP_READYZ_DETAIL (never|local|always) says who may see a /readyz detail; the\n" +
+			"default withholds it from everyone.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// The signal context is derived from the command context, so a caller that cancels its
@@ -226,6 +256,7 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 				addr:        addr,
 				dbPath:      os.Getenv(dbPathEnv),
 				autoMigrate: autoMigrateEnabled(),
+				readyDetail: readyDetailPolicy(ctx),
 			}
 
 			return runServe(ctx, cfg, ready)
@@ -316,6 +347,9 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			BuildDate: date,
 			Clock:     clock.System{},
 			Readiness: readiness{runner: runner},
+			// Who may see a /readyz detail. Never, unless DKP_READYZ_DETAIL says otherwise: the
+			// peer address is not a trust signal behind a reverse proxy (#74).
+			ReadyDetail: cfg.readyDetail,
 			// DKP_API_BASE is reported by GET /config.json as API_BASE. Empty (the default) means
 			// same-origin, which is what a co-hosted binary serves.
 			APIBase: os.Getenv(apiBaseEnv),
