@@ -1621,6 +1621,27 @@ table "bid_session" {
     SQL
   }
 
+  check "bid_session_source_enum" {
+    expr = "source IN /* the vocabulary */ ('web', 'discord')"
+  }
+
+  check "bid_session_outcome_enum" {
+    expr = <<-SQL
+      outcome IN
+      -- these four are the resolution ladder
+      ('won', 'passed', 'rotted', 'void')
+    SQL
+  }
+
+  check "bid_session_retry_bool" {
+    expr = <<-SQL
+      retry IN (
+        0, -- never 'draft'
+        1  -- never 'open'
+      )
+    SQL
+  }
+
   index "ux_bid_live" {
     where   = "state IN ('open', 'extended')"
     columns = [column.item_instance_id]
@@ -1702,6 +1723,12 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.Contains(t, out, "bid_session_lockout_enum",
 		"ENUM001 must enter a list whose keyword and parenthesis are split across the line break "+
 			"— the wrapped shape one token earlier\n%s", out)
+	require.Contains(t, out, "bid_session_source_enum",
+		"a block comment between the keyword and its parenthesis does not change what the CHECK "+
+			"says, so it must not change what the gate sees\n%s", out)
+	require.Contains(t, out, "bid_session_outcome_enum",
+		"nor does a line comment on its own line between the two — the keyword has to survive a "+
+			"line that strips to nothing\n%s", out)
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
 
@@ -1720,6 +1747,10 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.NotContains(t, out, "bid_session_sealed_bool",
 		"a boolean stays a boolean in lowercase too — matching the keyword case-insensitively "+
 			"must not widen what counts as a vocabulary\n%s", out)
+	require.NotContains(t, out, "bid_session_retry_bool",
+		"comments are STRIPPED, not merely tolerated: a boolean whose trailing comment quotes two "+
+			"enum values is still a boolean. Without this the fix could have been \"ignore the "+
+			"comment delimiters\" and every documented CHECK would read as a vocabulary\n%s", out)
 	require.NotContains(t, out, "ux_bid_live",
 		"an index predicate is not a CHECK: a partial index over a SUBSET of a vocabulary cannot "+
 			"be rendered from a catalogue as-is, so ENUM001 is scoped to check blocks (#97)\n%s", out)

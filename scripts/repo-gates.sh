@@ -347,7 +347,9 @@ fi
 #   caught   expr = "k IS NULL OR k IN ('a', 'b')"                   the nullable form (NullableCheckExpr)
 #   caught   expr = "state IN (\"draft\", \"open\")"                 SQLite's double-quoted literals
 #   caught   expr = "state in ('draft', 'open')"                     SQL keywords are case-insensitive
+#   caught   expr = "state IN /* set */ ('draft', 'open')"           comments are removed before scanning
 #   ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
+#   ignored  expr = "retry IN (0, -- not 'draft'\n 1)"               a comment is not a vocabulary
 #   ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
 #
 # BOTH SQL QUOTE FORMS, and that pair is closed rather than an enumeration that might be missing an
@@ -417,6 +419,47 @@ if [ -f db/schema.hcl ]; then
             }
         }
 
+        # strip_sql_comments — remove SQL comments from an expression before it is scanned.
+        #
+        # `state IN -- why these\n  (${SQ}a${SQ})` and `state IN /* set */ (${SQ}a${SQ})` are the same
+        # CHECK as the one written without them, so the scanner has to see the same thing. Removing
+        # the comments is what makes the token boundary between the keyword and its parenthesis
+        # insensitive to whatever a person wrote in the gap, rather than a list of gaps the pattern
+        # happens to allow — the enumeration failure this rule has now been bitten by three times.
+        #
+        # Block-comment state is file-scoped, like the list state, because `/*` may close lines later.
+        #
+        # STRING CONTEXT IS DELIBERATELY NOT TRACKED, and the direction of that error is the reason it
+        # is safe. A `--` inside a value truncates the rest of the line, which can only REMOVE text
+        # from the scan — and never the quote that opens the literal it appears in, since that quote
+        # comes first and has already been counted. So this can lose the closing parenthesis of a list
+        # it has already reported; it cannot hide a vocabulary. The alternative, a full SQL lexer in
+        # awk, buys nothing a grep gate needs.
+        function strip_sql_comments(s,   out, i, n, ch, nxt) {
+            out = ""
+            n = length(s)
+            i = 1
+
+            while (i <= n) {
+                ch = substr(s, i, 1)
+                nxt = substr(s, i + 1, 1)
+
+                if (in_block_comment) {
+                    if (ch == "*" && nxt == "/") { in_block_comment = 0; i += 2 }
+                    else { i++ }
+                    continue
+                }
+
+                if (ch == "-" && nxt == "-") { break }
+                if (ch == "/" && nxt == "*") { in_block_comment = 1; i += 2; continue }
+
+                out = out ch
+                i++
+            }
+
+            return out
+        }
+
         # quoted_in_list — does an IN list hold a quoted value? Carries an unfinished list ACROSS
         # LINES, because a wrapped or heredoc expression is a normal way to write a long one:
         #
@@ -445,10 +488,12 @@ if [ -f db/schema.hcl ]; then
         # not its case.
         # The keyword and its parenthesis may also be split across the line break — the same shape as
         # the case above, one token earlier — so a line ending in the bare keyword arms pending_in and
-        # the next line opening with `(` enters the list. Not covered, and knowingly: a comment
-        # between the two. That is not a shape anybody writes by accident, and the residue is named
-        # here rather than left for a reader to discover.
+        # the next line opening with `(` enters the list. A line with nothing left on it returns
+        # early rather than clearing that state, which is what carries the keyword across a blank or
+        # comment-only line between the two.
         function quoted_in_list(s,   i, n, ch, hit) {
+            if (s ~ /^[ \t]*$/) { return 0 }
+
             n = length(s)
             i = 1
 
@@ -531,19 +576,20 @@ if [ -f db/schema.hcl ]; then
             # in one block cannot swallow the next one.
             list_depth = 0
             pending_in = 0
+            in_block_comment = 0
         }
 
         in_check {
             # The list is reported at the line it STARTED on — where the author is looking — and
             # once, however many quoted values follow it.
-            if (!in_region && !this_waived && quoted_in_list($0) && !reported) {
+            if (!in_region && !this_waived && quoted_in_list(strip_sql_comments($0)) && !reported) {
                 reported = 1
                 printf "db/schema.hcl:%d: check \"%s\": %s\n", list_line, name, list_text
             }
 
             n = gsub(/[{]/, "&"); m = gsub(/[}]/, "&")
             depth += n - m
-            if (depth <= 0) { in_check = 0; list_depth = 0; pending_in = 0 }
+            if (depth <= 0) { in_check = 0; list_depth = 0; pending_in = 0; in_block_comment = 0 }
         }
 
         # A blank line or any other statement ends the waiver'"'"'s reach: it applies to the check
