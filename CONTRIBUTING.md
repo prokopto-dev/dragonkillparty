@@ -10,7 +10,7 @@ agents alike. This page is the process around it: how to get a branch merged.
 ## The short path
 
 ```bash
-git clone https://github.com/dragonkillparty/dkp && cd dkp
+git clone https://github.com/prokopto-dev/dragonkillparty && cd dragonkillparty
 make setup                       # once
 git switch -c fix/tick-dedup     # branch off main
 # ... change code AND its docs and its tests ...

@@ -22,21 +22,89 @@ hypothesis.
 ## What happens at boot
 
 ```
-1. Read the schema version recorded in the database.
-2. Database newer than this binary?
+1. Finish an interrupted restore, if a previous boot was killed part-way through one.
+2. Read the schema version recorded in the database.
+3. Database newer than this binary?
      → REFUSE TO START, naming the image tag you need and the snapshot path.
-3. Migrations pending, and DKP_AUTO_MIGRATE is on?
+4. Are the ledger's append-only triggers all present?
+     → If not: LOG IT LOUDLY and carry on. This boot did not cause it, so there is
+       nothing to restore — see "Your ledger's triggers are missing" below.
+5. Migrations pending, and DKP_AUTO_MIGRATE is on?
      a. VACUUM INTO /data/backups/pre-<version>-<timestamp>.db, compress it
-     b. Apply each migration in order, running PRAGMA integrity_check after each
-     c. On any failure: RESTORE the snapshot, exit non-zero, and print the failing
-        migration and the recovery command
-4. Record the applied version in the audit log — actor "boot", binary version, duration.
-5. Serve.
+     b. Record which ledger tables and triggers exist right now. This is the baseline
+        check (iv) compares against.
+     c. Apply ONE migration, then run all four checks on the result, in this order:
+          i.   put PRAGMA foreign_keys back ON — a NO TRANSACTION migration can
+               leave it off, and that would silently disarm every later migration
+               in this same boot
+          ii.  PRAGMA integrity_check
+          iii. PRAGMA foreign_key_check — integrity_check does not validate foreign
+               keys, so a rebuild that copied rows in the wrong order passes it
+          iv.  append-only survival — no ledger table and no ledger trigger that was
+               present before this migration may be absent after it
+     d. Repeat (c) until nothing is pending.
+     e. On any failure at any point in (c): RESTORE the snapshot, exit non-zero, and
+        print the failing migration and the recovery command.
+6. Record the applied version in the audit log — actor "boot", binary version, duration.
+7. Serve.
 ```
 
-Step 2 matters as much as step 3. Rolling back to an older image after a successful migration is
+Step 3 matters as much as step 5. Rolling back to an older image after a successful migration is
 refused rather than attempted, because an old binary writing to a new schema corrupts data quietly.
 The refusal names the tag to use.
+
+One migration at a time, checked after each, is the reason a failure can name a *file*. A bulk apply
+would discover the damage after the migrations that followed it had also run, and the file name is
+the entire actionable content of the message you get.
+
+### The four checks, and what each one is for
+
+| Check | Catches |
+|---|---|
+| `PRAGMA foreign_keys = ON` restored | A migration that turned foreign keys off to rebuild a table and forgot to turn them back on. Nothing reports a pragma, so without this every *later* migration in the same boot would apply with no referential integrity, silently. |
+| `PRAGMA integrity_check` | A corrupt database — torn pages, a broken index, a malformed record. |
+| `PRAGMA foreign_key_check` | Dangling references that `integrity_check` calls healthy. This is the normal outcome of a table rebuild that copied rows in the wrong order. |
+| Append-only survival | A migration that rebuilt a ledger table and did not re-create its `BEFORE UPDATE OR DELETE` triggers, or that dropped a ledger table outright. Both pass the three checks above, lose no page and dangle no key, and hand back a ledger whose history can be rewritten. |
+
+The append-only check compares against the state **before that migration**, not against a full
+catalogue of what should exist. That is deliberate: a database that arrived already missing a
+trigger would otherwise fail on the first migration it was ever offered, and your upgrade path would
+be closed for good by damage that predates the binary. What is refused is a migration that *lost*
+something that was there when it started.
+
+### What it looks like when it goes wrong
+
+Every row below is a message the process prints before it exits non-zero. In every case marked
+"restored", your data is intact — the snapshot from step 5(a) is already back in place and the
+process checked that it reads correctly before putting it there.
+
+| It says | What happened | What you do |
+|---|---|---|
+| `database schema is newer than this binary` | You rolled back to an older image after upgrading. Nothing was changed. | Run the image tag it names. |
+| `migration <file> failed: …` followed by "Your database was restored automatically" | A migration failed, or one of the four checks failed after it. | Do not retry this version. Report the migration it names, with a support bundle. |
+| `a migration dropped an append-only ledger trigger` | Check (iv). The migration applied cleanly and lost no data — it removed a protection, so the upgrade was refused. **Your ledger is fine.** | Report it. This is a bug in the migration, not in your database. |
+| `a migration dropped a ledger table` | Check (iv), the louder half: the rows went with the table. Restored. | Report it. Same as above, and quote the whole message. |
+| `THE AUTOMATIC RESTORE ALSO FAILED` | A migration failed *and* the snapshot could not be put back. This is the one case where you have to act. | **Do not start this version again.** Restore by hand with the `zstd -d` command it prints, then report it. |
+| `read the ledger's append-only state before migrating` | The database could not be inspected before anything was applied. Nothing ran; there is nothing to restore. | Usually a permissions or disk problem on the data directory. Check both, then report it. |
+| `a previous upgrade was interrupted while restoring its snapshot` | The process was killed mid-restore and could not finish the job on this boot either. | Restore by hand from `<data-dir>/backups/` and report it. |
+
+### Your ledger's triggers are missing
+
+Step 4 is the one message that does **not** stop the boot:
+
+> the ledger's append-only triggers are not all present on this database
+
+It is logged at error level and the site starts anyway. That combination is deliberate, and it means
+something specific: **this boot did not cause it.** The damage arrived with the database — from an
+older upgrade, a fork's build, or a support session with a SQLite client — so there is no snapshot to
+go back to and no migration to name. Refusing to start would lock your guild out of their site over
+damage that is already done, at whatever hour you happened to restart.
+
+What it costs you until it is fixed is the guarantee, not the data: ledger history can be rewritten
+by anything with direct access to the file, because the triggers that refuse an `UPDATE` or `DELETE`
+are not there to refuse it. The balances are still correct and `dkp verify-ledger` still checks them.
+
+Report it with a support bundle and the log line, which names exactly which triggers are missing.
 
 **No `down` migrations ship, ever.** A down migration is code that runs exactly once, in an emergency,
 on data you cannot reproduce, written months earlier by someone who never tested it against your

@@ -18,6 +18,39 @@
 # header for why. TARGETOS/TARGETARCH are supplied by buildx per platform; on a plain `docker build`
 # they default to the host, which is what a local `make docker` wants.
 
+# --- web stage: build the SPA -----------------------------------------------------------------
+# The binary embeds the SPA (internal/ui), and //go:embed cannot reach out of its own directory, so
+# the Vite output has to be staged into internal/ui/dist BEFORE `go build` runs. This stage exists
+# because for the whole of Phase 0 it did not: the build stage ran `go build` directly and every
+# image shipped internal/ui's committed PLACEHOLDER, serving "web UI not yet built into this binary"
+# to anyone who opened it (issue #55).
+#
+# $BUILDPLATFORM, never the target: JavaScript is architecture-independent, so the SPA is built once
+# on the native runner and the same bytes are embedded into every architecture's binary. Running
+# node under emulation for arm64 would be QEMU by another name.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS web
+
+# corepack activates the pnpm version pinned by web/package.json's `packageManager` field, so the
+# image, `make setup` and CI all run one pnpm. The prompt is disabled because corepack asks before
+# downloading a version it has not seen, and a build has nobody to answer it.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+WORKDIR /src
+
+# Manifest and lockfile first, then the tree: a change to a .tsx does not re-resolve the dependency
+# graph. --frozen-lockfile because the lockfile is the contract, --ignore-scripts because no
+# dependency lifecycle script runs during a build (the same posture CI and build-web.sh install with).
+COPY web/package.json web/pnpm-lock.yaml ./web/
+RUN corepack enable && cd web && pnpm install --frozen-lockfile --ignore-scripts
+
+# The SPA sources and nothing else: a Go-only commit must not invalidate this layer and re-run Vite.
+# The SAME script `make build` runs, not a second transcription of it — it builds the SPA, refuses to
+# stage a source map, and copies web/dist into internal/ui/dist. An image whose web build drifted
+# from the local one would be a difference nobody could see until a guild reported it.
+COPY web/ ./web/
+COPY scripts/build-web.sh ./scripts/
+RUN bash scripts/build-web.sh
+
 # --- build stage: compile the static binary --------------------------------------------------
 # Pinned by digest as well as tag: docker:pinDigests in renovate.json5 maintains it, and an
 # unpinned base is the supply-chain equivalent of an unpinned action.
@@ -42,6 +75,21 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
+
+# The built SPA, staged where //go:embed can reach it.
+#
+# The `rm -rf` is load-bearing and not tidiness: COPY MERGES into an existing directory, and the
+# context carries internal/ui's committed placeholders. Copying over them would replace index.html
+# but leave assets/app-placeholder.js behind, and the embed's `all:` directive would ship it.
+RUN rm -rf internal/ui/dist
+COPY --from=web /src/internal/ui/dist ./internal/ui/dist
+
+# Then prove it. A placeholder embed compiles, links and boots perfectly well — that is precisely why
+# issue #55 survived a whole phase — so the only thing that catches it is an assertion between
+# staging and compiling. This fails the build rather than pushing an image that serves the
+# placeholder, and it is the only SPA check that can cover the cross-compiled arm64 image, which no
+# runner boots without the QEMU this project bans. scripts/smoke-spa.sh is the runtime counterpart.
+RUN bash scripts/verify-spa-dist.sh internal/ui/dist
 
 # CGO_ENABLED=0 and -trimpath give a static, reproducible binary. GOOS/GOARCH come from buildx so a
 # single amd64 runner emits every architecture at native speed. The -ldflags match Makefile:33.

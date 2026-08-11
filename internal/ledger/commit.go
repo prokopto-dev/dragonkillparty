@@ -555,7 +555,7 @@ func (s *Service) writeAudit(
 		Action:        orDefault(req.Action, DefaultAuditAction),
 		ResourceKind:  auditResourceKind,
 		ResourceID:    &resourceID,
-		Outcome:       "success",
+		Outcome:       auditkinds.OutcomeSuccess,
 		LedgerBatchID: &batchID,
 		PrevHash:      prev,
 	}

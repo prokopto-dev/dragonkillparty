@@ -21,6 +21,16 @@ before:
     # release below. Kept as a make target so the same command runs locally, in this hook, and in
     # any future job. See Makefile `third-party-notices` and THIRD_PARTY_NOTICES.txt.
     - make third-party-notices
+    # The SPA, staged into internal/ui/dist before any `go build` below runs. goreleaser compiles
+    # ./cmd/dkp directly, so without this hook every downloadable binary, deb, rpm and Homebrew
+    # install embeds internal/ui's committed PLACEHOLDER and serves "web UI not yet built into this
+    # binary" — the container half of that defect is issue #55, and this channel had it too.
+    # Architecture-independent, so one build feeds all six OS/arch targets. Needs Node + pnpm on the
+    # runner: release.yml's `binaries` job asks setup-toolchain for them.
+    - bash scripts/build-web.sh
+    # And prove it, before six binaries are cut from it. A placeholder embed builds and boots
+    # perfectly; the only thing that catches it is an assertion between staging and compiling.
+    - bash scripts/verify-spa-dist.sh internal/ui/dist
 
 builds:
   - id: dkp
@@ -76,7 +86,7 @@ nfpms:
       - dkp
     package_name: dkp
     vendor: The Dragon Kill Party contributors
-    homepage: https://github.com/dragonkillparty/dkp
+    homepage: https://github.com/prokopto-dev/dragonkillparty
     maintainer: The Dragon Kill Party contributors <noreply@dragonkillparty.org>
     description: DKP and guild management for Project 1999 EverQuest raiding guilds.
     license: Apache-2.0
@@ -128,7 +138,7 @@ brews:
       owner: dragonkillparty
       name: homebrew-dkp
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: https://github.com/dragonkillparty/dkp
+    homepage: https://github.com/prokopto-dev/dragonkillparty
     description: DKP and guild management for Project 1999 EverQuest raiding guilds.
     license: Apache-2.0
     # A formula install is a binary drop; the service is the operator's to wire up.

@@ -18,11 +18,34 @@ The same output renders at `/ops` for anyone with the `ops.read` permission.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Exits naming an image tag | The database is newer than this binary — you rolled back | Run the tag it names. A downgrade is refused, not attempted, because an old binary writing a new schema corrupts data quietly. |
-| Exits naming a failing migration and a snapshot path | A migration failed | Your database was **already restored** from the pre-migration snapshot. Report the migration name; do not retry the same version. |
+| Exits naming a failing migration and a snapshot path | A migration failed, or one of the four post-migration checks failed after it | Your database was **already restored** from the pre-migration snapshot. Report the migration name; do not retry the same version. |
+| `a migration dropped an append-only ledger trigger` | A migration applied cleanly, lost no data, and removed one of the triggers that stop ledger history being rewritten. The upgrade was refused *because* of that | **Your data is fine** and was restored. Nothing on your side is broken — this is a bug in the migration. Report it with a support bundle and do not retry this version. |
+| `a migration dropped a ledger table` | The same check's louder half: a migration removed a ledger table and did not put it back | Restored, as above. Quote the whole message in the report; it names the table. |
+| `THE AUTOMATIC RESTORE ALSO FAILED` | A migration failed **and** the snapshot could not be put back | The only case where you must act. Do not start this version again. Run the `zstd -d` command the message prints, then report it. |
+| `read the ledger's append-only state before migrating` | The database could not be inspected before anything was applied | Nothing ran and nothing needs restoring. Usually permissions or disk on the data directory — check both, then report it. |
+| `a previous upgrade was interrupted while restoring its snapshot` | The process was killed mid-restore, and finishing that restore failed on this boot too | Restore by hand from `<data-dir>/backups/` and report it. |
 | Refuses to start over `secrets.json` | The file is missing, malformed, or not mode `0600` | Fix the permissions, or restore it from a backup. It is never regenerated silently — that would invalidate every token and session and look exactly like a mass logout bug. |
 | `503 setup_required` on every route | Setup was never completed | Read the bootstrap token from the logs and open `/setup`. See [First run](../getting-started/first-run.md). |
 | Port already in use | Something else has `:8080` | Change `DKP_LISTEN`, or stop the other process. |
 | Permission denied on the data directory | The container user is `65532:65532` | `chown` the volume, or use a named Docker volume rather than a bind mount. |
+
+## It started, but the log says the ledger's append-only triggers are missing
+
+> the ledger's append-only triggers are not all present on this database
+
+Logged at error level on every boot, and the site starts anyway. Both halves of that are deliberate.
+
+It means the database arrived in this state: **this boot did not cause it**, so there is no snapshot
+to go back to and no migration to name. Refusing to start would lock the guild out over damage that
+is already done, which helps nobody at 1 a.m. A migration that causes it *during* an upgrade is a
+different event and is refused outright — see the table above.
+
+Your balances are correct and `dkp verify-ledger` still checks them. What is missing until it is
+fixed is the guarantee: without those triggers, anything with direct access to the file can rewrite
+ledger history and nothing will refuse it.
+
+Report it with a support bundle. The log line names exactly which triggers are absent, which is what
+tells us how the database got there.
 
 ## Everyone is logged out, or nobody can log in
 

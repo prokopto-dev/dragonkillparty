@@ -158,8 +158,16 @@ snapshot-and-restore after a guild has six years of ledger in the file is a diff
 
 **Scope.** `db/schema.hcl` as the single source of schema truth containing exactly one table
 (`dkp_meta`, `STRICT`); `make gen` diffing it into goose migrations; the embedded runner; and the boot
-sequence: read version → refuse a downgrade → snapshot → migrate with `PRAGMA integrity_check` after
-each step → **auto-restore and exit 1 on failure**.
+sequence: read version → refuse a downgrade → snapshot → migrate one file at a time, checking after
+each → **auto-restore and exit 1 on failure**.
+
+> **Extended after PR 3, by #39.** The check after each migration was `PRAGMA integrity_check`
+> alone when this PR was written. It is now four, in order: restore `PRAGMA foreign_keys = ON`,
+> `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and append-only survival — a migration that
+> dropped a ledger table or one of its `BEFORE UPDATE OR DELETE` triggers is refused and the
+> snapshot restored. See [Upgrade and
+> backup](../operations/upgrade-and-backup.md#what-happens-at-boot) for the sequence and every
+> message it produces.
 
 **Files touched.**
 
@@ -192,6 +200,8 @@ test/golden/migrations/fresh_install_fingerprint.txt
 - `TestMigrate_BrokenMigration_RestoresByteIdentical`: a fixture migration that fails
   `PRAGMA integrity_check` causes exit code 1, stderr naming the failing migration file and the
   restore command, and the on-disk database SHA-256 is byte-identical to the pre-migration snapshot.
+  The same contract now covers all four post-migration checks — a migration that drops a ledger
+  trigger exits 1 and restores byte-identically too (#39).
 - `TestMigrate_NewerSchemaThanBinary_RefusesToStart`: a DB stamped above the binary's maximum exits 1
   with a message naming both the image tag that can read it and the snapshot path. It never migrates
   downward.

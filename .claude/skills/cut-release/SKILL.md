@@ -137,8 +137,13 @@ After `release.yml` runs, check all of these landed:
 ### 9. Confirm the smoke gate held
 
 Moving tags advance **only after** smoke passes. `release.yml` publishes the immutable `:1.5.0`, then
-smoke pulls it on amd64 **and** arm64 runners and runs first boot + `dkp doctor` + `/readyz` + an
-upgrade from the previous release's refdb. Only then do `:1.5`, `:1` and `:latest` move.
+smoke pulls it on amd64 **and** arm64 runners and runs first boot + `dkp doctor` + `/readyz` + the
+SPA the image serves + an upgrade from the previous release's refdb. Only then do `:1.5`, `:1` and
+`:latest` move.
+
+The SPA line is there because "it boots" was once the whole gate and an image that never ran the Vite
+build boots perfectly — it just serves "web UI not yet built into this binary" (issue #55). The check
+reads the bytes, because `internal/ui` answers 200 for every path either way.
 
 If smoke failed: the immutable tag stays for forensics, the moving tags must **not** have moved, the
 GitHub Release stays a draft, and an issue is filed. Verify that is what happened rather than
