@@ -9,9 +9,28 @@ A link to a file that does not exist YET (a per-phase deliverable) is still a fa
 in backticks until it exists, so the corpus never promises a page a reader cannot open.
 """
 
+# PEP 563, for the reason scripts/verify-spec.py gives at length (issue #83): an annotation that is
+# evaluated at runtime turns a too-old interpreter into a failure of the GATE rather than a failure
+# of the environment, and this file annotates with `list[tuple[...]]`. All three scripts here carry
+# the import so none of them can acquire that failure mode by accident.
+from __future__ import annotations
+
 import os
 import re
 import sys
+
+# The repository's Python floor. See scripts/verify-spec.py for why it is 3.9 and not 3.10;
+# test/repo/python_floor_test.go asserts every scripts/*.py declares the same number and still
+# parses at it.
+MINIMUM_PYTHON = (3, 9)
+
+if sys.version_info < MINIMUM_PYTHON:
+    sys.stderr.write(
+        "check-links.py needs Python %d.%d or newer; this is Python %d.%d.%d (%s).\n"
+        "No link was checked. Re-run with a newer interpreter.\n"
+        % (MINIMUM_PYTHON + sys.version_info[:3] + (sys.executable or "python3",))
+    )
+    sys.exit(2)
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 # A fenced code block opens and closes on a line whose first non-space characters are ``` (or ~~~).

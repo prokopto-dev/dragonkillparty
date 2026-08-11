@@ -49,6 +49,19 @@ export IMAGE VERSION COMMIT DATE
 # the installed Go satisfies it; it cannot install Go itself.
 GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
 
+# python3 is the third toolchain this repository needs, and until issue #83 it was the only one that
+# was never declared: `make docs-links` and `make verify-spec` are Python, and a too-old interpreter
+# made the SPEC GATE fail on a tree whose spec was fine. 3.9 because macOS's /usr/bin/python3 is
+# 3.9.6 and both gates are deliberately runnable on a laptop's stock interpreter — nothing here
+# installs Python. Each script re-declares this number and checks it itself, because most of them are
+# also run directly; test/repo/python_floor_test.go fails if the copies disagree.
+#
+# Deliberately no PYTHON ?= override variable to go with it. The recipes below name `python3`
+# literally, for the same reason verify-spec's recipe strips DKP_SPEC_BASE_REF: an interpreter a
+# developer's environment can redirect is a merge-blocking gate a developer's environment can turn
+# into a no-op.
+PYTHON_REQUIRED := 3.9
+
 # Where `go install` puts things, and therefore where `make setup` puts the dev tools. GOBIN wins
 # when set, otherwise GOPATH/bin.
 GOTOOLS_BIN    := $(shell $(GO) env GOBIN 2>/dev/null)
@@ -131,6 +144,21 @@ setup:
 		exit 1; \
 	fi; \
 	printf '  go %s satisfies the go %s directive in go.mod\n' "$$have" "$$want"
+	@# python3, for `make docs-links` and `make verify-spec`. Checked here rather than discovered
+	@# when a gate fails: an interpreter below the floor made verify-spec.py die at import and read
+	@# as spec drift (issue #83). Nothing is installed — the floor is low enough that every supported
+	@# platform's stock python3 clears it.
+	@command -v python3 >/dev/null 2>&1 || { \
+		printf '\033[31m  python3 is not installed or not on PATH\033[0m\n'; \
+		printf '  `make docs-links` and `make verify-spec` need python3 >= %s\n' '$(PYTHON_REQUIRED)'; \
+		exit 1; }
+	@have=$$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])'); want='$(PYTHON_REQUIRED)'; \
+	if [ "$$(printf '%s\n%s\n' "$$want" "$$have" | sort -V | head -1)" != "$$want" ]; then \
+		printf '\033[31m  python3 %s is too old\033[0m — `make check` needs python3 >= %s\n' "$$have" "$$want"; \
+		printf '  The spec and docs-link gates are Python; an older one fails them for the wrong reason.\n'; \
+		exit 1; \
+	fi; \
+	printf '  python3 %s satisfies the >= %s floor\n' "$$have" "$$want"
 	@printf '  installing gofumpt $(GOFUMPT_VERSION)\n'
 	@$(GO) install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
 	@printf '  installing goimports $(GOIMPORTS_VERSION)\n'
