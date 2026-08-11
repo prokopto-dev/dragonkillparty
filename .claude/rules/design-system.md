@@ -52,6 +52,12 @@ They account for most of the colour surface area — 325 uses across the mockups
 3–75%, and 59 `tint()` at 6–26%. Implement them in the token layer; never inline the `color-mix` in a
 component.
 
+**soft(55) is the floor for text.** A `soft()` rung is translucent, so its contrast depends on the
+ground: over `--color-surface`, soft(50) is ≈4.25:1 and misses the 4.5:1 AA floor at every size this
+product sets — soft(45) and soft(50) are borders, hairlines and fills only. That is the one place the
+shipped sheet diverges from the mockup (`.card-meta`, issue #58); see
+`09-frontend-and-design-system.md` §2 "Which soft() rungs are legal as text".
+
 ## Density
 
 `comfortable` / `compact` retunes **spacing only**. The type scale is fixed. A density mode that
@@ -62,6 +68,9 @@ changes font sizes changes what a table means.
 One file per component, which is what makes this a parallel lane. Reproduce the system's class names
 (`btn`, `card`, `table`, `tag`, `seg`, `field`, `input`, `radio`, `dialog`) rather than inventing
 parallel ones.
+
+**Never pick a heading level for its size.** The level is the outline a screen reader navigates;
+`h6`'s type on an `h3` is `.label-heading` in `base.css` (§5, issue #61).
 
 **Not in the system, because no mockup uses one:** toasts, skeletons, accordions, tree tables, date
 pickers, drawers. Feedback is inline, loading is a suspense boundary, there is no snackbar. Adding
