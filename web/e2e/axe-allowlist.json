@@ -11,17 +11,15 @@
     "to is just a lowered bar.",
     "",
     "Adding a row here is NOT the way to make a red build green. It is for a violation that is",
-    "real, understood, and whose fix is a decision someone else has to take — which today is one",
-    "entry, in the vendored design reference itself."
+    "real, understood, and whose fix is a decision someone else has to take.",
+    "",
+    "IT IS EMPTY, and that is the claim: zero serious/critical on /_design, with no exceptions.",
+    "The one entry it ever held — .card-meta contrast, issue #58 — was deleted by the change that",
+    "raised the rung to soft(60), which is the shrink-only rule doing its job. A route key with an",
+    "empty list means 'scanned, nothing allowed'; a route absent from here is scanned the same way.",
+    "The named-and-reviewed exception mechanism stays, because the next one will need it."
   ],
   "routes": {
-    "/_design": [
-      {
-        "rule": "color-contrast",
-        "target": ".card-meta",
-        "issue": 58,
-        "why": "soft(50) at 11px on --color-surface is 4.25:1 against a 4.5:1 AA floor. web/src/components/Card.css is byte-faithful to docs/design/mockups/nocturne/styles.css:214, so the defect is in Nocturne itself and raising the rung is a design decision, not a component fix."
-      }
-    ]
+    "/_design": []
   }
 }

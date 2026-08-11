@@ -394,6 +394,9 @@ function DesignSystem() {
           <h4>h4 Heading</h4>
           <h5>h5 Heading</h5>
           <h6>h6 Heading</h6>
+          {/* h6's type at whatever level the outline needs — here an h3, as the swatch groups above
+              use it. Size is presentation, heading level is structure (issue #61). */}
+          <h3 className="label-heading">h3.label-heading</h3>
           <p>
             Body copy at --font-size-base. A <a href="/_design">link</a> takes the accent, and{" "}
             <span className="text-muted">.text-muted</span> takes soft(55).
@@ -587,10 +590,16 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+// A colour group inside the Colour section.
+//
+// <h3>, not the <h6> this used to be: these sit under the section's own <h2>, and a level chosen for
+// its SIZE skipped four of them (issue #61). Heading level is structure — it is the outline a screen
+// reader navigates by — and h6's type is what this wants to look like, so .label-heading carries the
+// look and the element carries the level. docs/design/09-frontend-and-design-system.md §5.
 function SwatchGroup({ group }: { group: Swatches }) {
   return (
     <div className="design-section">
-      <h6>{group.title}</h6>
+      <h3 className="label-heading">{group.title}</h3>
       {group.note !== undefined && <p className="text-muted">{group.note}</p>}
       <div className="design-swatches">
         {group.tokens.map((token) => (

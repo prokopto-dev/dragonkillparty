@@ -3,12 +3,16 @@
 #
 # Runs the image on an EMPTY volume and proves it boots: /healthz answers 200 (the container
 # HEALTHCHECK path, which touches no database — canonical §13), then /readyz answers, then
-# `dkp version` prints. This is the PR-time `build / image` check; the release train's `smoke` job
-# does the same against the PUBLISHED digest on real amd64 and arm64 hardware plus an upgrade from
-# the previous refdb, and only then advances the moving tags.
+# `dkp version` prints, then the SPA it serves is the real build rather than the placeholder. This is
+# the PR-time `build / image` check; the release train's `smoke` job does the same against the
+# PUBLISHED digest on real amd64 and arm64 hardware plus an upgrade from the previous refdb, and only
+# then advances the moving tags.
 #
 # It is deliberately shell rather than Go: it exercises the actual container, entrypoint and
-# HEALTHCHECK, none of which a Go test can see. `docker` is the only dependency.
+# HEALTHCHECK, none of which a Go test can see. `docker` and `curl` are the dependencies — curl
+# because the SPA assertion has to read what the server actually sends, and the scratch image
+# contains no HTTP client but `dkp healthcheck`, which only reports a status code (see
+# scripts/smoke-spa.sh for why a status code cannot tell a placeholder from a SPA).
 #
 # IMAGE and VERSION mirror the Makefile so `make smoke-local` and a direct call agree.
 
@@ -77,5 +81,11 @@ if ! docker exec "$name" /usr/local/bin/dkp version; then
     echo "smoke-local: dkp version failed" >&2
     exit 1
 fi
+
+# The image must serve the BUILT SPA. This is the check that would have caught issue #55 on the day
+# it landed: the container built its binary without ever running the Vite build, so every image
+# booted perfectly and served "web UI not yet built into this binary". Everything above this line
+# passed throughout.
+bash "$(dirname "$0")/smoke-spa.sh" "$base"
 
 echo "smoke-local: ok"
