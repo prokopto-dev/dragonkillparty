@@ -755,27 +755,55 @@ one of the four triggers, but a database that *arrived* without one boots anyway
 Reporting it on every probe is the difference between detecting that a guild's ledger became editable
 and somebody finding out.
 
-Detail is disclosed only to loopback and RFC-1918 callers — and to the RFC 4193 IPv6 unique-local
-range, which is the same decision and not a widening of it: `fc00::/7` is what an IPv6-only Docker
-network or Kubernetes cluster assigns, so a rule naming only RFC 1918 would be unimplementable there
-and the detail would reach nobody. **Link-local (`169.254/16`, `fe80::/10`) is excluded**, because those
-are reachable by anything sharing a layer-2 segment — another tenant on a cloud VLAN, a device on the
-office wifi — which is not the "has shell access, or is on the network this instance is managed from"
-audience the disclosure is for. CGNAT (`100.64/10`) is excluded for the same reason.
+**Detail is disclosed to nobody until the operator says otherwise.** `DKP_READYZ_DETAIL` takes
+`never` (the default), `local` or `always`, and nothing else grants a `detail` — not the peer address,
+and certainly not a forwarded header. The reason is the deployment this document recommends: behind a
+reverse proxy on the same host, `RemoteAddr` is `127.0.0.1` for every caller on the internet, so a
+rule that read the peer address was disclosing to all of them on the majority of real installs. An
+address cannot answer "is this caller trusted" where a proxy owns the socket, so the endpoint waits to
+be told. (An authenticated, authorized caller is the other signal that could grant it. There is no
+auth package before Phase 2, and `/readyz` is a probe a load balancer calls unauthenticated by design,
+so it is not one today; when it exists it becomes a fourth answer here, not a loosening of these
+three.)
 
-There is **one deliberate exception**: the
+`check` and `state` are public under every policy — monitoring has to see that something is wrong, and
+the 503 says that much anyway. What an unasked-for caller does not get is *which* thing and its shape.
+
+`local` is the pre-existing rule, kept as an opt-in for the instance that is genuinely exposed
+directly (`docker run -p 8080:8080`): the peer is loopback or private space — RFC 1918 and the RFC
+4193 IPv6 unique-local range, which is the same decision and not a widening of it, since `fc00::/7` is
+what an IPv6-only Docker network or Kubernetes cluster assigns — **and** nothing in the request says
+the peer is relaying somebody else. **Link-local (`169.254/16`, `fe80::/10`) is excluded**, because
+those are reachable by anything sharing a layer-2 segment — another tenant on a cloud VLAN, a device
+on the office wifi — which is not the "has shell access, or is on the network this instance is managed
+from" audience the disclosure is for. CGNAT (`100.64/10`) is excluded for the same reason. Setting
+`local` is the operator asserting that nothing sits in front of the listener; a layer-4 proxy, or a
+layer-7 one that strips its own forwarded headers, makes that assertion false and is invisible from
+inside the process.
+
+`always` is how an operator behind a proxy gets the string back — the fail-closed default costs the
+legitimate case, monitoring that really is on the guild's own network but arrives through the proxy,
+and this is the documented way to pay for it. It belongs on an instance whose `/readyz` strangers
+cannot reach.
+
+There is **one deliberate exception**, and it survives every policy including the default: the
 migrations-pending body `{"check":"migrations","state":"pending","command":"dkp migrate"}` is public.
 It tells an unauthenticated caller only that the instance is mid-upgrade — which the 503 already
 tells them — and the command it names is in the published documentation. The SPA renders it as a
-banner for an operator who may not have shell access at that moment, and gating it behind a source
-address would mean the banner is blank for exactly the person who needs it. A `/readyz` that tells
-the public internet your schema version, disk state or worker lag is a reconnaissance endpoint, and
-those checks are the ones the redaction is for.
+banner for an operator who may not have shell access at that moment, and gating it behind a
+disclosure policy would mean the banner is blank on every instance that never set the variable, which
+is almost all of them. A `/readyz` that tells the public internet your schema version, disk state or
+worker lag is a reconnaissance endpoint, and those checks are the ones the redaction is for.
 
 > Landed in Phase 0 PR 3: the migrations check and its public body. Landed with the append-only
-> readiness check (#59): the caller-based redaction, applied to every `detail` except the exception
-> above. It is **two** tests, because the peer address alone is not a control in a proxied deployment —
-> a same-host reverse proxy presents `127.0.0.1` for every caller alive:
+> readiness check (#59): a caller-based redaction, applied to every `detail` except the exception
+> above. Replaced by the policy above in **#74**, because a caller-based rule is not a control where a
+> proxy owns the socket — the peer address it read is `127.0.0.1` for the whole internet in the shape
+> this document recommends. `DKP_READYZ_DETAIL` is unset on an upgrade, so an instance that relied on
+> the old behaviour stops disclosing until an operator chooses `local` or `always`; that is the
+> intended direction of the change.
+>
+> Under `local`, both halves of the old rule still apply and are **two** tests:
 >
 > 1. the peer is loopback or private space, from `RemoteAddr`; **and**
 > 2. nothing in the request says the peer is relaying somebody else — any `X-Forwarded-*` header
@@ -786,16 +814,15 @@ those checks are the ones the redaction is for.
 > forwards an empty value has still told you it is a proxy — and the contents are never read. Reading
 > them would invert the control, since a client-supplied header that *grants* disclosure is a header
 > anyone can forge, while one that only *withholds* it buys an attacker nothing but a shorter response.
-> An operator behind a proxy still sees the detail by asking the process directly rather than through
-> the proxy — which is what somebody on the box is doing anyway.
 >
-> Residual gap: a layer-4 proxy, or a layer-7 one configured to add no headers at all, is invisible to
-> (2). Closing that needs `DKP_TRUSTED_PROXIES` — already specified in
-> [`install-docker.md`](../getting-started/install-docker.md), empty by default and ignoring forwarded
-> headers entirely while it is — plus PROXY-protocol support. Filed as #74. Note that implementing it
-> *loosens* (2) deliberately and only for a validated peer: it recovers the real client so a
-> genuinely-local caller behind a proxy sees the detail again. The remaining checks land with the code
-> that can fail them.
+> Residual gap, now scoped to `local` rather than to the default: a layer-4 proxy, or a layer-7 one
+> configured to add no headers at all, is invisible to (2), so an operator who sets `local` in front of
+> one discloses through it. Recovering the real client instead needs `DKP_TRUSTED_PROXIES` — already
+> specified in [`install-docker.md`](../getting-started/install-docker.md), empty by default and
+> ignoring forwarded headers entirely while it is — plus PROXY-protocol support on the listener. That
+> is the shared resolved-client-IP helper rate limiting, the audit log's actor IP and session binding
+> each need too, and it is not invented for one call site; it is filed as #98. The remaining checks
+> land with the code that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

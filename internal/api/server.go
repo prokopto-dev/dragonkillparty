@@ -51,7 +51,20 @@ type Config struct {
 	// Readiness backs GET /readyz. A nil Readiness means the route is not registered at all,
 	// preserving the split PR 3 introduced: /healthz must never touch the database, /readyz must,
 	// and the two are wired from different places so that dependency is visible in the call site.
+	//
+	// A non-nil interface holding a NIL implementation is a different case and is not silently
+	// tolerated: the route registers and answers 503 with `no readiness checker configured` rather
+	// than calling Ready() on a nil receiver (#75, checkerUnwired). A wiring bug should sound like a
+	// wiring bug, not like a panic.
 	Readiness ReadyChecker
+
+	// ReadyDetail is who may see a /readyz `detail`, read from DKP_READYZ_DETAIL in cmd/dkp.
+	//
+	// The zero value is ReadyDetailNever, so a Config that does not mention this field — every test
+	// that predates #74, and any future embedder — discloses nothing. That default is the fix: the
+	// peer address cannot be a trust signal behind the reverse proxy this project recommends, so
+	// disclosure waits for the operator to say so. See ReadyDetailPolicy.
+	ReadyDetail ReadyDetailPolicy
 
 	// APIBase is the value GET /config.json reports as API_BASE, read from DKP_API_BASE in cmd/dkp.
 	// Empty (the default) means same-origin, which is what a co-hosted binary serves. It is a
@@ -107,9 +120,12 @@ func New(cfg Config) http.Handler {
 	// between breaking that wire contract and breaking "every error is RFC 9457".
 	mux.HandleFunc("GET /healthz", handleHealthz)
 
+	// `!= nil` and not checkerUnwired: an untyped-nil Readiness means "this binary does not do
+	// readiness" and gets no route, while an interface holding a typed nil is a wiring bug that must
+	// be audible — it registers, and handleReadyz reports it as unwired (#75).
 	if cfg.Readiness != nil {
 		mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-			handleReadyz(w, r, cfg.Readiness)
+			handleReadyz(w, r, cfg.Readiness, cfg.ReadyDetail)
 		})
 	}
 

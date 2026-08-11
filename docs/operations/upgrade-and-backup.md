@@ -117,10 +117,14 @@ firing. `/healthz` stays green throughout, so nothing kills the container over i
 split as everywhere else on this page, and here it matters twice: losing the raid night on top of
 losing the guarantee helps nobody.
 
-If you see the verdict but no `detail`, **ask the process directly rather than through your reverse
-proxy**: `curl -s localhost:8080/readyz` on the box, or `docker exec <container> …`. The trigger names
-go only to a caller that is both on the local network *and* not being relayed by a proxy, because a
-proxy on the same host makes every caller on the internet look local.
+If you see the verdict but no `detail`, that is the default: the trigger names are withheld from
+everyone until you set `DKP_READYZ_DETAIL`, because a proxy on the same host makes every caller on the
+internet look local and the process cannot tell them apart. Set `always` if `/readyz` is reachable only
+from your own network, or `local` if the binary is published directly with no proxy — and with `local`,
+**ask the process directly rather than through your reverse proxy**: `curl -s localhost:8080/readyz` on
+the box, or `docker exec <container> …`, since any forwarded header on the request withholds it again.
+See [Configuration](configuration.md#health-and-readiness). The same names are in the boot log at error
+level whatever you set.
 
 Report it with a support bundle and the log line, which names exactly which triggers are missing.
 Keep your current backups while you do: restoring a snapshot from before the damage is the only action

@@ -113,6 +113,12 @@ The image's `HEALTHCHECK` calls `/healthz`, not `/readyz` and not `dkp doctor`. 
 touches the database lets Docker kill the container part-way through a migration, which is the one
 failure this design refuses to allow.
 
+`/readyz` names the failing check and its state to every caller, but the `detail` explaining it is
+withheld by default — behind the proxy above, every request reaches the binary from `127.0.0.1`, so
+it cannot tell yours from anyone else's. Set `DKP_READYZ_DETAIL=always` if `/readyz` is reachable only
+from your own network, or `local` if you dropped the proxy and publish the port directly. See
+[Configuration](../operations/configuration.md#health-and-readiness).
+
 ## Image facts
 
 | | |
