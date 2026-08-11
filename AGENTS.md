@@ -150,7 +150,12 @@ follow-up you can already name — each of those is an issue.
   have to re-derive that from the diff.
 - **Use the existing labels** — `bug`, `documentation`, `enhancement` — and the matching form in
   `.github/ISSUE_TEMPLATE/` where one fits: `parser-bug`, `import-failure`, `parity-gap`,
-  `bug_report`, `feature_request`. There are no phase labels in this repo; do not invent one.
+  `bug_report`, `feature_request`. **Add the roadmap-phase label too**: `phase-0` … `phase-9`, one
+  per `## Phase N` heading in `ROADMAP.md`. Pick the phase that would have to *ship* the fix, not
+  the phase you are standing in — something needing infrastructure Phase 3 builds is `phase-3`,
+  something to clear before the next boundary is the current phase. If you genuinely cannot tell,
+  leave it off and say so in the body; triage adds it. `.github/labels.yml` is the whole set — a
+  label that is not in that file does not exist, so do not invent one.
 - **Do not expand the PR to fix it.** Keep the PR scoped and link the issue from the body's
   **Issues filed** table. A "risks and follow-ups" paragraph does not count on its own — the issue
   is the durable artefact and the PR body is only the pointer to it.
