@@ -38,7 +38,7 @@ concurrency:
 
 env:
   GOTOOLCHAIN: local
-  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dragonkillparty
   REFDB: ghcr.io/${{ github.repository_owner }}/dkp-refdb
   FIXTURES: ghcr.io/${{ github.repository_owner }}/dkp-fixtures
 
@@ -50,7 +50,7 @@ jobs:
   # ---------------------------------------------------------------------------------------------
   guard:
     name: guard
-    if: github.repository_owner == 'dragonkillparty' || github.event_name == 'workflow_dispatch'
+    if: github.repository_owner == 'prokopto-dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -82,10 +82,11 @@ jobs:
       - env:
           FIXTURE: ${{ matrix.fixture }}
         run: make test-importer
-        # Pulls ghcr.io/<org>/dkp-fixtures:${FIXTURE} (a public OCI artifact built by fixtures.yml),
-        # restores it into MariaDB via testcontainers, runs the two-phase ETL, and asserts the
-        # classifier oracle: every delta between the EQdkp-computed balance and the DKP-computed
-        # balance is EXPLAINED by a named rule. Any `unexplained` classification fails the build.
+        # Pulls ghcr.io/prokopto-dev/dkp-fixtures:${FIXTURE} (a public OCI artifact built by
+        # fixtures.yml), restores it into MariaDB via testcontainers, runs the two-phase ETL, and
+        # asserts the classifier oracle: every delta between the EQdkp-computed balance and the
+        # DKP-computed balance is EXPLAINED by a named rule. Any `unexplained` classification fails
+        # the build.
         # The importer default is --dry-run; this suite never passes --commit.
 
   # ---------------------------------------------------------------------------------------------

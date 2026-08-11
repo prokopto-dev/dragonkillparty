@@ -53,7 +53,7 @@ bash "$(dirname "$0")/smoke-spa.sh" "http://127.0.0.1:${port}"
 
 # --- 2. Verify the supply-chain attestations, with the README's exact commands ----------------
 # A wrong identity regexp in the README is a support burden; running the published command here is
-# what keeps the README honest. ORG is derived from IMAGE (ghcr.io/<org>/dkp).
+# what keeps the README honest. ORG is derived from IMAGE (ghcr.io/<org>/dragonkillparty).
 org="$(printf '%s' "$IMAGE" | awk -F/ '{ print $2 }')"
 identity_re="^https://github\\.com/${org}/dragonkillparty/\\.github/workflows/release\\.yml@refs/tags/v"
 

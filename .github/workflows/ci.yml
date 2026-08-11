@@ -751,11 +751,11 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: make test-upgrade
-        # Pulls the real ghcr.io/<org>/dkp-refdb:<latest tag>, runs HEAD against it, and asserts:
-        # migrations apply, the pre-migration snapshot was written, `dkp verify-ledger` is clean,
-        # /readyz returns 200, protected-table row counts did not decrease, and the append-only
-        # triggers still fire AFTER the full migration set (a table rebuild drops triggers — this
-        # is how you find out).
+        # Pulls the real ghcr.io/prokopto-dev/dkp-refdb:<latest tag>, runs HEAD against it, and
+        # asserts: migrations apply, the pre-migration snapshot was written, `dkp verify-ledger` is
+        # clean, /readyz returns 200, protected-table row counts did not decrease, and the
+        # append-only triggers still fire AFTER the full migration set (a table rebuild drops
+        # triggers — this is how you find out).
 
   # ---------------------------------------------------------------------------------------------
   # ci-required — the ONLY check in branch protection, alongside DCO.

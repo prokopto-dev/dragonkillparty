@@ -37,14 +37,14 @@ func TestSchemaAheadError_RecordedBinaryVersion_NamesTheImageTag(t *testing.T) {
 		{
 			name:        "a recorded version becomes a pullable image tag",
 			wroteBy:     "v1.9.2",
-			wantContain: "ghcr.io/dragonkillparty/dkp:v1.9.2",
+			wantContain: "ghcr.io/prokopto-dev/dragonkillparty:v1.9.2",
 		},
 		{
 			name:    "no recorded version says so instead of inventing a tag",
 			wroteBy: "",
 			wantContain: "the version you upgraded from (this database predates the binary_version " +
 				"record)",
-			wantAbsent: "ghcr.io/dragonkillparty/dkp:\n",
+			wantAbsent: "ghcr.io/prokopto-dev/dragonkillparty:\n",
 		},
 	}
 
