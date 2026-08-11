@@ -64,11 +64,11 @@ port="$(docker port "$name" 8080/tcp | head -1 | sed 's/.*://')"
 [ -n "$port" ] || { echo "release-smoke: could not determine the published port" >&2; exit 1; }
 base="http://127.0.0.1:${port}"
 
-# /readyz must answer, and answer AS ITSELF. This is the probe the comment here promised and the code
-# never made (issue #99): the line below it ran `dkp version`, and the only health-adjacent call in
-# the file was the /healthz boot poll above. scripts/smoke-local.sh has the worked version of this
-# against a locally built image; this is the same three checks against the PUBLISHED digest, which is
-# the one that gates the moving tags.
+# /readyz must answer, and answer AS ITSELF. This is the probe the script's comment promised and its
+# code never made (issue #99): a `# /readyz and version` comment sat above a `dkp version` call and
+# nothing else, so the only health-adjacent check in the file was the /healthz boot poll above.
+# scripts/smoke-local.sh has the worked version of this against a locally built image; these are the
+# same three checks against the PUBLISHED digest, which is the one that gates the moving tags.
 #
 # Not 200 specifically — a first boot may legitimately still be applying migrations, which is a 503
 # with state "pending" (internal/api/ready.go) — but a readiness report, from the readiness handler:
