@@ -143,26 +143,25 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 // address test is not a control in the deployment this project actually recommends unless something
 // notices the relay.
 //
-// PRESENCE ONLY — of the header KEY, whatever its value. The contents are never read, and that
-// asymmetry is the entire safety argument: these headers are client-supplied, so believing one that
-// says "the real client is 10.0.0.5" would let anybody unredact this endpoint with one curl flag.
-// Presence is used solely to REFUSE — the direction
-// a forged header cannot exploit, because the worst an attacker achieves by adding one is a response
-// with less in it. An operator behind a proxy still gets the detail by asking the process directly
-// rather than through the proxy, which is what somebody on the box is doing anyway.
+// The test is the PRESENCE of a header key — whatever its value, and across the whole X-Forwarded-*
+// family rather than three chosen members. Contents are never read, and that asymmetry is the entire
+// safety argument: these headers are client-supplied, so believing one that says "the real client is
+// 10.0.0.5" would let anybody unredact this endpoint with one curl flag, while using presence to
+// REFUSE is the direction a forged header cannot exploit — the worst it achieves is a shorter
+// response. An operator behind a proxy still gets the detail by asking the process directly rather
+// than through the proxy, which is what somebody on the box is doing anyway.
 //
-// The test is the header's PRESENCE, not whether it has a usable value, and the whole X-Forwarded-*
-// family counts rather than three chosen members. Both of those are the fail-closed reading of the
-// same rule, and the narrower one had two holes: Header.Get returns "" for a header that is present
-// and empty, so `X-Forwarded-For:` with no value read as "no proxy here"; and a proxy that sets only
-// X-Forwarded-Port — or X-Forwarded-Prefix, or any future member — was invisible while still relaying
-// the public internet from a local peer. Neither costs anything to close, because the only thing a
-// caller achieves by adding a header is a shorter response.
+// Both halves of that sentence are load-bearing, because the narrower readings each had a hole:
+// Header.Get returns "" for a header that is present and empty, so `X-Forwarded-For:` with no value
+// read as "no proxy here"; and a proxy setting only X-Forwarded-Port, or Traefik's X-Forwarded-Prefix,
+// was invisible to a fixed list while still relaying the public internet from a local peer.
 //
-// The list is evidence, not authority. It is still not exhaustive — a layer-4 proxy, or a layer-7 one
-// configured to add nothing, is invisible here, and closing THAT needs the trusted-proxy list
+// The list is evidence, not authority, and not exhaustive: a layer-4 proxy, or a layer-7 one
+// configured to add nothing, is invisible here. Closing that needs the trusted-proxy list
 // (DKP_TRUSTED_PROXIES, already specified in docs/getting-started/install-docker.md) plus
-// PROXY-protocol support. That is filed as #74, and until it lands this function is what keeps the
+// PROXY-protocol support, filed as #74 — and note that implementing it LOOSENS this function for a
+// validated peer rather than tightening it, since recovering the real client is what lets a
+// genuinely-local caller behind a proxy see the detail again. Until then this is what keeps the
 // default safe.
 func viaProxy(h http.Header) bool {
 	// Local rather than package-level: a package-level slice is mutable state that any caller can
