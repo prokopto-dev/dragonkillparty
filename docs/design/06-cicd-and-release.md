@@ -740,18 +740,24 @@ those checks are the ones the redaction is for.
 > a same-host reverse proxy presents `127.0.0.1` for every caller alive:
 >
 > 1. the peer is loopback or private space, from `RemoteAddr`; **and**
-> 2. nothing in the request says the peer is relaying somebody else — `Forwarded`, `X-Forwarded-*`,
->    `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`.
+> 2. nothing in the request says the peer is relaying somebody else — any `X-Forwarded-*` header
+>    (the whole family by prefix, not three chosen members: `X-Forwarded-Port` alone is the same
+>    fact as `X-Forwarded-For`), or `Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, `True-Client-IP`.
 >
-> Their **presence** is what redacts; their contents are never read. Reading them would invert the
-> control, since a client-supplied header that *grants* disclosure is a header anyone can forge, while
-> one that only *withholds* it buys an attacker nothing but a shorter response. An operator behind a
-> proxy still sees the detail by asking the process directly rather than through the proxy — which is
-> what somebody on the box is doing anyway.
+> The **presence of the header key** is what redacts — present-and-empty counts, since a proxy that
+> forwards an empty value has still told you it is a proxy — and the contents are never read. Reading
+> them would invert the control, since a client-supplied header that *grants* disclosure is a header
+> anyone can forge, while one that only *withholds* it buys an attacker nothing but a shorter response.
+> An operator behind a proxy still sees the detail by asking the process directly rather than through
+> the proxy — which is what somebody on the box is doing anyway.
 >
-> Residual gap: a layer-4 proxy, or a layer-7 one configured to add no headers, is invisible to (2).
-> Closing that needs a configured trusted-proxy list plus PROXY-protocol support, filed as #74 rather
-> than guessed at. The remaining checks land with the code that can fail them.
+> Residual gap: a layer-4 proxy, or a layer-7 one configured to add no headers at all, is invisible to
+> (2). Closing that needs `DKP_TRUSTED_PROXIES` — already specified in
+> [`install-docker.md`](../getting-started/install-docker.md), empty by default and ignoring forwarded
+> headers entirely while it is — plus PROXY-protocol support. Filed as #74. Note that implementing it
+> *loosens* (2) deliberately and only for a validated peer: it recovers the real client so a
+> genuinely-local caller behind a proxy sees the detail again. The remaining checks land with the code
+> that can fail them.
 
 **`/metrics`** is off by default per canonical conventions §14. The metric set is small and every
 entry maps to a support question people actually ask:

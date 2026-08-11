@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
+	"strings"
 )
 
 // ReadyState is what /readyz reports about one check.
@@ -141,33 +143,54 @@ func handleReadyz(w http.ResponseWriter, r *http.Request, checker ReadyChecker) 
 // address test is not a control in the deployment this project actually recommends unless something
 // notices the relay.
 //
-// PRESENCE ONLY. The contents are never read, and that asymmetry is the entire safety argument: these
-// headers are client-supplied, so believing one that says "the real client is 10.0.0.5" would let
-// anybody unredact this endpoint with one curl flag. Presence is used solely to REFUSE — the direction
+// PRESENCE ONLY — of the header KEY, whatever its value. The contents are never read, and that
+// asymmetry is the entire safety argument: these headers are client-supplied, so believing one that
+// says "the real client is 10.0.0.5" would let anybody unredact this endpoint with one curl flag.
+// Presence is used solely to REFUSE — the direction
 // a forged header cannot exploit, because the worst an attacker achieves by adding one is a response
 // with less in it. An operator behind a proxy still gets the detail by asking the process directly
 // rather than through the proxy, which is what somebody on the box is doing anyway.
 //
-// The list is evidence, not authority, and it is deliberately generous: a header that only says the
-// request was proxied (X-Forwarded-Proto) is as good a signal as one carrying an address. It is still
-// not exhaustive — a layer-4 proxy, or a layer-7 one configured to add nothing, is invisible here, and
-// closing THAT needs a configured trusted-proxy list and PROXY-protocol support. That is filed
-// (#74) rather than guessed at, and until it lands this function is what keeps the default safe.
+// The test is the header's PRESENCE, not whether it has a usable value, and the whole X-Forwarded-*
+// family counts rather than three chosen members. Both of those are the fail-closed reading of the
+// same rule, and the narrower one had two holes: Header.Get returns "" for a header that is present
+// and empty, so `X-Forwarded-For:` with no value read as "no proxy here"; and a proxy that sets only
+// X-Forwarded-Port — or X-Forwarded-Prefix, or any future member — was invisible while still relaying
+// the public internet from a local peer. Neither costs anything to close, because the only thing a
+// caller achieves by adding a header is a shorter response.
+//
+// The list is evidence, not authority. It is still not exhaustive — a layer-4 proxy, or a layer-7 one
+// configured to add nothing, is invisible here, and closing THAT needs the trusted-proxy list
+// (DKP_TRUSTED_PROXIES, already specified in docs/getting-started/install-docker.md) plus
+// PROXY-protocol support. That is filed as #74, and until it lands this function is what keeps the
+// default safe.
 func viaProxy(h http.Header) bool {
 	// Local rather than package-level: a package-level slice is mutable state that any caller can
 	// append to, and this one decides who sees a security-relevant string.
-	evidence := []string{
-		"Forwarded",         // RFC 7239, the standard one
-		"X-Forwarded-For",   // the ubiquitous one
-		"X-Forwarded-Proto", // set by Caddy, nginx, Traefik and every cloud ALB
-		"X-Forwarded-Host",
-		"X-Real-Ip",        // nginx's usual proxy_set_header
-		"CF-Connecting-IP", // Cloudflare
-		"True-Client-IP",   // Akamai, Cloudflare Enterprise
+	//
+	// Canonicalised on both sides. net/http canonicalises "CF-Connecting-IP" to "Cf-Connecting-Ip"
+	// when it parses a request, so indexing the map with the vendor's own spelling would silently
+	// never match.
+	named := []string{
+		http.CanonicalHeaderKey("Forwarded"),        // RFC 7239, the standard one
+		http.CanonicalHeaderKey("X-Real-IP"),        // nginx's usual proxy_set_header
+		http.CanonicalHeaderKey("CF-Connecting-IP"), // Cloudflare
+		http.CanonicalHeaderKey("True-Client-IP"),   // Akamai, Cloudflare Enterprise
 	}
 
-	for _, name := range evidence {
-		if h.Get(name) != "" {
+	// One pass over what the request actually carries, canonicalising the REQUEST's key rather than
+	// looking the canonical form up in the map. The difference is not academic: an http.Header is a
+	// plain map, so a caller that populated it by hand can hold "cf-connecting-ip", and a lookup of
+	// the canonical spelling would miss it while the same header off the wire matched. A disclosure
+	// control must not depend on which door the header came through.
+	for name := range h {
+		canonical := http.CanonicalHeaderKey(name)
+
+		// The whole X-Forwarded-* family by prefix, because the policy is the family and not a list of
+		// the members somebody thought of: X-Forwarded-Port on its own is as good evidence of a relay
+		// as X-Forwarded-For, and Traefik's X-Forwarded-Prefix or a proxy's X-Forwarded-Server are the
+		// same fact again.
+		if strings.HasPrefix(canonical, "X-Forwarded-") || slices.Contains(named, canonical) {
 			return true
 		}
 	}

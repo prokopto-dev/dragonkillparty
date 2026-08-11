@@ -176,6 +176,12 @@ func TestReadyz_ProxiedCaller_DetailIsRedactedEvenFromLoopback(t *testing.T) {
 		{name: "a forged local x-forwarded-for buys nothing", headers: map[string]string{"X-Forwarded-For": "127.0.0.1"}},
 		{name: "x-forwarded-proto alone still proves a relay", headers: map[string]string{"X-Forwarded-Proto": "https"}},
 		{name: "x-forwarded-host alone", headers: map[string]string{"X-Forwarded-Host": "dkp.example.org"}},
+		{name: "x-forwarded-port alone, which a fixed three-header list missed", headers: map[string]string{"X-Forwarded-Port": "443"}},
+		{name: "traefik x-forwarded-prefix, a family member nobody enumerated", headers: map[string]string{"X-Forwarded-Prefix": "/dkp"}},
+		{
+			name:    "present but EMPTY is still a relay: Header.Get cannot tell it from absent",
+			headers: map[string]string{"X-Forwarded-For": ""},
+		},
 		{name: "nginx x-real-ip", headers: map[string]string{"X-Real-Ip": "203.0.113.9"}},
 		{name: "cloudflare", headers: map[string]string{"CF-Connecting-IP": "203.0.113.9"}},
 		{name: "akamai / cloudflare enterprise", headers: map[string]string{"True-Client-IP": "203.0.113.9"}},
@@ -247,8 +253,20 @@ func TestReadyz_ProxiedCaller_TheVerdictAndTheCommandSurvive(t *testing.T) {
 	require.JSONEq(t, `{"check":"migrations","state":"ready"}`, body)
 }
 
-// TestViaProxy_Classification pins the evidence list, and the negative rows are the point: an ordinary
-// request must not be mistaken for a relayed one, or the detail becomes unreachable everywhere.
+// TestViaProxy_Classification pins the evidence rule, which is header-KEY presence over the whole
+// X-Forwarded-* family plus four named headers — not a nonempty value, and not a fixed list of the
+// three X-Forwarded members somebody happened to think of.
+//
+// Both distinctions are regressions waiting to happen, and both were live in this PR's first revision
+// of the function:
+//
+//   - Header.Get returns "" for a header that is PRESENT and empty, so `X-Forwarded-For:` with no value
+//     read as "not proxied" and released the detail to a proxy's public callers.
+//   - a proxy that sets only X-Forwarded-Port (or Traefik's X-Forwarded-Prefix, or a future member of
+//     the family) was invisible to a three-name list, with the same result.
+//
+// The negative rows are equally the point: an ordinary request must not be mistaken for a relayed one,
+// or the detail becomes unreachable everywhere and the check quietly stops being useful.
 func TestViaProxy_Classification(t *testing.T) {
 	t.Parallel()
 
@@ -261,15 +279,23 @@ func TestViaProxy_Classification(t *testing.T) {
 		{name: "ordinary client headers", headers: map[string]string{
 			"User-Agent": "Prometheus/2.53", "Accept": "application/json",
 		}, proxied: false},
-		{name: "an empty forwarded header is not evidence", headers: map[string]string{
-			"X-Forwarded-For": "",
+		{name: "a header that merely mentions forwarding is not one", headers: map[string]string{
+			"X-Forwarded": "not a real header", "Forwarded-By": "nobody",
 		}, proxied: false},
+		{name: "an empty x-forwarded-for IS evidence: the key is there", headers: map[string]string{
+			"X-Forwarded-For": "",
+		}, proxied: true},
+		{name: "an empty forwarded likewise", headers: map[string]string{"Forwarded": ""}, proxied: true},
 		{name: "x-forwarded-for", headers: map[string]string{"X-Forwarded-For": "203.0.113.9"}, proxied: true},
 		{name: "forwarded", headers: map[string]string{"Forwarded": "for=203.0.113.9"}, proxied: true},
 		{name: "x-forwarded-proto", headers: map[string]string{"X-Forwarded-Proto": "https"}, proxied: true},
 		{name: "x-forwarded-host", headers: map[string]string{"X-Forwarded-Host": "dkp.example.org"}, proxied: true},
+		{name: "x-forwarded-port, the one a fixed list missed", headers: map[string]string{"X-Forwarded-Port": "443"}, proxied: true},
+		{name: "x-forwarded-prefix, traefik", headers: map[string]string{"X-Forwarded-Prefix": "/dkp"}, proxied: true},
+		{name: "x-forwarded-server", headers: map[string]string{"X-Forwarded-Server": "edge-1"}, proxied: true},
+		{name: "an x-forwarded member nobody has invented yet", headers: map[string]string{"X-Forwarded-Tenant": "g"}, proxied: true},
 		{name: "x-real-ip", headers: map[string]string{"X-Real-Ip": "203.0.113.9"}, proxied: true},
-		{name: "cf-connecting-ip", headers: map[string]string{"CF-Connecting-IP": "203.0.113.9"}, proxied: true},
+		{name: "cf-connecting-ip, whose canonical form is Cf-Connecting-Ip", headers: map[string]string{"CF-Connecting-IP": "203.0.113.9"}, proxied: true},
 		{name: "true-client-ip", headers: map[string]string{"True-Client-IP": "203.0.113.9"}, proxied: true},
 		{
 			name:    "header names are matched case-insensitively, as net/http canonicalises them",
@@ -289,6 +315,22 @@ func TestViaProxy_Classification(t *testing.T) {
 			require.Equal(t, tc.proxied, viaProxy(header))
 		})
 	}
+}
+
+// TestViaProxy_NonCanonicalKey_IsStillEvidence covers a header map built by hand rather than through
+// Header.Set.
+//
+// net/http canonicalises every key it parses off the wire, so this shape cannot arrive from a client —
+// but viaProxy takes an http.Header, which is a plain map any in-process caller or middleware can
+// populate directly, and a predicate that recognised only canonical keys would be one refactor away
+// from a silent hole in a disclosure control.
+func TestViaProxy_NonCanonicalKey_IsStillEvidence(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, viaProxy(http.Header{"x-forwarded-port": []string{"443"}}))
+	require.True(t, viaProxy(http.Header{"cf-connecting-ip": []string{"203.0.113.9"}}))
+	require.True(t, viaProxy(http.Header{"X-FORWARDED-FOR": []string{""}}),
+		"a present key with an empty value is evidence whatever its spelling")
 }
 
 // TestReadyz_MigrationsPending_BodyStaysPublicVerbatim guards the ONE stated exception to the
