@@ -163,7 +163,7 @@ func (e *SchemaAheadError) Error() string {
 	if tag == "" {
 		tag = "the version you upgraded from (this database predates the binary_version record)"
 	} else {
-		tag = "ghcr.io/dragonkillparty/dkp:" + tag
+		tag = "ghcr.io/prokopto-dev/dragonkillparty:" + tag
 	}
 
 	return fmt.Sprintf(

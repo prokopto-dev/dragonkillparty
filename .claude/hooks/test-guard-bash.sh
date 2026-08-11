@@ -55,7 +55,7 @@ check allow 'make check'
 
 # Releases and deploys stay blocked regardless of branch.
 check block 'gh release create v1.0.0'
-check block 'docker push ghcr.io/dragonkillparty/dkp:1'
+check block 'docker push ghcr.io/prokopto-dev/dragonkillparty:1'
 check block 'npm publish'
 
 # Data destruction.

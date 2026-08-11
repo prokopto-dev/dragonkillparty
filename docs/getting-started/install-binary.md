@@ -17,7 +17,7 @@ fallback.
 | Linux | `dkp_<version>_linux_amd64.tar.gz`, `..._arm64`, `..._armv7` |
 | Debian/Ubuntu | `dkp_<version>_amd64.deb` — installs a systemd unit |
 | RHEL/Fedora | `dkp_<version>_amd64.rpm` — installs a systemd unit |
-| macOS via Homebrew | `brew install dragonkillparty/tap/dkp` |
+| macOS via Homebrew | `brew install prokopto-dev/tap/dkp` |
 
 Every asset is listed in `checksums.txt`, which is signed. Verify before you run it:
 

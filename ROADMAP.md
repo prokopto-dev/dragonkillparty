@@ -111,8 +111,9 @@ deliverable N is generally not PR N — 10 below is its PR 7. Cite these as "del
 `docs/development/inner-loop.md` · `docs/development/verify-before-phase-0.md` (worked *during*
 Phase 0, not after) · `docs/operations/upgrade-and-backup.md` · ADR-0001…0005.
 
-**Exit criterion.** `docker run ghcr.io/<org>/dkp:edge` starts, migrates, and serves `/healthz`,
-`/readyz`, `/openapi.json`, `/docs` and the SPA shell. `make check` ≤ 60 s. Breaking a migration on a
+**Exit criterion.** `docker run ghcr.io/prokopto-dev/dragonkillparty:edge` starts, migrates, and
+serves `/healthz`, `/readyz`, `/openapi.json`, `/docs` and the SPA shell. `make check` ≤ 60 s.
+Breaking a migration on a
 scratch branch fails the auto-restore test. Editing a handler without `make gen` fails the drift
 gate. **A new agent handed only `EXAMPLE_ENDPOINT.md` and `RECIPES.md` adds a second endpoint with no
 further guidance.**

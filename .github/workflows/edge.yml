@@ -37,7 +37,7 @@ concurrency:
 
 env:
   GOTOOLCHAIN: local
-  IMAGE: ghcr.io/${{ github.repository_owner }}/dkp
+  IMAGE: ghcr.io/${{ github.repository_owner }}/dragonkillparty
   # The moving channel tag. Immutable per-arch and manifest tags are :edge-<arch> / :edge; the sha
   # -addressable :edge-<short> is written by release-manifest.sh from SHA7 so a specific edge build
   # stays pinnable after :edge has moved on.
