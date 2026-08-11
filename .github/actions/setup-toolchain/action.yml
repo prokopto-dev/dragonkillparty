@@ -12,6 +12,15 @@ inputs:
     description: Install Node and pnpm for the web build
     required: false
     default: "false"
+  python:
+    description: >
+      Assert the runner's python3 clears CI's floor (3.10). Nothing is installed — every runner image
+      this repository pins ships 3.12 — and that is exactly the point: before issue #83 the only
+      record of it was a ci.yml comment saying "the runner has python3", so a base-image change would
+      have surfaced as the SPEC GATE failing rather than as a missing dependency. Ask for this in any
+      job that runs `make verify-spec`, `make docs-links` or `make test`.
+    required: false
+    default: "false"
   tools:
     description: >
       Space-separated dev tools to install: gofumpt golangci-lint govulncheck sqlc atlas
@@ -59,6 +68,38 @@ runs:
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: "22"
+
+    # CI's floor is 3.10, which is HIGHER than the 3.9 the scripts themselves require
+    # (Makefile PYTHON_REQUIRED, and the guard at the top of each scripts/*.py). The two numbers say
+    # different things and both are deliberate: 3.9 is what a contributor's stock interpreter must
+    # manage — macOS ships 3.9.6 — and 3.10 is what CI is held to, so the pinned runner image's
+    # Python is a checked fact rather than an accident of the base image.
+    #
+    # A newer CI interpreter cannot become a way to land syntax the floor rejects:
+    # test/repo/python_floor_test.go re-parses every scripts/*.py at the 3.9 floor with
+    # ast.parse(feature_version=...), and that test runs in `test / integration`.
+    - name: Check python3
+      if: inputs.python == 'true'
+      shell: bash
+      env:
+        DKP_PYTHON_CI_FLOOR: "3.10"
+      run: |
+        set -euo pipefail
+        command -v python3 >/dev/null 2>&1 || {
+          echo "::error::python3 is not on PATH. make verify-spec and make docs-links are Python;" \
+               "without it the gates fail as if the spec or the docs were wrong (issue #83)."
+          exit 1
+        }
+        have="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+        # sort -V, so 3.9 sorts BELOW 3.10 — the comparison this check exists for is exactly the one
+        # a lexicographic test gets backwards.
+        if [ "$(printf '%s\n%s\n' "$DKP_PYTHON_CI_FLOOR" "$have" | sort -V | head -1)" != "$DKP_PYTHON_CI_FLOOR" ]; then
+          echo "::error::python3 $have is below CI's floor of $DKP_PYTHON_CI_FLOOR." \
+               "The runner image changed; pin an interpreter rather than letting a Python gate fail" \
+               "as a content failure."
+          exit 1
+        fi
+        printf '  python3 %s (CI floor %s; scripts/*.py themselves run on 3.9+)\n' "$have" "$DKP_PYTHON_CI_FLOOR"
 
     - name: Install dev tools
       if: inputs.tools != ''

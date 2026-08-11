@@ -19,11 +19,33 @@ with a verdict.
 | **Interaction semantics** — preview-then-commit, step-up gates, three-state tick cells, the three-way key cycle. | Any price scale predating tiered bidding. Main-tier bids land in single or low double digits; a three-figure main-tier bid on a screen is stale. |
 | **Copy**, where it states a rule. The explanatory callouts carry most of the product's reasoning. | The `seq` values printed across pools. `seq` is **per pool** (canonical §4); a single instance-wide `seq` marker is a known mockup error. |
 
-The mockups are a **snapshot**, not a live dependency. Nothing in `web/src` reads them, no test
-asserts against them, and they are never served. When a screen and
-[`../10-ui-decisions.md`](../10-ui-decisions.md) disagree, the decisions document wins — and when
-either disagrees with `docs/design/00-canonical-conventions.md`, the canonical conventions win and
-the conflict is a bug worth reporting.
+Nothing in `web/src` reads these files at runtime and they are never served. **Tests do assert
+against them**, though — the design system half of the table above is enforced, not merely
+documented:
+
+- `test/repo/design_tokens_test.go` diffs the shipped `.table` rules against `nocturne/styles.css`
+  with `var()` resolved on both sides (`TestDesignSystem_TableCSS_ResolvesToTheSourceSheet`), and
+  holds the scrolling variant to the same sheet bar an explicit list
+  (`TestDesignSystem_VirtualTable_DivergesOnlyWhereSanctioned`). The sanctioned-divergence list lives
+  in that file.
+- `test/repo/web_fonts_subset_test.go` scans these files for OpenType features, so a
+  `font-variant-numeric` the drawn screen uses cannot be dropped by the Latin font subset.
+
+So the screens, the mock data and the ~400 inline pixel values are a **snapshot**; the design
+system's values are a **contract with a test behind it**. Refreshing `nocturne/styles.css` is
+therefore not a docs-only change — expect `test/repo` to have an opinion, and read the failure
+message rather than editing the vendored file to satisfy it.
+
+That cuts both ways, and the second direction is the one that surprises people: when the mockup is
+wrong — `.card-meta` painted at ≈4.25:1, under the AA floor (issue #58) — the fix is to diverge the
+*shipped* sheet and record why, precisely BECAUSE the vendored file is byte-exact and fingerprinted.
+A divergence belongs in [`../09-frontend-and-design-system.md`](../09-frontend-and-design-system.md)
+(§4 for the sticky header, §2 for the `.card-meta` contrast rung) and in the shipped sheet's own
+comment. Never in the vendored file.
+
+When a screen and [`../10-ui-decisions.md`](../10-ui-decisions.md) disagree, the decisions document
+wins — and when either disagrees with `docs/design/00-canonical-conventions.md`, the canonical
+conventions win and the conflict is a bug worth reporting.
 
 ## Files
 
@@ -48,8 +70,10 @@ with spaces (`Admin Console.dc.html`), the repo uses kebab-case. Do not fetch th
 tool's file read: it caps at 256 KiB, which silently truncates `admin-console.dc.html`, and routing
 the rest through a model to retype them is lossy for files whose whole value is being byte-exact.
 
-Refreshing them changes no product code, but the build does check the result — see MOCK001 and
-MOCK002 below. A refreshed export carries no `noindex`; the build injects it and MOCK004 checks it.
+Refreshing them changes no product code, but two different things check the result. The build gates
+are MOCK001 and MOCK002 below, plus MOCK004 for the `noindex` a fresh export does not carry. And a
+refresh that touches `nocturne/styles.css` also has to clear the fidelity tests named above — the
+shipped `.table` is diffed against it — so budget for that rather than expecting a docs-only diff.
 
 ## The harness — our own, not the design tool's
 

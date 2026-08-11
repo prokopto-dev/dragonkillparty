@@ -317,10 +317,14 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
         with:
-          # scripts/verify-spec.py itself needs only python3, which the runner has. Go is here
-          # because the gate is worthless against a stale committed spec, and `make gen` needs a
-          # compiler to regenerate one.
+          # scripts/verify-spec.py needs only python3 — but "which the runner has" is what this line
+          # used to say, and issue #83 is what that cost: the script needed an interpreter nothing
+          # declared, so on an older one the gate died at import and read as SPEC DRIFT on a tree
+          # whose spec was fine. `python: "true"` asserts the runner clears CI's floor instead of
+          # assuming it. Go is here because the gate is worthless against a stale committed spec, and
+          # `make gen` needs a compiler to regenerate one.
           go: "true"
+          python: "true"
       - run: make verify-spec
         # Asserts properties of openapi/openapi.json that codegen-drift cannot see because they are
         # true of any regenerated file: every operation has an explicit lowerCamelCase operationId,
@@ -446,6 +450,10 @@ jobs:
           # and the gate would go unexercised in CI — the exact "green build that ran nothing" this
           # repo's test-the-gate ethos exists to prevent.
           tools: "golangci-lint gofumpt"
+          # test/repo's spec-gate fixtures exec python3 against scripts/verify-spec.py, and
+          # python_floor_test.go re-parses every scripts/*.py at the declared floor. Both are gated
+          # out of the -short unit run and execute here.
+          python: "true"
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
@@ -706,6 +714,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # `make docs-links` is scripts/check-links.py. Same reason as gen / spec-drift: a Python
+          # gate whose interpreter nobody declared fails as if the CORPUS were broken (issue #83).
+          python: "true"
       - run: make docs-build
         # Builds the site AND the embed.FS the binary serves at /docs, so a docs page that 404s in
         # the container fails here rather than in a guild's install.
