@@ -25,7 +25,7 @@ Every asset is listed in `checksums.txt`, which is signed. Verify before you run
 sha256sum -c checksums.txt --ignore-missing
 cosign verify-blob checksums.txt \
   --signature checksums.txt.sig --certificate checksums.txt.pem \
-  --certificate-identity-regexp 'https://github.com/dragonkillparty/.*' \
+  --certificate-identity-regexp '^https://github\.com/prokopto-dev/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 )
@@ -67,16 +68,22 @@ const BalanceKindDKP = "dkp"
 // The four system-account keys: the ledger-addressable non-human targets that make zero-sum splits,
 // rot handling and write-offs expressible (docs/design/01-domain-model.md §6.1).
 //
-// They are DECLARED HERE and referenced by internal/ledger, rather than the other way round, for the
-// reason this whole file exists: a strategy has to be able to say "route this to the guild bank"
-// without importing the package that knows what a guild bank's row id is. internal/ledger's
-// SystemKey* constants are defined as these, so there is one definition and Ctx.SystemAccount is the
-// only thing that turns a key into an id.
+// THEY ARE THE CATALOGUE'S, re-exported here rather than declared here (#51). They used to be
+// declared here and referenced by internal/ledger, which put the vocabulary on the pure side — a
+// strategy has to name the guild bank without importing the package that knows what a guild bank's
+// row id is — but left a second, unrelated copy in db/schema.hcl's CHECK that nothing generated and
+// no test compared. internal/account/kinds is now the single definition `make gen` writes that CHECK
+// from; these aliases keep a planner writing `SystemKeyGuildBank` without an import it does not need,
+// and Ctx.SystemAccount is still the only thing that turns a key into an id.
+//
+// Importing the catalogue does not touch law 3: it is a stdlib-only leaf over internal/schemaenum, so
+// it reaches internal/store no more than `strings` does, and arch_test.go's purity audit walks the
+// real graph and would say so if that ever changed.
 const (
-	SystemKeyResidue       = "residue"
-	SystemKeyGuildBank     = "guild_bank"
-	SystemKeyWriteOff      = "write_off"
-	SystemKeyImportOpening = "import_opening"
+	SystemKeyResidue       = accountkinds.SystemKeyResidue
+	SystemKeyGuildBank     = accountkinds.SystemKeyGuildBank
+	SystemKeyWriteOff      = accountkinds.SystemKeyWriteOff
+	SystemKeyImportOpening = accountkinds.SystemKeyImportOpening
 )
 
 // Share is one account's claim on a split: an account and its non-negative weight.
@@ -123,11 +130,7 @@ type AccountRef struct {
 // IsSystem reports whether this is one of the four ledger-addressable non-human accounts. Planners
 // use it to keep the guild bank out of an attendee split — crediting the bank its own payout is the
 // classic way a zero-sum ledger stays balanced while every raider is quietly short.
-func (a AccountRef) IsSystem() bool { return a.Kind == accountKindSystem }
-
-// accountKindSystem is account.kind's value for a system account, restated here because the strategy
-// package cannot see the schema. internal/ledger holds the same value against the same column.
-const accountKindSystem = "system"
+func (a AccountRef) IsSystem() bool { return a.Kind == accountkinds.KindSystem }
 
 // ItemRef is the strategy-visible projection of an item: what a pricing decision may depend on.
 //

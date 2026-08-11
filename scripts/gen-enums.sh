@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The enum half of `make gen`: db/schema.hcl's generated CHECK constraints, emitted from the Go
-# catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source) and
-# internal/audit/kinds (audit_log.actor_kind).
+# catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source), internal/audit/kinds
+# (audit_log.actor_kind, audit_log.outcome) and internal/account/kinds (account.kind,
+# account.system_key).
 #
-# RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Both catalogues and internal/schemaenum, which holds
+# RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Every catalogue and internal/schemaenum, which holds
 # the rendering they share, import nothing but the standard library, deliberately: this step
 # precedes sqlc, so if it reached generated code a tree whose sqlc output did not build could not
 # run `make gen` to repair it.
@@ -14,7 +15,10 @@
 # kind added in Go was a legal write that failed at the database — the failure mode canonical §5
 # exists to remove, and the one internal/authz/catalogue.go already removes for permission keys. The
 # six audit_log actor kinds were worse: a literal in the CHECK AND a second list in
-# internal/ledger/commit.go, which is the same failure with a second way to reach it (#40).
+# internal/ledger/commit.go, which is the same failure with a second way to reach it (#40). The
+# account vocabularies were worse again: account.system_key was written THREE times — a const block
+# in internal/strategy, the CHECK, and the seed rows of 000003_ledger.sql — and generated from none
+# of them (#51), while account.kind and audit_log.outcome had no Go list at all (#53).
 #
 # RUNS BEFORE gen-db.sh, and the order is load-bearing: gen-db.sh asserts db/schema.hcl and the
 # committed migrations describe the same schema, so it has to see the schema this step just wrote.
@@ -39,8 +43,9 @@ command -v go >/dev/null 2>&1 || die "go is not installed — see make setup"
 
 # The generator writes through a temp file and a rename, and says nothing on success. It is a
 # generator, not a gate: the drift assertions are TestLedgerKinds_CheckMatchesCatalogue,
-# TestAuditKinds_CheckMatchesCatalogue and `make verify-generated`.
+# TestAuditKinds_CheckMatchesCatalogue, TestAccountKinds_CheckMatchesCatalogue and
+# `make verify-generated`.
 go run ./internal/ledger/enumgen db/schema.hcl \
     || die "enumgen failed — db/schema.hcl was not rewritten"
 
-printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds, internal/audit/kinds\n'
+printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds, internal/audit/kinds, internal/account/kinds\n'

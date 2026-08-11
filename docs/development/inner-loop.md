@@ -10,8 +10,8 @@ agent — must be able to write a failing test, run it, fix it, and re-run insid
 ## Clone to green
 
 ```bash
-git clone https://github.com/dragonkillparty/dkp
-cd dkp
+git clone https://github.com/prokopto-dev/dragonkillparty
+cd dragonkillparty
 make setup      # once — gofumpt, goimports, golangci-lint, govulncheck, sqlc and atlas.
                 #        oasdiff, vale, lychee and the pnpm dependencies arrive with the
                 #        phases that need them; `make setup` prints what is still missing.
@@ -29,8 +29,15 @@ Prerequisites: Go 1.26 and Node 24 via corepack. That is the whole list.
 
 CI asserts that every row here is a real target. Needing a command that is not in the table means
 adding the target **and** the row in the same change. The Makefile also carries plumbing targets
-(`build`, `fmt`, `clean`, `verify-commands`, `verify-generated`) that the rows below invoke; those
-are deliberately not listed.
+(`build`, `fmt`, `clean`, `web-deps`, `verify-commands`, `verify-generated`) that the rows below
+invoke; those are deliberately not listed.
+
+`web-deps` runs `pnpm install --frozen-lockfile --ignore-scripts` **every time** `make dev`, `make
+vet` or `make lint-web` runs, and make resolves it once per invocation so a `make check` pays for one
+(~0.3 s when the tree already matches the lockfile). It used to be guarded on `web/node_modules`
+existing, which meant a merge that added a web dependency left every existing checkout stale and
+`make check` failed thirty lines into `tsc` with implicit-any errors on files the reader had never
+opened — issue #64. A directory that exists is not a directory that is current.
 
 | Task | Command | Budget |
 |---|---|---|

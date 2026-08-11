@@ -65,6 +65,27 @@ func TestCheckExpr_RendersASQLInList(t *testing.T) {
 	require.Equal(t, "source IN ('web')", schemaenum.CheckExpr("source", []string{"web"}))
 }
 
+// TestNullableCheckExpr_AdmitsNullAndTheCatalogue pins the nullable rendering, which account's
+// system_key CHECK is written in and which no other form can substitute for.
+//
+// The `IS NULL OR` prefix is LOAD-BEARING rather than defensive: `x IN (…)` evaluates to NULL when x
+// is NULL, and SQLite admits a row whose CHECK is not false, so a bare IN list on a nullable column
+// is satisfied by NULL by accident. The prefix says so deliberately — and, more to the point here,
+// the committed CHECK carries these exact bytes, so a rendering that dropped or reworded it would
+// make `make gen` demand a 12-step rebuild of account on a change that moved no values.
+func TestNullableCheckExpr_AdmitsNullAndTheCatalogue(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "system_key IS NULL OR system_key IN ('a', 'b_c')",
+		schemaenum.NullableCheckExpr("system_key", []string{"a", "b_c"}))
+
+	// And it is the non-nullable rendering with one prefix, not a second formatter: the ", " separator
+	// has one definition, so a change to it cannot rewrite one CHECK and not another.
+	require.Equal(t,
+		"kind IS NULL OR "+schemaenum.CheckExpr("kind", []string{"a", "b_c"}),
+		schemaenum.NullableCheckExpr("kind", []string{"a", "b_c"}))
+}
+
 // TestRegion_Replace_RewritesOnlyItsOwnRegion is the property a second catalogue depends on.
 func TestRegion_Replace_RewritesOnlyItsOwnRegion(t *testing.T) {
 	t.Parallel()

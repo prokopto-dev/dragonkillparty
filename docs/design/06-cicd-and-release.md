@@ -10,7 +10,7 @@ Every claim below that is an assumption about people rather than a decision abou
 
 ## 1. Repository strategy — one repository
 
-`dragonkillparty/dragonkillparty` holds the binary, the SPA, the docs, the generated SDKs and the
+`prokopto-dev/dragonkillparty` holds the binary, the SPA, the docs, the generated SDKs and the
 fixture definitions. Three things live outside it and only three.
 
 The decision is not a monorepo preference. **Four of the five architectural CI gates are
@@ -418,7 +418,12 @@ property of interpreted and JIT-heavy toolchains, not of multi-arch.**
 
 Go cross-compiles. `GOOS=linux GOARCH=arm64 go build` runs at native speed on the same amd64 runner,
 `modernc.org/sqlite` is pure Go so CGO stays off, and the final image is `FROM scratch` with three
-COPY layers. So: build every architecture natively on amd64, push one image per architecture, and
+COPY layers. The SPA is built once, in a Node stage on `$BUILDPLATFORM`, and staged into
+`internal/ui/dist` **before** any `go build` — JavaScript is architecture-independent, so one Vite
+build feeds every architecture's binary, and running node under emulation for arm64 would be QEMU by
+another name. `deploy/Dockerfile` asserts what it staged (`scripts/verify-spa-dist.sh`) rather than
+trusting it: a placeholder embed compiles and boots perfectly, which is how issue #55 survived a
+whole phase. So: build every architecture natively on amd64, push one image per architecture, and
 join them with `docker buildx imagetools create`, which writes a manifest list and executes no
 instruction of the target architecture. Whole multi-arch stage: **about 90 seconds**, mostly Vite.
 
@@ -451,8 +456,15 @@ will cross a major and change the deployment contract.
 
 **Moving tags advance only after the smoke job passes.** `release.yml` publishes the immutable tag,
 then `smoke` pulls that **digest** on both amd64 and arm64 runners and runs first boot, `/readyz`,
-`dkp doctor`, and an upgrade from the previous release's refdb. Only then does `imagetools create`
-advance `:1.5`, `:1` and `:latest`.
+`dkp doctor`, an upgrade from the previous release's refdb, and **the SPA the image actually
+serves** — `GET /` must return the built bundle, not `internal/ui`'s committed placeholder. Only
+then does `imagetools create` advance `:1.5`, `:1` and `:latest`.
+
+That last one was learned the expensive way. "It boots" was the whole of this gate until issue #55,
+and an image whose build never ran Vite boots flawlessly: it passes the healthcheck, answers
+`/readyz`, prints its version, and serves "web UI not yet built into this binary" to every officer
+who opens it. `internal/ui` falls back to `index.html` with a 200 for any path it does not have, so
+nothing that reads status codes can tell the two apart — only the bytes can (`scripts/smoke-spa.sh`).
 
 If smoke fails: the immutable tag stays (for forensics), the moving tags never move, the GitHub
 Release stays a draft, and an issue is filed. **Nobody running `:1` ever sees a build that failed to
@@ -510,16 +522,41 @@ start with an error they will not understand at 1 a.m. after a raid. The risk of
 is real and is addressed by making it *safe*, not by making it *manual*:
 
 ```
+0. finish an interrupted restore, if a previous boot was killed part-way through one
 1. read dkp_meta.schema_version
 2. version > this binary's max  -> REFUSE TO START, naming the correct image tag
                                    and the exact snapshot path
-3. pending && DKP_AUTO_MIGRATE  -> a. VACUUM INTO /data/backups/pre-<ver>-<ts>.db, zstd
-                                   b. goose Up per migration, PRAGMA integrity_check after each
-                                   c. on failure: AUTO-RESTORE the snapshot, exit 1, print the
-                                      failing migration and the rollback command
-4. audit-log applied version, actor="boot", binary version, duration
-5. serve
+3. append-only triggers absent  -> LOG AT ERROR AND CONTINUE. This boot did not cause it,
+                                   so there is nothing to restore and nothing to name;
+                                   refusing here locks an officer out over old damage
+4. pending && DKP_AUTO_MIGRATE  -> a. VACUUM INTO /data/backups/pre-<ver>-<ts>.db, zstd
+                                   b. record the ledger tables and triggers that exist
+                                      now — the baseline (c.iv) compares against
+                                   c. goose Up ONE migration, then all four checks:
+                                        i.   restore PRAGMA foreign_keys = ON
+                                        ii.  PRAGMA integrity_check
+                                        iii. PRAGMA foreign_key_check
+                                        iv.  append-only survival — no ledger table and
+                                             no ledger trigger present before this
+                                             migration may be absent after it
+                                      repeat until nothing is pending
+                                   d. on failure anywhere in (c): AUTO-RESTORE the
+                                      snapshot, exit 1, print the failing migration and
+                                      the rollback command
+5. audit-log applied version, actor="boot", binary version, duration
+6. serve
 ```
+
+The four checks are four distinct failure classes and only the second is "your database is corrupt".
+(i) exists because `PRAGMA foreign_keys` is connection state and a `NO TRANSACTION` migration that
+forgets to re-assert it disarms every later migration in the same boot, silently, since nothing
+reports a pragma. (iii) exists because `integrity_check` does not validate foreign keys, so a
+rebuild that copied rows in the wrong order passes it. (iv) exists because a rebuild that forgets to
+re-create a ledger table's `BEFORE UPDATE OR DELETE` triggers passes all three of the others, loses
+no row, and returns a ledger whose history is editable; it compares against the pre-migration state
+rather than a full catalogue, so a database that arrived already degraded is not refused an upgrade
+for damage that predates the binary. The operator-facing messages are in
+[Upgrade and backup](../operations/upgrade-and-backup.md#what-happens-at-boot).
 
 `DKP_AUTO_MIGRATE=false` exists for operators who want a maintenance window; in that mode `/readyz`
 returns 503 with `{"check":"migrations","state":"pending","command":"dkp migrate"}` and the SPA
