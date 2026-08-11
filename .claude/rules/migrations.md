@@ -58,9 +58,19 @@ A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf ov
 the next one added has no excuse to be a literal — and **`ENUM001` in `scripts/repo-gates.sh` is the
 machine half of that sentence**, because the three `CheckMatchesCatalogue` tests each compare their
 own region with their own catalogue and none of them can see a seventh vocabulary that has no
-catalogue at all. A `check` block in `db/schema.hcl` whose `expr` lists quoted values and does not
-lie between `BEGIN`/`END GENERATED` markers fails the gate. Boolean CHECKs (`x IN (0, 1)`) and index
-predicates are not string enums and are not caught. The waiver is a `// dkp:enum-literal <reason>`
+catalogue at all. A `check` block in `db/schema.hcl` whose `expr` lists quoted values — in either SQL
+quote form, since SQLite makes a string literal out of `'x'` and out of a double-quoted token that
+matches no column — and does not lie between `BEGIN`/`END GENERATED` markers fails the gate. Boolean
+CHECKs (`x IN (0, 1)`) and index predicates are not string enums and are not caught.
+
+**A region is generated when a catalogue owns it, not when the schema says so.** The markers are
+comments, so wrapping a new literal in a balanced pair would otherwise be a self-service exemption —
+and `make gen` would not notice either, because it rewrites only the regions its catalogues declare.
+So the marker line must match, whole, a `schemaEnumBegin`/`schemaEnumEnd` const in an
+`internal/*/kinds` package, and one that nothing declares is itself a failure.
+`TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues` is the Go twin: the marker pairs in the
+schema are exactly the pairs `internal/ledger/enumgen`'s `catalogues()` renders, so a marker const
+declared in Go but wired into no generator fails too. The waiver is a `// dkp:enum-literal <reason>`
 comment on the line above the check — with a reason; a bare marker fails — and it belongs in the
 schema rather than in an allowlist inside the script, so the exception appears in the diff a reviewer
 reads. `TestRepoGates_HandWrittenEnumCheck_FailsGate` in `test/repo/` is its negative fixture.

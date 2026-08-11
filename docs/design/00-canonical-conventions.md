@@ -118,9 +118,10 @@ CHECK and the OpenAPI schema; a test asserts the three copies agree. Those per-v
 check their own region against their own catalogue and say nothing about a vocabulary that has no
 catalogue at all, so **`ENUM001` in `scripts/repo-gates.sh`** is the half that covers the *next* one:
 a string-enum `CHECK` in `db/schema.hcl` outside the `BEGIN`/`END GENERATED` markers fails the
-`lint / repo` job. Boolean `CHECK`s (`x IN (0, 1)`) are not string enums and are not caught. The
-waiver is a `// dkp:enum-literal <reason>` comment above the check, which puts the exception in the
-schema diff a reviewer reads.
+`lint / repo` job, in either SQL quote form. Boolean `CHECK`s (`x IN (0, 1)`) are not string enums
+and are not caught. A region counts as generated only when a catalogue declares its marker line in
+Go, so a fabricated marker pair exempts nothing; the waiver is a `// dkp:enum-literal <reason>`
+comment above the check, which puts the exception in the schema diff a reviewer reads.
 
 ## 6. Permissions and scopes — one catalogue, generated
 

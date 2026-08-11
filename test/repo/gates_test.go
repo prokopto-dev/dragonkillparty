@@ -27,6 +27,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
+	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	ledgerkinds "github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // A real 40-hex-character commit SHA, in the shape PIN001 demands.
@@ -1535,10 +1539,20 @@ func TestRepoGates_EQdkpConfigKeyInSchema_FailsGate(t *testing.T) {
 // each transition against a fresh, empty state. The cases that MUST fire and the cases that MUST
 // NOT are interleaved on purpose: the gate has to tell them apart in one pass, which is the thing
 // that breaks when somebody widens the pattern.
+//
+// The marker text is the fixture catalogue's, byte for byte — writeEnumCatalogue declares the same
+// two strings in Go. That linkage is the point: the generated region here is honoured *because* a
+// catalogue in the fixture tree owns those markers, and TestRepoGates_FabricatedGeneratedMarker_FailsGate
+// is the same schema with a pair nothing owns.
+const (
+	enumFixtureBegin = "  // BEGIN GENERATED — account enum CHECKs, from internal/account/kinds. Run make gen."
+	enumFixtureEnd   = "  // END GENERATED — account enum CHECKs."
+)
+
 const enumFixtureSchema = `// The header prose. enums are text + check (x IN ('a','b')), lowercase snake_case — a gate that
 // fires on the documentation of its own rule is a gate people route around.
 table "account" {
-  // BEGIN GENERATED — account enum CHECKs, from internal/account/kinds. Run ` + "`make gen`" + `.
+` + enumFixtureBegin + `
   check "account_kind_enum" {
     expr = "kind IN ('person', 'system')"
   }
@@ -1546,7 +1560,7 @@ table "account" {
   check "account_system_key_enum" {
     expr = "system_key IS NULL OR system_key IN ('guild_bank', 'residue')"
   }
-  // END GENERATED — account enum CHECKs.
+` + enumFixtureEnd + `
 
   check "account_person_shape" {
     expr = "((kind = 'person') = (person_id IS NOT NULL))"
@@ -1560,6 +1574,10 @@ table "bid_session" {
 
   check "bid_session_mode_enum" {
     expr = "mode IS NULL OR mode IN ('auction_open', 'auction_sealed_first')"
+  }
+
+  check "bid_session_visibility_enum" {
+    expr = "visibility IN (\"blind\", \"open\")"
   }
 
   check "bid_session_blind_bool" {
@@ -1598,6 +1616,21 @@ table "bid_session" {
 // region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, an index predicate, and
 // the file's own prose all have to stay quiet, or the first author to hit a false positive reaches
 // for --no-verify rather than for the rule id.
+// writeEnumCatalogue writes the fixture's Go catalogue — the package that OWNS the generated region
+// in enumFixtureSchema, in the shape internal/account/kinds keeps its markers in.
+//
+// It exists because ENUM001 does not take the schema's word for what is generated: a region is
+// exempt only when its marker line matches, whole, a marker some catalogue declares in Go. So a
+// fixture whose generated region must be honoured has to carry the catalogue that owns it, and the
+// linkage is what the test is asserting rather than an incidental setup step.
+func writeEnumCatalogue(t *testing.T, tree, begin, end string) {
+	t.Helper()
+
+	writeGo(t, tree, "internal/account/kinds/kinds.go", "package kinds\n\nconst (\n"+
+		"\tschemaEnumBegin = \""+begin+"\"\n"+
+		"\tschemaEnumEnd   = \""+end+"\"\n)\n")
+}
+
 func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	t.Parallel()
 
@@ -1605,6 +1638,7 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	tree := t.TempDir()
 
 	writeRepoFile(t, tree, "db/schema.hcl", enumFixtureSchema)
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
 
 	out, code := runGateScript(t, script, tree)
 
@@ -1615,6 +1649,10 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.Contains(t, out, "bid_session_mode_enum",
 		"ENUM001 must fire on the NullableCheckExpr form too — `x IS NULL OR x IN (…)` is the "+
 			"second shape internal/schemaenum renders, and account.system_key uses it\n%s", out)
+	require.Contains(t, out, "bid_session_visibility_enum",
+		"ENUM001 must fire on DOUBLE-quoted values too. SQLite treats a double-quoted token that "+
+			"resolves to no column as a string literal, so `IN (\"blind\", \"open\")` is a "+
+			"hand-written vocabulary — changing quote style must not be a way past the gate\n%s", out)
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
 
@@ -1684,8 +1722,12 @@ func TestRepoGates_UnclosedGeneratedMarker_FailsGate(t *testing.T) {
 	script := scriptPath(t, "repo-gates.sh")
 	tree := t.TempDir()
 
+	// The catalogue DOES own this marker pair, so the failure can only be the missing END — a
+	// fixture whose marker was also unrecognised would go red for the other reason and prove
+	// nothing about unbalanced regions.
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
 	writeRepoFile(t, tree, "db/schema.hcl", `table "bid_session" {
-  // BEGIN GENERATED — bid_session enum CHECKs.
+`+enumFixtureBegin+`
   check "bid_session_state_enum" {
     expr = "state IN ('draft', 'open')"
   }
@@ -1695,9 +1737,118 @@ func TestRepoGates_UnclosedGeneratedMarker_FailsGate(t *testing.T) {
 	out, code := runGateScript(t, script, tree)
 
 	require.NotZero(t, code, "an unclosed BEGIN GENERATED marker must fail the gates\n%s", out)
+	require.NotContains(t, out, "no Go catalogue declares",
+		"the fixture's marker IS declared — a hit here means this test is proving the wrong "+
+			"thing\n%s", out)
 	require.Contains(t, out, "ENUM001", "%s", out)
 	require.Contains(t, out, "unclosed BEGIN GENERATED",
 		"ENUM001 must name the unbalanced marker: it silently exempts every check below it\n%s", out)
+}
+
+// TestRepoGates_FabricatedGeneratedMarker_FailsGate closes the self-service exemption, and it is the
+// bypass that mattered most: everything else ENUM001 does is undone by two comment lines without it.
+//
+// The markers are comments. Nothing stops an author writing a balanced
+// `// BEGIN GENERATED` / `// END GENERATED` pair around a brand-new literal — and nothing downstream
+// notices either, because `make gen` rewrites only the regions its catalogues declare, so a
+// fabricated one is invisible to `make verify-generated` as well. The region would be "generated"
+// in the sense that nothing generates it.
+//
+// So a marker counts only when a catalogue declares it in Go, and this fixture asserts both
+// directions in one run: the declared pair exempts its region, the fabricated pair does not exempt
+// anything and is itself reported. Asserting only the second would pass against a gate that had
+// stopped honouring generated regions at all, which is the "fix" a red build invites.
+func TestRepoGates_FabricatedGeneratedMarker_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
+	writeRepoFile(t, tree, "db/schema.hcl", `table "account" {
+`+enumFixtureBegin+`
+  check "account_kind_enum" {
+    expr = "kind IN ('person', 'system')"
+  }
+`+enumFixtureEnd+`
+}
+
+table "bid_session" {
+  // BEGIN GENERATED — bid_session enum CHECKs, from internal/bids/kinds. Run make gen.
+  check "bid_session_state_enum" {
+    expr = "state IN ('draft', 'open', 'extended')"
+  }
+  // END GENERATED — bid_session enum CHECKs.
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a fabricated generated region must not exempt a literal\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "no Go catalogue declares",
+		"ENUM001 must report the marker itself: a region nothing generates is a claim, not a "+
+			"fact, and saying only \"hand-written CHECK\" would leave the author re-adding the "+
+			"markers more carefully\n%s", out)
+	require.Contains(t, out, "internal/bids/kinds",
+		"the failure must quote the offending marker line\n%s", out)
+	require.Contains(t, out, "bid_session_state_enum",
+		"the smuggled CHECK must be reported too — the fabricated markers exempt nothing\n%s", out)
+
+	require.NotContains(t, out, "account_kind_enum",
+		"the region the fixture's catalogue DOES declare must still be exempt; a gate that "+
+			"stopped honouring generated regions would satisfy every assertion above\n%s", out)
+}
+
+// TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues is ENUM001's Go twin, and it closes the
+// one residue the shell gate cannot see.
+//
+// That gate honours a marker line because some `internal/*/kinds` package declares it — which leaves
+// a narrow path open: declare a NEW marker const in Go, wire it into no generator, and the region it
+// delimits is exempt from the gate while nothing regenerates it. This asserts the stronger property
+// the shell cannot ask about without a Go toolchain: the marker pairs in db/schema.hcl are EXACTLY
+// the pairs the registered catalogues own — no fabricated region, and no catalogue whose region has
+// gone missing from the schema.
+//
+// The three catalogues are named here rather than enumerated, which is deliberate: a fourth added to
+// `internal/ledger/enumgen`'s catalogues() puts a fourth marker pair in the schema, and this test
+// then fails until it is listed here too. That is the correct direction for it to break — the
+// alternative, reflecting over the tree, would silently accept a catalogue nobody registered.
+func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
+	t.Parallel()
+
+	var wantBegin, wantEnd []string
+
+	for _, block := range []string{
+		ledgerkinds.SchemaEnumBlock(),
+		auditkinds.SchemaEnumBlock(),
+		accountkinds.SchemaEnumBlock(),
+	} {
+		lines := strings.Split(block, "\n")
+		require.GreaterOrEqual(t, len(lines), 2, "a generated block is at least its two markers")
+
+		wantBegin = append(wantBegin, lines[0])
+		wantEnd = append(wantEnd, lines[len(lines)-1])
+	}
+
+	var gotBegin, gotEnd []string
+
+	for _, line := range strings.Split(readRepoFile(t, "db/schema.hcl"), "\n") {
+		switch {
+		case strings.Contains(line, "BEGIN GENERATED"):
+			gotBegin = append(gotBegin, line)
+		case strings.Contains(line, "END GENERATED"):
+			gotEnd = append(gotEnd, line)
+		}
+	}
+
+	require.ElementsMatch(t, wantBegin, gotBegin,
+		"db/schema.hcl's BEGIN GENERATED markers must be exactly the ones the registered catalogues "+
+			"declare. An extra one is a region nothing generates — ENUM001 would step over it and "+
+			"`make gen` would never rewrite it; a missing one means a catalogue lost its region")
+	require.ElementsMatch(t, wantEnd, gotEnd,
+		"db/schema.hcl's END GENERATED markers must be exactly the ones the registered catalogues "+
+			"declare")
 }
 
 // TestRepoGates_DKPOwnColumnNames_PassGate is the allowlist half, and it is the half that matters.

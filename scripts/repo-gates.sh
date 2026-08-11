@@ -345,8 +345,16 @@ fi
 #
 #   caught   expr = "state IN ('draft', 'open')"                     the plain form (CheckExpr)
 #   caught   expr = "k IS NULL OR k IN ('a', 'b')"                   the nullable form (NullableCheckExpr)
+#   caught   expr = "state IN (\"draft\", \"open\")"                 SQLite's double-quoted literals
 #   ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
 #   ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
+#
+# BOTH SQL QUOTE FORMS, and that pair is closed rather than an enumeration that might be missing an
+# arm: SQLite produces a string literal from an apostrophe and — through the double-quoted-identifier
+# misfeature it keeps for compatibility — from a double quote whose token resolves to no column. The
+# other two quoting characters it accepts, backticks and brackets, are identifier quoting and cannot
+# express a value. So a hand-written enum can be spelled exactly two ways and the gate reads both;
+# changing quote style is not a way past it.
 #
 # The index-predicate exclusion is deliberate and is #97: a partial index over a SUBSET of a
 # vocabulary is not the vocabulary, so it cannot be rendered from a catalogue as-is and a gate that
@@ -358,15 +366,86 @@ fi
 # schema rather than in an allowlist here so that an exception is visible in the diff a reviewer
 # reads, and it requires a reason for the same purpose the ADR waiver below does.
 #
-# An UNCLOSED `BEGIN GENERATED` is itself a violation. Without that, one unbalanced marker line
+# A GENERATED REGION IS ONE A CATALOGUE OWNS, NOT ONE THE SCHEMA CLAIMS. The markers are comments, so
+# without this the exemption is self-service: wrap the new literal in a balanced
+# `// BEGIN GENERATED` / `// END GENERATED` pair and the gate steps over it — and nothing downstream
+# notices either, because `make gen` only rewrites the regions its catalogues declare and a
+# fabricated one is not among them. So the marker line must match, WHOLE, a marker some catalogue
+# declares in Go, and the marker set is read out of the Go source rather than restated here:
+#
+#   internal/*/kinds/*.go:  schemaEnumBegin = "  // BEGIN GENERATED — … Run `make gen`."
+#
+# Whole-line identity is the same rule schemaenum.Region.Replace uses to find its own region, which
+# is what makes the two agree by construction. A marker nothing declares is a VIOLATION, not a silent
+# non-exemption: it means either a fabricated region or a catalogue and a schema that have drifted,
+# and both need saying. The Go twin is TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues,
+# which closes the residue this cannot see — a marker const declared in Go but wired into no
+# generator.
+#
+# An UNCLOSED `BEGIN GENERATED` is itself a violation too. Without that, one unbalanced marker line
 # exempts every check after it — the whole rest of the file — and the gate stays green while doing
 # nothing.
 if [ -f db/schema.hcl ]; then
+    # The marker lines the Go catalogues declare, extracted from the const block each one keeps them
+    # in. Empty when internal/ does not exist yet, which fails CLOSED: with no catalogue to own it,
+    # no region is generated and every marker is unrecognised.
+    #
+    # Joined with ASCII FS rather than newlines: a multi-line `awk -v` value is a parse error in BWK
+    # awk ("newline in string"), and a marker line can hold anything except a control character.
+    enum_markers=$(grep -rhE '^[[:space:]]*schemaEnum(Begin|End)[[:space:]]*=[[:space:]]*"' \
+        --include='*.go' internal 2>/dev/null | sed -E 's/^[^"]*"//; s/"[[:space:]]*$//' | tr '\n' '\034' || true)
+
     # Explicit character ranges rather than POSIX classes: this runs under GNU awk on CI and BWK awk
-    # on a laptop, and the class support differs between them.
-    hits=$(awk '
-        index($0, "BEGIN GENERATED") { in_region = 1; begin_line = NR; next }
-        index($0, "END GENERATED")   { in_region = 0; next }
+    # on a laptop, and the class support differs between them. The two quote characters are built
+    # with sprintf so that neither has to survive the shell's quoting of this program.
+    if hits=$(awk -v known_markers="$enum_markers" '
+        BEGIN {
+            SQ = sprintf("%c", 39)
+            DQ = sprintf("%c", 34)
+
+            # mk, not m: m is a scalar in the brace counter below, and awk has one namespace for
+            # both — a collision is a fatal "array in a scalar context" under gawk and a silently
+            # different answer under BWK awk.
+            count = split(known_markers, mk, sprintf("%c", 28))
+            for (i = 1; i <= count; i++) {
+                if (mk[i] != "") { declared[mk[i]] = 1 }
+            }
+        }
+
+        # quoted_in_list — does any IN list on this line hold a quoted value?
+        #
+        # Scans list by list rather than with one regex, because the question is about the text
+        # BETWEEN the parentheses: `IN (0, 1)` is a boolean and must not match, while a quote
+        # anywhere in a list is a vocabulary. The leading non-word character keeps JOIN and MIN out.
+        function quoted_in_list(s,   rest, shut, seg) {
+            while (match(s, /(^|[^A-Za-z0-9_])IN[ \t]*\(/)) {
+                rest = substr(s, RSTART + RLENGTH)
+                shut = index(rest, ")")
+                seg = (shut > 0) ? substr(rest, 1, shut - 1) : rest
+
+                if (index(seg, SQ) > 0 || index(seg, DQ) > 0) { return 1 }
+
+                s = rest
+            }
+
+            return 0
+        }
+
+        index($0, "BEGIN GENERATED") {
+            if ($0 in declared) { in_region = 1; begin_line = NR }
+            else {
+                printf "db/schema.hcl:%d: BEGIN GENERATED marker no Go catalogue declares — a region is generated only if a catalogue in internal/*/kinds owns it:%s\n", NR, $0
+            }
+            next
+        }
+
+        index($0, "END GENERATED") {
+            if ($0 in declared) { in_region = 0 }
+            else {
+                printf "db/schema.hcl:%d: END GENERATED marker no Go catalogue declares:%s\n", NR, $0
+            }
+            next
+        }
 
         # Comment lines, in both HCL spellings. A gate that fires on the prose documenting it is a
         # gate people route around — and db/schema.hcl'"'"'s own header names the enum shape.
@@ -388,7 +467,7 @@ if [ -f db/schema.hcl ]; then
         }
 
         in_check {
-            if (!in_region && !this_waived && $0 ~ /IN[ \t]*\([^)]*'"'"'/) {
+            if (!in_region && !this_waived && quoted_in_list($0)) {
                 printf "db/schema.hcl:%d: check \"%s\": %s\n", NR, name, $0
             }
 
@@ -409,10 +488,18 @@ if [ -f db/schema.hcl ]; then
                 printf "db/schema.hcl:%d: dkp:enum-literal with no reason — the reason is the point of the waiver\n", bare_waiver
             }
         }
-    ' db/schema.hcl || true)
-    [ -n "$hits" ] && violation ENUM001 \
-        "hand-written string-enum CHECK in db/schema.hcl — the values come from a Go catalogue between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)" \
-        "$hits"
+    ' db/schema.hcl 2>&1); then
+        [ -n "$hits" ] && violation ENUM001 \
+            "hand-written string-enum CHECK in db/schema.hcl — the values come from a Go catalogue between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)" \
+            "$hits"
+    else
+        # A scan that CANNOT RUN is a failure, never a pass. Without this the awk program's own
+        # errors — a fatal on the wrong awk, an unreadable file — go to stderr and leave `hits`
+        # empty, which reads exactly like a clean schema. That is the shape of bug that makes a gate
+        # stop meaning anything without anybody noticing, and it was found in review of this rule.
+        violation ENUM001 "the string-enum CHECK scan did not run — this is a gate failure, not a pass" \
+            "$hits"
+    fi
 else
     note "skip" "[ENUM001] db/schema.hcl does not exist yet"
 fi
