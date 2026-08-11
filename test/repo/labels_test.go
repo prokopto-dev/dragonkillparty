@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -636,6 +637,59 @@ func unresolvedIssueFilingNames(bullet string, manifest []labelSpec, formDir str
 	return unresolved
 }
 
+// bulletPhaseNames returns the phase labels the bullet names, in order of appearance and deduped.
+func bulletPhaseNames(bullet string) []string {
+	var names []string
+
+	seen := make(map[string]bool)
+
+	for _, m := range backtickedName.FindAllStringSubmatch(bullet, -1) {
+		if !phaseLabelName.MatchString(m[1]) || seen[m[1]] {
+			continue
+		}
+
+		seen[m[1]] = true
+
+		names = append(names, m[1])
+	}
+
+	return names
+}
+
+// unnamedPhaseRangeEnds returns the ends of the phase family that the bullet fails to name, given
+// the manifest's phases in ROADMAP.md order.
+//
+// The bullet writes the family as a RANGE — "`phase-0` … `phase-9`" — so the two ends are what
+// carries its meaning, and both must be real ends. Requiring the bullet to name every phase would
+// be worse prose and a worse instruction; requiring it to name *some* phase is what the first
+// version of this gate did, and it left the range able to go stale the moment a Phase 10 was
+// added: the manifest gate would go green on the new label while the instruction still told filers
+// the family stopped at 9.
+//
+// Phases the bullet names BETWEEN the ends are not constrained, because the bullet names `phase-3`
+// as a worked example of choosing a phase. That one is already covered: it is a label-shaped name
+// like any other, so unresolvedIssueFilingNames requires it to exist.
+func unnamedPhaseRangeEnds(bullet string, phases []string) []string {
+	if len(phases) == 0 {
+		return nil
+	}
+
+	named := make(map[string]bool)
+	for _, n := range bulletPhaseNames(bullet) {
+		named[n] = true
+	}
+
+	var missing []string
+
+	for _, end := range []string{"phase-" + phases[0], "phase-" + phases[len(phases)-1]} {
+		if !named[end] && !slices.Contains(missing, end) {
+			missing = append(missing, end)
+		}
+	}
+
+	return missing
+}
+
 // TestAgentsMD_IssueFilingLabels_AgreeWithTheManifest is the gate on the instruction itself.
 //
 // TestLabelManifest_CoversEveryLabelTheDocsTellPeopleToUse above hardcodes the three kind labels;
@@ -672,18 +726,18 @@ func TestAgentsMD_IssueFilingLabels_AgreeWithTheManifest(t *testing.T) {
 		// Non-vacuous: the bullet must actually name phase labels, and they must be real ones.
 		// Without this the assertion above passes just as happily on a bullet that says the phase
 		// labels do not exist — which is exactly what it said before #68.
-		named := 0
-
-		for _, m := range backtickedName.FindAllStringSubmatch(bullet, -1) {
-			if phaseLabelName.MatchString(m[1]) {
-				named++
-			}
-		}
-
-		require.NotZero(t, named,
-			"the bullet must tell agents to apply a roadmap-phase label and name at least one "+
-				"of them; ten exist and are in use, and an instruction that omits them produces "+
+		require.NotEmpty(t, bulletPhaseNames(bullet),
+			"the bullet must tell agents to apply a roadmap-phase label and name the family; "+
+				"ten exist and are in use, and an instruction that omits them produces "+
 				"phase-less issues the sweep for that phase cannot see (#68, #79, #86)")
+
+		// And the range it states must be the range that exists. Naming *a* phase is not enough:
+		// the day ROADMAP.md grows a Phase 10, the manifest gate above goes green on the new
+		// label while this sentence still tells filers the family ends at 9.
+		require.Empty(t, unnamedPhaseRangeEnds(bullet, manifestPhases(manifest)),
+			"the AGENTS.md bullet states the phase family as a range and must state the real "+
+				"one — both ends. A phase added to ROADMAP.md and to .github/labels.yml is not "+
+				"done until the instruction that tells agents to apply it says it exists")
 	})
 
 	t.Run("a bullet naming a label that does not exist fails", func(t *testing.T) {
@@ -706,6 +760,39 @@ func TestAgentsMD_IssueFilingLabels_AgreeWithTheManifest(t *testing.T) {
 			"the gate must name the two that resolve to nothing and only those — `bug` IS in the "+
 				"fixture manifest and `parity-gap` IS a fixture form, and a gate that flagged "+
 				"either would be flagging everything")
+	})
+
+	t.Run("a phase added to the roadmap leaves the instruction stale, and that fails", func(t *testing.T) {
+		t.Parallel()
+
+		// The scenario this subtest exists for: someone adds `## Phase 10` to ROADMAP.md and
+		// `phase-10` to the manifest, which is exactly what
+		// TestLabelManifest_PhaseLabels_MatchTheRoadmap asks for and it goes green — while
+		// AGENTS.md still tells filers the family is `phase-0` … `phase-9`. That is the state
+		// #68 described, arriving one phase at a time, and a gate that only counted phase
+		// mentions would not see it.
+		bullet := issueFilingBullet(
+			"- **Use the existing labels** — `bug` — and add the roadmap-phase label:\n" +
+				"  `phase-0` … `phase-9`, one per `## Phase N` heading. Phase 3 work is `phase-3`.\n")
+
+		require.Equal(t, []string{"phase-0", "phase-9", "phase-3"}, bulletPhaseNames(bullet),
+			"every phase the bullet names must be read, in order and deduped — the worked "+
+				"example between the ends included")
+
+		require.Empty(t, unnamedPhaseRangeEnds(bullet, []string{"0", "9"}),
+			"the ends the bullet states ARE the ends of this fixture family; a gate that fired "+
+				"here would fire on the tree it is meant to pass")
+
+		require.Equal(t, []string{"phase-10"}, unnamedPhaseRangeEnds(bullet, []string{"0", "9", "10"}),
+			"a family that now runs to phase-10 must be reported against a bullet that still "+
+				"says the range ends at 9")
+
+		require.Equal(t, []string{"phase-0", "phase-9"},
+			unnamedPhaseRangeEnds("- **Use the existing labels** — `bug`.\n", []string{"0", "9"}),
+			"a bullet naming no phase at all is missing both ends, not one")
+
+		require.Empty(t, unnamedPhaseRangeEnds(bullet, nil),
+			"an empty family constrains nothing — the roadmap gate is what catches that")
 	})
 
 	t.Run("the bullet ends where the next one starts", func(t *testing.T) {
