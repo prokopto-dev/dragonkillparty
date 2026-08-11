@@ -134,6 +134,53 @@ func TestE2E_AxeAllowlist_EveryEntryIsAccountedFor(t *testing.T) {
 	}
 }
 
+// TestE2E_AxeScans_HaveHeadroomOverTheDefaultTimeout closes issue #88.
+//
+// The axe sweep over /_design was observed at 44.7 s against Playwright's 30 s default, and passes
+// in 2-11 s when the file runs alone — contention, not a defect in the scan. `fullyParallel: true`
+// puts the whole suite on the machine at once and /_design is the heaviest page in the repo: every
+// token plus a 200-row x 12-column virtualised table, all of which axe walks. With `retries: 0`
+// (deliberate — a flaky e2e is quarantined, never retried) a budget smaller than the observed worst
+// case is a red build with no product defect behind it, which is how a suite gets `.skip`ped.
+//
+// The rule is per-test rather than a config-wide `timeout:` bump, because the headroom belongs to
+// the tests that need it: raising the default for all twenty-odd would hide a genuinely hung page
+// in one of the fast ones. `test.slow()` triples this test's budget and changes no assertion, so it
+// masks nothing — a scan that never finishes still fails, at 90 s instead of 30 s.
+func TestE2E_AxeScans_HaveHeadroomOverTheDefaultTimeout(t *testing.T) {
+	t.Parallel()
+
+	spec := readRepoFile(t, "web/e2e/a11y.spec.ts")
+
+	// One block per `test(...)` declaration, so the assertion is about the test that scans rather
+	// than about the file containing the call somewhere.
+	blocks := strings.Split(spec, "\n  test(")
+	require.Greater(t, len(blocks), 1,
+		"web/e2e/a11y.spec.ts declares no tests — has the file been reformatted or emptied?")
+
+	scanning := 0
+
+	for _, block := range blocks[1:] {
+		if !strings.Contains(block, "scan(page)") {
+			continue
+		}
+
+		scanning++
+
+		title, _, _ := strings.Cut(block, "\n")
+
+		require.Containsf(t, block, "test.slow()",
+			"the axe test %s runs a full page scan without test.slow(). Playwright's 30 s default is "+
+				"under the 44.7 s this scan was observed at under parallel load, and retries are zero "+
+				"(issue #88).", strings.TrimSpace(title))
+	}
+
+	require.Equalf(t, 2, scanning,
+		"expected exactly 2 axe-scanning tests in web/e2e/a11y.spec.ts (the /_design sweep and the open "+
+			"dialog), found %d. A new one needs the same budget; a removed one needs this number "+
+			"updated and a reason in the diff.", scanning)
+}
+
 // TestE2E_Specs_RunAgainstTheBuiltBinary asserts the harness has not been repointed at Vite.
 //
 // docs/design/04-testing.md is explicit that E2E "runs against the shipped binary, not a dev server",

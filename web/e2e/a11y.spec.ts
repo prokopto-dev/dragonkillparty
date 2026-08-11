@@ -223,6 +223,21 @@ async function headingOutline(page: Page): Promise<{ level: number; text: string
 
 test.describe("Accessibility", () => {
   test("/_design has no unallowlisted serious or critical axe violations", async ({ page }) => {
+    // A CONTENTION BUDGET, NOT A LOOSENED ASSERTION (issue #88). test.slow() triples this test's
+    // timeout to 90 s; it changes nothing about what counts as a violation, and a healthy run is
+    // unaffected because a timeout is a ceiling rather than a wait.
+    //
+    // The scan itself takes 2-11 s when this file runs alone and was observed at 44.7 s against the
+    // 30 s default with the full suite in flight. `fullyParallel: true` puts every spec on the
+    // machine at once and /_design is the heaviest page in the repo — every token plus a 200-row x
+    // 12-column virtualised table, all of which axe walks. With `retries: 0` (deliberate: a flaky
+    // e2e is quarantined, never retried) a 30 s budget against a 44.7 s worst case is a red build
+    // with no product defect behind it, which is how a suite ends up `.skip`ped.
+    //
+    // The alternative was AxeBuilder.exclude(".virtual-table"), which buys the same headroom by
+    // giving up the a11y of the surface this suite most needs to check. Headroom is cheaper.
+    test.slow();
+
     await openDesignPage(page);
 
     assertWithinAllowlist(DESIGN_ROUTE, await scan(page));
@@ -290,6 +305,11 @@ test.describe("Accessibility", () => {
   });
 
   test("the open dialog has no serious or critical axe violations", async ({ page }) => {
+    // The same budget as the sweep above, and for the same reason: this is a second full axe walk
+    // of /_design (the modal covers the page but the DOM behind it is still there), so it carries
+    // the same worst case under parallel load. See issue #88.
+    test.slow();
+
     await openDesignPage(page);
     await page.getByRole("button", { name: "Open dialog" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
