@@ -272,7 +272,9 @@ first-class distribution channel and `modernc.org/sqlite` file locking, path sep
    repos, which the Apache-2.0 choice already implies. What then actually binds is not minutes: it is
    20 concurrent jobs on Free, the 10 GB cache, and contributor patience.
 2. **Cross-compile, never QEMU.** See §7.
-3. **Draft PRs run lint and unit only.** Agents open drafts and mark ready when green locally.
+3. **Draft PRs run lint and unit only.** Agents open drafts and mark ready when green locally. This
+   lever only works if `ready_for_review` is in `on: pull_request: types:` — without it the expensive
+   jobs are not deferred, they are skipped for good (issue #82, and §4's fourth mitigation).
 4. **`push:` restricted to `main` and tags.** Running on both `pull_request` and `push` for every
    branch doubles the bill for zero information.
 5. **Every scheduled workflow guards on the repository owner.** Otherwise every fork runs the nightly
@@ -301,7 +303,31 @@ Three mitigations, all of which assert the **shape** of the run rather than only
 2. Jobs that are unconditional (`changes`, `lint-repo`, `typecheck`, `codegen-drift`, `build-binary`)
    are asserted to be exactly `success`, not "success or skipped".
 3. When `changes.outputs.deep == 'true'`, the deep jobs (`build-image`, `test-e2e`) are asserted
-   **not** to be in state `skipped`.
+   **not** to be in state `skipped`. `test-importer` is deep *and* path-filtered, so it is asserted
+   the same way whenever the importer filter also selected — its legitimate skip is "the importer
+   did not change", never "this PR was a draft when the run started".
+
+**A fourth mitigation, because three were not enough (issue #82).** `deep` reads
+`github.event.pull_request.draft`, so the whole tier depends on the workflow being re-run when the PR
+leaves draft. `on: pull_request:` with no `types:` defaults to `[opened, synchronize, reopened]`,
+which does **not** include `ready_for_review` — so a PR opened as a draft, marked ready and merged
+with no further push reached `main` with `test / e2e`, `test / importer` and `build / image` never
+having run, and `ci-required` green throughout. That is the flow this document recommends, not an
+unusual one, and neither fallback existed: there is no merge queue, so `merge_group` never fires, and
+`push` happens after the merge. `ci.yml` therefore names all four types explicitly — declaring
+`types:` replaces the default list rather than extending it, so `synchronize` has to be restated or
+CI stops running on pushes. `test/repo/ci_required_test.go` pins the list and, separately, asserts
+that every job gated on `deep` is named in mitigation 3.
+
+**And the path filters are held to their own inputs.** A gate that stops running on the files it
+polices is the same defect one level down: `test/repo` runs only in jobs gated on the `go` filter,
+but several of its suites read `web/` and `docs/design/`, so a web-only PR skipped every one of them
+and `ci-required` counted the skips as success (issue #94). Those inputs — the token and component
+sheets, `/_design`, the Playwright config and axe allowlist, the font files, `NOTICE`,
+`THIRD_PARTY_NOTICES.txt` and the two `.npmrc` files — are pinned to the `go` filter for the same
+reason `scripts/**`, `.githooks/**` and the two worked-example documents already are.
+`TestCIFilters_GoFilter_SelectsEveryTestRepoInput` names each concrete file rather than the pattern,
+so the assertion survives a reformatting of the filter block and fails when a line is deleted.
 
 ---
 

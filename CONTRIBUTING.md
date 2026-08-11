@@ -159,7 +159,9 @@ Two things follow from that budget, and both are your side of the deal:
 
 - **Open PRs as drafts.** Drafts run lint plus unit tests only, in about 90 seconds. Mark ready when
   it is green locally. Pushing six times in four minutes to a ready PR burns the whole fan-out each
-  time.
+  time. Marking ready re-runs the workflow with the expensive jobs enabled — `ready_for_review` is in
+  `ci.yml`'s trigger list precisely so that leaving draft defers those jobs rather than skipping them
+  (issue #82); before that they could be absent all the way to merge.
 - **Superseded runs are cancelled** on pull requests, never on `main`, tags, or the merge queue.
 
 ## Docs change in the same PR as the behaviour
