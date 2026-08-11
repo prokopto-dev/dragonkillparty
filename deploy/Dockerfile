@@ -37,10 +37,12 @@ ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 WORKDIR /src
 
-# Manifest and lockfile first, then the tree: a change to a .tsx does not re-resolve the dependency
-# graph. --frozen-lockfile because the lockfile is the contract, --ignore-scripts because no
-# dependency lifecycle script runs during a build (the same posture CI and build-web.sh install with).
-COPY web/package.json web/pnpm-lock.yaml ./web/
+# Manifest, lockfile and .npmrc first, then the tree: a change to a .tsx does not re-resolve the
+# dependency graph. --frozen-lockfile because the lockfile is the contract, --ignore-scripts because
+# no dependency lifecycle script runs during a build (the same posture CI and build-web.sh install
+# with). web/.npmrc carries `ignore-scripts=true` so this layer has that posture by DEFAULT and not
+# only because the flag is spelled out — the flag stays, so the two cannot silently disagree.
+COPY web/package.json web/pnpm-lock.yaml web/.npmrc ./web/
 RUN corepack enable && cd web && pnpm install --frozen-lockfile --ignore-scripts
 
 # The SPA sources and nothing else: a Go-only commit must not invalidate this layer and re-run Vite.

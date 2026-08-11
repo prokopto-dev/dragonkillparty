@@ -48,6 +48,12 @@ existing, which meant a merge that added a web dependency left every existing ch
 `make check` failed thirty lines into `tsc` with implicit-any errors on files the reader had never
 opened — issue #64. A directory that exists is not a directory that is current.
 
+`--ignore-scripts` is also the committed default: `web/.npmrc` carries `ignore-scripts=true`, so a
+bare `cd web && pnpm install` — the command in every pnpm tutorial, and the one you reach for when a
+make target fails for an unrelated reason — does not execute any dependency's lifecycle scripts
+either (issue #87). It does not affect `pnpm run <script>`; `build`, `lint`, `typecheck` and `dev`
+all still run.
+
 | Task | Command | Budget |
 |---|---|---|
 | install toolchain | `make setup` | once |

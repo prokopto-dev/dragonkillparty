@@ -161,6 +161,88 @@ func jobKeys(t *testing.T, workflow, job string) []string {
 	return keys
 }
 
+// onBlock returns the lines of ci.yml's top-level `on:` mapping — the trigger declaration.
+func onBlock(t *testing.T, workflow string) []string {
+	t.Helper()
+
+	lines := strings.Split(workflow, "\n")
+	start := -1
+
+	for i, l := range lines {
+		if l == "on:" {
+			start = i + 1
+
+			break
+		}
+	}
+
+	require.NotEqual(t, -1, start, "ci.yml has no top-level `on:` key")
+
+	for i := start; i < len(lines); i++ {
+		l := lines[i]
+		if l == "" || strings.HasPrefix(l, " ") || strings.HasPrefix(l, "#") {
+			continue
+		}
+
+		return lines[start:i] // a new top-level key ends the block
+	}
+
+	return lines[start:]
+}
+
+// deepAssertion returns the body of ci-required's `if [ "$DEEP" = "true" ]` block — the assertion
+// that a job gated on `deep` was not silently skipped on a reviewable PR.
+func deepAssertion(t *testing.T, workflow string) string {
+	t.Helper()
+
+	const marker = `if [ "$DEEP" = "true" ]; then`
+
+	start := strings.Index(workflow, marker)
+	require.NotEqual(t, -1, start,
+		"ci-required's Gate step no longer contains the `if [ \"$DEEP\" = \"true\" ]` assertion")
+
+	// The block ends at the `fi` closing it: the first line at the same indentation as the `if`.
+	indent := ""
+	if bol := strings.LastIndex(workflow[:start], "\n"); bol != -1 {
+		indent = workflow[bol+1 : start]
+	}
+
+	rest := workflow[start:]
+
+	end := strings.Index(rest, "\n"+indent+"fi\n")
+	require.NotEqual(t, -1, end, "the DEEP assertion block is unterminated")
+
+	return rest[:end]
+}
+
+// deepGatedJobs returns every job whose `if:` reads needs.changes.outputs.deep.
+func deepGatedJobs(t *testing.T, workflow string) []string {
+	t.Helper()
+
+	var (
+		jobs    []string
+		current string
+	)
+
+	for _, l := range jobsBlock(t, workflow) {
+		if m := jobIDRe.FindStringSubmatch(l); m != nil {
+			current = m[1]
+
+			continue
+		}
+
+		if strings.HasPrefix(l, "    if:") && strings.Contains(l, "needs.changes.outputs.deep") {
+			jobs = append(jobs, current)
+		}
+	}
+
+	require.NotEmpty(t, jobs,
+		"no job in ci.yml gates on needs.changes.outputs.deep — the draft tier has been removed, or "+
+			"the `if:` lines no longer parse")
+
+	return jobs
+}
+
 // alwaysOnAssertion returns the jq expression in ci-required's Gate step that names the jobs which
 // must have actually run — the list that turns "skipped counts as success" from a hole into a
 // deliberate, bounded choice.
@@ -257,6 +339,80 @@ func TestCIRequired_SupplyChainJobs_AreAlwaysOnAndBlocking(t *testing.T) {
 			require.NotContains(t, keys, "needs",
 				"%s must not depend on the `changes` filter job", job)
 		})
+	}
+}
+
+// TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview closes issue #82.
+//
+// `deep` is a draft gate — it reads github.event.pull_request.draft, and three jobs hang off it:
+// build / image, test / e2e and test / importer. The gate assumes leaving draft re-evaluates it,
+// and that only happens if the workflow LISTENS for the event that clears it. `on: pull_request:`
+// with no `types:` defaults to [opened, synchronize, reopened], which does not include
+// ready_for_review — so a PR opened as a draft, marked ready and merged with no further push
+// reached main with all three never having run, ci-required green the whole way. That is the flow
+// CONTRIBUTING.md documents, not an unusual one. There is no merge queue, so merge_group is not a
+// fallback, and push happens after the merge rather than before it.
+//
+// The three defaults are asserted alongside it because declaring `types:` REPLACES the default list
+// rather than extending it: a future edit that trims this to [ready_for_review] would stop CI
+// running on every push to an open PR, which is a strictly worse hole than the one being fixed.
+func TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+
+	var types string
+
+	inPullRequest := false
+
+	for _, l := range onBlock(t, workflow) {
+		if strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "   ") {
+			inPullRequest = strings.TrimSpace(l) == "pull_request:"
+
+			continue
+		}
+
+		if inPullRequest && strings.HasPrefix(strings.TrimSpace(l), "types:") {
+			types = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "types:"))
+
+			break
+		}
+	}
+
+	require.NotEmpty(t, types,
+		"ci.yml's `on: pull_request:` declares no `types:`, so it defaults to "+
+			"[opened, synchronize, reopened]. Leaving draft fires `ready_for_review`, which is not in "+
+			"that list, so the `deep` jobs never re-run and a draft PR can be merged without them "+
+			"(issue #82).")
+
+	for _, event := range []string{"opened", "synchronize", "reopened", "ready_for_review"} {
+		require.Containsf(t, types, event,
+			"ci.yml's `on: pull_request: types:` must name %q. Declaring `types:` REPLACES the default "+
+				"[opened, synchronize, reopened] rather than extending it, and `ready_for_review` is the "+
+				"event that clears the draft gate (issue #82). Current list: %s", event, types)
+	}
+}
+
+// TestCIRequired_DeepGatedJobs_AreAssertedNotSkipped keeps ci-required's deep assertion in step with
+// the jobs that are actually gated on `deep`.
+//
+// ci-required counts `skipped` as success, which is right for path filtering and wrong for the draft
+// gate: once a PR is reviewable there is no legitimate reason for a deep job to be absent. Step 3 of
+// the Gate step is what states that, and it states it by NAME — so a new deep-gated job that nobody
+// adds to it is a job whose skip is once again indistinguishable from a correct filter. Issue #82 is
+// the same invariant failing from the trigger side; this is the job-graph side of it.
+func TestCIRequired_DeepGatedJobs_AreAssertedNotSkipped(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+	assertion := deepAssertion(t, workflow)
+
+	for _, job := range deepGatedJobs(t, workflow) {
+		require.Containsf(t, assertion, `"`+job+`"`,
+			"job %q is gated on needs.changes.outputs.deep but is not named in ci-required's "+
+				"`if [ \"$DEEP\" = \"true\" ]` block. ci-required counts a skip as success, so on a "+
+				"reviewable PR that job can be skipped and merged past. Add it to the assertion in "+
+				".github/workflows/ci.yml.", job)
 	}
 }
 
