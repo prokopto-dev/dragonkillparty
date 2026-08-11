@@ -418,7 +418,12 @@ property of interpreted and JIT-heavy toolchains, not of multi-arch.**
 
 Go cross-compiles. `GOOS=linux GOARCH=arm64 go build` runs at native speed on the same amd64 runner,
 `modernc.org/sqlite` is pure Go so CGO stays off, and the final image is `FROM scratch` with three
-COPY layers. So: build every architecture natively on amd64, push one image per architecture, and
+COPY layers. The SPA is built once, in a Node stage on `$BUILDPLATFORM`, and staged into
+`internal/ui/dist` **before** any `go build` — JavaScript is architecture-independent, so one Vite
+build feeds every architecture's binary, and running node under emulation for arm64 would be QEMU by
+another name. `deploy/Dockerfile` asserts what it staged (`scripts/verify-spa-dist.sh`) rather than
+trusting it: a placeholder embed compiles and boots perfectly, which is how issue #55 survived a
+whole phase. So: build every architecture natively on amd64, push one image per architecture, and
 join them with `docker buildx imagetools create`, which writes a manifest list and executes no
 instruction of the target architecture. Whole multi-arch stage: **about 90 seconds**, mostly Vite.
 
@@ -451,8 +456,15 @@ will cross a major and change the deployment contract.
 
 **Moving tags advance only after the smoke job passes.** `release.yml` publishes the immutable tag,
 then `smoke` pulls that **digest** on both amd64 and arm64 runners and runs first boot, `/readyz`,
-`dkp doctor`, and an upgrade from the previous release's refdb. Only then does `imagetools create`
-advance `:1.5`, `:1` and `:latest`.
+`dkp doctor`, an upgrade from the previous release's refdb, and **the SPA the image actually
+serves** — `GET /` must return the built bundle, not `internal/ui`'s committed placeholder. Only
+then does `imagetools create` advance `:1.5`, `:1` and `:latest`.
+
+That last one was learned the expensive way. "It boots" was the whole of this gate until issue #55,
+and an image whose build never ran Vite boots flawlessly: it passes the healthcheck, answers
+`/readyz`, prints its version, and serves "web UI not yet built into this binary" to every officer
+who opens it. `internal/ui` falls back to `index.html` with a 200 for any path it does not have, so
+nothing that reads status codes can tell the two apart — only the bytes can (`scripts/smoke-spa.sh`).
 
 If smoke fails: the immutable tag stays (for forensics), the moving tags never move, the GitHub
 Release stays a draft, and an issue is filed. **Nobody running `:1` ever sees a build that failed to
