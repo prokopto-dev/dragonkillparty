@@ -271,7 +271,8 @@ Caches, budgeted against the 10 GB per-repository limit (LRU eviction; cache thr
 
 | Cache | Key | Budget |
 |---|---|---|
-| Go modules + build cache | `go.sum` + Go version | ~1.5 GB |
+| Go modules (`$GOMODCACHE`, `setup-go`'s `cache: true`) | `go.sum` + Go version | ~1 GB |
+| Go build cache (`$GOCACHE`, rolling) | `<os>-<arch>-gobuild-<toolchain>-<job>-<sha>` | ~200 MB per job lane |
 | golangci-lint | `.golangci.yml` + `go.sum` | ~250 MB |
 | pnpm store | `pnpm-lock.yaml` | ~400 MB |
 | Playwright browsers | resolved Playwright version | ~1 GB |
@@ -283,6 +284,31 @@ so a PR branch's writes are invisible to every other PR and are evicted almost i
 `cache-to` on a PR burns quota for nothing while evicting the caches that *are* shared. `mode=max` is
 also wrong: the final stage is `FROM scratch` with three COPYs, so all the value is in the Node and
 Go builder stages.
+
+**The Go build cache follows the same rule, and it is a different cache from the module cache**
+(issue #153). `setup-go`'s `cache: true` archives both under go.sum's hash, which is the right key
+for `$GOMODCACHE` — it changes only when go.sum does — and the wrong one for `$GOCACHE`, which every
+source edit invalidates: an immutable key never rolls forward and is not rewritten once it exists,
+so each run restores the entry written the first time that go.sum existed and recompiles everything
+touched since. `.github/actions/setup-toolchain` therefore adds a **rolling** `$GOCACHE` cache whose
+key ends in `github.sha`, so the key is never hit exactly and `main` always writes a fresh entry,
+while `restore-keys` fall back by prefix to the newest entry from the same job, then to the newest
+from any job. PRs restore only (`actions/cache/restore`, which has no post step); `main` restores
+and saves (`actions/cache`, whose post step runs at job end, after the compilation that filled it).
+
+The `<job>` segment buys precision — `test / integration` builds `-race` objects `test / unit`
+never produces — and keeps the several Go jobs of one `main` run from racing to reserve a single
+key. It costs one entry per lane: measured cold, this repository's `$GOCACHE` is ~240 MB after
+compiling every test binary and ~500 MB once `-race` objects are added, so a lane is roughly 100–200
+MB compressed and the steady state is one warm entry per lane. Old per-commit entries are the
+least-recently-used things in the pool by construction — nothing ever restores them again — so they
+are what LRU evicts first, rather than the pnpm, Playwright or Docker caches that every run touches.
+
+A stale build-cache entry cannot make CI *wrong*, only slower: Go's cache is content-addressed by an
+action ID hashing the compiler, the flags and every input, so a mismatched entry is a miss. What a
+warm cache *can* do is let `go test` report a false `(cached)` for a gate whose real input a
+subprocess read — which is why every `go test` recipe in the Makefile passes `-count=1` and
+`test/repo/gate_cache_test.go` holds it there.
 
 The matrix is deliberately anaemic: one Go version (pinned in `go.mod` with `GOTOOLCHAIN=local`, so a
 runner image bump cannot silently change compilers), one Node version, one OS. The only PR-time
