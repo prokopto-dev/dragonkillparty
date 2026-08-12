@@ -58,8 +58,8 @@ GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
 #
 # The gate #83 actually broke was the SPEC gate, and that one is no longer Python: `make verify-spec`
 # is internal/specgate now (issue #127), so a wrong interpreter can no longer be reported as spec
-# drift. The floor stays because `make docs-links` and scripts/dc-publish.py are still Python and the
-# failure shape was never specific to the spec.
+# drift. `make mockup-site` left too — internal/mockup since issue #126. The floor stays because
+# `make docs-links` is still Python and the failure shape was never specific to the spec.
 #
 # Deliberately no PYTHON ?= override variable to go with it. The recipes below name `python3`
 # literally, for the same reason verify-spec's recipe strips DKP_SPEC_BASE_REF: an interpreter a
@@ -725,8 +725,14 @@ docs-links:
 # mockup-site: build the publishable UI-mockup site into _site/ (.github/workflows/pages.yml).
 # Deliberately absent from the AGENTS.md canonical table — it is a docs artefact, not part of the
 # inner loop. See docs/design/mockups/README.md.
+#
+# Go, not shell, since issue #126. The job is entirely "parse HTML, rewrite it, then assert
+# properties of the result", and the scripts/dc-publish.py + scripts/build-mockup-site.sh pair did
+# that with a hand-written tag scanner, quote-state tracking and four greps. internal/mockup does it
+# with golang.org/x/net/html; test/repo/mockup_gates_test.go drives MOCK001-004 against negative
+# fixtures, which no version of the shell gate was ever able to do.
 mockup-site:
-	@bash scripts/build-mockup-site.sh
+	@$(GO) run ./internal/mockup/sitegen
 
 # verify-spec: assert the properties of openapi/openapi.json that regenerating it cannot establish.
 #

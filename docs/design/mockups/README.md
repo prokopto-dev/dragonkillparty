@@ -89,9 +89,9 @@ drop the tool's React, ReactDOM and Babel CDN loads: **every one of the 1,228 bi
 files is a plain dotted path or a literal**, so the runtime resolves them by walking objects. There
 is no `eval`, no `new Function`, and no expression evaluator to escape from.
 
-That property is load-bearing, so it is a build gate. `scripts/build-mockup-site.sh` refuses to
-build if a refreshed export introduces a binding the resolver cannot walk (`MOCK001`) or if the
-tool's runtime filenames reappear (`MOCK002`).
+That property is load-bearing, so it is a build gate. `internal/mockup` refuses to build if a
+refreshed export introduces a binding the resolver cannot walk (`MOCK001`) or if the tool's runtime
+filenames reappear (`MOCK002`).
 
 ## Publishing
 
@@ -100,15 +100,21 @@ make mockup-site
 ```
 
 Assembles `_site/` and is what `.github/workflows/pages.yml` deploys. The vendored files are never
-modified; `scripts/dc-publish.py` does the work on copies — repointing the runtime and stylesheet,
-letting the authored logic run as an ordinary script, and injecting the **MOCKUP — not a live
-instance** banner that every published page carries.
+modified; [`internal/mockup`](../../../internal/mockup) does the work on copies — repointing the
+runtime and stylesheet, letting the authored logic run as an ordinary script, and injecting the
+**MOCKUP — not a live instance** banner that every published page carries. `MOCK001`–`MOCK004` and
+every transform below are driven against negative fixtures by
+[`test/repo/mockup_gates_test.go`](../../../test/repo/mockup_gates_test.go).
 
 One transform there is worth knowing about. The HTML parser *foster-parents* unknown elements out of
-a `<table>`, so a `<sc-for>` wrapping `<tr>`s is hoisted above the table and its rows are discarded —
-which silently emptied 37 of these tables. The build lifts each directive onto the element it
-repeats (`<tr data-sc-for="…" data-sc-as="…">`), which is valid HTML anywhere, and then asserts no
-`<sc-*>` element survives inside table context.
+a `<table>`, so a `<sc-for>` wrapping `<tr>`s is hoisted above the table — and arrives there
+**empty**, because the rows stay behind in the table. The runtime repeats a directive's children, so
+a directive with none renders nothing, which is what silently emptied 37 of these tables. The build
+lifts each directive onto the element it repeats (`<tr data-sc-for="…" data-sc-as="…">`), which is
+valid HTML anywhere, then asserts no `<sc-*>` element survives inside table context — and finally
+hands the finished page to a real HTML5 tree builder and refuses it if any of the mockups' own
+elements came back with fewer children than the markup gave them. That last check is what catches the
+same failure arriving through `<x-import>` or `<helmet>`, which the lift does not touch.
 
 ### Nothing here is indexable
 
