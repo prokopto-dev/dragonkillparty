@@ -30,8 +30,10 @@ upgrade to people with no ops skills.
       matrix is `fail-fast` — a red one there stops the release after the tag already exists.
 - [ ] **The three GHCR packages are public.** A package is **private on first publish** and stays that
       way until the owner changes it by hand, so this row is load-bearing on the first release and
-      after any package is republished under a new name. Every workflow authenticates (issue #113), so
-      CI will not tell you — the failure lands on an officer running the README's `docker pull`.
+      after any package is republished under a new name. The release train authenticates (issue #113),
+      so a private **product image** passes every gate and fails the officer running the README's
+      `docker pull`; a private `dkp-refdb` or `dkp-fixtures` fails the other way, in the nightly
+      ladder and `test / importer`, which pull anonymously so a fork PR can.
 
       ```bash
       for p in dragonkillparty dkp-refdb dkp-fixtures; do
