@@ -31,6 +31,7 @@ and one link is cheaper than one argument.
 | [0016](0016-bespoke-licence-classifier.md) | A bespoke licence classifier | accepted | A similarity classifier reports a rider's permissive base; this one evaluates every pattern and any denial wins |
 | [0017](0017-mockup-build-on-a-real-html5-parser.md) | Mockup build on a real HTML5 parser | accepted | `x/net/html` replaces a regex parser; the tokenizer rewrites, the tree builder verifies |
 | [0018](0018-repo-gates-as-a-go-engine.md) | Repository gates as a Go engine | accepted | A typed rule catalogue plus `go/parser` analyzers; the rules must read a tree that does not build, which is what rules out `go/analysis` |
+| [0019](0019-two-buckets-for-repository-scripts.md) | Two buckets for `scripts/` | accepted | Thin glue around a real CLI stays bash; anything that parses, rewrites or computes moves to Go |
 
 ## When an ADR is required
 
@@ -98,5 +99,7 @@ Two of those carry the weight. **An ADR with no negative consequences is rejecte
 advocacy, not a record. And the reversal-cost line is the thing a future maintainer actually needs,
 because the question is never "was this right?" but "what does it cost to change now?"
 
-Budget: one screen, about 900 words, checked by the docs word-count gate. Longer than that almost
-always means it is two decisions in one file.
+Budget: one screen, about 900 words, and 1,000 is the ceiling — `wc -w` over the whole file. **No
+gate counts them**; this is guidance for you and your reviewer, and the template says so at the point
+where you would otherwise trust a machine to catch it. Longer than the budget almost always means it
+is two decisions in one file, which is the defect the number is a proxy for.

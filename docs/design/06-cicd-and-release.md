@@ -539,6 +539,52 @@ typing the word `edge` into a confirmation field.
 support tickets are unfalsifiable from our side. GHCR is free for public packages with no pull limits,
 and it is already where the fixture and refdb artifacts live.
 
+### Package visibility is a manual step, and it is the owner's
+
+**A GHCR package is private on its first publish.** Visibility is a repository setting, not anything
+in this tree, so nothing here can create it, assert it or fix it — which is exactly why it has to be
+written down.
+
+| Package | Must be | Who reads it anonymously | What a private one breaks |
+|---|---|---|---|
+| `ghcr.io/prokopto-dev/dragonkillparty` | public | every officer running the documented `docker pull …:1` | the user, silently — the release train logs in, so CI stays green |
+| `ghcr.io/prokopto-dev/dkp-refdb` | public | `nightly-verify.yml`'s `upgrade-ladder`, which does not log in; anyone reproducing an upgrade locally | the nightly upgrade ladder |
+| `ghcr.io/prokopto-dev/dkp-fixtures` | public | `ci.yml`'s `test / importer` and the nightly importer matrix, neither of which logs in — and a fork PR has no credential to use even in principle (§1) | `test / importer`, hardest on the fork PR |
+
+**Who and when: the repository owner, once per package, immediately after that package's first
+successful publish** — GitHub → the repository → Packages → the package → Package settings → Change
+visibility → Public, and confirm the package is linked to this repository so its permissions are
+inherited rather than hand-maintained. There is no earlier moment to do it: a package does not exist
+until something pushes to it, and the three arrive at different times. `edge.yml` creates
+`dragonkillparty` on the first merge to `main`; `fixtures.yml` creates `dkp-fixtures` the first time
+somebody dispatches it (it is `workflow_dispatch` only); and `dkp-refdb` does not exist until
+`release.yml`'s `refdb / publish`
+job runs, which is **during** the first release, not before it. So the first two are checkable on the
+releasable checklist and the third is checkable only afterwards — which is how
+`.claude/skills/cut-release/SKILL.md` splits them, §1 and §8.
+
+**Logging in fixed the release train, not CI as a whole.** Issue #113 fixed a `release.yml` smoke job
+that pulled the published digest anonymously, and `TestReleaseWorkflows_EveryGHCRJob_LogsInFirst`
+holds every GHCR-touching job to that rule — across `release.yml` and `edge.yml`, which are the
+workflows that write to the registry. Nothing else logs in, deliberately: `test / importer` and the
+nightly jobs consume artifacts a **fork PR** must be able to pull, and a fork has no credential to
+offer. So the two consequences run in opposite directions, and both are worth knowing before the
+first tag:
+
+- A private **`dragonkillparty`** is invisible to CI — the release goes green, the moving tags
+  advance, and the first evidence is an officer's `docker pull` returning `denied` / `manifest
+  unknown`.
+- A private **`dkp-refdb`** or **`dkp-fixtures`** is the reverse: CI goes red, in a job whose failure
+  reads like a registry outage rather than a settings page nobody has opened.
+
+Neither is checkable from this tree, so the check belongs in the release checklist —
+`.claude/skills/cut-release/SKILL.md` §1 for the two packages that exist before a tag, §8 for
+`dkp-refdb` — and it is a `gh` command, not a click:
+
+```bash
+gh api /users/prokopto-dev/packages/container/dragonkillparty --jq .visibility   # want: public
+```
+
 ### Multi-arch by cross-compilation, joined with `imagetools` — never QEMU
 
 Every other stack in the comparison builds multi-arch images inside a QEMU-emulated container.
