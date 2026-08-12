@@ -23,9 +23,11 @@ upgrade to people with no ops skills.
 - [ ] `main` is green on `ci-required`. (There is no merge queue to drain first — issue #101 deleted
       the configuration for one that was never turned on.)
 - [ ] No open PR carries `!breaking-api` that was meant for this release.
-- [ ] `nightly-verify.yml`'s last run is green, including `upgrade-ladder` and the OS matrix
-      (`integration-windows`, `integration-macos`). `dkp.exe` is a first-class channel; SQLite file
-      locking and `t.TempDir()` cleanup differ on Windows.
+- [ ] `nightly-verify.yml`'s last run is green, including `upgrade-ladder`, `image / arm64-cross` and
+      the OS matrix (`integration-windows`, `integration-macos`). `dkp.exe` is a first-class channel;
+      SQLite file locking and `t.TempDir()` cleanup differ on Windows. `image / arm64-cross` is the
+      only arm64 image build outside the release train itself (issue #108), and release.yml's image
+      matrix is `fail-fast` — a red one there stops the release after the tag already exists.
 
 ### 2. Check the version bump against the SemVer policy
 

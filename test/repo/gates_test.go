@@ -27,6 +27,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
+	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	ledgerkinds "github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // A real 40-hex-character commit SHA, in the shape PIN001 demands.
@@ -72,7 +76,12 @@ func scriptPath(t *testing.T, name string) string {
 // panic. NAME is set because the Makefile guards `migration` with `ifndef NAME` -> $(error ...),
 // so a bare `make -n migration` exits 2; verify-commands.sh survives that via its `grep '^target:'`
 // fallback, but setting NAME keeps the dry run honest instead of relying on the fallback.
-func runGateScript(t *testing.T, script, tree string) (output string, exitCode int) {
+//
+// extraEnv carries the PR context ADR001 reads (DKP_ADR_BASE_REF, DKP_ADR_PR_BODY). It is variadic
+// rather than a second function because every other property of the run is identical: the ADR
+// fixtures must go through the same entry point as every other gate, or they would prove that a
+// script exits non-zero rather than that `make lint-repo` does.
+func runGateScript(t *testing.T, script, tree string, extraEnv ...string) (output string, exitCode int) {
 	t.Helper()
 
 	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the scripts fall back to the real repo")
@@ -80,6 +89,7 @@ func runGateScript(t *testing.T, script, tree string) (output string, exitCode i
 
 	cmd := exec.Command("bash", script)
 	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree, "NAME=ci_verify")
+	cmd.Env = append(cmd.Env, extraEnv...)
 
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -1029,6 +1039,368 @@ func writeRepoFile(t *testing.T, tree, rel, body string) {
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
+// The base tree the ADR001 fixtures branch from: one of every file the rule watches, in the state
+// that must NOT trigger it. Everything a case does afterwards is "the working tree of a PR".
+const (
+	adrBaseGoMod = `module github.com/prokopto-dev/dragonkillparty
+
+go 1.25
+
+require (
+	github.com/danielgtaylor/huma/v2 v2.0.0
+	github.com/stretchr/testify v1.9.0
+	golang.org/x/sys v0.20.0 // indirect
+)
+`
+	adrBaseDockerfile = "FROM gcr.io/distroless/static-debian12\nENTRYPOINT [\"/dkp\"]\n"
+	adrBaseSchema     = "table \"pool\" {\n  column \"id\" {\n    type = text\n  }\n}\n"
+)
+
+// newADRFixture builds that tree and seals it as the base revision.
+//
+// sealFixtureBase (migration_gates_test.go) is reused rather than reimplemented: MIG003 needs a real
+// merge base for exactly the same reason ADR001 does, and its comment records why an injected
+// "pretend this was the base" knob would be both a way to weaken the gate and a second code path CI
+// never runs.
+func newADRFixture(t *testing.T) string {
+	t.Helper()
+
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "go.mod", adrBaseGoMod)
+	writeRepoFile(t, tree, "deploy/Dockerfile", adrBaseDockerfile)
+	writeRepoFile(t, tree, "db/schema.hcl", adrBaseSchema)
+	writeRepoFile(t, tree, "docs/adr/README.md", "# Architecture decision records\n")
+	writeGo(t, tree, "internal/api/handler.go", "package api\n\nfunc handler() {}\n")
+
+	sealFixtureBase(t, tree)
+
+	return tree
+}
+
+// runADRGate runs the gates against tree with the pull-request context ADR001 reads.
+//
+// body is passed even when empty, and that is the point: a PR with no body has not answered the
+// question, so it must FAIL rather than skip. Only an absent DKP_ADR_BASE_REF means "this is not a
+// pull request".
+func runADRGate(t *testing.T, tree, body string) (output string, exitCode int) {
+	t.Helper()
+
+	return runGateScript(t, scriptPath(t, "repo-gates.sh"), tree,
+		"DKP_ADR_BASE_REF=origin/main", "DKP_ADR_PR_BODY="+body)
+}
+
+// requireOnlyRule asserts that exactly one rule id went red, and that it is the expected one.
+//
+// A `require.Contains(out, "ADR001")` alone passes on a run that also tripped ENUM001 or AGPL002 on
+// the fixture's own schema file — the fixture would then be proving that the gates exit non-zero,
+// not that this rule fires. That is the failure the whole package exists to make impossible, and
+// requireOnlyMIG003 above is the same assertion written for one rule.
+func requireOnlyRule(t *testing.T, out, id string) {
+	t.Helper()
+
+	var fired []string
+
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "FAIL") {
+			continue
+		}
+
+		// LastIndex, not Index: the line opens with the ANSI sequence that colours FAIL red, and
+		// `\033[31m` carries a bracket of its own.
+		shut := strings.Index(line, "]")
+		if shut < 0 {
+			continue
+		}
+
+		if open := strings.LastIndex(line[:shut], "["); open >= 0 {
+			fired = append(fired, line[open+1:shut])
+		}
+	}
+
+	require.Equal(t, []string{id}, fired,
+		"exactly one rule must have fired, and it must be %s — otherwise this fixture proves the "+
+			"gates went red, not that %s did\n%s", id, id, out)
+}
+
+// TestRepoGates_AdrTriggerWithoutRecord_FailsGate covers ADR001 (#85).
+//
+// docs/adr/README.md and docs/design/07-documentation-system.md both said, in bold, that this
+// requirement was "part of the `lint / repo` job". It was not — there was no step, no rule and no
+// grep. That is worse than an ordinary stale sentence because of who reads it: an agent reading the
+// README concludes the gate will catch it if an ADR is needed, and a reviewer reading the same line
+// concludes CI already asked. The requirement was carried entirely by whoever happened to remember
+// it.
+//
+// All four documented triggers are exercised, because they are four independent branches of the
+// rule rather than four spellings of one: two are path tests, one compares go.mod against the base
+// blob, and one asks git whether a top-level package existed before. A fixture for one would leave
+// the other three free to be deleted in silence.
+func TestRepoGates_AdrTriggerWithoutRecord_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(t *testing.T, tree string)
+		trigger string
+	}{
+		{
+			name: "a new direct dependency in go.mod",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "go.mod", strings.Replace(adrBaseGoMod,
+					"\tgithub.com/stretchr/testify v1.9.0\n",
+					"\tgithub.com/stretchr/testify v1.9.0\n\tgithub.com/redis/go-redis/v9 v9.5.1\n", 1))
+			},
+			trigger: "go.mod",
+		},
+		{
+			name: "deploy/Dockerfile gains a port",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "deploy/Dockerfile", adrBaseDockerfile+"EXPOSE 9090\n")
+			},
+			trigger: "deploy/Dockerfile",
+		},
+		{
+			name: "db/schema.hcl gains a table",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "db/schema.hcl", adrBaseSchema+
+					"\ntable \"bid_session\" {\n  column \"id\" {\n    type = text\n  }\n}\n")
+			},
+			trigger: "db/schema.hcl",
+		},
+		{
+			name: "a new top-level internal package",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeGo(t, tree, "internal/bids/session.go", "package bids\n\ntype Session struct{}\n")
+			},
+			trigger: "internal/bids",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tree := newADRFixture(t)
+			tc.mutate(t, tree)
+
+			out, code := runADRGate(t, tree, "## What and why\n\nCloses #123.\n")
+
+			require.NotZero(t, code, "%s must require a decision record\n%s", tc.name, out)
+			requireOnlyRule(t, out, "ADR001")
+			require.Contains(t, out, tc.trigger,
+				"ADR001 must name what triggered it — a gate that says only \"you need an ADR\" "+
+					"leaves the author guessing which of four rules fired\n%s", out)
+			require.Contains(t, out, "adr: n/a",
+				"the failure must print the escape hatch verbatim; the author cannot look it up "+
+					"from a rule id\n%s", out)
+		})
+	}
+}
+
+// TestRepoGates_AdrRecordPresent_PassesGate is the half that keeps ADR001 landable.
+//
+// The documents promise two ways to satisfy it and this asserts both. Without them a gate that
+// rejected every triggering change would pass the test above — and the first author to hit an
+// unsatisfiable rule reaches for a way around it rather than for the rule id.
+func TestRepoGates_AdrRecordPresent_PassesGate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		body   string
+		record func(t *testing.T, tree string)
+	}{
+		{
+			name: "an adr: n/a line with a reason",
+			body: "## What and why\n\nRe-orders two Dockerfile layers for cache hits.\n\nadr: n/a — no new port, volume or process\n",
+		},
+		{
+			name: "a new file under docs/adr",
+			body: "## What and why\n\nCloses #123.\n",
+			record: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "docs/adr/0016-expose-a-metrics-port.md",
+					"# 16. Expose a metrics port\n\nStatus: accepted\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tree := newADRFixture(t)
+			writeRepoFile(t, tree, "deploy/Dockerfile", adrBaseDockerfile+"EXPOSE 9090\n")
+
+			if tc.record != nil {
+				tc.record(t, tree)
+			}
+
+			out, code := runADRGate(t, tree, tc.body)
+
+			require.Zero(t, code, "%s must satisfy ADR001\n%s", tc.name, out)
+			require.NotContains(t, out, "FAIL", "%s", out)
+		})
+	}
+}
+
+// TestRepoGates_AdrWaiverWithoutReason_FailsGate pins the one property that makes the waiver worth
+// having.
+//
+// `adr: n/a` on its own is the box ticked without the thought. Both documents specify
+// `adr: n/a — <reason>`, and harvesting that reason is the entire value of the escape hatch: the
+// reasons are what a later reader searches when the question is re-litigated. A marker that costs
+// one token gets pasted onto the next PR too, and the gate becomes a formality within a month.
+func TestRepoGates_AdrWaiverWithoutReason_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{
+		"adr: n/a",
+		"adr: n/a —",
+		"adr: n/a - ",
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+
+			tree := newADRFixture(t)
+			writeRepoFile(t, tree, "deploy/Dockerfile", adrBaseDockerfile+"EXPOSE 9090\n")
+
+			out, code := runADRGate(t, tree, body)
+
+			require.NotZero(t, code, "%q is a marker, not a reason\n%s", body, out)
+			requireOnlyRule(t, out, "ADR001")
+		})
+	}
+}
+
+// TestRepoGates_AdrNonTriggeringChange_PassesGate is the scope control, and it is what stops ADR001
+// from becoming a tax on every PR.
+//
+// Each case is a change that touches a WATCHED FILE without meeting the documented trigger. The
+// go.mod pair is the operationally important one: Renovate bumps versions and adds indirects
+// continuously, and a rule that fired on those would demand a waiver line on every dependency PR —
+// which is how a gate stops being read and starts being pasted past.
+func TestRepoGates_AdrNonTriggeringChange_PassesGate(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(t *testing.T, tree string)
+	}{
+		{
+			name: "a version bump of an existing direct dependency",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "go.mod",
+					strings.Replace(adrBaseGoMod, "testify v1.9.0", "testify v1.10.0", 1))
+			},
+		},
+		{
+			name: "a new indirect dependency",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeRepoFile(t, tree, "go.mod", strings.Replace(adrBaseGoMod,
+					"\tgolang.org/x/sys v0.20.0 // indirect\n",
+					"\tgolang.org/x/sys v0.20.0 // indirect\n\tgolang.org/x/text v0.15.0 // indirect\n", 1))
+			},
+		},
+		{
+			name: "a new file in an existing internal package",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeGo(t, tree, "internal/api/roster.go", "package api\n\nfunc roster() {}\n")
+			},
+		},
+		{
+			name: "a new sub-package of an existing internal package",
+			mutate: func(t *testing.T, tree string) {
+				t.Helper()
+				writeGo(t, tree, "internal/api/compat/shim.go", "package compat\n\nfunc shim() {}\n")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tree := newADRFixture(t)
+			tc.mutate(t, tree)
+
+			out, code := runADRGate(t, tree, "## What and why\n\nCloses #123.\n")
+
+			require.Zero(t, code, "%s is not a documented ADR trigger\n%s", tc.name, out)
+			require.NotContains(t, out, "ADR001",
+				"ADR001 must stay silent on %s — a rule that fires on ordinary work is a rule "+
+					"people learn to paste past\n%s", tc.name, out)
+		})
+	}
+}
+
+// TestRepoGates_AdrWithoutPullRequestContext_Skips records the one direction in which ADR001 is
+// fail-open, so that nobody discovers it by accident.
+//
+// The rule reads the PR body, which exists only on a pull_request event. A local `make check` has
+// none, so the gate SKIPS — loudly, with the rule id, the same way MIG003 skips without git
+// history. What stops that skip from becoming the normal case is not this test but
+// TestCI_LintRepoJob_PassesPullRequestContext, which pins the env block in ci.yml.
+func TestRepoGates_AdrWithoutPullRequestContext_Skips(t *testing.T) {
+	t.Parallel()
+
+	tree := newADRFixture(t)
+	writeRepoFile(t, tree, "deploy/Dockerfile", adrBaseDockerfile+"EXPOSE 9090\n")
+
+	// No DKP_ADR_BASE_REF: exactly what a laptop run looks like.
+	out, code := runGateScript(t, scriptPath(t, "repo-gates.sh"), tree, "DKP_ADR_BASE_REF=")
+
+	require.Zero(t, code, "a run with no pull-request context must not fail\n%s", out)
+	require.Contains(t, out, "[ADR001]",
+		"the skip must name the rule — a gate that vanishes silently is indistinguishable in a CI "+
+			"log from a gate that ran\n%s", out)
+	require.Contains(t, out, "skip", "%s", out)
+}
+
+// TestRepoGates_AdrUnreadableBaseRef_FailsGate is the other side of that decision: a base ref that
+// IS supplied and cannot be read is a VIOLATION, never a skip.
+//
+// That is the shallow-clone case, and it is the configuration most likely to have it — which is
+// precisely why it must not be the quiet one. verify-spec.py makes the same distinction for
+// SPEC003, and MIG003's fetch-depth: 0 exists for the same reason.
+func TestRepoGates_AdrUnreadableBaseRef_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	tree := newADRFixture(t)
+
+	out, code := runGateScript(t, scriptPath(t, "repo-gates.sh"), tree,
+		"DKP_ADR_BASE_REF=refs/remotes/origin/does-not-exist", "DKP_ADR_PR_BODY=")
+
+	require.NotZero(t, code, "an unreadable base revision must fail, not skip\n%s", out)
+	requireOnlyRule(t, out, "ADR001")
+	require.Contains(t, out, "does-not-exist",
+		"the failure must name the revision it could not read\n%s", out)
+}
+
+// TestPRTemplate_DoesNotPreSatisfyTheADRGate is the anti-vacuity test for ADR001.
+//
+// The template is the natural place to tell an author about the requirement, and the natural way to
+// write that is a filled-in example — which every PR then inherits, satisfying the gate for every
+// change in the repository forever. `github.event.pull_request.body` carries HTML comments too, so
+// commenting the example out does not help. The guidance therefore has to describe the line without
+// being one, and this test is what keeps a well-meaning edit from undoing that.
+func TestPRTemplate_DoesNotPreSatisfyTheADRGate(t *testing.T) {
+	t.Parallel()
+
+	template := readRepoFile(t, ".github/PULL_REQUEST_TEMPLATE.md")
+
+	for i, line := range strings.Split(template, "\n") {
+		trimmed := strings.ToLower(strings.TrimSpace(line))
+		require.False(t, strings.HasPrefix(trimmed, "adr:"),
+			".github/PULL_REQUEST_TEMPLATE.md:%d starts a line with `adr:`. Every PR inherits the "+
+				"template, so a line ADR001 accepts here satisfies the gate for every change in "+
+				"the repository — including inside an HTML comment, which the PR body still "+
+				"carries. Describe the line instead of writing one.\n  %s", i+1, line)
+	}
+}
+
 // TestRepoGates_EQdkpIdentifierOutsideAllowlist_FailsGate covers AGPL001, the licence firewall.
 //
 // EQdkp Plus is AGPL-3.0 and this project is Apache-2.0, so transcribing their PHP is not a style
@@ -1158,6 +1530,411 @@ func TestRepoGates_EQdkpConfigKeyInSchema_FailsGate(t *testing.T) {
 	require.Contains(t, out, "dkp_name", "%s", out)
 	require.NotContains(t, out, "EQdkp's inactive_period is carried",
 		"AGPL002 fired on a comment explaining the rule; strip_comments should have dropped it\n%s", out)
+}
+
+// enumFixtureSchema is the db/schema.hcl the ENUM001 fixtures share.
+//
+// One file rather than one per case, because the rule is a state machine over the whole file —
+// region in/out, inside/outside a check block, waived/not — and a fixture per case would exercise
+// each transition against a fresh, empty state. The cases that MUST fire and the cases that MUST
+// NOT are interleaved on purpose: the gate has to tell them apart in one pass, which is the thing
+// that breaks when somebody widens the pattern.
+//
+// The marker text is the fixture catalogue's, byte for byte — writeEnumCatalogue declares the same
+// two strings in Go. That linkage is the point: the generated region here is honoured *because* a
+// catalogue in the fixture tree owns those markers, and TestRepoGates_FabricatedGeneratedMarker_FailsGate
+// is the same schema with a pair nothing owns.
+const (
+	enumFixtureBegin = "  // BEGIN GENERATED — account enum CHECKs, from internal/account/kinds. Run make gen."
+	enumFixtureEnd   = "  // END GENERATED — account enum CHECKs."
+)
+
+const enumFixtureSchema = `// The header prose. enums are text + check (x IN ('a','b')), lowercase snake_case — a gate that
+// fires on the documentation of its own rule is a gate people route around.
+table "account" {
+` + enumFixtureBegin + `
+  check "account_kind_enum" {
+    expr = "kind IN ('person', 'system')"
+  }
+
+  check "account_system_key_enum" {
+    expr = "system_key IS NULL OR system_key IN ('guild_bank', 'residue')"
+  }
+` + enumFixtureEnd + `
+
+  check "account_person_shape" {
+    expr = "((kind = 'person') = (person_id IS NOT NULL))"
+  }
+}
+
+table "bid_session" {
+  check "bid_session_state_enum" {
+    expr = "state IN ('draft', 'open', 'extended', 'closing', 'resolved')"
+  }
+
+  check "bid_session_mode_enum" {
+    expr = "mode IS NULL OR mode IN ('auction_open', 'auction_sealed_first')"
+  }
+
+  check "bid_session_visibility_enum" {
+    expr = "visibility IN (\"blind\", \"open\")"
+  }
+
+  check "bid_session_blind_bool" {
+    expr = "blind IN (0, 1)"
+  }
+
+  check "bid_session_phase_enum" {
+    expr = <<-SQL
+      phase IN (
+        'pull',
+        'engaged',
+        'looting'
+      )
+    SQL
+  }
+
+  check "bid_session_flags_bool" {
+    expr = <<-SQL
+      flags IN (
+        0,
+        1
+      )
+    SQL
+  }
+
+  check "bid_session_tier_enum" {
+    expr = "tier in ('main', 'main_offspec', 'alt', 'anyone')"
+  }
+
+  check "bid_session_sealed_bool" {
+    expr = "sealed in (0, 1)"
+  }
+
+  check "bid_session_lockout_enum" {
+    expr = <<-SQL
+      lockout IN
+      (
+        'none',
+        'shared'
+      )
+    SQL
+  }
+
+  check "bid_session_source_enum" {
+    expr = "source IN /* the vocabulary */ ('web', 'discord')"
+  }
+
+  check "bid_session_outcome_enum" {
+    expr = <<-SQL
+      outcome IN
+      -- these four are the resolution ladder
+      ('won', 'passed', 'rotted', 'void')
+    SQL
+  }
+
+  check "bid_session_retry_bool" {
+    expr = <<-SQL
+      retry IN (
+        0, -- never 'draft'
+        1  -- never 'open'
+      )
+    SQL
+  }
+
+  index "ux_bid_live" {
+    where   = "state IN ('open', 'extended')"
+    columns = [column.item_instance_id]
+  }
+
+  // dkp:enum-literal — a vendor vocabulary the importer reads, not a DKP catalogue.
+  check "legacy_status_enum" {
+    expr = "legacy_status IN ('a', 'b')"
+  }
+}
+`
+
+// TestRepoGates_HandWrittenEnumCheck_FailsGate covers ENUM001, the gate that closes canonical §5's
+// last hole (#72).
+//
+// Every string-enum CHECK in db/schema.hcl is generated from a Go catalogue — ledger_batch.kind and
+// .source (#29), audit_log.actor_kind (#40), audit_log.outcome plus account.kind and .system_key
+// (#51/#53). Each has a test asserting that ITS OWN region matches ITS OWN catalogue, and none of
+// them says anything about a seventh vocabulary: a new table whose enum CHECK is a literal passes
+// all three, `make verify-generated` and `make check`. That is not hypothetical — the same finding
+// has now been made three times, and canonical §5 lists ten more enums that Phase 1 and Phase 2
+// land one table at a time.
+//
+// BOTH RENDERED FORMS are tainted, because internal/schemaenum renders two — CheckExpr's plain
+// `x IN (…)` and NullableCheckExpr's `x IS NULL OR x IN (…)`. A fixture carrying only the first
+// would let the second be forgotten, and the nullable form is the one a person account's
+// system_key uses.
+//
+// The must-NOT-fire half is the larger one and it is what keeps the gate usable: a generated
+// region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, an index predicate, and
+// the file's own prose all have to stay quiet, or the first author to hit a false positive reaches
+// for --no-verify rather than for the rule id.
+// writeEnumCatalogue writes the fixture's Go catalogue — the package that OWNS the generated region
+// in enumFixtureSchema, in the shape internal/account/kinds keeps its markers in.
+//
+// It exists because ENUM001 does not take the schema's word for what is generated: a region is
+// exempt only when its marker line matches, whole, a marker some catalogue declares in Go. So a
+// fixture whose generated region must be honoured has to carry the catalogue that owns it, and the
+// linkage is what the test is asserting rather than an incidental setup step.
+func writeEnumCatalogue(t *testing.T, tree, begin, end string) {
+	t.Helper()
+
+	writeGo(t, tree, "internal/account/kinds/kinds.go", "package kinds\n\nconst (\n"+
+		"\tschemaEnumBegin = \""+begin+"\"\n"+
+		"\tschemaEnumEnd   = \""+end+"\"\n)\n")
+}
+
+func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "db/schema.hcl", enumFixtureSchema)
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a hand-written string-enum CHECK must fail the gates\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "bid_session_state_enum",
+		"ENUM001 must fire on a literal in the plain CheckExpr form and name the check\n%s", out)
+	require.Contains(t, out, "bid_session_mode_enum",
+		"ENUM001 must fire on the NullableCheckExpr form too — `x IS NULL OR x IN (…)` is the "+
+			"second shape internal/schemaenum renders, and account.system_key uses it\n%s", out)
+	require.Contains(t, out, "bid_session_visibility_enum",
+		"ENUM001 must fire on DOUBLE-quoted values too. SQLite treats a double-quoted token that "+
+			"resolves to no column as a string literal, so `IN (\"blind\", \"open\")` is a "+
+			"hand-written vocabulary — changing quote style must not be a way past the gate\n%s", out)
+	require.Contains(t, out, "bid_session_phase_enum",
+		"ENUM001 must carry an IN list ACROSS LINES. A wrapped or heredoc expression puts `IN (` "+
+			"alone on one line and the values on the next — a line-scoped scan sees no quote on "+
+			"the first and no `IN (` on the rest, so the longest vocabularies, the ones most "+
+			"worth generating, would be the ones that walk through\n%s", out)
+	require.Contains(t, out, "bid_session_tier_enum",
+		"ENUM001 must match `in` case-insensitively. SQL keywords are, and the generator's "+
+			"uppercase is a convention rather than a rule — a hand-written CHECK, which is the "+
+			"only kind this gate ever sees, is written in whatever case its author was typing\n%s", out)
+	require.Contains(t, out, "bid_session_lockout_enum",
+		"ENUM001 must enter a list whose keyword and parenthesis are split across the line break "+
+			"— the wrapped shape one token earlier\n%s", out)
+	require.Contains(t, out, "bid_session_source_enum",
+		"a block comment between the keyword and its parenthesis does not change what the CHECK "+
+			"says, so it must not change what the gate sees\n%s", out)
+	require.Contains(t, out, "bid_session_outcome_enum",
+		"nor does a line comment on its own line between the two — the keyword has to survive a "+
+			"line that strips to nothing\n%s", out)
+	require.Contains(t, out, "db/schema.hcl:",
+		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
+
+	require.NotContains(t, out, "account_kind_enum",
+		"a CHECK between the BEGIN/END GENERATED markers is generated from a catalogue — that is "+
+			"the sanctioned form and the whole point of the rule\n%s", out)
+	require.NotContains(t, out, "account_system_key_enum",
+		"the nullable form INSIDE a generated region is equally sanctioned\n%s", out)
+	require.NotContains(t, out, "account_person_shape",
+		"a shape CHECK quoting one value is not a vocabulary; ENUM001 must not fire on it\n%s", out)
+	require.NotContains(t, out, "bid_session_blind_bool",
+		"`IN (0, 1)` is a boolean, not a string enum — no catalogue could generate it\n%s", out)
+	require.NotContains(t, out, "bid_session_flags_bool",
+		"a boolean stays a boolean when its list is wrapped over several lines. Carrying list "+
+			"state across lines must not turn every multi-line CHECK into a hit\n%s", out)
+	require.NotContains(t, out, "bid_session_sealed_bool",
+		"a boolean stays a boolean in lowercase too — matching the keyword case-insensitively "+
+			"must not widen what counts as a vocabulary\n%s", out)
+	require.NotContains(t, out, "bid_session_retry_bool",
+		"comments are STRIPPED, not merely tolerated: a boolean whose trailing comment quotes two "+
+			"enum values is still a boolean. Without this the fix could have been \"ignore the "+
+			"comment delimiters\" and every documented CHECK would read as a vocabulary\n%s", out)
+	require.NotContains(t, out, "ux_bid_live",
+		"an index predicate is not a CHECK: a partial index over a SUBSET of a vocabulary cannot "+
+			"be rendered from a catalogue as-is, so ENUM001 is scoped to check blocks (#97)\n%s", out)
+	require.NotContains(t, out, "lowercase snake_case",
+		"ENUM001 fired on the schema's own header prose — comment lines are stripped\n%s", out)
+	require.NotContains(t, out, "legacy_status_enum",
+		"a `dkp:enum-literal` waiver WITH a reason is the documented exception and must be "+
+			"honoured, or the first legitimate one is landed by weakening the gate\n%s", out)
+	require.NotContains(t, out, tree,
+		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
+}
+
+// TestRepoGates_EnumLiteralWaiverWithoutReason_FailsGate is the other half of the waiver.
+//
+// `// dkp:enum-literal` with nothing after it is the box ticked without the thought — the same
+// defect as a bare `adr: n/a`, and the same answer: the reason is the artefact, the marker is only
+// its carrier. Without this test the reason requirement is decorative, and a waiver that costs one
+// token is a waiver that gets pasted onto the next literal too.
+func TestRepoGates_EnumLiteralWaiverWithoutReason_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeRepoFile(t, tree, "db/schema.hcl", `table "bid_session" {
+  // dkp:enum-literal
+  check "bid_tier_enum" {
+    expr = "tier IN ('main', 'main_offspec', 'alt', 'anyone')"
+  }
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a waiver with no reason must not exempt a literal\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "no reason",
+		"ENUM001 must say the waiver lacks a reason, not merely that a literal exists\n%s", out)
+	require.Contains(t, out, "bid_tier_enum",
+		"the unexempted check must still be reported — canonical §5 makes bid.tier's declaration "+
+			"ORDER semantic, so this is the literal that costs the most\n%s", out)
+}
+
+// TestRepoGates_UnclosedGeneratedMarker_FailsGate closes the bypass that would otherwise make
+// ENUM001 self-disabling.
+//
+// The rule is "a string-enum CHECK lies between BEGIN and END GENERATED". Region state is
+// line-ordered, so a BEGIN with no matching END exempts every check after it — the entire rest of
+// the file — from one unbalanced comment line. A gate whose own escape hatch is a typo is worse
+// than no gate: it reports green while checking nothing, and the marker text is exactly the kind
+// of line a careless merge mangles.
+func TestRepoGates_UnclosedGeneratedMarker_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// The catalogue DOES own this marker pair, so the failure can only be the missing END — a
+	// fixture whose marker was also unrecognised would go red for the other reason and prove
+	// nothing about unbalanced regions.
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
+	writeRepoFile(t, tree, "db/schema.hcl", `table "bid_session" {
+`+enumFixtureBegin+`
+  check "bid_session_state_enum" {
+    expr = "state IN ('draft', 'open')"
+  }
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "an unclosed BEGIN GENERATED marker must fail the gates\n%s", out)
+	require.NotContains(t, out, "no Go catalogue declares",
+		"the fixture's marker IS declared — a hit here means this test is proving the wrong "+
+			"thing\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "unclosed BEGIN GENERATED",
+		"ENUM001 must name the unbalanced marker: it silently exempts every check below it\n%s", out)
+}
+
+// TestRepoGates_FabricatedGeneratedMarker_FailsGate closes the self-service exemption, and it is the
+// bypass that mattered most: everything else ENUM001 does is undone by two comment lines without it.
+//
+// The markers are comments. Nothing stops an author writing a balanced
+// `// BEGIN GENERATED` / `// END GENERATED` pair around a brand-new literal — and nothing downstream
+// notices either, because `make gen` rewrites only the regions its catalogues declare, so a
+// fabricated one is invisible to `make verify-generated` as well. The region would be "generated"
+// in the sense that nothing generates it.
+//
+// So a marker counts only when a catalogue declares it in Go, and this fixture asserts both
+// directions in one run: the declared pair exempts its region, the fabricated pair does not exempt
+// anything and is itself reported. Asserting only the second would pass against a gate that had
+// stopped honouring generated regions at all, which is the "fix" a red build invites.
+func TestRepoGates_FabricatedGeneratedMarker_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeEnumCatalogue(t, tree, enumFixtureBegin, enumFixtureEnd)
+	writeRepoFile(t, tree, "db/schema.hcl", `table "account" {
+`+enumFixtureBegin+`
+  check "account_kind_enum" {
+    expr = "kind IN ('person', 'system')"
+  }
+`+enumFixtureEnd+`
+}
+
+table "bid_session" {
+  // BEGIN GENERATED — bid_session enum CHECKs, from internal/bids/kinds. Run make gen.
+  check "bid_session_state_enum" {
+    expr = "state IN ('draft', 'open', 'extended')"
+  }
+  // END GENERATED — bid_session enum CHECKs.
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a fabricated generated region must not exempt a literal\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "no Go catalogue declares",
+		"ENUM001 must report the marker itself: a region nothing generates is a claim, not a "+
+			"fact, and saying only \"hand-written CHECK\" would leave the author re-adding the "+
+			"markers more carefully\n%s", out)
+	require.Contains(t, out, "internal/bids/kinds",
+		"the failure must quote the offending marker line\n%s", out)
+	require.Contains(t, out, "bid_session_state_enum",
+		"the smuggled CHECK must be reported too — the fabricated markers exempt nothing\n%s", out)
+
+	require.NotContains(t, out, "account_kind_enum",
+		"the region the fixture's catalogue DOES declare must still be exempt; a gate that "+
+			"stopped honouring generated regions would satisfy every assertion above\n%s", out)
+}
+
+// TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues is ENUM001's Go twin, and it closes the
+// one residue the shell gate cannot see.
+//
+// That gate honours a marker line because some `internal/*/kinds` package declares it — which leaves
+// a narrow path open: declare a NEW marker const in Go, wire it into no generator, and the region it
+// delimits is exempt from the gate while nothing regenerates it. This asserts the stronger property
+// the shell cannot ask about without a Go toolchain: the marker pairs in db/schema.hcl are EXACTLY
+// the pairs the registered catalogues own — no fabricated region, and no catalogue whose region has
+// gone missing from the schema.
+//
+// The three catalogues are named here rather than enumerated, which is deliberate: a fourth added to
+// `internal/ledger/enumgen`'s catalogues() puts a fourth marker pair in the schema, and this test
+// then fails until it is listed here too. That is the correct direction for it to break — the
+// alternative, reflecting over the tree, would silently accept a catalogue nobody registered.
+func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
+	t.Parallel()
+
+	var wantBegin, wantEnd []string
+
+	for _, block := range []string{
+		ledgerkinds.SchemaEnumBlock(),
+		auditkinds.SchemaEnumBlock(),
+		accountkinds.SchemaEnumBlock(),
+	} {
+		lines := strings.Split(block, "\n")
+		require.GreaterOrEqual(t, len(lines), 2, "a generated block is at least its two markers")
+
+		wantBegin = append(wantBegin, lines[0])
+		wantEnd = append(wantEnd, lines[len(lines)-1])
+	}
+
+	var gotBegin, gotEnd []string
+
+	for _, line := range strings.Split(readRepoFile(t, "db/schema.hcl"), "\n") {
+		switch {
+		case strings.Contains(line, "BEGIN GENERATED"):
+			gotBegin = append(gotBegin, line)
+		case strings.Contains(line, "END GENERATED"):
+			gotEnd = append(gotEnd, line)
+		}
+	}
+
+	require.ElementsMatch(t, wantBegin, gotBegin,
+		"db/schema.hcl's BEGIN GENERATED markers must be exactly the ones the registered catalogues "+
+			"declare. An extra one is a region nothing generates — ENUM001 would step over it and "+
+			"`make gen` would never rewrite it; a missing one means a catalogue lost its region")
+	require.ElementsMatch(t, wantEnd, gotEnd,
+		"db/schema.hcl's END GENERATED markers must be exactly the ones the registered catalogues "+
+			"declare")
 }
 
 // TestRepoGates_DKPOwnColumnNames_PassGate is the allowlist half, and it is the half that matters.
