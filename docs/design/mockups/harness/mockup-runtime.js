@@ -15,7 +15,7 @@
 //   onClick / onChange / onScroll       bound to a function resolved from the same path space
 //
 // EVERY binding in the five mockups is a plain dotted path or a literal (`true`, `false`, a number)
-// — verified by survey, and asserted by scripts/build-mockup-site.sh before a build proceeds. So
+// — verified by survey, and asserted by internal/mockup (MOCK001) before a build proceeds. So
 // there is deliberately **no expression evaluator**: no eval, no `new Function`, no Babel. A binding
 // the resolver cannot walk renders as an empty string rather than executing anything.
 //

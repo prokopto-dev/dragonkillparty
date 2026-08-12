@@ -175,7 +175,13 @@ jobs:
               - '.npmrc'
               - 'web/.npmrc'
               - 'docs/design/09-frontend-and-design-system.md'
-              - 'docs/design/mockups/nocturne/styles.css'
+              # The whole mockups tree, not just the sheet design_tokens_test.go diffs against:
+              # mockup_gates_test.go publishes all five surfaces and runs MOCK001-004 over the
+              # result, so its inputs are the .dc.html files, index.html and harness/**. Without
+              # this a mockup REFRESH — the one change most likely to introduce a binding the
+              # runtime cannot resolve — would select `docs` and skip the gate that exists to catch
+              # exactly that.
+              - 'docs/design/mockups/**'
               - 'NOTICE'
               - 'THIRD_PARTY_NOTICES.txt'
               # The image definition, on the `go` filter for the same reason and found the same way.
