@@ -122,7 +122,8 @@ endef
         release-manifest release-sign release-sbom release-smoke release-promote \
         release-promote-rc release-refdb release-failure-issue \
         shipped-lock-seal release-shipped-lock \
-        eval-example-endpoint third-party-notices image-size subset-fonts verify-fonts
+        eval-example-endpoint third-party-notices image-size subset-fonts verify-fonts \
+        verify-image-arm64
 
 ## help: list every target with its description
 help:
@@ -387,12 +388,25 @@ seed:
 # buildx, not `docker build`: it is what CI's build/image job invokes, and it is what the
 # Dockerfile's cross-compilation ARGs (TARGETOS/TARGETARCH, supplied per platform) expect.
 # `--load` puts the result in the local image store so `make smoke-local` and `make image-size` can
-# find it. PLATFORM is optional: unset for a native host build, which is the only way CI calls this
-# target now that the dead merge-queue arm64 job is gone (issue #101); set it to linux/arm64 to
-# cross-compile that platform by hand, as issue #108 proposes doing nightly. Go cross-compiles, so no
-# QEMU is ever needed.
+# find it. PLATFORM is optional: unset for a native host build (CI's `build / image`), set to
+# linux/arm64 by `verify-image-arm64` below, which is what nightly-verify.yml's `image / arm64-cross`
+# job runs (issue #108). Go cross-compiles, so no QEMU is ever needed.
 docker:
 	docker buildx build $${PLATFORM:+--platform $$PLATFORM} --load -f deploy/Dockerfile -t $(IMAGE):$(VERSION) $(DOCKER_BUILD_ARGS) .
+
+## verify-image-arm64: cross-build the arm64 image and prove it really is arm64
+# Called by nightly-verify.yml's `image / arm64-cross`. Between #101 deleting the merge-queue job
+# that never ran and this target, nothing built linux/arm64 until release.yml's per-arch matrix — so
+# arm64 breakage surfaced while cutting a release (issue #108).
+#
+# Two steps, and the second is not decoration. `make docker` failing is the loud half: a GOARCH build
+# tag, a cgo dependency from a bump, a base-image assumption. The quiet half is an image buildx has
+# labelled arm64 from --platform whose binary is not — nothing in CI boots an arm64 image (that needs
+# the QEMU this project bans), so the bytes are what has to be checked. VERSION and IMAGE are
+# exported above, so the script measures exactly the ref this recipe built.
+verify-image-arm64:
+	@PLATFORM=linux/arm64 $(MAKE) docker
+	@bash scripts/verify-image-arch.sh linux/arm64
 
 ## build: compile the binary to ./bin
 build:
