@@ -14,16 +14,22 @@ import (
 
 // The repository's Python floor, asserted rather than assumed.
 //
-// Two of this repo's merge-blocking gates are Python — `make verify-spec` and `make docs-links` —
-// and until issue #83 nothing declared what interpreter they needed. scripts/verify-spec.py
-// annotated a return as `dict | None`, which PEP 604 only made legal in 3.10 and which is evaluated
-// when the function is DEFINED, so on macOS's stock 3.9.6 the module raised TypeError at import.
+// `make docs-links` is Python, and until issue #83 nothing declared what interpreter it needed. The
+// script that actually broke was scripts/verify-spec.py: it annotated a return as `dict | None`,
+// which PEP 604 only made legal in 3.10 and which is evaluated when the function is DEFINED, so on
+// macOS's stock 3.9.6 the module raised TypeError at import.
 //
 // The cost was not the version bump. It was WHERE the failure surfaced: `make check` reported the
 // SPEC GATE failing, on a tree whose spec was fine, pointing at openapi/openapi.json — the one file
 // nobody is allowed to hand-edit. The natural next move is to go hunting for drift that does not
 // exist. An environment fault wearing a content fault's clothes is the most expensive shape a gate
 // failure has.
+//
+// THAT PARTICULAR GATE IS GO NOW — issue #127 moved it to internal/specgate, so the spec can no
+// longer be blamed for an interpreter. What is asserted here is unchanged and still load-bearing: the
+// failure shape was never specific to the spec, and every remaining scripts/*.py is a gate or a
+// publisher that can fail the same way. The floor leaves this file when the last of them does, not
+// before.
 //
 // Four assertions, each a different way for it to come back:
 //
@@ -63,11 +69,19 @@ func pythonScripts(t *testing.T) []string {
 	matches, err := filepath.Glob(filepath.Join(repoRoot(t), pythonScriptsDir, "*.py"))
 	require.NoError(t, err, "glob scripts/*.py")
 
-	// A floor asserted over an empty set is a green test that checks nothing. Two exist today:
-	// check-links.py and verify-spec.py. It was three until issue #126 replaced dc-publish.py with
-	// internal/mockup, which is why this number is a floor on the glob and not a census — every
-	// assertion below still runs over every script the glob returns.
-	require.GreaterOrEqualf(t, len(matches), 2,
+	// A floor asserted over an empty set is a green test that checks nothing.
+	//
+	// ONE exists today — check-links.py — where this said three a fortnight ago. Epic #125 took the
+	// other two in quick succession: issue #127 moved verify-spec.py to internal/specgate, and issue
+	// #126 replaced dc-publish.py with internal/mockup. The number tracks the tree rather than
+	// guarding it, so lowering it is not a loosening: what it exists to catch is a broken glob
+	// returning nothing, and a count of one catches that exactly as well as a count of three did —
+	// every assertion below still runs over every script the glob returns.
+	//
+	// When check-links.py goes too, this whole file goes with it rather than the floor being asserted
+	// over nothing. Deleting it is then the correct move and not a weakening, because there is no
+	// Python left to declare a floor.
+	require.GreaterOrEqualf(t, len(matches), 1,
 		"found only %d scripts/*.py — the glob is broken, not the tree", len(matches))
 
 	out := make([]string, 0, len(matches))
@@ -235,10 +249,15 @@ func TestPythonFloor_CIDeclaresItsOwnInterpreter(t *testing.T) {
 
 	// Every job that runs a Python target must ask for the check. Named individually rather than
 	// scanned for, because the failure mode is a job that quietly stops asking.
+	//
+	// `spec-drift:` was in this list until issue #127. It is out because `make verify-spec` is Go now
+	// and a job that no longer runs Python must not be required to declare an interpreter — an
+	// assertion that is true of nothing is how a list like this stops meaning anything. The gate it
+	// covers did not move: spec-drift is still required, still runs on every PR, and is now gated on
+	// the `go` path filter through the package it runs.
 	workflow := readCIWorkflow(t)
 
 	for job, why := range map[string]string{
-		"spec-drift:":       "runs `make verify-spec`, which is scripts/verify-spec.py",
 		"docs-build:":       "runs `make docs-links`, which is scripts/check-links.py",
 		"test-integration:": "runs `make test`, whose test/repo suite execs python3 directly",
 	} {

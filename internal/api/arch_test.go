@@ -168,7 +168,7 @@ func TestArch_Operations_DeclareSecurityAndPermission(t *testing.T) {
 		require.True(t, ok,
 			"%s does not declare %s in its Extensions map. Note Metadata is NOT a substitute: it is "+
 				"tagged `yaml:\"-\"` in Huma and never reaches the OpenAPI document, so an operation "+
-				"declaring its permission there passes nothing and fails scripts/verify-spec.py.",
+				"declaring its permission there passes nothing and fails `make verify-spec`.",
 			op, ExtensionPermission)
 
 		require.NotEmpty(t, permission, "%s declares an empty %s", op, ExtensionPermission)
@@ -613,7 +613,7 @@ func TestArch_MissingOperationID_FailsBuild(t *testing.T) {
 // property of a dependency rather than of this repository, so nothing here would notice it going
 // away. If Huma ever downgrades it to last-write-wins, this test goes red and points at the two
 // places that then have to carry the weight: operationIDViolations' duplicate branch, and
-// scripts/verify-spec.py's SPEC002.
+// internal/specgate's SPEC002.
 //
 // SPEC002 is not redundant with this. It reads the committed JSON, where a path operation and a
 // webhook CAN share an id — Huma registers webhooks through a different route that AddOperation

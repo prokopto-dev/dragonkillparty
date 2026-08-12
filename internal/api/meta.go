@@ -69,8 +69,8 @@ type MetaServer struct {
 //   - x-dkp-permission goes in Extensions, NOT in Metadata. .claude/rules/api-endpoints.md:32
 //     prescribes `Metadata: map[string]any{"x-dkp-permission": ...}` and that idiom is wrong:
 //     huma.Operation.Metadata is tagged `yaml:"-"` and never reaches the document, so an operation
-//     written that way emits a spec with no x-dkp-permission at all — and scripts/verify-spec.sh,
-//     per .github/workflows/ci.yml:280, asserts on the committed JSON. Following the rule file
+//     written that way emits a spec with no x-dkp-permission at all — and `make verify-spec`
+//     (internal/specgate, SPEC004) asserts on the committed JSON. Following the rule file
 //     verbatim would fail the gate the rule file describes. Extensions is the field that marshals
 //     inline, it is equally readable from the registry for arch_test.go, and the rule file is
 //     corrected in this PR. Its value here is the `public` sentinel, not a catalogue key —

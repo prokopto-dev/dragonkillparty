@@ -138,7 +138,7 @@ func TestCatalogue_Scopes_MatchCanonicalConventions(t *testing.T) {
 
 // TestCatalogue_Permissions_AreWholeQuotedLiterals is the SPEC005 contract, asserted in Go.
 //
-// scripts/verify-spec.py's SPEC005 greps this package's source for `"<key>"` — a whole quoted
+// internal/specgate's SPEC005 greps this package's source for `"<key>"` — a whole quoted
 // literal — so a key composed from parts (Resource + "." + Action) produces the right runtime value
 // and fails the gate. This test proves the source-text property directly, so a refactor that breaks
 // it goes red here in `make test-unit` before it reaches the spec gate, with a message that explains
