@@ -118,9 +118,11 @@ orphaned_at, sort_order` (`docs/design/01-domain-model.md:364-372`).
 
 ### The catalogue's Go shape is constrained by SPEC005, and it was measured
 
-`scripts/verify-spec.py:269-279` reads `internal/authz/catalogue.go` as **text** and asserts
-`f'"{permission}"' in catalogue` — a quoted exact substring, deliberately so `raid.tick` does not
-satisfy `raid.tick.create` (`:273`).
+`scripts/verify-spec.py` — that file is gone; issue #127 moved the gate into Go, and the rule is now
+`checkPermissionsResolve` in `internal/specgate/rules.go` — reads `internal/authz/catalogue.go` as
+**text** and asserts `f'"{permission}"' in catalogue`, a quoted exact substring, deliberately so
+`raid.tick` does not satisfy `raid.tick.create`. The port kept the substring match rather than
+parsing the Go, so the property measured below is still exactly the live one.
 
 Two spikes, each running the real gate against a scratch tree through `DKP_REPO_ROOT` — the same
 seam `test/repo/spec_gate_test.go:74-75` uses:
@@ -428,7 +430,7 @@ Two structural drivers, both measured and both mandated by AGENTS.md:
 | `internal/api/EXAMPLE_ENDPOINT.md` rewrite | 350–450 | 310 today; gains ETag/412/428, loses six wrong claims |
 | `db/RECIPES.md` rewrite | 120–200 added (~180 deleted) | 279 today; **9 of its 12 recipes query tables that do not exist** |
 | `TestDocs_ExampleEndpointSnippets_Compile` | 250–450 | extract fences, classify hcl/sql/go/json, wrap Go fragments, sqlc-check SQL. Analogues: `docs_test.go` 207, `spec_gate_test.go` 673 |
-| `scripts/eval-example-endpoint.sh` + nightly workflow | 150–280 | `verify-spec.py` 421, `new-migration.sh` 163 — plus an agent runner and an API key |
+| `scripts/eval-example-endpoint.sh` + nightly workflow | 150–280 | `verify-spec.py` 421 (the Python gate this was sized against; now `internal/specgate`), `new-migration.sh` 163 — plus an agent runner and an API key |
 | `docs/api-changelog.md` (does not exist; step 8 requires it) | 30–60 | — |
 | Makefile row, `ci.yml`, CODEOWNERS | 40–80 | — |
 | **Total** | **2,875 – 4,405** — midpoint **≈ 3,600** | |
@@ -650,7 +652,7 @@ Two gates now cover the class, at the two points where a name becomes contract:
 | Gate | Scope | Catches |
 |---|---|---|
 | `AGPL002` (`scripts/repo-gates.sh`) | `db/` | an EQdkp config key used as a **column** name, before any endpoint exposes it |
-| `SPEC008` (`scripts/verify-spec.py`) | `openapi/openapi.json` | an EQdkp config key used as a **wire field or parameter** name |
+| `SPEC008` (`internal/specgate`; `scripts/verify-spec.py` when this was written) | `openapi/openapi.json` | an EQdkp config key used as a **wire field or parameter** name |
 
 Both are proven by fixtures in `test/repo/`, in both directions —
 `TestRepoGates_EQdkpConfigKeyInSchema_FailsGate` / `TestRepoGates_DKPOwnColumnNames_PassGate` and
