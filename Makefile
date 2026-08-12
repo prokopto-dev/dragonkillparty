@@ -547,14 +547,19 @@ install-atlas:
 # point DKP_REPO_ROOT at a fabricated module tree in t.TempDir(), and a value leaking in from a
 # developer's shell would make `make check` inspect the wrong graph while printing that it passed.
 #
-# In `lint` rather than a job of its own because it is one `go list` plus shell, and a licence
+# In `lint` rather than a job of its own because it is one `go list` plus a classifier, and a licence
 # violation should stop a laptop before it stops CI. It is the cheapest half of the supply-chain
 # gates; govulncheck below is the expensive half.
 # GOFLAGS is stripped alongside DKP_REPO_ROOT: it can carry -mod=vendor or -tags, either of which
 # changes which modules `go list` resolves. A developer's environment must not decide which
 # dependency graph the licence gate inspects.
+#
+# Go rather than shell since #130: the classifier is pure text matching, and in internal/licence its
+# patterns are unit-tested directly instead of only through a subprocess. `go run` compiles into the
+# build cache, so the second invocation costs nothing over the `go list` calls the gate must make
+# anyway.
 licence-gate:
-	@env -u DKP_REPO_ROOT -u GOFLAGS bash scripts/licence-gate.sh
+	@env -u DKP_REPO_ROOT -u GOFLAGS $(GO) run ./internal/licence/cmd/licence gate
 
 # Hard-fails when golangci-lint is missing. Exiting 0 would report a green `make check` that linted
 # nothing, which is the defect this target exists to prevent.

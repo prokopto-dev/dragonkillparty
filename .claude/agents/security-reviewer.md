@@ -133,7 +133,7 @@ This is a product guarantee. Trace it, do not assume it.
 - Any new dependency: name it, name its licence, name why. A human decides — this review does not
   approve dependencies, it surfaces them.
 - No copyleft or source-available runtime dependency, direct or transitive. The mechanism is
-  `scripts/licence-gate.sh`, run by `make licence-gate` (inside `make check`) and by the required
+  `internal/licence`, run by `make licence-gate` (inside `make check`) and by the required
   `security / licences` CI job. To confirm it ran and what it concluded, run `make licence-gate` —
   it prints a count per licence and exits non-zero on a violation. Its three rule ids:
   - `LIC001` — a runtime dependency is under a denied licence.
