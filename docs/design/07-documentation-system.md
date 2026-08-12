@@ -365,10 +365,16 @@ reversal-cost line is what a future maintainer actually needs.
 | **Required** | A change alters a public contract (API shape, wire format, CLI, config keys, backup format); adds a runtime dependency, process, port or volume; changes a data-model invariant or a ledger rule; picks between two viable libraries; takes more than about two weeks to reverse; or answers a question a reader would otherwise re-litigate |
 | **Not required** | Ordinary features, refactors, bug fixes, new pages, or adding a strategy or parser that fits the existing interface — that is the interface working as intended |
 
-**Enforced:** a PR touching `go.mod` (new *direct* dependency), `deploy/Dockerfile` (new port, volume
-or process), `db/schema.hcl` (new table or changed constraint), or adding a top-level `internal/`
-package requires either a new file under `docs/adr/` or an `adr: n/a — <reason>` line in the PR body.
-Same harvest-the-reasons discipline as the docs gate.
+**Enforced:** `ADR001` in `scripts/repo-gates.sh`, in the `lint / repo` job. A PR that adds a new
+*direct* requirement to `go.mod`, touches `deploy/Dockerfile` or `db/schema.hcl`, or adds a top-level
+`internal/` package requires either a new file under `docs/adr/` or an `adr: n/a — <reason>` line in
+the PR body — with a reason, since harvesting it is the point. Same harvest-the-reasons discipline as
+the docs gate. The `go.mod` trigger compares direct requirements against the base revision, so a
+version bump does not fire; the `deploy/Dockerfile` and `db/schema.hcl` triggers are the path itself,
+because "new port, volume or process" and "new table or changed constraint" are judgements no grep
+can make and the cost of asking is one line. It runs on pull requests only — the body is its input —
+and `ci.yml` passing that context is pinned by a test, because this paragraph asserted enforcement
+for months while none existed.
 
 Published rather than hidden, because "why is there no Postgres option?" and "why did you not fork
 EQdkp Plus?" will otherwise be re-asked in every issue thread for two years. See
