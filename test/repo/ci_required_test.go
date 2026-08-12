@@ -315,7 +315,10 @@ func TestCIRequired_SupplyChainJobs_AreAlwaysOnAndBlocking(t *testing.T) {
 
 	workflow := readCIWorkflow(t)
 
-	for _, job := range []string{"security-licences", "security-govulncheck"} {
+	// security-osv joined the other two with issue #132. It is the npm graph's only vulnerability
+	// coverage, so the same three properties matter for it and for the same reason: in the needs
+	// list, named in the always-on assertion, and unconditional at the source.
+	for _, job := range []string{"security-licences", "security-govulncheck", "security-osv"} {
 		t.Run(job, func(t *testing.T) {
 			t.Parallel()
 

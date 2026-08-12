@@ -101,6 +101,21 @@ SQLC_VERSION           ?= v1.31.1
 # every pin with `$1==k { print $3 }`, and install-atlas.sh reads this line the same way.
 # renovate: datasource=github-releases depName=ariga/atlas
 ATLAS_VERSION          ?= v1.3.0
+# osv-scanner (issue #132) covers the dependency graphs govulncheck cannot see — above all the ~275
+# package npm graph in web/pnpm-lock.yaml, which had NO vulnerability scanning at all until it
+# landed. It does not replace govulncheck: govulncheck is reachability-aware (call-graph analysis
+# over the Go module graph), osv-scanner is not, so on the Go side osv-scanner is the noisier of the
+# two and the complementary one.
+#
+# Not installed by `make setup` and not `go install`ed by the CI action, unlike every pin above it.
+# osv-scanner's own go.mod requires a Go PATCH version (1.26.5 for v2.5.0) newer than the `go 1.26`
+# line in this repository's go.mod, and CI runs GOTOOLCHAIN=local — so `go install` would couple
+# this project's compiler floor to the scanner's release cadence and break on a runner that resolved
+# a slightly older patch. CI runs the upstream action instead, which carries the scanner in a
+# container with its own toolchain. This pin is what `make osv-scan` reports when the binary is
+# missing, and TestOSV_ActionPin_MatchesTheMakefilePin keeps it equal to the version ci.yml runs.
+# renovate: datasource=github-releases depName=google/osv-scanner
+OSV_SCANNER_VERSION    ?= v2.5.0
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -111,7 +126,8 @@ endef
 .PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
         lint vet migration seed docker check \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
-        lint-repo lint-go lint-web licence-gate govulncheck bench-clone verify-action-pins \
+        lint-repo lint-go lint-web lint-migrations licence-gate govulncheck osv-scan \
+        bench-clone verify-action-pins \
         install-atlas generated-digest \
         docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
@@ -339,8 +355,16 @@ test-importer:
 test-e2e:
 	@bash scripts/test-e2e.sh
 
-## lint: the repo grep gates, the dependency licence gate, golangci-lint and eslint
-lint: lint-repo licence-gate lint-go lint-web
+## lint: the repo grep gates, the dependency licence gate, migration lint, golangci-lint and eslint
+# lint-migrations is here rather than in a CI job of its own because it is ~30 ms, needs no network
+# and reads no live database — and because an advisory belongs in the inner loop, where the person
+# who can act on it is still holding the migration. It is ADVISORY: it prints diagnostics and exits
+# 0, so it never blocks a laptop or a merge (issue #131; #136 tracks promoting it).
+#
+# It does mean `make lint`, and therefore `make check`, now needs atlas on PATH. `make setup`
+# installs it, and `make gen` has always required it, so this adds no new toolchain obligation —
+# only a new place that reports its absence.
+lint: lint-repo licence-gate lint-migrations lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
 # Runs build + vet, then tsc over the SPA. staticcheck is folded into golangci-lint, so it runs
@@ -561,6 +585,60 @@ govulncheck:
 	[ -x "$$bin" ] || { \
 		printf '\033[31m  govulncheck not installed — run make setup\033[0m\n'; exit 1; }; \
 	"$$bin" ./...
+
+# Known vulnerabilities across BOTH dependency graphs, from the OSV database (issue #132).
+#
+# The two supply-chain scanners are complementary and neither replaces the other:
+#
+#   govulncheck    Go only, REACHABILITY-aware. Call-graph analysis, so it reports a vulnerability
+#                  only when this module's code can actually reach it. High signal, narrow scope.
+#   osv-scan       Go AND npm, reachability-BLIND. Reports every advisory affecting a pinned
+#                  version. Lower signal on the Go side — which is exactly why govulncheck stays —
+#                  and the ONLY coverage the ~275 package npm graph in web/pnpm-lock.yaml has.
+#
+# The npm graph is the gap this closes. `security / licences` already reads that graph for LICENCES;
+# nothing read it for VULNERABILITIES until now, and the first scan found three (issues #133, #134,
+# #135 — all transitive devDependencies, all waived with an expiry in osv-scanner.toml).
+#
+# BOTH lockfiles are named explicitly rather than letting `-r .` walk the tree. A recursive walk
+# quietly scans whatever it happens to find, so a lockfile that moved or a manifest that stopped
+# being generated reads as "clean" instead of "not scanned"; naming them means osv-scanner itself
+# errors when one is missing. TestOSV_ScanTargets_AreTheSameInCIAndTheMakefile asserts this list and
+# ci.yml's agree — two copies of a scan target is how one of them silently stops covering anything.
+#
+# Same hard-fail-when-missing rule as govulncheck and lint-go: a scanner that exits 0 because the
+# binary is absent reports a clean tree it never read. NOT in `lint` or `check`, for govulncheck's
+# reason exactly — it queries api.osv.dev, and `make check` must work on a laptop with no network.
+# CI runs it as its own required job; run it by hand before proposing a dependency.
+osv-scan:
+	@bin=$$(command -v osv-scanner 2>/dev/null || echo '$(GOTOOLS_BIN)/osv-scanner'); \
+	[ -x "$$bin" ] || { \
+		printf '\033[31m  osv-scanner not installed\033[0m — `make setup` does not install it.\n'; \
+		printf '  CI runs it as a pinned container action; install $(OSV_SCANNER_VERSION) locally with:\n'; \
+		printf '    go install github.com/google/osv-scanner/v2/cmd/osv-scanner@$(OSV_SCANNER_VERSION)\n'; \
+		printf '  (needs a Go patch release at or above the one osv-scanner pins, which is why\n'; \
+		printf '   `make setup` leaves it out — see OSV_SCANNER_VERSION above.)\n'; \
+		exit 1; }; \
+	"$$bin" scan source --config=osv-scanner.toml --lockfile=go.mod --lockfile=web/pnpm-lock.yaml
+
+# Atlas's own migration analyzers over db/migrations-sqlite/ — destructive changes, data-dependent
+# changes and backward-incompatible changes (issue #131). ADVISORY: scripts/migrate-lint.sh prints
+# diagnostics and exits 0 in its default MODE=advise. See that script's header for why it is
+# advisory by construction rather than by `continue-on-error`, and why a BROKEN invocation still
+# hard-fails.
+#
+# ADDITIVE, never a replacement. MIG001 (DDL in a Down block), MIG002 (backtick identifiers), MIG003
+# (SHIPPED.lock), TestMigrate_FreshInstall_MatchesFingerprint and the populated-upgrade suite all
+# stay: Atlas lint knows nothing about forward-only migrations, a frozen-shipped-migration file, or
+# append-only triggers surviving a table rebuild. TestMigrationGates_AtlasLint_IsAdditive says so in
+# code.
+#
+# `env -u DKP_REPO_ROOT` for the same reason as lint-repo and licence-gate: the script honours that
+# variable so test/repo can point it at a fabricated migration directory in t.TempDir(), and a value
+# leaking in from a developer's shell would make `make check` analyse some other tree while printing
+# that it passed.
+lint-migrations:
+	@env -u DKP_REPO_ROOT bash scripts/migrate-lint.sh
 
 # The template-database clone cost, printed as a p50 in the CI log. This is the measurement behind
 # item V4 of docs/development/verify-before-phase-0.md — "integration tests are nearly free" is the

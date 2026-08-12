@@ -203,6 +203,9 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `lint / repo` — grep gates + licence firewall | always | 15 s | required |
 | `lint / go` — gofumpt, golangci-lint | go changed | 75 s | required |
 | `lint / web` — eslint, prettier | web changed | 40 s | required |
+| `security / licences` — Go runtime graph + JS production graph, closed allowlist | always | 45 s | required |
+| `security / govulncheck` — REACHABLE Go vulnerabilities (call-graph) | always | 40 s | required |
+| `security / osv` — OSV advisories over `go.mod` **and** `web/pnpm-lock.yaml` | always | 30 s | required |
 | `typecheck` — `make vet`: build, vet, staticcheck, tsc | always | 75 s | required |
 | `gen / codegen-drift` — `make gen`, then a clean tree | always | 80 s | required |
 | `gen / spec-drift` — spec properties codegen cannot see | api/go changed | 30 s | required |
@@ -211,7 +214,7 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | go changed | 60 s | required |
 | `test / golden` — plus a non-decreasing fixture count | go changed | 45 s | required |
 | `test / integration` — real SQLite, real triggers, goleak | go/db changed | 130 s | required |
-| `test / migrations` — fresh install, N-1, row invariants, auto-restore | db changed | 110 s | required |
+| `test / migrations` — fresh install, N-1, row invariants, auto-restore; plus `atlas migrate lint`, **advisory** | db changed | 110 s | required |
 | `test / authz-matrix` — every operation × every principal | api/go changed | 60 s | required |
 | `api / breaking-change` — oasdiff + sticky changelog comment | api changed | 45 s | required |
 | `build / binary` — uploads the artifact everything reuses | always | 165 s | required |
@@ -238,6 +241,22 @@ decision instead of a drift.
 
 **The corollary that stops this list metastasising: any advisory check nobody has acted on in 90 days
 gets deleted.** `ci-budget.yml` reports advisory-check action rates alongside the wall-clock numbers.
+
+**`atlas migrate lint` is the one advisory step inside a required job**, and it is advisory *by
+construction* rather than by `continue-on-error` — which this workflow bans, and which
+`TestCIWorkflow_NoContinueOnError` asserts the absence of. `scripts/migrate-lint.sh` prints Atlas's
+destructive / data-dependent / backward-incompatible diagnostics, emits a `::warning::`, and exits 0
+in its default `MODE=advise`; `MODE=enforce` fails instead and is already exercised by
+`test/repo/migrate_lint_test.go`. Introduced advisory-first (issue #131) because SQLite's 12-step
+table rebuild is where Atlas's analyzers are least predictable, and a linter that blocks merges
+before it is trusted gets disabled rather than tuned. Promotion is tracked in issue #136, and it is a
+one-word change at the call site.
+
+It is **additive**. `atlas migrate lint` knows nothing about forward-only migrations (MIG001),
+backtick identifiers (MIG002), the `SHIPPED.lock` frozen-migration rule (MIG003), the fresh-install
+schema fingerprint, or append-only triggers surviving a table rebuild — those are this repository's
+rules and its own gates keep them. `TestMigrationGates_AtlasLint_IsAdditive` states that in code, so
+a later consolidation pass cannot quietly retire the bespoke half.
 
 ### The wall-clock budget
 

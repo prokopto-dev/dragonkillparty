@@ -285,15 +285,24 @@ jobs:
       - run: make lint-web # eslint over src/**, plus eslint --no-ignore over the negative fixtures
 
   # ---------------------------------------------------------------------------------------------
-  # security — the supply-chain gates.
+  # security — the supply-chain gates. Three of them, and each covers something the other two
+  # cannot see:
   #
-  # Both are UNCONDITIONAL, and deliberately so. `scripts/**` is in no path filter, so a job whose
-  # own definition lives there and which gated itself on `changes` would be the exact defect the
-  # filters comment above warns about: a gate that stops running when the file defining it changes.
-  # Neither job is on the critical path (changes -> build/binary -> test/e2e), so running them on
+  #   licences      Go runtime module graph + JS production graph, against a closed allowlist.
+  #                 About what a dependency PERMITS, not about defects in it.
+  #   govulncheck   Go only, REACHABILITY-aware — call-graph analysis, so a vulnerability is
+  #                 reported only when this module's code can actually reach it. High signal.
+  #   osv           Go AND npm, reachability-BLIND — every advisory affecting a pinned version.
+  #                 Noisier than govulncheck on the Go side, which is why govulncheck stays, and
+  #                 the ONLY vulnerability coverage the ~275 package npm graph has ever had.
+  #
+  # All three are UNCONDITIONAL, and deliberately so. `scripts/**` is in no path filter, so a job
+  # whose own definition lives there and which gated itself on `changes` would be the exact defect
+  # the filters comment above warns about: a gate that stops running when the file defining it
+  # changes. None is on the critical path (changes -> build/binary -> test/e2e), so running them on
   # every PR costs no wall-clock against the budget.
   #
-  # Neither is `continue-on-error`, and both are asserted in ci-required's always-on list below.
+  # None is `continue-on-error`, and all three are asserted in ci-required's always-on list below.
   # ---------------------------------------------------------------------------------------------
   security-licences:
     name: security / licences
@@ -334,6 +343,50 @@ jobs:
         # `govulncheck ./...` — call-graph analysis, so only vulnerabilities that are actually
         # reachable from this module's code are reported. That is what keeps the signal high enough
         # that people act on it rather than learning to skim past it.
+
+  security-osv:
+    name: security / osv
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Known vulnerabilities in the Go and npm dependency graphs
+        uses: google/osv-scanner-action/osv-scanner-action@8deb546fdb875b9996d27d4950be7312dac076a1 # v2.5.0
+        with:
+          # One argument per line — the action passes them to the scanner as argv.
+          #
+          # BOTH lockfiles are named EXPLICITLY, and this is the load-bearing part of the job. The
+          # action's default is `--recursive ./`, which scans whatever it happens to walk into: a
+          # lockfile that moves, or a manifest that stops being generated, then reads as "clean"
+          # rather than as "not scanned" — the self-concealing omission this workflow's header
+          # warns about, in scanner form. Naming them means osv-scanner itself errors when one is
+          # absent, so the job cannot quietly cover less than it says it does.
+          #
+          # go.mod is the reason osv-scanner does NOT replace `security / govulncheck` above:
+          # osv-scanner reports every advisory affecting a pinned version, with no call-graph
+          # analysis, so it is the noisier of the two on the Go side. It is here because the same
+          # blindness is a virtue on the npm side, where nothing else looks at all.
+          #
+          # TestOSV_ScanTargets_AreTheSameInCIAndTheMakefile keeps this list equal to the one in
+          # `make osv-scan`, so a lockfile added to one is not missing from the other.
+          scan-args: |-
+            scan
+            source
+            --config=osv-scanner.toml
+            --lockfile=go.mod
+            --lockfile=web/pnpm-lock.yaml
+        # BLOCKING, not advisory (issue #132). Every waiver is an `[[IgnoredVulns]]` entry in
+        # osv-scanner.toml carrying a filed issue and an `ignoreUntil` expiry, printed in this job's
+        # log when it filters one — so the exceptions are enumerated in a reviewed file rather than
+        # implied by a gate that never fails. test/repo asserts an entry cannot exist without both.
+        #
+        # The action is a Docker action, so the SHA pin above pins the ACTION but its inner
+        # `docker://ghcr.io/google/osv-scanner-action:v2.5.0` reference is a mutable tag — the pin is
+        # weaker than it looks and it is worth saying so rather than implying otherwise. It is still
+        # the right trade here: `go install`ing the scanner would couple this repository's Go patch
+        # floor to osv-scanner's (its go.mod requires 1.26.5; ours says `go 1.26` and CI runs
+        # GOTOOLCHAIN=local), so a runner resolving an older patch would fail the scan for a reason
+        # nobody could act on. The container carries its own toolchain.
 
   typecheck:
     name: typecheck
@@ -520,7 +573,15 @@ jobs:
           # asserts the hooks format and block. Without gofumpt on PATH that functional test skips,
           # and the gate would go unexercised in CI — the exact "green build that ran nothing" this
           # repo's test-the-gate ethos exists to prevent.
-          tools: "golangci-lint gofumpt"
+          #
+          # atlas is here for the same reason, and it closes an instance of that defect that was
+          # already live: test/repo's atlas_lock_test.go and new_migration_test.go both skip when
+          # atlas is absent, and this job never installed it — so the suite proving issue #36's
+          # per-invocation dev-url fix has been silently skipping in CI. It also runs
+          # migrate_lint_test.go, whose fixtures drive scripts/migrate-lint.sh against a fabricated
+          # migration directory in t.TempDir() to prove MODE=advise exits 0 while MODE=enforce does
+          # not — the negative fixture for the advisory gate added in issue #131.
+          tools: "golangci-lint gofumpt atlas"
           # test/repo's spec-gate fixtures exec python3 against scripts/verify-spec.py, and
           # python_floor_test.go re-parses every scripts/*.py at the declared floor. Both are gated
           # out of the -short unit run and execute here.
@@ -545,9 +606,47 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # REQUIRED by the migration-lint step below, not an optimisation.
+          # scripts/migrate-lint.sh selects what to analyse with `atlas migrate lint --git-base
+          # origin/main`, so that only the migrations this branch ADDS are analysed — a shipped
+          # migration is frozen (MIG003), so a diagnostic on one is not actionable by whoever trips
+          # over it. A shallow checkout has no origin/main, which downgrades the script to its
+          # printed `--latest 1` fallback: it would still run and still exit 0, and the log would
+          # say so, but a branch adding two migrations would have the first go unanalysed.
+          # TestCI_MigrationLintStep_FetchesFullHistory pins this line.
+          fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
+          # atlas, for the advisory migration lint below. It is the authoring tool for everything in
+          # db/migrations-sqlite/ and is already installed in `gen / codegen-drift`; this is the
+          # second job that needs it on PATH. Without it scripts/migrate-lint.sh hard-fails with
+          # "atlas is not installed" rather than skipping, which is the intended behaviour — an
+          # advisory that exits 0 because the analyser was absent reports "no diagnostics" about
+          # migrations it never read.
+          tools: "atlas"
+      - name: Migration lint (advisory)
+        run: make lint-migrations
+        # ADVISORY, and advisory the same way `make image-size` is: the step is NOT
+        # `continue-on-error` (this workflow bans that string and TestCIWorkflow_NoContinueOnError
+        # asserts its absence — it is the quiet way to keep a gate while removing its teeth).
+        # scripts/migrate-lint.sh is advisory BY CONSTRUCTION: in its default MODE=advise it prints
+        # every diagnostic, emits a `::warning::` annotation, and exits 0. MODE=enforce exits
+        # non-zero instead and already works; promoting this call site is tracked in issue #136.
+        #
+        # Advisory does not mean it cannot fail. A migration Atlas could not analyse at all, or an
+        # invocation that produced no report, is a hard failure in BOTH modes — because a scan that
+        # never ran must not report as a scan that found nothing.
+        #
+        # ADDITIVE to `make test-migrations` below, never a replacement for it. Atlas's analyzers
+        # know about destructive, data-dependent and backward-incompatible changes; they know
+        # nothing about forward-only migrations (MIG001), the SHIPPED.lock history rule (MIG003),
+        # the fresh-install fingerprint, or append-only triggers surviving a 12-step table rebuild.
+        # Issue #131 said so and TestMigrationGates_AtlasLint_IsAdditive holds it.
+        #
+        # Deliberately BEFORE `make test-migrations`: it costs ~30 ms and a destructive-change
+        # diagnostic is the most useful thing to read first when the suite after it goes red.
       - run: make test-migrations
         # Landed in Phase 0 PR 3: 1, 6 and 7 below, plus STRICT-on-every-table and no-guild_id.
         # Still owed, and by whom: 2 and 3 need a published reference database (`release-refdb`,
@@ -828,6 +927,7 @@ jobs:
       - lint-web
       - security-licences
       - security-govulncheck
+      - security-osv
       - typecheck
       - codegen-drift
       - spec-drift
@@ -870,7 +970,7 @@ jobs:
           #    If one of them is "skipped", somebody added an `if:` that should not exist.
           missing=$(jq -rn --argjson r "$RESULTS" '
             ["changes","lint-repo","typecheck","codegen-drift","build-binary",
-             "security-licences","security-govulncheck"]
+             "security-licences","security-govulncheck","security-osv"]
             | map(select($r[.].result != "success")) | join(", ")')
           if [ -n "$missing" ]; then
             echo "::error::ci-required: always-on jobs did not run: ${missing}"
