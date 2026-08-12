@@ -260,8 +260,13 @@ func TestOSV_IsNotAReplacementForGovulncheck(t *testing.T) {
 func ignoredVulnBlocks(t *testing.T) []string {
 	t.Helper()
 
-	text := readRepoFile(t, "osv-scanner.toml")
+	return splitIgnoredVulnBlocks(readRepoFile(t, "osv-scanner.toml"))
+}
 
+// splitIgnoredVulnBlocks is the parsing half of ignoredVulnBlocks, taking the text rather than
+// reading it, so TestOSVConfig_BlockParser_StillMatches can exercise it on input that is not
+// whatever osv-scanner.toml happens to contain today.
+func splitIgnoredVulnBlocks(text string) []string {
 	parts := strings.Split(text, "[[IgnoredVulns]]")
 	if len(parts) == 1 {
 		return nil
@@ -406,10 +411,51 @@ func TestOSVConfig_IsReferencedByBothCallSites(t *testing.T) {
 	require.FileExists(t, filepath.Join(repoRoot(t), "osv-scanner.toml"),
 		"osv-scanner.toml is gone, but ci.yml and the Makefile pass --config=osv-scanner.toml. "+
 			"osv-scanner fails on a config path that does not exist.")
+}
 
-	require.NotEmpty(t, ignoredVulnBlocks(t),
-		"osv-scanner.toml carries no [[IgnoredVulns]] entries. That is a GOOD state — it means "+
-			"every finding has been fixed rather than waived. Delete this assertion when it "+
-			"happens; it exists only so the parser above cannot silently stop matching and take "+
-			"TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry vacuous with it.")
+// TestOSVConfig_BlockParser_StillMatches keeps TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry
+// from going silently vacuous.
+//
+// This assertion used to live in TestOSVConfig_IsReferencedByBothCallSites as a `NotEmpty` over the
+// real file, with a comment saying to delete it once every finding was fixed rather than waived.
+// That happened: #133, #134 and #135 were all cleared by a dependency bump, so osv-scanner.toml now
+// carries no [[IgnoredVulns]] blocks and a `NotEmpty` over it can only fail.
+//
+// Deleting it outright would drop the property it was actually protecting — that splitIgnoredVulnBlocks
+// still recognises a block when there IS one. With an empty config, a parser that had stopped
+// matching entirely would look exactly like a clean waiver list, and every per-block rule
+// (issue reference, expiry, the owned-golden cross-check) would pass over zero blocks. So the check
+// moves off the real file and onto fixed input, where it holds whether or not a waiver exists today
+// and is strictly harder to satisfy by accident than the `NotEmpty` it replaces.
+func TestOSVConfig_BlockParser_StillMatches(t *testing.T) {
+	t.Parallel()
+
+	const oneBlock = `
+[[IgnoredVulns]]
+id = "GHSA-aaaa-bbbb-cccc"
+ignoreUntil = 2026-11-09
+reason = "Issue #1. Because."
+`
+
+	tests := []struct {
+		name string
+		text string
+		want int
+	}{
+		{"no blocks", "# a config with only comments\n", 0},
+		{"one block", "# header\n" + oneBlock, 1},
+		{"three blocks", "# header\n" + oneBlock + oneBlock + oneBlock, 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Lenf(t, splitIgnoredVulnBlocks(tc.text), tc.want,
+				"splitIgnoredVulnBlocks no longer finds [[IgnoredVulns]] blocks it should. Every "+
+					"per-waiver rule in this file iterates over its output, so a parser that stops "+
+					"matching turns all of them into assertions over an empty slice — a green build "+
+					"that checks nothing.\nInput:\n%s", tc.text)
+		})
+	}
 }

@@ -6,7 +6,7 @@
 # of them stops being read by anybody.
 #
 # WHAT AN ENTRY HERE COSTS. `security / osv` is a REQUIRED, blocking job: it is in ci-required's
-# needs list and in its always-on assertion, and it is not `continue-on-error`. Every id below is
+# needs list and in its always-on assertion, and it is not `continue-on-error`. Every id here is
 # therefore a hole in a gate, deliberately cut, and the three rules that keep it from becoming the
 # gate's off switch are enforced by TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry in test/repo:
 #
@@ -22,27 +22,23 @@
 # function and moving it silently is the same as removing it.
 #
 # WHAT DOES NOT BELONG HERE. A vulnerability in a RUNTIME dependency of the shipped binary or the
-# shipped SPA bundle. All three entries below are transitive devDependencies — build- and lint-time
-# tools that never reach a guild's server. A runtime finding is an incident, not a waiver.
+# shipped SPA bundle. A waiver is for a build- or lint-time tool that never reaches a guild's
+# server; a runtime finding is an incident, not a waiver.
 
 # ---------------------------------------------------------------------------------------------
-# The three findings from the first scan of web/pnpm-lock.yaml this repository has ever run — the
-# npm blind spot #132 exists to close, reported on the day the gate landed. The Go graph
+# THERE ARE CURRENTLY NO WAIVERS, and that is the intended steady state: every finding has been
+# fixed rather than ignored.
+#
+# The first scan of web/pnpm-lock.yaml this repository ever ran — the npm blind spot #132 exists to
+# close — reported three, all transitive devDependencies (#133 @eslint/plugin-kit ReDoS,
+# #134 esbuild dev-server file read, #135 js-yaml quadratic CPU). All three were cleared in the
+# dependency bump that closed them, before their 2026-11-09 expiry, so their blocks are gone from
+# here and their ids are gone from test/golden/supply-chain/osv-waivers.txt. The Go graph
 # (go.mod, 28 packages) came back clean, which is the expected result given govulncheck has been
 # running over it as a required job since Phase 0 PR 12.
+#
+# ADDING ONE is a two-file edit by design: the block goes here, and the bare id goes in
+# test/golden/supply-chain/osv-waivers.txt, which is CODEOWNERS-protected.
+# TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile fails when the two disagree, so cutting a hole
+# in a required supply-chain gate cannot happen without a code owner agreeing the reason is good.
 # ---------------------------------------------------------------------------------------------
-
-[[IgnoredVulns]]
-id = "GHSA-xffm-g5w8-qvg7"
-ignoreUntil = 2026-11-09
-reason = "Issue #133. @eslint/plugin-kit 0.2.8 ReDoS via ConfigCommentParser, CVSS 2.3 LOW, fixed in 0.3.4. Transitive devDependency of eslint@9.17.0; never in the shipped SPA bundle. Not fixed here because the fix is a web/package.json + web/pnpm-lock.yaml bump, which has to re-clear security/licences, budget/bundle and lint/web on its own merits rather than riding along inside a CI-plumbing PR."
-
-[[IgnoredVulns]]
-id = "GHSA-g7r4-m6w7-qqqr"
-ignoreUntil = 2026-11-09
-reason = "Issue #134. esbuild 0.27.7 arbitrary file read from the DEVELOPMENT server on Windows, CVSS 2.5 LOW, fixed in 0.28.1. Transitive devDependency of vite@7.3.5; the exposed case is a Windows contributor running `make dev`, and the production build starts no dev server. Not fixed here because a Vite bump moves the build output and has to re-clear budget/bundle, test/e2e and verify-spa-dist on its own merits."
-
-[[IgnoredVulns]]
-id = "GHSA-5p4m-2wfm-xmqj"
-ignoreUntil = 2026-11-09
-reason = "Issue #135. js-yaml 4.3.0 quadratic CPU in !!omap resolution, CVSS 7.5 HIGH, fixed in 4.3.1. Transitive devDependency reached via openapi-typescript -> @redocly/openapi-core; it parses our own OpenAPI document at `make gen` time, not attacker input. The lockfile already resolves the fixed 4.3.1 for @eslint/eslintrc, so this is a duplicate-version problem and a pnpm overrides entry may clear it. Not fixed here because it may pull an openapi-typescript bump, which regenerates web/src/api/schema.d.ts and belongs in a codegen diff a reviewer can see on its own."
