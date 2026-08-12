@@ -308,10 +308,20 @@ gate MIG002 "backtick-quoted identifier in a migration (sqlc parses no table and
 # rule is supposed to permit. Completeness is checked once, at tag time, by
 # `make release-shipped-lock` in release.yml's `prepare` job.
 #
-# The check itself lives in scripts/shipped-lock.sh because the release path runs the same code with
-# one more assertion; a second copy here would be a second implementation nobody keeps in step.
+# The check itself lives in internal/migrate/shippedlock because the release path runs the same code
+# with one more assertion; a second copy here would be a second implementation nobody keeps in step.
+# It is Go rather than shell (issue #129) so the row parsing and the merge-base prefix comparison —
+# the highest-blast-radius logic in this file's reach — are unit-tested directly rather than only
+# through this subprocess. `go` runs from THIS checkout, never from the tree under inspection: the
+# negative fixtures are t.TempDir() trees with no module in them.
 if [ -f db/migrations-sqlite/SHIPPED.lock ]; then
-    if lock_out=$(DKP_REPO_ROOT="$PWD" bash "$gates_dir/shipped-lock.sh" verify 2>&1); then
+    # No Go, no check — and that is a FAILURE, not a skip, for the same reason the command itself
+    # hard-fails on a migration it cannot read: a hash gate that cannot hash must not report green.
+    # The `lint / repo` job installs the toolchain for exactly this.
+    if ! command -v go >/dev/null 2>&1; then
+        violation MIG003 "go is not on PATH, so db/migrations-sqlite/SHIPPED.lock could not be checked" \
+            "install the toolchain with: make setup"
+    elif lock_out=$(DKP_REPO_ROOT="$PWD" go -C "$gates_dir/.." run ./internal/migrate/shippedlock verify 2>&1); then
         printf '%s\n' "$lock_out"
     else
         violation MIG003 "a migration listed in db/migrations-sqlite/SHIPPED.lock was modified or deleted" \
