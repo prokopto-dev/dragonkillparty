@@ -28,6 +28,7 @@ and one link is cheaper than one argument.
 | [0013](0013-eqdkp-compat-shim.md) | EQdkp compatibility shim | accepted | ~700 lines so every existing P99 bot works on cutover day; deprecated at birth |
 | [0014](0014-full-portal-parity-in-scope.md) | Full portal parity in scope | accepted | The owner overruled the recommendation to drop the CMS; Phase 8 can slip to 1.1 |
 | [0015](0015-nocturne-dark-only-design-tokens.md) | Nocturne, dark-only, plain CSS and design tokens | accepted | Plain CSS with custom properties; one dark palette themed by overriding token values; status colours added |
+| [0016](0016-bespoke-licence-classifier.md) | A bespoke licence classifier | accepted | A similarity classifier reports a rider's permissive base; this one evaluates every pattern and any denial wins |
 
 ## When an ADR is required
 
