@@ -253,7 +253,7 @@ schema, so these are structural requirements rather than a style guide nobody re
 | Learning page (`getting-started/`) | ≤ 1,200 | error |
 | Understanding page (`concepts/`) | ≤ 1,500 | error |
 | FAQ answer | ≤ 3 sentences | error |
-| ADR | ~600 words, about one printed page | error |
+| ADR (`docs/adr/`) | ≤ 1,000 words, whole file — the ceiling `0000-template.md` states | error |
 | Heading depth | `###` maximum | error |
 | H2 count | ≤ 7 per page | warn |
 | `description` frontmatter | required, ≤ 160 characters, must not restate the title | error |

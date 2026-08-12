@@ -28,6 +28,21 @@ upgrade to people with no ops skills.
       SQLite file locking and `t.TempDir()` cleanup differ on Windows. `image / arm64-cross` is the
       only arm64 image build outside the release train itself (issue #108), and release.yml's image
       matrix is `fail-fast` — a red one there stops the release after the tag already exists.
+- [ ] **The three GHCR packages are public.** A package is **private on first publish** and stays that
+      way until the owner changes it by hand, so this row is load-bearing on the first release and
+      after any package is republished under a new name. Every workflow authenticates (issue #113), so
+      CI will not tell you — the failure lands on an officer running the README's `docker pull`.
+
+      ```bash
+      for p in dragonkillparty dkp-refdb dkp-fixtures; do
+        printf '%-16s %s\n' "$p" "$(gh api /users/prokopto-dev/packages/container/$p --jq .visibility)"
+      done   # want: public, public, public
+      ```
+
+      A `404` means that package has never been published; a `private` means fix it before the tag —
+      GitHub → the repository → Packages → the package → Package settings → Change visibility →
+      Public. `docs/design/06-cicd-and-release.md` §7 records why each one must be anonymously
+      pullable.
 
 ### 2. Check the version bump against the SemVer policy
 

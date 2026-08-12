@@ -26,10 +26,21 @@ wrong regex in a P99 log parser.
 logo are not licensed; forks must rename, which is what Apache-2.0 §6 makes sayable and `TRADEMARK.md`
 says plainly.
 
-**Enforced by:** the DCO GitHub App as a required status check named `DCO`; `lefthook.yml` installs a
-local hook so the failure happens before push; the `security / licenses` CI job fails on any GPL or
-AGPL **runtime** dependency, with no exception process; and `.github/CODEOWNERS` puts `LICENSE`,
-`NOTICE` and `TRADEMARK.md` behind a named reviewer.
+**Enforced by:** the DCO GitHub App as a required status check named `DCO`; the `security / licences`
+CI job fails on any GPL or AGPL **runtime** dependency, with no exception process; and
+`.github/CODEOWNERS` puts `LICENSE`, `NOTICE` and `TRADEMARK.md` behind a named reviewer. Nothing
+adds the trailer for you: sign-off is `git commit -s`, and a missing one surfaces as a red required
+check on the pull request, not before the push.
+
+> **Correction, 2026-08-12 ([#160](https://github.com/prokopto-dev/dragonkillparty/issues/160)).** As
+> accepted, the line above also promised that "`lefthook.yml` installs a local hook so the failure
+> happens before push". There is no such file and there never has been; `.githooks/pre-commit` and
+> `.githooks/pre-push`, installed by `make setup`, do not touch the commit message. The clause was a
+> plan for a mechanism, not part of the decision, so it is corrected rather than annotated — the
+> decision (Apache-2.0, DCO, no CLA) stands exactly as accepted. The same sentence spelled the licence
+> job `security / licenses`; `ci.yml` declares `security / licences`. The cost of leaving it was
+> concrete: a contributor who believes the hook exists pushes a branch, gets a red required check, and
+> rebases the lot — which is the outcome the DCO-over-CLA choice was made to avoid.
 
 ### Consequences
 

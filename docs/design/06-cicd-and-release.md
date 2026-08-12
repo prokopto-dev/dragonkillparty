@@ -539,6 +539,36 @@ typing the word `edge` into a confirmation field.
 support tickets are unfalsifiable from our side. GHCR is free for public packages with no pull limits,
 and it is already where the fixture and refdb artifacts live.
 
+### Package visibility is a manual step, and it is the owner's
+
+**A GHCR package is private on its first publish.** Visibility is a repository setting, not anything
+in this tree, so nothing here can create it, assert it or fix it — which is exactly why it has to be
+written down.
+
+| Package | Must be | Who reads it anonymously |
+|---|---|---|
+| `ghcr.io/prokopto-dev/dragonkillparty` | public | every officer running the documented `docker pull …:1`; `release.yml`'s smoke job and `nightly-verify.yml` authenticate, so only the user is exposed |
+| `ghcr.io/prokopto-dev/dkp-refdb` | public | `nightly-verify.yml`'s `upgrade-ladder`, and anyone reproducing an upgrade locally |
+| `ghcr.io/prokopto-dev/dkp-fixtures` | public | the importer matrix **on fork PRs**, which have no token for a private package (§1) |
+
+**Who and when: the repository owner, once per package, immediately after that package's first
+successful publish** — GitHub → the repository → Packages → the package → Package settings → Change
+visibility → Public, and confirm the package is linked to this repository so its permissions are
+inherited rather than hand-maintained. There is no earlier moment to do it: a package does not exist
+until something pushes to it.
+
+**Logging in is not the answer to this.** Issue #113 fixed a `release.yml` smoke job that pulled the
+published digest anonymously, and `TestReleaseWorkflows_EveryGHCRJob_LogsInFirst` holds every
+GHCR-touching job to it. That makes *CI* correct whatever the visibility is, deliberately: it means a
+private package no longer fails the release gate, so the first evidence of a private package would
+otherwise be an officer's `docker pull` returning `denied` / `manifest unknown` after a green release.
+The check belongs in the release checklist instead — `.claude/skills/cut-release/SKILL.md` §1 carries
+the row, and it is a `gh` command, not a click:
+
+```bash
+gh api /users/prokopto-dev/packages/container/dragonkillparty --jq .visibility   # want: public
+```
+
 ### Multi-arch by cross-compilation, joined with `imagetools` — never QEMU
 
 Every other stack in the comparison builds multi-arch images inside a QEMU-emulated container.

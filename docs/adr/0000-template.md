@@ -43,9 +43,13 @@ One line: what it costs to undo this in two years. Be specific — "a day", "a r
 
 **Rules for writing one of these.**
 
-- Budget one screen, about 900 words. **Nothing counts them** — there is no word-count gate, so this
-  one is on you and your reviewer. The count is only a proxy for the rule that matters: over budget
-  usually means two decisions in one file, and that is what to check for.
+- Budget one screen, about 900 words, and **1,000 is the ceiling** — `wc -w` over the whole file,
+  which is the number quoted whenever this comes up. **Nothing counts them** — there is no word-count
+  gate, so this one is on you and your reviewer. The count is only a proxy for the rule that matters:
+  over budget usually means two decisions in one file, and that is what to check for. The ceiling was
+  set above the longest ADR already accepted ([0014](0014-full-portal-parity-in-scope.md), 935 words)
+  on purpose: a number invented afterwards must never be a reason to edit an accepted record, which
+  is the rule one line below this one ([#162](https://github.com/prokopto-dev/dragonkillparty/issues/162)).
 - Status values: `proposed` · `accepted` · `superseded by ADR-NNNN` · `deprecated`. Never edit an
   accepted ADR's decision — write a new one and mark the old one superseded, both directions linked.
 - Present tense, second person for instructions. No marketing voice.

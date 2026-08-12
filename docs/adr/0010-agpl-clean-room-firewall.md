@@ -38,7 +38,7 @@ No game data ships in core either — item names, stats and icons are Darkpaw IP
 separate, optional, user-run repository. Class, race and zone tables ship as our own literals.
 
 **Enforced by:** the `lint / repo` CI job greps for those four identifiers everywhere outside the two
-permitted paths and fails the build; `security / licenses` fails on any GPL/AGPL runtime dependency;
+permitted paths and fails the build; `security / licences` fails on any GPL/AGPL runtime dependency;
 `CODEOWNERS` gates `LICENSE`, `NOTICE` and `TRADEMARK.md`; and `AGENTS.md`, `CONTRIBUTING.md` and the
 PR template all state the rule, because the temptation arrives phrased as a legitimate task.
 
