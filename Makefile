@@ -797,18 +797,18 @@ release-promote:
 #                          migration present at the tag must be listed — at a tag, everything present
 #                          ships, so an unsealed manifest is a hole in the record and fails here.
 #
-# The per-PR half is MIG003 in scripts/repo-gates.sh, which runs the same script WITHOUT --complete:
-# a migration added on a feature branch has not shipped and must not be listed yet.
+# The per-PR half is MIG003 in scripts/repo-gates.sh, which runs the same command WITHOUT
+# --complete: a migration added on a feature branch has not shipped and must not be listed yet.
 #
-# `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the script honours that variable so
+# `env -u DKP_REPO_ROOT` for the reason given above lint-repo: the command honours that variable so
 # its negative fixtures can run against a fabricated tree in t.TempDir(), and a value leaking in
 # from a developer's shell would otherwise verify some other directory's manifest while printing
 # that it passed.
 shipped-lock-seal:
-	@env -u DKP_REPO_ROOT bash scripts/shipped-lock.sh seal
+	@env -u DKP_REPO_ROOT $(GO) run ./internal/migrate/shippedlock seal
 
 release-shipped-lock:
-	@env -u DKP_REPO_ROOT bash scripts/shipped-lock.sh verify --complete
+	@env -u DKP_REPO_ROOT $(GO) run ./internal/migrate/shippedlock verify --complete
 
 # Regenerate THIRD_PARTY_NOTICES.txt from the runtime dependency graph. NOTICE promises this file and
 # .goreleaser.yaml attaches it to every release archive; TestThirdPartyNotices_* asserts it covers the
