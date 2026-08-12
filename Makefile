@@ -298,12 +298,22 @@ test-property:
 # vanish from the output and the floor would pass having checked nothing. The expected count is a
 # word count of the list below, so keep it as explicit package paths — a `...` pattern expands to
 # several packages and one word, and the assertion would then be wrong in the safe-looking direction.
+#
+# BOTH the quotes and the `tr` on that word count are load-bearing; neither is tidying (issue #111).
+# BSD `wc` right-aligns its count in an eight-column field, GNU `wc` does not, so on a stock macOS
+# the substitution expands to `       6`. Unquoted, that word-splits into `-v want=` plus a separate
+# argument `6`, and awk then takes `6` as its PROGRAM and the program text as a FILENAME — the whole
+# target died with "awk: can't open file" before it evaluated a single coverage number, and with it
+# `make check`. The quotes close that. The `tr` closes the subtler half: quoted-but-padded leaves
+# want as the string "       6", and whether that compares equal to a numeric seen is an awk
+# implementation detail. test/repo/coverage_floor_portability_test.go stages a BSD-shaped `wc` on
+# any host — Linux CI included — and holds both halves, in both directions.
 COVERAGE_FLOOR          := 95
 COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
                            ./internal/account/kinds ./internal/schemaenum ./internal/strategy
 test-coverage-floor:
 	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
-	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want=$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w) ' \
+	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want="$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w | tr -d '[:space:]')" ' \
 		/^ok/ && /coverage:/ { \
 			for (i = 1; i <= NF; i++) if ($$i == "coverage:") { pct = $$(i + 1); sub(/%$$/, "", pct) } \
 			seen++; \

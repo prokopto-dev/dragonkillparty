@@ -50,9 +50,12 @@ if [ -n "$(find "$dir" -maxdepth 1 -name '*.sql' -print -quit 2>/dev/null)" ]; t
     trap 'rm -rf "$probe"' EXIT
     cp "$dir"/. "$probe"/ -R 2>/dev/null || cp -R "$dir"/ "$probe"/
 
-    before=$(find "$probe" -name '*.sql' | wc -l)
+    # `tr -d` because BSD `wc` pads its count into an eight-column field and GNU `wc` does not, so
+    # these two would otherwise be "       6"/"       7" on macOS and lean on `test -ne` skipping
+    # leading blanks. It does today; that is a tolerance, not a guarantee (issue #111).
+    before=$(find "$probe" -name '*.sql' | wc -l | tr -d '[:space:]')
     "$atlas" migrate diff --env sqlite --dir "file://$probe" gen_sync_probe >/dev/null
-    after=$(find "$probe" -name '*.sql' | wc -l)
+    after=$(find "$probe" -name '*.sql' | wc -l | tr -d '[:space:]')
 
     if [ "$before" -ne "$after" ]; then
         pending=$(find "$probe" -name '*gen_sync_probe.sql' -exec cat {} \;)
