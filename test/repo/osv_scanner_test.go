@@ -249,7 +249,7 @@ func TestOSV_IsNotAReplacementForGovulncheck(t *testing.T) {
 	// Apache-2.0 licence depends on.
 	require.Contains(t, ciJobIDs(t, workflow), "security-licences",
 		"the security-licences job is gone. osv-scanner's --licenses mode is not a substitute for "+
-			"scripts/licence-gate.sh: LIC002 fails CLOSED on a licence it cannot identify, and the "+
+			"internal/licence: LIC002 fails CLOSED on a licence it cannot identify, and the "+
 			"allowlist is closed rather than a denylist.")
 }
 
@@ -331,6 +331,67 @@ func TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry(t *testing.T) {
 					"raise maxIgnoreUntilYear deliberately — that edit is meant to prompt a re-read "+
 					"of the whole waiver file.", id[1], parsed.Year())
 		})
+	}
+}
+
+// TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile puts a code-owner review in front of every new
+// waiver.
+//
+// The two controls above constrain the SHAPE of a waiver — it must name an issue, it must expire —
+// but neither requires a human to agree the reason is a good one, and `security / osv` is a
+// required blocking job. So the cheapest way to make that job green is still to add an id to
+// osv-scanner.toml, which is the shape AGENTS.md forbids: "do not disable a lint rule, a hook, or a
+// CI gate to land a change."
+//
+// osv-scanner.toml itself is not CODEOWNERS-protected. test/golden/ IS
+// (`/test/golden/ @prokopto-dev`), and AGENTS.md separately forbids rewriting anything under it to
+// go green — so mirroring the waiver set there and asserting the two agree means a new ignore cannot
+// land without an edit that requests a code owner's review.
+//
+// Second-best and knowingly so: owning osv-scanner.toml directly would be more direct, and that
+// one-line CODEOWNERS change is staged for the maintainer. This is the version implementable with
+// the ownership surface that already exists, so the gate is not left unguarded in the meantime. Keep
+// both if the CODEOWNERS entry lands — two independent locks on a waiver list is defence in depth.
+func TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile(t *testing.T) {
+	t.Parallel()
+
+	idRe := regexp.MustCompile(`(?m)^\s*id\s*=\s*"([^"]+)"`)
+
+	configured := make(map[string]bool)
+
+	for _, block := range ignoredVulnBlocks(t) {
+		if m := idRe.FindStringSubmatch(block); m != nil {
+			configured[m[1]] = true
+		}
+	}
+
+	golden := make(map[string]bool)
+
+	for _, line := range strings.Split(readRepoFile(t, "test/golden/supply-chain/osv-waivers.txt"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		golden[line] = true
+	}
+
+	const remedy = "\n\nAdding a waiver requires editing BOTH osv-scanner.toml and " +
+		"test/golden/supply-chain/osv-waivers.txt. That second file is CODEOWNERS-protected, which " +
+		"is the point: a hole cut in a required supply-chain gate should need a code owner to agree " +
+		"the reason is a good one. Do not resolve this by deleting the assertion."
+
+	for id := range configured {
+		require.Truef(t, golden[id],
+			"osv-scanner.toml waives %s, but test/golden/supply-chain/osv-waivers.txt does not list "+
+				"it — so a blocking gate was weakened without the owned file changing.%s", id, remedy)
+	}
+
+	for id := range golden {
+		require.Truef(t, configured[id],
+			"test/golden/supply-chain/osv-waivers.txt lists %s, but osv-scanner.toml no longer "+
+				"waives it. If the advisory was fixed, delete the id from the golden file too; the "+
+				"two are meant to be identical.%s", id, remedy)
 	}
 }
 

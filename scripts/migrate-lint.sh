@@ -28,8 +28,8 @@
 #   DKP_REPO_ROOT               repository root, the same contract the other gate scripts honour
 #
 # There is no test-only environment variable and no branch below that exists for the tests, which is
-# the rule scripts/licence-gate.sh is held to. test/repo drives this script the way CI does: a real
-# tree in t.TempDir() carrying the repository's own atlas.hcl, reached through DKP_REPO_ROOT.
+# the rule every gate here is held to. test/repo drives this script the way CI does: a real tree in
+# t.TempDir() carrying the repository's own atlas.hcl, reached through DKP_REPO_ROOT.
 #
 # `atlas migrate lint` is ~30 ms over this repository's migration set, needs no network, and reads
 # no live database — it replays the directory into the per-invocation in-memory dev database that

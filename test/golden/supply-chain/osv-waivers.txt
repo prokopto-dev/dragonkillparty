@@ -1,0 +1,27 @@
+# The complete set of OSV advisory ids waived in osv-scanner.toml. One id per line, sorted.
+#
+# WHY THIS FILE EXISTS, IN A DIRECTORY OF EXPECTED OUTPUTS.
+#
+# `security / osv` is a required, blocking CI job, so every `[[IgnoredVulns]]` entry in
+# osv-scanner.toml is a deliberate hole in a supply-chain gate. Two controls already constrain one:
+# TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry refuses an entry without a filed issue and a
+# real expiry date, and osv-scanner itself stops honouring the entry once that date passes.
+#
+# Neither of those requires a HUMAN to agree the reason is a good one. That is what this file adds.
+# It is under test/golden/, which is CODEOWNERS-protected (`/test/golden/ @prokopto-dev`), and
+# TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile fails when it disagrees with osv-scanner.toml.
+# So adding a waiver is no longer an edit to one unowned file — it also requires an edit here, which
+# requests a code-owner review, and which AGENTS.md separately forbids doing "to go green".
+#
+# It is second-best on purpose. Owning osv-scanner.toml directly in .github/CODEOWNERS would be more
+# direct, and that one-line change is staged for the maintainer (see PR #152). This achieves the same
+# property through the ownership surface that already exists, so the gate is not left unguarded while
+# waiting for it. If the CODEOWNERS entry lands, keep this too: two independent locks on a waiver
+# list is defence in depth, not duplication.
+#
+# TO CLEAR A WAIVER: fix the dependency, run `make osv-scan`, then delete the id from BOTH
+# osv-scanner.toml and this file, and close the tracking issue. Deleting from one is a red build.
+
+GHSA-5p4m-2wfm-xmqj
+GHSA-g7r4-m6w7-qqqr
+GHSA-xffm-g5w8-qvg7
