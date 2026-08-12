@@ -27,11 +27,15 @@
 
 set -euo pipefail
 
+# The real checkout, captured BEFORE the cd below and never overridden. It is where the Go module
+# lives, and under test that is not the tree this script operates on.
+module_root=$(cd "$(dirname "$0")/.." && pwd)
+
 # DKP_REPO_ROOT lets a test drive this against a fabricated tree in t.TempDir() — the same
 # mechanism scripts/repo-gates.sh uses and for the same reason. The negative cases here (a name
 # that is not snake_case, a name that already exists) must be proven to fail, and a fixture that
 # proves it cannot live in this checkout. `make migration` strips it with `env -u`.
-cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
+cd "${DKP_REPO_ROOT:-$module_root}"
 
 die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
 
@@ -69,6 +73,12 @@ $(printf '%s\n' "$clash" | sed 's/^/    /')"
 atlas=$(command -v atlas 2>/dev/null || true)
 [ -n "$atlas" ] || die "atlas is not installed — run make setup"
 
+# Both tools are checked up front, before anything is generated. Discovering the second one missing
+# after `atlas migrate diff` has already written a file leaves a half-authored, un-rewritten,
+# un-hashed migration in the tree for the next person to interpret.
+go_bin=$(command -v go 2>/dev/null || true)
+[ -n "$go_bin" ] || die "go is not installed — see make setup"
+
 before=$(find "$dir" -maxdepth 1 -name '*.sql' | sort)
 
 "$atlas" migrate diff --env sqlite "$name" >/dev/null
@@ -91,25 +101,34 @@ $(printf '%s\n' "$created" | sed 's/^/    /')"
 final="$dir/${next}_${name}.sql"
 mv "$created" "$final"
 
-# Two rewrites in one pass.
+# Two rewrites in one pass, and they live in Go: internal/migrate/migrationfmt.
 #
 # FIRST, backtick-quoted identifiers become double-quoted ones. Atlas emits `dkp_meta` for SQLite,
 # which SQLite accepts as a MySQL compatibility extension — but sqlc's SQLite parser does not, and
 # its failure mode is the worst kind: it does not reject the schema file, it silently parses no
 # table out of it and then reports `relation "dkp_meta" does not exist` against the QUERY, pointing
-# at the one file that is correct. Double quotes are the SQL standard identifier quote and are what
-# a SQLite file should have contained in the first place.
-#
-# The pattern requires the quoted text to be a bare identifier, so a backtick inside a longer
-# string literal — a CHECK expression, a DEFAULT — is left alone. Gate MIG002 in
-# scripts/repo-gates.sh is the backstop: it fails any migration that still contains one.
+# at the one file that is correct. Gate MIG002 in scripts/repo-gates.sh is the backstop: it fails
+# any migration that still contains a backtick.
 #
 # SECOND, everything from `-- +goose Down` onwards is replaced. Recovery in this project is the
 # snapshot taken immediately before the migration ran, not a reverse migration.
 #
-# The rewrite is deterministic, which is what keeps `make gen` honest: regenerating this file from
-# the same db/schema.hcl produces these bytes again, so `verify-generated`'s
-# `git diff --exit-code` stays a real assertion rather than permanent noise.
+# AND IT REFUSES, rather than rewrite, a backtick INSIDE a single-quoted string literal wrapping
+# something identifier-shaped: `CHECK (a <> '`abc`')` would become `CHECK (a <> '"abc"')` — still
+# valid SQL, still applies cleanly, and now meaning something different, with nothing in the diff to
+# suggest the generator did it. On that path it writes nothing at all and leaves the file exactly as
+# Atlas produced it.
+#
+# THE REWRITE MOVED OUT OF THIS SCRIPT IN ISSUE #128, and the reason is the refusal above. It is
+# string surgery on a file that is append-only and permanent from the moment it is committed — the
+# one artefact here where a wrong rewrite is unrecoverable for a user — and as a sed/awk pipeline the
+# only way to test it was to run this whole script. The two inputs that decide whether the refusal is
+# right are now unit tests: the literal that must be refused, and the adjacent-literal shape
+# (`DEFAULT ''`, a backticked column, `DEFAULT 'UTC'` — any table with two TEXT defaults) that a
+# naive regex misreports as the same thing because its runs hop the boundary BETWEEN two literals.
+# Both are in internal/migrate/migrationfmt/main_test.go, along with a test asserting every migration
+# already committed is a fixed point of the Go rewrite — which is what makes this a move rather than
+# a second implementation of the same intent.
 #
 # No "GENERATED — do not edit" banner is prepended, deliberately. Three mechanisms already carry
 # that status and all three are enforced rather than advisory: .claude/hooks/guard-protected-paths.sh
@@ -117,49 +136,14 @@ mv "$created" "$final"
 # lists the directory as generated, and CI's codegen-drift job fails on any diff. A prose banner on
 # top of that would only lengthen the one artefact whose review value is that the SQL is short
 # enough to read in full.
-# The one input the rewrite below would silently corrupt: a backtick INSIDE a single-quoted string
-# literal, wrapping something identifier-shaped. `CHECK (a <> '`abc`')` would become
-# `CHECK (a <> '"abc"')` — still valid SQL, still applies cleanly, and now means something different,
-# with nothing in the diff to suggest the generator did it. Refuse instead. This has never fired; it
-# costs a few lines and the alternative is a class of bug that only shows up as wrong data.
 #
-# The test STRIPS every backtick-free string literal first, then looks for a backtick still enclosed
-# by quotes. A naive `'[^']*\`[^']*'` cannot do this: its `[^']*` runs hop the `', '` boundary
-# BETWEEN two adjacent literals, so a backtick identifier sitting between `DEFAULT ''` and
-# `DEFAULT 'UTC'` — which is what any table with two TEXT-default columns produces — reads as
-# "inside a literal" when it is plainly between them. Removing the backtick-free literals first
-# leaves only literals that actually contain a backtick, which is exactly the corrupting input.
-stripped=$(sed -E "s/'[^'\`]*'//g" "$final")
-if printf '%s' "$stripped" | grep -qE "'[^']*\`[^']*'"; then
-    printf '\033[31m  %s contains a backtick inside a string literal.\033[0m\n' "$final" >&2
-    printf '  The backtick-to-double-quote rewrite would change what that literal MEANS, so this\n' >&2
-    printf '  script is refusing rather than guessing. Fix the expression in db/schema.hcl to avoid\n' >&2
-    printf '  the backtick, or rewrite the identifiers in this file by hand and re-run\n' >&2
-    printf '  `atlas migrate hash --env sqlite`.\n' >&2
+# `-C "$module_root"` and an absolute file argument, never a bare `go run`: this script has already
+# cd'd to DKP_REPO_ROOT, which under test is a fabricated tree in t.TempDir() with no Go module in
+# it — and with the module root as the working directory, a relative migration path would resolve
+# against the real checkout instead of the fixture.
+if ! "$go_bin" run -C "$module_root" ./internal/migrate/migrationfmt "$PWD/$final"; then
     exit 1
 fi
-
-tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
-awk '/^-- \+goose Down$/ { exit } { print }' "$final" \
-    | sed -E 's/`([A-Za-z_][A-Za-z0-9_]*)`/"\1"/g' > "$tmp"
-cat >> "$tmp" <<'DOWN'
--- +goose Down
--- Forward-only. This project ships no down migrations, ever: a down migration is code that runs
--- exactly once, in an emergency, on data that cannot be reproduced, written months earlier by
--- someone who never tested it against your database. Recovery is restoring the snapshot taken
--- immediately before this migration ran:
---
---     /data/backups/pre-<version>-<timestamp>.db.zst
---
--- The statement below aborts if goose is ever asked to run this block. Note that SQLite discards
--- RAISE()'s message outside a trigger body and reports "RAISE() may only be used within a
--- trigger-program" instead, so the path above — not the string below — is what an operator can
--- actually read.
-SELECT RAISE(ABORT, 'DKP migrations are forward-only; restore /data/backups/pre-<ver>-*.db.zst');
-DOWN
-mv "$tmp" "$final"
-chmod 0644 "$final"
 
 # The rename and the rewrite both invalidate atlas.sum. Plain `hash`, never `hash --force`: the
 # forced variant re-hashes a directory whose contents changed under it, which is the mechanism that

@@ -363,6 +363,12 @@ fmt:
 ## migration: create a migration — make migration NAME=add_bid_hold
 # The `ifndef` stays even though the script also checks NAME: it makes `make migration` with no
 # argument fail at parse time with the usage line, before any tool runs.
+#
+# Two tools, and the script checks for both before it generates anything: `atlas` authors the SQL
+# from db/schema.hcl, and `go` runs internal/migrate/migrationfmt over what Atlas wrote (issue #128
+# — the rewrite guards a file that is permanent once committed, so it is tested Go rather than a sed
+# pipeline). Neither is a runtime dependency: goose applies migrations from the embedded set and the
+# binary the officer installs contains no generator.
 migration:
 ifndef NAME
 	$(error NAME is required: make migration NAME=add_bid_hold)
