@@ -48,7 +48,8 @@ resolves to a real target, not that every target appears here.)
   you do not edit are the enum CHECKs between the `GENERATED` markers: the `ledger_batch` pair from
   `internal/ledger/kinds`, the `audit_log` pair (`actor_kind`, `outcome`) from `internal/audit/kinds`
   and the `account` pair (`kind`, `system_key`) from `internal/account/kinds`, all written by
-  `make gen` (canonical §5).
+  `make gen` (canonical §5). A *new* string-enum CHECK goes in a catalogue too, not in a literal:
+  `ENUM001` fails one written outside the markers.
 - `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach
   upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.

@@ -65,6 +65,20 @@ make check
 - [ ] **Breaking API change** — I added the `!breaking-api` label and updated
       `docs/api-changelog.md`. `/api/v1` is additive-only; a real break mints `/api/v2`.
 
+## Decision record
+
+<!-- Needed when this PR adds a new *direct* dependency to go.mod, touches deploy/Dockerfile or
+     db/schema.hcl, or adds a top-level internal/ package. Either add a file under docs/adr/ in
+     this PR, or write a line HERE, in this body, starting with the word "adr" then a colon, then
+     "n/a", then a dash and the reason it does not need one. ADR001 in `lint / repo` reads this
+     body and fails without one, so the reason is harvested rather than remembered.
+
+     Do not paste a filled-in example into this template: every PR inherits it and the gate would
+     be satisfied for all of them. TestPRTemplate_DoesNotPreSatisfyTheADRGate fails if you do.
+
+     docs/adr/README.md § "When an ADR is required" is the list. Ordinary features, refactors, bug
+     fixes and new doc pages need nothing here. -->
+
 ## Issues filed
 
 <!-- Out-of-scope findings from this work, one row per issue. AGENTS.md § "Out-of-scope findings:

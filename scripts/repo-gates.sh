@@ -308,10 +308,20 @@ gate MIG002 "backtick-quoted identifier in a migration (sqlc parses no table and
 # rule is supposed to permit. Completeness is checked once, at tag time, by
 # `make release-shipped-lock` in release.yml's `prepare` job.
 #
-# The check itself lives in scripts/shipped-lock.sh because the release path runs the same code with
-# one more assertion; a second copy here would be a second implementation nobody keeps in step.
+# The check itself lives in internal/migrate/shippedlock because the release path runs the same code
+# with one more assertion; a second copy here would be a second implementation nobody keeps in step.
+# It is Go rather than shell (issue #129) so the row parsing and the merge-base prefix comparison —
+# the highest-blast-radius logic in this file's reach — are unit-tested directly rather than only
+# through this subprocess. `go` runs from THIS checkout, never from the tree under inspection: the
+# negative fixtures are t.TempDir() trees with no module in them.
 if [ -f db/migrations-sqlite/SHIPPED.lock ]; then
-    if lock_out=$(DKP_REPO_ROOT="$PWD" bash "$gates_dir/shipped-lock.sh" verify 2>&1); then
+    # No Go, no check — and that is a FAILURE, not a skip, for the same reason the command itself
+    # hard-fails on a migration it cannot read: a hash gate that cannot hash must not report green.
+    # The `lint / repo` job installs the toolchain for exactly this.
+    if ! command -v go >/dev/null 2>&1; then
+        violation MIG003 "go is not on PATH, so db/migrations-sqlite/SHIPPED.lock could not be checked" \
+            "install the toolchain with: make setup"
+    elif lock_out=$(DKP_REPO_ROOT="$PWD" go -C "$gates_dir/.." run ./internal/migrate/shippedlock verify 2>&1); then
         printf '%s\n' "$lock_out"
     else
         violation MIG003 "a migration listed in db/migrations-sqlite/SHIPPED.lock was modified or deleted" \
@@ -319,6 +329,420 @@ if [ -f db/migrations-sqlite/SHIPPED.lock ]; then
     fi
 else
     note "skip" "[MIG003] db/migrations-sqlite/SHIPPED.lock does not exist yet"
+fi
+
+# --- ENUM001: a string-enum CHECK comes from a Go catalogue, never from a literal --------------
+#
+# Canonical §5: "both the SQL CHECK constraint and the OpenAPI enum are generated from one Go
+# catalogue". Every string-enum CHECK in db/schema.hcl now is — ledger_batch.kind/source,
+# audit_log.actor_kind/outcome, account.kind/system_key — and each has a test asserting its own
+# region matches its own catalogue. NONE of them says anything about a SEVENTH enum, which is the
+# hole this closes: a brand-new table added with
+#
+#   check "bid_session_state_enum" { expr = "state IN ('draft', 'open', 'extended')" }
+#
+# and no catalogue passes all three of those tests, `make verify-generated` and `make check`. The
+# rule that it should not was prose in .claude/rules/migrations.md and AGENTS.md, and prose is what
+# produced this finding three times already (#29 fixed two enums, #40 a third, #51/#53 the last
+# three).
+#
+# canonical §5 makes bid.tier's DECLARATION ORDER semantic — the resolution ladder — so a literal
+# that agrees with the Go list on values and disagrees on order is a resolver bug that no schema
+# comparison would ever see. That is the expensive version of this defect and it is coming in Phase
+# 1 or 2, in a PR whose author is thinking about bidding rather than about enum plumbing.
+#
+# SCOPED TO `check` BLOCKS, structurally, and to lists containing a QUOTED value:
+#
+#   caught   expr = "state IN ('draft', 'open')"                     the plain form (CheckExpr)
+#   caught   expr = "k IS NULL OR k IN ('a', 'b')"                   the nullable form (NullableCheckExpr)
+#   caught   expr = "state IN (\"draft\", \"open\")"                 SQLite's double-quoted literals
+#   caught   expr = "state in ('draft', 'open')"                     SQL keywords are case-insensitive
+#   caught   expr = "state IN /* set */ ('draft', 'open')"           comments are removed before scanning
+#   ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
+#   ignored  expr = "retry IN (0, -- not 'draft'\n 1)"               a comment is not a vocabulary
+#   ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
+#
+# BOTH SQL QUOTE FORMS, and that pair is closed rather than an enumeration that might be missing an
+# arm: SQLite produces a string literal from an apostrophe and — through the double-quoted-identifier
+# misfeature it keeps for compatibility — from a double quote whose token resolves to no column. The
+# other two quoting characters it accepts, backticks and brackets, are identifier quoting and cannot
+# express a value. So a hand-written enum can be spelled exactly two ways and the gate reads both;
+# changing quote style is not a way past it.
+#
+# The index-predicate exclusion is deliberate and is #97: a partial index over a SUBSET of a
+# vocabulary is not the vocabulary, so it cannot be rendered from a catalogue as-is and a gate that
+# demanded it would fire on correct work.
+#
+# The scan tracks the check block STRUCTURALLY and carries an unfinished IN list across lines, so a
+# wrapped or heredoc expression is read as the one expression it is. A line-scoped scan misses that
+# shape entirely — `IN (` alone on its line, then the values on theirs — which would have made the
+# longest vocabularies, the ones most worth generating, the ones that walked through.
+#
+# The waiver is `// dkp:enum-literal <reason>` on the line above the check, the same in-tree marker
+# idiom as `-- dkp:destructive-approved:` and `-- dkp:fixture deliberately-broken`. It lives in the
+# schema rather than in an allowlist here so that an exception is visible in the diff a reviewer
+# reads, and it requires a reason for the same purpose the ADR waiver below does.
+#
+# A GENERATED REGION IS ONE A CATALOGUE OWNS, NOT ONE THE SCHEMA CLAIMS. The markers are comments, so
+# without this the exemption is self-service: wrap the new literal in a balanced
+# `// BEGIN GENERATED` / `// END GENERATED` pair and the gate steps over it — and nothing downstream
+# notices either, because `make gen` only rewrites the regions its catalogues declare and a
+# fabricated one is not among them. So the marker line must match, WHOLE, a marker some catalogue
+# declares in Go, and the marker set is read out of the Go source rather than restated here:
+#
+#   internal/*/kinds/*.go:  schemaEnumBegin = "  // BEGIN GENERATED — … Run `make gen`."
+#
+# Whole-line identity is the same rule schemaenum.Region.Replace uses to find its own region, which
+# is what makes the two agree by construction. A marker nothing declares is a VIOLATION, not a silent
+# non-exemption: it means either a fabricated region or a catalogue and a schema that have drifted,
+# and both need saying. The Go twin is TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues,
+# which closes the residue this cannot see — a marker const declared in Go but wired into no
+# generator.
+#
+# An UNCLOSED `BEGIN GENERATED` is itself a violation too. Without that, one unbalanced marker line
+# exempts every check after it — the whole rest of the file — and the gate stays green while doing
+# nothing.
+if [ -f db/schema.hcl ]; then
+    # The marker lines the Go catalogues declare, extracted from the const block each one keeps them
+    # in. Empty when internal/ does not exist yet, which fails CLOSED: with no catalogue to own it,
+    # no region is generated and every marker is unrecognised.
+    #
+    # Joined with ASCII FS rather than newlines: a multi-line `awk -v` value is a parse error in BWK
+    # awk ("newline in string"), and a marker line can hold anything except a control character.
+    enum_markers=$(grep -rhE '^[[:space:]]*schemaEnum(Begin|End)[[:space:]]*=[[:space:]]*"' \
+        --include='*.go' internal 2>/dev/null | sed -E 's/^[^"]*"//; s/"[[:space:]]*$//' | tr '\n' '\034' || true)
+
+    # Explicit character ranges rather than POSIX classes: this runs under GNU awk on CI and BWK awk
+    # on a laptop, and the class support differs between them. The two quote characters are built
+    # with sprintf so that neither has to survive the shell's quoting of this program.
+    if hits=$(awk -v known_markers="$enum_markers" '
+        BEGIN {
+            SQ = sprintf("%c", 39)
+            DQ = sprintf("%c", 34)
+
+            # mk, not m: m is a scalar in the brace counter below, and awk has one namespace for
+            # both — a collision is a fatal "array in a scalar context" under gawk and a silently
+            # different answer under BWK awk.
+            count = split(known_markers, mk, sprintf("%c", 28))
+            for (i = 1; i <= count; i++) {
+                if (mk[i] != "") { declared[mk[i]] = 1 }
+            }
+        }
+
+        # strip_sql_comments — remove SQL comments from an expression before it is scanned.
+        #
+        # `state IN -- why these\n  (${SQ}a${SQ})` and `state IN /* set */ (${SQ}a${SQ})` are the same
+        # CHECK as the one written without them, so the scanner has to see the same thing. Removing
+        # the comments is what makes the token boundary between the keyword and its parenthesis
+        # insensitive to whatever a person wrote in the gap, rather than a list of gaps the pattern
+        # happens to allow — the enumeration failure this rule has now been bitten by three times.
+        #
+        # Block-comment state is file-scoped, like the list state, because `/*` may close lines later.
+        #
+        # STRING CONTEXT IS DELIBERATELY NOT TRACKED, and the direction of that error is the reason it
+        # is safe. A `--` inside a value truncates the rest of the line, which can only REMOVE text
+        # from the scan — and never the quote that opens the literal it appears in, since that quote
+        # comes first and has already been counted. So this can lose the closing parenthesis of a list
+        # it has already reported; it cannot hide a vocabulary. The alternative, a full SQL lexer in
+        # awk, buys nothing a grep gate needs.
+        function strip_sql_comments(s,   out, i, n, ch, nxt) {
+            out = ""
+            n = length(s)
+            i = 1
+
+            while (i <= n) {
+                ch = substr(s, i, 1)
+                nxt = substr(s, i + 1, 1)
+
+                if (in_block_comment) {
+                    if (ch == "*" && nxt == "/") { in_block_comment = 0; i += 2 }
+                    else { i++ }
+                    continue
+                }
+
+                if (ch == "-" && nxt == "-") { break }
+                if (ch == "/" && nxt == "*") { in_block_comment = 1; i += 2; continue }
+
+                out = out ch
+                i++
+            }
+
+            return out
+        }
+
+        # quoted_in_list — does an IN list hold a quoted value? Carries an unfinished list ACROSS
+        # LINES, because a wrapped or heredoc expression is a normal way to write a long one:
+        #
+        #   expr = <<-SQL
+        #     state IN (
+        #       ${SQ}draft${SQ},
+        #       ${SQ}open${SQ}
+        #     )
+        #   SQL
+        #
+        # A line-scoped scanner reads `IN (` with no quote after it, then two value lines with no
+        # `IN (` on them, and finds nothing — which is how the longest vocabularies, the ones most
+        # worth generating, would have been the ones that walked through. list_depth is therefore
+        # file-scoped state: the scan runs character by character, entering a list at `IN (`, and
+        # staying in it until the parenthesis that closes it however many lines later.
+        #
+        # Character-wise rather than by regex because the question is about the text BETWEEN the
+        # parentheses — `IN (0, 1)` is a boolean and must not match, a quote anywhere in a list is a
+        # vocabulary — and because nesting has to be counted rather than assumed away.
+        #
+        # `[Ii][Nn]`, because SQL keywords are case-insensitive: the uppercase the generator emits is
+        # a convention rather than a rule, and a hand-written CHECK — the only kind this gate ever
+        # sees — is written in whatever case its author was typing in. Spelled as a character class
+        # rather than with IGNORECASE, which is a gawk extension and off under --posix. The leading
+        # non-word character keeps JOIN and MIN out and still does: what precedes the keyword decides,
+        # not its case.
+        # The keyword and its parenthesis may also be split across the line break — the same shape as
+        # the case above, one token earlier — so a line ending in the bare keyword arms pending_in and
+        # the next line opening with `(` enters the list. A line with nothing left on it returns
+        # early rather than clearing that state, which is what carries the keyword across a blank or
+        # comment-only line between the two.
+        function quoted_in_list(s,   i, n, ch, hit) {
+            if (s ~ /^[ \t]*$/) { return 0 }
+
+            n = length(s)
+            i = 1
+
+            if (list_depth == 0 && pending_in && match(s, /^[ \t]*\(/)) {
+                i = RSTART + RLENGTH
+                list_depth = 1
+                reported = 0
+            }
+
+            pending_in = 0
+
+            while (i <= n) {
+                if (list_depth > 0) {
+                    ch = substr(s, i, 1)
+
+                    if (ch == "(") { list_depth++ }
+                    else if (ch == ")") { list_depth-- }
+                    else if (ch == SQ || ch == DQ) { hit = 1 }
+
+                    i++
+                    continue
+                }
+
+                if (!match(substr(s, i), /(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*\(/)) {
+                    if (match(substr(s, i), /(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*$/)) {
+                        pending_in = 1
+                        list_line = NR
+                        list_text = $0
+                    }
+
+                    break
+                }
+
+                # Just past the opening parenthesis the match ended on.
+                i = i + RSTART + RLENGTH - 1
+                list_depth = 1
+                list_line = NR
+                list_text = $0
+                reported = 0
+            }
+
+            return hit
+        }
+
+        index($0, "BEGIN GENERATED") {
+            if ($0 in declared) { in_region = 1; begin_line = NR }
+            else {
+                printf "db/schema.hcl:%d: BEGIN GENERATED marker no Go catalogue declares — a region is generated only if a catalogue in internal/*/kinds owns it:%s\n", NR, $0
+            }
+            next
+        }
+
+        index($0, "END GENERATED") {
+            if ($0 in declared) { in_region = 0 }
+            else {
+                printf "db/schema.hcl:%d: END GENERATED marker no Go catalogue declares:%s\n", NR, $0
+            }
+            next
+        }
+
+        # Comment lines, in both HCL spellings. A gate that fires on the prose documenting it is a
+        # gate people route around — and db/schema.hcl'"'"'s own header names the enum shape.
+        /^[ \t]*(\/\/|#)/ {
+            if ($0 ~ /dkp:enum-literal[ \t]+[^ \t]+[ \t]*[^ \t]/) { waived = 1 }
+            else if ($0 ~ /dkp:enum-literal/) { waived = 0; bare_waiver = NR }
+            next
+        }
+
+        # Entering a check block. The name is what a reviewer keys a waiver to, so it is carried
+        # into the message.
+        /^[ \t]*check[ \t]+"/ {
+            in_check = 1
+            depth = 0
+            name = $0
+            sub(/^[ \t]*check[ \t]+"/, "", name)
+            sub(/".*$/, "", name)
+            this_waived = waived
+
+            # A list cannot span two check blocks. Clearing it here means an unbalanced parenthesis
+            # in one block cannot swallow the next one.
+            list_depth = 0
+            pending_in = 0
+            in_block_comment = 0
+        }
+
+        in_check {
+            # The list is reported at the line it STARTED on — where the author is looking — and
+            # once, however many quoted values follow it.
+            if (!in_region && !this_waived && quoted_in_list(strip_sql_comments($0)) && !reported) {
+                reported = 1
+                printf "db/schema.hcl:%d: check \"%s\": %s\n", list_line, name, list_text
+            }
+
+            n = gsub(/[{]/, "&"); m = gsub(/[}]/, "&")
+            depth += n - m
+            if (depth <= 0) { in_check = 0; list_depth = 0; pending_in = 0; in_block_comment = 0 }
+        }
+
+        # A blank line or any other statement ends the waiver'"'"'s reach: it applies to the check
+        # block it sits above, not to the rest of the file.
+        !in_check { waived = 0 }
+
+        END {
+            if (in_region) {
+                printf "db/schema.hcl:%d: unclosed BEGIN GENERATED marker — every check after it is silently exempt\n", begin_line
+            }
+            if (bare_waiver) {
+                printf "db/schema.hcl:%d: dkp:enum-literal with no reason — the reason is the point of the waiver\n", bare_waiver
+            }
+        }
+    ' db/schema.hcl 2>&1); then
+        [ -n "$hits" ] && violation ENUM001 \
+            "hand-written string-enum CHECK in db/schema.hcl — the values come from a Go catalogue between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)" \
+            "$hits"
+    else
+        # A scan that CANNOT RUN is a failure, never a pass. Without this the awk program's own
+        # errors — a fatal on the wrong awk, an unreadable file — go to stderr and leave `hits`
+        # empty, which reads exactly like a clean schema. That is the shape of bug that makes a gate
+        # stop meaning anything without anybody noticing, and it was found in review of this rule.
+        violation ENUM001 "the string-enum CHECK scan did not run — this is a gate failure, not a pass" \
+            "$hits"
+    fi
+else
+    note "skip" "[ENUM001] db/schema.hcl does not exist yet"
+fi
+
+# --- ADR001: a change that needs a decision record carries one --------------------------------
+#
+# docs/adr/README.md and docs/design/07-documentation-system.md both said, in bold, that this was
+# enforced in `lint / repo`. It was not (#85), and that is worse than an ordinary stale sentence
+# because of who reads it: an agent reading the README concludes the gate will catch it, and a
+# reviewer reading the same line concludes CI already asked. Neither was true.
+#
+# NEEDS THE PR BODY, which no grep over the tree can see, so the inputs arrive from the environment
+# and ci.yml's `lint / repo` job supplies them:
+#
+#   DKP_ADR_BASE_REF   the PR base sha. UNSET => this is not a pull request; skip, loudly.
+#   DKP_ADR_PR_BODY    the PR body. May legitimately be EMPTY — a PR with no body is a PR that has
+#                      not answered the question, so emptiness must fail rather than skip.
+#
+# Absence of the base ref disables the gate, which makes it fail-open in exactly one direction: a
+# CI job that stopped passing the env would go quietly green. TestCI_LintRepoJob_PassesPullRequestContext
+# is what holds that line, the same way TestCI_LintRepoJob_FetchesFullHistory holds MIG003's
+# fetch-depth. A base ref that IS set and cannot be read is a violation, never a skip: that is the
+# shallow-clone case, and it is the configuration most likely to have it.
+#
+# TRIGGERS — the four in the two documents:
+#
+#   go.mod                a NEW DIRECT requirement, compared against the base blob. A version bump
+#                         or a new indirect does not fire, which is what keeps Renovate quiet.
+#   deploy/Dockerfile     any change. The document says "new port, volume or process"; no grep can
+#   db/schema.hcl         any change. …judge "new table or changed constraint" either.
+#   internal/<pkg>/…      a file added under a top-level package that does not exist at the base.
+#
+# The two path triggers are deliberately BROADER than their parenthetical, and the docs now say so.
+# Over-triggering costs one line in the PR body and is visible; under-triggering is invisible, which
+# is the failure mode this gate exists to end. Same reasoning as WEB003 above.
+#
+# SATISFIED BY either half of what the documents promise: a file ADDED under docs/adr/, or an
+# `adr: n/a — <reason>` line in the body. The reason is required — a bare `adr: n/a` is the box
+# ticked without the thought, and harvesting the reason is the entire point.
+
+# adr_direct_requires — the direct module paths of a go.mod on stdin. `// indirect` first, so it
+# wins over both the block and the single-line spelling.
+adr_direct_requires() {
+    awk '
+        /\/\/ indirect/                          { next }
+        /^require[ \t]*\(/                       { inblock = 1; next }
+        inblock && /^\)/                         { inblock = 0; next }
+        inblock && NF >= 2 && $2 ~ /^v/          { print $1; next }
+        /^require[ \t]+/ && NF >= 3 && $3 ~ /^v/ { print $2 }
+    '
+}
+
+if [ -z "${DKP_ADR_BASE_REF:-}" ]; then
+    note "skip" "[ADR001] DKP_ADR_BASE_REF is unset — no pull-request context to check against"
+elif ! git rev-parse --verify --quiet "${DKP_ADR_BASE_REF}^{commit}" >/dev/null 2>&1; then
+    violation ADR001 "the ADR base revision cannot be read, so the check cannot run" \
+        "${DKP_ADR_BASE_REF} is not in this checkout. The lint / repo job carries fetch-depth: 0
+for this reason; a shallow clone must not turn this gate into a green check."
+else
+    adr_base="${DKP_ADR_BASE_REF}"
+
+    # base -> WORKING TREE, plus untracked files. In CI the tree is clean and this is exactly the
+    # PR's diff; on a laptop it also sees work in progress, including an ADR that has been written
+    # but not yet added. `--diff-filter=A` is what separates "added an ADR" from "touched the index".
+    adr_changed=$( { git diff --name-only "$adr_base" --; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
+    adr_added=$( { git diff --name-only --diff-filter=A "$adr_base" --; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
+
+    adr_triggers=""
+
+    # `[ -f go.mod ]` as well as the changed-path test: deleting go.mod entirely is a change to it,
+    # and reading a file that is no longer there would abort the script rather than report a rule.
+    if [ -f go.mod ] && printf '%s\n' "$adr_changed" | grep -qx 'go\.mod'; then
+        adr_new_dep=$(comm -13 \
+            <(git show "$adr_base:go.mod" 2>/dev/null | adr_direct_requires | sort -u) \
+            <(adr_direct_requires < go.mod | sort -u) || true)
+        [ -n "$adr_new_dep" ] && adr_triggers="$adr_triggers
+go.mod — new direct dependency: $(printf '%s' "$adr_new_dep" | tr '\n' ' ')"
+    fi
+
+    for adr_path in deploy/Dockerfile db/schema.hcl; do
+        printf '%s\n' "$adr_changed" | grep -qxF "$adr_path" &&
+            adr_triggers="$adr_triggers
+$adr_path — changed"
+    done
+
+    for adr_pkg in $(printf '%s\n' "$adr_added" | sed -n 's#^internal/\([^/][^/]*\)/.*#\1#p' | sort -u); do
+        git cat-file -e "$adr_base:internal/$adr_pkg" 2>/dev/null ||
+            adr_triggers="$adr_triggers
+internal/$adr_pkg — new top-level package"
+    done
+
+    if [ -n "$adr_triggers" ]; then
+        adr_new_record=$(printf '%s\n' "$adr_added" | grep -E '^docs/adr/[0-9]' || true)
+
+        # The waiver line: `adr: n/a` plus a reason. Two whitespace-separated tokens after the
+        # marker, so a separator alone ("adr: n/a —") is not a reason.
+        adr_waiver=$(printf '%s\n' "${DKP_ADR_PR_BODY:-}" | awk '
+            tolower($0) !~ /^[ \t]*adr:/ { next }
+            {
+                rest = $0
+                sub(/^[ \t]*[Aa][Dd][Rr]:[ \t]*/, "", rest)
+                if (tolower(rest) !~ /^n\/a/) { next }
+                sub(/^[Nn]\/[Aa]/, "", rest)
+                sub(/^[^a-zA-Z0-9]*/, "", rest)
+                if (rest ~ /[^ \t]+[ \t]+[^ \t]/) { print "ok"; exit }
+            }' || true)
+
+        if [ -z "$adr_new_record" ] && [ -z "$adr_waiver" ]; then
+            violation ADR001 \
+                "this change needs an architecture decision record (docs/adr/README.md, docs/design/07 §ADRs)" \
+                "triggered by:$adr_triggers
+
+Add a file under docs/adr/ in this PR, or put a line in the PR BODY reading
+  adr: n/a — <why this change does not need one>
+A reason is required; the marker on its own is not one."
+        fi
+    fi
 fi
 
 # --- The golden-file rewrite fence ------------------------------------------------------------

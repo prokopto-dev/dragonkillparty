@@ -94,7 +94,9 @@ fi
 # More than one file means Atlas split the change, and the renumbering below would need to order
 # them. It has never happened for a SQLite diff; if it does, a human should look rather than have
 # this script guess at the order.
-[ "$(printf '%s\n' "$created" | wc -l)" -eq 1 ] \
+# `tr -d` for the reason in gen-db.sh: BSD `wc` pads the count, and `-eq` tolerating the padding is
+# an implementation detail rather than a promise (issue #111).
+[ "$(printf '%s\n' "$created" | wc -l | tr -d '[:space:]')" -eq 1 ] \
     || die "atlas wrote more than one file; renumber them by hand and re-run 'atlas migrate hash --env sqlite':
 $(printf '%s\n' "$created" | sed 's/^/    /')"
 

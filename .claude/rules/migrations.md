@@ -55,7 +55,27 @@ regions.
 A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
 `internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in
 `internal/ledger/enumgen`'s `catalogues()`. Every string-enum CHECK in the schema is now generated;
-the next one added has no excuse to be a literal. A **nullable** column's CHECK is rendered by
+the next one added has no excuse to be a literal — and **`ENUM001` in `scripts/repo-gates.sh` is the
+machine half of that sentence**, because the three `CheckMatchesCatalogue` tests each compare their
+own region with their own catalogue and none of them can see a seventh vocabulary that has no
+catalogue at all. A `check` block in `db/schema.hcl` whose `expr` lists quoted values — in either SQL
+quote form, since SQLite makes a string literal out of `'x'` and out of a double-quoted token that
+matches no column — and does not lie between `BEGIN`/`END GENERATED` markers fails the gate. Boolean
+CHECKs (`x IN (0, 1)`) and index predicates are not string enums and are not caught.
+
+**A region is generated when a catalogue owns it, not when the schema says so.** The markers are
+comments, so wrapping a new literal in a balanced pair would otherwise be a self-service exemption —
+and `make gen` would not notice either, because it rewrites only the regions its catalogues declare.
+So the marker line must match, whole, a `schemaEnumBegin`/`schemaEnumEnd` const in an
+`internal/*/kinds` package, and one that nothing declares is itself a failure.
+`TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues` is the Go twin: the marker pairs in the
+schema are exactly the pairs `internal/ledger/enumgen`'s `catalogues()` renders, so a marker const
+declared in Go but wired into no generator fails too. The waiver is a `// dkp:enum-literal <reason>`
+comment on the line above the check — with a reason; a bare marker fails — and it belongs in the
+schema rather than in an allowlist inside the script, so the exception appears in the diff a reviewer
+reads. `TestRepoGates_HandWrittenEnumCheck_FailsGate` in `test/repo/` is its negative fixture.
+
+A **nullable** column's CHECK is rendered by
 `schemaenum.NullableCheckExpr` (`x IS NULL OR x IN (…)`), not by wrapping the plain form at the call
 site — `account.system_key` is the worked example, and the prefix is load-bearing rather than
 decorative: a bare `IN` list is NULL, not true, for a NULL column.
@@ -127,6 +147,10 @@ and no backup discipline.
   deleting the row, which un-freezes the file entirely. The manifest ships in the same diff as the
   migration it protects, so it is only trustworthy against its own history. (2) reads git, so it
   skips loudly without one; `lint / repo` carries `fetch-depth: 0` and a test asserts that it does.
+  The gate itself is `internal/migrate/shippedlock` (`verify` / `verify --complete` / `seal` /
+  `init`); `repo-gates.sh` and both Makefile targets run that one command, and a missing `go` is a
+  MIG003 **failure**, never a skip. A malformed row is likewise a failure: a manifest that parsed to
+  nothing would otherwise report "0 shipped migrations unchanged" and pass.
 - It is **not** a completeness check, deliberately: a migration added on a feature branch has not
   shipped and must not be listed. Completeness is asserted once, at tag time, by
   `make release-shipped-lock` in `release.yml`'s `prepare` job — at a tag everything present ships,

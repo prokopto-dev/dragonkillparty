@@ -158,6 +158,41 @@ jobs:
         # deliberately and not fine to do accidentally — this job is the difference.
 
   # ---------------------------------------------------------------------------------------------
+  # image / arm64-cross — the ONLY thing in this repository that builds linux/arm64 before the
+  # release train does (issue #108).
+  #
+  # `mq / image-arm64` used to claim this and never ran: it was gated on `merge_group` and there is
+  # no merge queue, so #101 deleted it rather than pretend. That left arm64 built in exactly one
+  # place — release.yml's per-arch matrix — where a GOARCH-conditional build tag, a Dockerfile or
+  # base-image assumption, or a cgo dependency arriving through a bump is discovered while cutting a
+  # release. That is the worst moment to find it: the image job is fail-fast, so a broken arm64 stops
+  # the release after the tag exists and before the manifest is joined.
+  #
+  # NO QEMU, here or anywhere (release.yml's header, QEMU001 in scripts/repo-gates.sh). Go
+  # cross-compiles and modernc.org/sqlite is pure Go, so this is a normal amd64 runner emitting an
+  # arm64 image at native speed. Nothing in this job RUNS the arm64 binary — running it is what would
+  # need emulation, and validating it does not.
+  #
+  # Nightly rather than per-PR is the honest tier by this file's own rule: an arm64-only break is not
+  # deterministic given a typical diff, and it costs a whole image build. The release matrix remains
+  # the thing that ships arm64; this is the thing that finds out first.
+  # ---------------------------------------------------------------------------------------------
+  image-arm64:
+    name: image / arm64-cross
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - run: make verify-image-arm64
+        # PLATFORM=linux/arm64 make docker, then scripts/verify-image-arch.sh: the image config must
+        # say arm64 AND the binary inside it must be an AArch64 ELF. The second half is the one that
+        # matters here — buildx labels the image from --platform, so an image whose Dockerfile stopped
+        # threading GOARCH through would be a correctly-labelled arm64 image containing an amd64
+        # binary, and no CI job boots it (that would need the QEMU this project bans).
+
+  # ---------------------------------------------------------------------------------------------
   # soak — River is an early-preview job driver (risk R6). A 10k-job soak is the only cheap way to
   # find a stuck queue, a lost periodic run, or a leaked connection before a guild does.
   # ---------------------------------------------------------------------------------------------
@@ -326,6 +361,7 @@ jobs:
       - importer
       - property-deep
       - postgres-convergence
+      - image-arm64
       - river-soak
       - upgrade-ladder-enumerate
       - upgrade-ladder

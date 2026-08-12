@@ -44,10 +44,24 @@ and one link is cheaper than one argument.
 a parser that fits the existing interface. Those are the interfaces working as intended, and an ADR
 per strategy would bury the fourteen above in noise.
 
-**Enforced by:** a PR touching `go.mod` (a new *direct* dependency), `deploy/Dockerfile` (a new port,
-volume or process), `db/schema.hcl` (a new table or a changed constraint), or adding a top-level
-`internal/` package must contain either a new file under `docs/adr/` or an `adr: n/a — <reason>` line
-in the PR body. The check is part of the `lint / repo` job.
+**Enforced by:** `ADR001` in `scripts/repo-gates.sh`, in the `lint / repo` job. A PR that adds a new
+*direct* requirement to `go.mod`, touches `deploy/Dockerfile` or `db/schema.hcl`, or adds a
+top-level `internal/` package must contain either a new file under `docs/adr/` or an
+`adr: n/a — <reason>` line in the PR body. The reason is required: a bare `adr: n/a` fails, because
+harvesting the reason is the entire value of the waiver.
+
+Two of those four are **path** triggers, deliberately broader than the sentence above them:
+"a new port, volume or process" and "a new table or a changed constraint" are judgements no grep can
+make, so any change to those two files asks the question. Over-asking costs one line in the PR body
+and is visible; under-asking is invisible, which is the failure this gate exists to end. The `go.mod`
+trigger *is* precise — it compares the direct requirements against the base revision, so a version
+bump or a new indirect does not fire.
+
+The gate reads the PR body, so it runs on pull requests only: on a laptop, and on `push` or
+`merge_group`, it prints a skip naming the rule. `ci.yml` supplies the context and
+`TestCI_LintRepoJob_PassesPullRequestContext` fails if that stops happening — this paragraph claimed
+enforcement for months while nothing enforced it ([#85](https://github.com/prokopto-dev/dragonkillparty/issues/85)),
+and a pinned CI line is what stops it becoming untrue again.
 
 ## Numbering
 
