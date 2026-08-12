@@ -843,19 +843,30 @@ jobs:
       # the reason is the same: Actions caches are branch-scoped with read-through to the default
       # branch, so a PR's write is invisible to every other PR and is evicted almost immediately.
       #
-      # THE KEY IS CONTENT, NOT THE COMMIT. `mode=max` exports every stage, which is the only mode
-      # worth exporting here — the final stage is `FROM scratch` with three COPYs, so `mode=min`
-      # would archive the one part of this build with nothing expensive in it and leave the Node and
-      # Go builder stages, where all the time goes, uncached. That makes the entry large, so the key
-      # is the hash of the three files that decide what those stages can reuse: a rolling per-commit
-      # key would upload it again on every merge to main for layers that did not change.
+      # THE KEY ROLLS, AND ITS MIDDLE SEGMENT IS CONTENT. Actions cache entries are IMMUTABLE, and an
+      # exact hit makes actions/cache SKIP its post-job save — so a key that did not roll would be
+      # written the first time it existed and never refreshed again: main would export a fresh cache,
+      # swap it into place, and upload nothing, forever. The key therefore ends in the commit sha,
+      # exactly as the Go build cache's does, so main never hits it exactly and always writes.
+      #
+      # The hash of deploy/Dockerfile and the two lockfiles sits in the MIDDLE because that is what
+      # decides whether the expensive stages are reusable at all: the first restore-key falls back to
+      # the newest entry that shares it, and only then to the newest entry from any. Old per-commit
+      # entries are the least-recently-used things in the pool by construction — nothing restores
+      # them again — so they are what LRU evicts first.
+      #
+      # `mode=max` exports every stage, which is the only mode worth exporting here: the final stage
+      # is `FROM scratch` with three COPYs, so `mode=min` would archive the one part of this build
+      # with nothing expensive in it and leave the Node and Go builder stages, where all the time
+      # goes, uncached.
       - name: Restore the Docker layer cache
         if: github.ref != 'refs/heads/main'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-
             ${{ runner.os }}-${{ runner.arch }}-buildx-
 
       # Key and restore-keys IDENTICAL to the step above — GitHub supports no YAML anchors in a
@@ -866,8 +877,9 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-${{ github.sha }}
           restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-
             ${{ runner.os }}-${{ runner.arch }}-buildx-
 
       - name: Build amd64 and smoke it locally

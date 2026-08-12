@@ -108,16 +108,31 @@ func TestBuildImage_LayerCache_WritesOnMainReadsEverywhere(t *testing.T) {
 				"cache's entry or nothing at all", prefix, restore.key)
 	}
 
-	// The key is content, not the commit: a `mode=max` export of this build is the biggest thing in
-	// the cache pool, and a per-commit key would upload it again on every merge to main for layers
-	// that did not change. What decides whether the Node and Go builder stages can be reused is the
-	// Dockerfile and the two lockfiles.
-	require.NotContains(t, restore.key, "github.sha",
-		"the layer cache key must not roll per commit — it would re-upload the whole export on every "+
-			"push to main. Got %q", restore.key)
+	// The narrowest fallback first, or the broad lane answers and the specific one never runs.
+	for i := 1; i < len(restore.restoreKeys); i++ {
+		require.Less(t, len(restore.restoreKeys[i]), len(restore.restoreKeys[i-1]),
+			"restore-keys are tried in order, so each must be a SHORTER prefix than the one before "+
+				"it:\n%v", restore.restoreKeys)
+	}
+
+	// THE KEY HAS TO ROLL. Actions cache entries are immutable and actions/cache SKIPS its post-job
+	// save on an exact hit, so a key that does not roll is written the first time it exists and never
+	// refreshed: main exports a fresh cache, the roll step swaps it into place, and nothing is ever
+	// uploaded again. The layer cache would then be frozen at whatever the first build for that
+	// lockfile set happened to contain — a cache that looks configured and cannot advance.
+	require.True(t, strings.HasSuffix(restore.key, "${{ github.sha }}"),
+		"the layer cache key must end in the commit sha so main writes a fresh entry every run: an "+
+			"exactly-hit key is never rewritten, so the export the roll step prepares would never be "+
+			"saved. Got %q", restore.key)
+
+	// And its middle segment must be the content that decides whether the expensive stages are
+	// reusable at all, so the first fallback lands on an entry whose builder stages still apply.
 	require.Contains(t, restore.key, "hashFiles(",
-		"the layer cache must be keyed on the files that decide what the builder stages can reuse. "+
-			"Got %q", restore.key)
+		"the layer cache key must carry the hash of the files that decide what the builder stages can "+
+			"reuse — without it every fallback is to an arbitrary previous build. Got %q", restore.key)
+	require.Contains(t, restore.restoreKeys[0], "hashFiles(",
+		"the FIRST restore-key must keep the content hash, or a lockfile bump silently falls back to "+
+			"an entry whose Node and Go stages cannot be reused. Got %q", restore.restoreKeys[0])
 }
 
 // TestBuildImage_LayerCache_IsWiredToTheDirectoryItArchives is the anti-#119 assertion.

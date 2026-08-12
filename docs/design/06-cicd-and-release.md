@@ -295,7 +295,7 @@ Caches, budgeted against the 10 GB per-repository limit (LRU eviction; cache thr
 | golangci-lint | `.golangci.yml` + `go.sum` | ~250 MB |
 | pnpm store | `<os>-<arch>-pnpmstore-<hash of web/pnpm-lock.yaml>` | ~400 MB |
 | Playwright browsers | resolved Playwright version | ~1 GB |
-| Docker layers (`type=local`, `mode=max`) | `<os>-<arch>-buildx-<hash of the Dockerfile + both lockfiles>` | ~1 GB |
+| Docker layers (`type=local`, `mode=max`) | `<os>-<arch>-buildx-<hash of the Dockerfile + both lockfiles>-<sha>` | ~1 GB |
 
 Every one of them except Playwright's is declared in `.github/actions/setup-toolchain` or in
 `ci.yml`'s `build / image` block, and `TestSetupToolchain_EveryCacheStep_IsAccountedFor` keeps that
@@ -351,11 +351,16 @@ they did nothing at all until the recipe was taught to pass them through.
 
 `mode=max`, not `mode=min`: the final stage is `FROM scratch` with three COPYs, so `min` — which
 exports only the resulting image's layers — would archive the one part of this build with nothing
-expensive in it, leaving the Node and Go builder stages, where all the time goes, uncached. That
-makes the entry the largest in the pool, which is why its key is the hash of `deploy/Dockerfile` and
-both lockfiles rather than the commit sha: those are the files that decide what the builder stages
-can reuse, so `main` re-uploads the export when they change and not on every merge. `ci-budget.yml`
-measures whether the whole arrangement earns its place.
+expensive in it, leaving the Node and Go builder stages, where all the time goes, uncached.
+
+Its key **rolls, with a content segment in the middle**:
+`<os>-<arch>-buildx-<hash of deploy/Dockerfile + both lockfiles>-<sha>`. The rolling tail is not
+decoration — Actions cache entries are immutable and `actions/cache` skips its post-job save on an
+exact hit, so a key without one is written the first time it exists and never refreshed: `main` would
+export a fresh cache, swap it into place, and upload nothing ever again. The content segment is what
+the first `restore-key` truncates to, so a fallback lands on the newest entry whose builder stages are
+still reusable before it falls back to the newest entry from any. `ci-budget.yml` measures whether the
+whole arrangement earns its place.
 
 The matrix is deliberately anaemic: one Go version (pinned in `go.mod` with `GOTOOLCHAIN=local`, so a
 runner image bump cannot silently change compilers), one Node version, one OS. The only PR-time
