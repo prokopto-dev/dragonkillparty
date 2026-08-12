@@ -80,7 +80,7 @@ capability turns out to be browser-only.
 | Invariant | Enforced by |
 |---|---|
 | No EQdkp Plus code, DDL text, language strings or assets enter this repository | A CI grep for `pdh_`, `gen_class`, `plus_exchange` and `__multidkp2event` outside `internal/importer/legacy_names.go` and `internal/api/compat/` |
-| No copyleft or source-available runtime dependency | `scripts/licence-gate.sh`, run by the required `security / licences` job and by `make check`. It classifies every module in `go list -deps ./...` — the code that actually ships, not the test-only graph — unioned across the release platforms, and fails closed (LIC001 denied, LIC002 unidentified or not on the allowlist, LIC003 embedded third-party copyleft) |
+| No copyleft or source-available runtime dependency | `internal/licence` (`make licence-gate`), run by the required `security / licences` job and by `make check`. It classifies every module in `go list -deps ./...` — the code that actually ships, not the test-only graph — unioned across the release platforms, and every package in the `web/` graph via `pnpm licenses list --json`, and fails closed (LIC001 denied, LIC002 unidentified or not on the allowlist, LIC003 embedded third-party copyleft) |
 | No game data is bundled | Reviewed at release; item names, stats and icons come from the separate, optional `dkp-p99-seed` importer |
 
 Reading a guild's own EQdkp database at runtime creates no derivative work. Transcribing their PHP

@@ -142,8 +142,8 @@ retained *inside* each face.
 
 `NOTICE` records the vendoring and `THIRD_PARTY_NOTICES.txt` reproduces the OFL text in the file the
 release archives attach — the font is embedded in the binary by `internal/ui`, so the binary's
-notices file is where the obligation actually lands. `scripts/licence-gate.sh` cannot see any of
-this: it reads the **Go** module graph (`go list -deps ./cmd/dkp`), and a font is not a module.
+notices file is where the obligation actually lands. The licence gate (`internal/licence`) cannot
+see any of this: it reads the **Go** module graph (`go list -deps ./cmd/dkp`), and a font is not a module.
 `test/repo/web_fonts_test.go` is the gate that does see it.
 
 ## Regenerating, re-vendoring, or adding a face
