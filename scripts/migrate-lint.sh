@@ -82,21 +82,31 @@ printf '  migrate-lint: analysing %s\n' "$selection_desc"
 
 # Run twice, and the duplication is the point.
 #
-# The JSON pass is the DISCRIMINATOR. `atlas migrate lint` exits 1 both when it finds a diagnostic
-# and when the analysis itself failed — a migration that does not apply, an unreadable config, a
-# dev-url that will not open — and those two need opposite treatments here. Valid JSON on stdout
-# means the analysis completed and the exit status is a verdict about migrations; anything else
-# means the tool did not get that far, and no amount of advisory-ness should turn that into a green
-# check. Parsing rather than grepping for a message keeps the discriminator off Atlas's wording,
-# which is exactly the trap scripts/gen-db.sh documents about `atlas schema diff`.
+# The JSON pass is the DISCRIMINATOR. `atlas migrate lint` exits 1 when it finds a diagnostic AND
+# when it could not run at all, and those two need opposite treatments here. Whether stdout is a
+# JSON array is what separates "Atlas produced a report" from "Atlas never got that far"; the
+# report's CONTENTS then separate a verdict from a migration it could not analyse, further down.
+# Parsing rather than grepping Atlas's prose keeps the discriminator off its wording, which is
+# exactly the trap scripts/gen-db.sh documents about `atlas schema diff`.
+#
+# stdout and stderr are captured SEPARATELY rather than folded together with 2>&1. Atlas writes
+# advice to stderr on some paths — the community-build banner is the one seen here — and a banner
+# landing in front of the JSON would make the `[]` comparison below miss, silently turning "no
+# migrations to analyse" into a parse of something else. stderr is kept only to be reprinted when
+# the invocation fails, which is the one time it is worth reading.
 #
 # The text pass is what a human reads: it names the analyzer, the position and the suggested fix.
+stderr_file=$(mktemp)
+# shellcheck disable=SC2064  # expand stderr_file now: the trap must survive the variable going away
+trap "rm -f '$stderr_file'" EXIT
+
 set +e
-report=$("$atlas" migrate lint --env sqlite "${selection[@]}" --format '{{ json .Files }}' 2>&1)
+report=$("$atlas" migrate lint --env sqlite "${selection[@]}" --format '{{ json .Files }}' 2>"$stderr_file")
 json_status=$?
 set -e
 
 if ! printf '%s' "$report" | grep -qE '^\[' ; then
+    cat "$stderr_file" >&2
     printf '%s\n' "$report" >&2
     die "atlas migrate lint could not complete (exit $json_status).
   This is NOT a migration diagnostic — the analysis itself failed, so nothing was checked.
