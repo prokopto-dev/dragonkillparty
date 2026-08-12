@@ -242,9 +242,13 @@ hand-managed screenshots in a volunteer-maintained project.
 
 ## Anti-verbosity as a build error
 
-`docs/site/scripts/check-budgets.mjs` runs on every PR. Prose words exclude code fences, tables,
-frontmatter and transcluded snippets. The frontmatter schema in `src/content.config.ts` is a zod
-schema, so these are structural requirements rather than a style guide nobody reads.
+`docs/site/scripts/check-budgets.mjs` runs on every PR **once the site is built** — it ships with the
+site, and per the status line at the top of this document neither exists yet, so the levels below are
+the designed severities and **nothing measures any of them today**. `docs / build` runs
+`make docs-build` and `make docs-links`, and that is the whole of the docs gate on a PR right now.
+Prose words exclude code fences, tables, frontmatter and transcluded snippets. The frontmatter schema
+in `src/content.config.ts` is a zod schema, so these become structural requirements rather than a
+style guide nobody reads.
 
 | Constraint | Limit | Level |
 |---|---|---|
@@ -253,7 +257,7 @@ schema, so these are structural requirements rather than a style guide nobody re
 | Learning page (`getting-started/`) | ≤ 1,200 | error |
 | Understanding page (`concepts/`) | ≤ 1,500 | error |
 | FAQ answer | ≤ 3 sentences | error |
-| ADR (`docs/adr/`) | ≤ 1,000 words, whole file — the ceiling `0000-template.md` states | error |
+| ADR (`docs/adr/`) | ≤ 1,000 words, whole file — the ceiling `0000-template.md` states | error, when built — guidance today |
 | Heading depth | `###` maximum | error |
 | H2 count | ≤ 7 per page | warn |
 | `description` frontmatter | required, ≤ 160 characters, must not restate the title | error |
