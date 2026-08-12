@@ -17,8 +17,9 @@ inputs:
       Assert the runner's python3 clears CI's floor (3.10). Nothing is installed — every runner image
       this repository pins ships 3.12 — and that is exactly the point: before issue #83 the only
       record of it was a ci.yml comment saying "the runner has python3", so a base-image change would
-      have surfaced as the SPEC GATE failing rather than as a missing dependency. Ask for this in any
-      job that runs `make verify-spec`, `make docs-links` or `make test`.
+      have surfaced as a GATE failing rather than as a missing dependency. Ask for this in any job
+      that runs `make docs-links` or `make test`. Not `make verify-spec`: that gate was the one #83
+      broke and it is Go since issue #127, which is why the spec-drift job no longer asks.
     required: false
     default: "false"
   tools:
@@ -86,8 +87,8 @@ runs:
       run: |
         set -euo pipefail
         command -v python3 >/dev/null 2>&1 || {
-          echo "::error::python3 is not on PATH. make verify-spec and make docs-links are Python;" \
-               "without it the gates fail as if the spec or the docs were wrong (issue #83)."
+          echo "::error::python3 is not on PATH. make docs-links is Python, and test/repo re-parses" \
+               "every scripts/*.py; without it a gate fails as if its subject were wrong (issue #83)."
           exit 1
         }
         have="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"

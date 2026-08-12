@@ -9,19 +9,31 @@ A link to a file that does not exist YET (a per-phase deliverable) is still a fa
 in backticks until it exists, so the corpus never promises a page a reader cannot open.
 """
 
-# PEP 563, for the reason scripts/verify-spec.py gives at length (issue #83): an annotation that is
-# evaluated at runtime turns a too-old interpreter into a failure of the GATE rather than a failure
-# of the environment, and this file annotates with `list[tuple[...]]`. All three scripts here carry
-# the import so none of them can acquire that failure mode by accident.
+# PEP 563, and it is load-bearing rather than stylistic (issue #83): an annotation is evaluated when
+# its function is DEFINED, so `-> dict | None` raises TypeError on 3.9 and a module-level `list[str]`
+# raises on 3.8 — at IMPORT, before the script reads a single byte of its subject. What the
+# contributor then sees is the GATE failing on a corpus that is fine, which is an environment fault
+# wearing a content fault's clothes. With this import every annotation is a string nobody evaluates,
+# and the floor below is about the interpreter rather than about the type syntax. This file annotates
+# with `list[tuple[...]]`. Every scripts/*.py carries the import — test/repo/python_floor_test.go
+# fails if one does not — so none of them can acquire that failure mode by accident.
+#
+# The script the bug actually happened in was scripts/verify-spec.py, which is no longer here: the
+# spec gate is internal/specgate since issue #127. The rule outlived it because the shape did.
 from __future__ import annotations
 
 import os
 import re
 import sys
 
-# The repository's Python floor. See scripts/verify-spec.py for why it is 3.9 and not 3.10;
-# test/repo/python_floor_test.go asserts every scripts/*.py declares the same number and still
-# parses at it.
+# The repository's Python floor, checked rather than assumed. 3.9 and not 3.10 because macOS ships
+# /usr/bin/python3 at 3.9.6 and this gate is deliberately runnable on a laptop's stock interpreter —
+# `make setup` installs no Python. The same number is in the Makefile's PYTHON_REQUIRED, which carries
+# the full reasoning, and in scripts/subset-fonts.sh; test/repo/python_floor_test.go fails if the
+# copies disagree, if any scripts/*.py stops parsing at the floor, or if one stops enforcing it. CI is
+# held to a HIGHER floor (3.10, asserted by .github/actions/setup-toolchain) so the runner image's
+# interpreter is a checked fact, and the parse test is what keeps CI's newer Python from accepting
+# syntax the floor cannot run.
 MINIMUM_PYTHON = (3, 9)
 
 if sys.version_info < MINIMUM_PYTHON:

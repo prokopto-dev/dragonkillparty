@@ -28,8 +28,8 @@ const (
 	docsScriptPath = DocsPath + "/scalar.js"
 
 	// SpecPathJSON is where Huma serves the OpenAPI document. Huma appends the extension to
-	// Config.OpenAPIPath itself; this constant exists so the docs page, the tests and
-	// scripts/verify-spec.sh all name it once.
+	// Config.OpenAPIPath itself; this constant exists so the docs page, the tests and the spec gate
+	// all name it once.
 	SpecPathJSON = BasePath + "/openapi.json"
 )
 

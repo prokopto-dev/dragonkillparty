@@ -17,6 +17,7 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/specgate"
 )
 
 // decodeProblem reads a response body as a problem document, failing the test if it is not one.
@@ -375,7 +376,13 @@ func TestErrors_CodeForStatus_CoversEveryStatusHumaRaises(t *testing.T) {
 	}
 }
 
-// TestErrors_LowerCamelCase covers the shared definition arch_test.go and verify-spec.py both rely on.
+// TestErrors_LowerCamelCase covers the shared definition arch_test.go and the spec gate both rely on.
+//
+// It drives BOTH definitions over the same table, which is the mechanism that stops them diverging.
+// arch_test.go checks the in-process Huma registry with lowerCamelCase; internal/specgate checks the
+// committed JSON with IsOperationID; and an operationId that passes one and fails the other is a merge
+// blocked for a reason nobody can reproduce. That agreement was a comment for as long as the gate was
+// Python (issue #127 moved it to Go), and a comment is not a mechanism.
 func TestErrors_LowerCamelCase(t *testing.T) {
 	t.Parallel()
 
@@ -401,6 +408,11 @@ func TestErrors_LowerCamelCase(t *testing.T) {
 			t.Parallel()
 
 			require.Equal(t, tc.want, lowerCamelCase(tc.input))
+
+			require.Equal(t, tc.want, specgate.IsOperationID(tc.input),
+				"internal/specgate disagrees with lowerCamelCase about %q. The spec gate and "+
+					"arch_test.go would then block a merge for a reason the other cannot reproduce.",
+				tc.input)
 		})
 	}
 }

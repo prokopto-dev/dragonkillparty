@@ -437,10 +437,12 @@ func (problemRenderer) RenderProblem(w http.ResponseWriter, r *http.Request, sta
 // lowerCamelCase reports whether s is lowerCamelCase: a lowercase letter followed by letters and
 // digits only.
 //
-// It lives here rather than in the test because arch_test.go and scripts/verify-spec.sh must agree
-// on the definition — one checks the Huma registry in Go, the other checks the committed JSON in
-// shell, and an operationId that passes one and fails the other is a gate that blocks a merge for a
-// reason nobody can reproduce.
+// It lives here rather than in the test because arch_test.go and the spec gate must agree on the
+// definition — one checks the Huma registry, the other checks the committed JSON — and an operationId
+// that passes one and fails the other is a gate that blocks a merge for a reason nobody can reproduce.
+//
+// internal/specgate.IsOperationID is the other definition, and since #127 made it Go the agreement is
+// enforced rather than intended: TestErrors_LowerCamelCase drives both over one table.
 func lowerCamelCase(s string) bool {
 	if s == "" {
 		return false
