@@ -89,11 +89,26 @@ func citations(block string) []string {
 	return slices.Sorted(maps.Keys(seen))
 }
 
-// resolvesInTree reports whether a cited path exists, as a file or a directory.
+// resolvesInTree reports whether a cited path exists IN THIS REPOSITORY, as a file or a directory.
 //
 // A bare YAML name resolves against .github/workflows first, because that is where a document citing
 // `ci.yml` means, and against the root and .github after it, for the config files that live there.
+//
+// "In this repository" is the whole contract, so the escape is closed before the stat rather than
+// hoped away: filepath.Join CLEANS `..`, so a citation of `../../etc/hosts` — or of
+// `../<this-repo>/CONTRIBUTING.md`, which exists — would stat successfully and read as resolved while
+// naming nothing a contributor can find here. An absolute path or a `..` segment is not a
+// repo-relative citation and is rejected outright; the containment check after the join is the belt
+// to that pair of braces, because a symlink or a future candidate shape could still land outside.
 func resolvesInTree(root, cited string) bool {
+	if filepath.IsAbs(cited) || strings.HasPrefix(cited, "/") {
+		return false
+	}
+
+	if slices.Contains(strings.Split(filepath.ToSlash(cited), "/"), "..") {
+		return false
+	}
+
 	candidates := []string{cited}
 	if !strings.Contains(cited, "/") {
 		candidates = []string{
@@ -104,7 +119,12 @@ func resolvesInTree(root, cited string) bool {
 	}
 
 	for _, c := range candidates {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(c))); err == nil {
+		path := filepath.Join(root, filepath.FromSlash(c))
+		if !strings.HasPrefix(path, root+string(filepath.Separator)) {
+			continue
+		}
+
+		if _, err := os.Stat(path); err == nil {
 			return true
 		}
 	}
@@ -328,6 +348,24 @@ func TestContributingClaims_GateFixtures_FailAndPass(t *testing.T) {
 		require.Empty(t, unresolvedClaims(root,
 			"The title lint is designed but not built; `pr-title-lint.yml` lives in the design doc.",
 			ciFixture))
+	})
+
+	// A citation that leaves the repository resolves to nothing a contributor can find, however well
+	// it stats. The traversal below points back at THIS repository's own CONTRIBUTING.md through its
+	// parent directory, so the file genuinely exists on any machine and filepath.Join cleans the `..`
+	// away — which is exactly what made it resolve before the containment check went in. What is wrong
+	// with it is not that the file is missing; it is that the citation is not repo-relative.
+	t.Run("a citation that escapes the tree does not resolve", func(t *testing.T) {
+		t.Parallel()
+
+		for _, cited := range []string{
+			"../" + filepath.Base(root) + "/CONTRIBUTING.md",
+			"/etc/hosts",
+		} {
+			bad := unresolvedClaims(root, "**Enforced by:** `"+cited+"`.", ciFixture)
+			require.Lenf(t, bad, 1, "%q resolved from outside the tree, got %v", cited, bad)
+			require.Contains(t, bad[0], cited)
+		}
 	})
 
 	// Globs and templates are legitimate prose that names no single file, and resolving either would
