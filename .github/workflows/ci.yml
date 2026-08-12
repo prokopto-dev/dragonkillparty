@@ -242,6 +242,14 @@ jobs:
           # version to prove rows were only appended. A shallow checkout downgrades that to a
           # printed skip and a green check. TestCI_LintRepoJob_FetchesFullHistory pins this line.
           fetch-depth: 0
+      # REQUIRED for the same gate. MIG003 delegates to internal/migrate/shippedlock (issue #129),
+      # and repo-gates.sh treats a missing `go` as a MIG003 FAILURE rather than a skip — a hash gate
+      # that cannot hash must not report green. The runner image ships some Go, but relying on it
+      # would mean this job's toolchain is whatever the base image happens to carry rather than the
+      # version go.mod pins. TestCI_LintRepoJob_HasTheGoToolchain pins this step.
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
       - name: Architectural grep gates and the licence firewall
         env:
           # The pull-request context ADR001 reads. Both are EMPTY on push and merge_group, which is
