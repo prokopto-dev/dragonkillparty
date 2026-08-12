@@ -149,7 +149,7 @@ and `DCO`. Everything else reports into `ci-required`.
 | Group | Jobs |
 |---|---|
 | `gen` | `verify-generated` — `make gen` then `git diff --exit-code`. Runs always. |
-| `lint` | `go` (gofumpt, vet, golangci-lint, staticcheck) · `web` (eslint, prettier, `tsc --noEmit`) · `repo` (grep gates + the licence firewall) |
+| `lint` | `go` (gofumpt, vet, golangci-lint, staticcheck) · `web` (eslint, prettier, `tsc --noEmit`) · `repo` (the architectural gates in `internal/repogate` + the licence firewall) |
 | `test` | `go-unit` (`-race -shuffle=on`) · `go-integration` · `contract` (oasdiff breaking-change, `operationId` set diff, SDK regen diff) · `migrations` · `importer` · `e2e` |
 | `build` | `binary` (pnpm build → `go build`, uploads the artifact every other job reuses) · `image` |
 | `security` | `govulncheck` (`govulncheck ./...`, reachable vulnerabilities) · `licences` (GPL/AGPL/LGPL/CC BY-NC in the runtime module graph). Both unconditional and required. `secrets` (gitleaks) is not wired up yet — see SECURITY.md |

@@ -394,7 +394,7 @@ test-importer:
 test-e2e:
 	@bash scripts/test-e2e.sh
 
-## lint: the repo grep gates, the dependency licence gate, migration lint, golangci-lint and eslint
+## lint: the repo gates, the dependency licence gate, migration lint, golangci-lint and eslint
 # lint-migrations is here rather than in a CI job of its own because it is ~30 ms, needs no network
 # and reads no live database — and because an advisory belongs in the inner loop, where the person
 # who can act on it is still holding the migration. It is ADVISORY: it prints diagnostics and exits
