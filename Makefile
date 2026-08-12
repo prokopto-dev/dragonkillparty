@@ -606,8 +606,14 @@ docs-links:
 # mockup-site: build the publishable UI-mockup site into _site/ (.github/workflows/pages.yml).
 # Deliberately absent from the AGENTS.md canonical table — it is a docs artefact, not part of the
 # inner loop. See docs/design/mockups/README.md.
+#
+# Go, not shell, since issue #126. The job is entirely "parse HTML, rewrite it, then assert
+# properties of the result", and the scripts/dc-publish.py + scripts/build-mockup-site.sh pair did
+# that with a hand-written tag scanner, quote-state tracking and four greps. internal/mockup does it
+# with golang.org/x/net/html; test/repo/mockup_gates_test.go drives MOCK001-004 against negative
+# fixtures, which no version of the shell gate was ever able to do.
 mockup-site:
-	@bash scripts/build-mockup-site.sh
+	@$(GO) run ./internal/mockup/sitegen
 
 # verify-spec: assert the properties of openapi/openapi.json that regenerating it cannot establish.
 #

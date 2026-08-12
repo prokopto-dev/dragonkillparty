@@ -63,8 +63,11 @@ func pythonScripts(t *testing.T) []string {
 	matches, err := filepath.Glob(filepath.Join(repoRoot(t), pythonScriptsDir, "*.py"))
 	require.NoError(t, err, "glob scripts/*.py")
 
-	// A floor asserted over an empty set is a green test that checks nothing. Three exist today.
-	require.GreaterOrEqualf(t, len(matches), 3,
+	// A floor asserted over an empty set is a green test that checks nothing. Two exist today:
+	// check-links.py and verify-spec.py. It was three until issue #126 replaced dc-publish.py with
+	// internal/mockup, which is why this number is a floor on the glob and not a census — every
+	// assertion below still runs over every script the glob returns.
+	require.GreaterOrEqualf(t, len(matches), 2,
 		"found only %d scripts/*.py — the glob is broken, not the tree", len(matches))
 
 	out := make([]string, 0, len(matches))
