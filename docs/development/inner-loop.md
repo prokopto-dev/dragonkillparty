@@ -25,14 +25,17 @@ fixture databases.
 
 Prerequisites: Go 1.26, Node 24 via corepack, and **python3 ≥ 3.9**. That is the whole list.
 
-Python is not installed by anything and does not need to be: `make verify-spec` and `make docs-links`
-are Python, the floor is low enough that macOS's stock `/usr/bin/python3` (3.9.6) clears it, and
-`make setup` checks the version rather than letting you find out from a gate. It is checked because
-of what an unchecked floor cost once — the spec gate failing at import on a tree whose spec was
-perfectly fine, which reads as drift in `openapi/openapi.json`, the one file nobody is allowed to
-hand-edit (issue #83). CI is held to a higher floor (3.10) so the runner image's interpreter is a
-declared fact; `test/repo/python_floor_test.go` re-parses every `scripts/*.py` at 3.9 so CI's newer
-Python cannot become a way to land syntax your laptop will not run.
+Python is not installed by anything and does not need to be: `make docs-links` is Python, the floor is
+low enough that macOS's stock `/usr/bin/python3` (3.9.6) clears it, and `make setup` checks the version
+rather than letting you find out from a gate. It is checked because of what an unchecked floor cost
+once — the spec gate failing at import on a tree whose spec was perfectly fine, which reads as drift in
+`openapi/openapi.json`, the one file nobody is allowed to hand-edit (issue #83). CI is held to a higher
+floor (3.10) so the runner image's interpreter is a declared fact;
+`test/repo/python_floor_test.go` re-parses every `scripts/*.py` at 3.9 so CI's newer Python cannot
+become a way to land syntax your laptop will not run.
+
+`make verify-spec` is **no longer** Python — issue #127 moved it to `internal/specgate`, so the gate
+#83 broke can no longer be failed by an interpreter. The floor stays for the gates that still are.
 
 ## The commands
 

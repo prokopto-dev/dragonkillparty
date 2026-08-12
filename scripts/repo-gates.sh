@@ -821,7 +821,7 @@ done
 # :572 and :2870 to explain why DKP rejects that design, and the correction notes accompanying this
 # rule quote the banned names in order to document them. Both are correct writing a grep would
 # reject, and a gate that is usually wrong is a gate people route around. The wire half is covered
-# where it is unambiguous — SPEC008 in scripts/verify-spec.py reads the generated OpenAPI document,
+# where it is unambiguous — SPEC008 in internal/specgate reads the generated OpenAPI document,
 # which contains field names and no prose.
 #
 # `hide_inactive` and `timezone` are in EQdkp's list too and are ALSO DKP's own column names: the

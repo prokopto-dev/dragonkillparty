@@ -28,9 +28,12 @@
 // comparing Catalogue() against the fenced §6 list element by element, in both directions — the same
 // mechanism TestErrors_Enum_MatchesPublishedCatalogue uses for the error enum.
 //
-// EVERY KEY IS A WHOLE QUOTED LITERAL, AND THIS IS LOAD-BEARING, NOT STYLE. scripts/verify-spec.py's
-// SPEC005 reads this file as TEXT and asserts `f'"{permission}"' in catalogue` — a quoted exact
-// substring, so `raid.tick` does not satisfy a requirement for `raid.tick.create`. A composed key
+// EVERY KEY IS A WHOLE QUOTED LITERAL, AND THIS IS LOAD-BEARING, NOT STYLE. internal/specgate's
+// SPEC005 reads this file as TEXT and asserts that each permission appears in it wrapped in double
+// quotes — a quoted exact substring, so `raid.tick` does not satisfy a requirement for
+// `raid.tick.create`. That the gate moved from Python to Go (#127) changes nothing here: reading the
+// source as text rather than parsing it is the deliberate half, because a parser would resolve a
+// composed key and lose the property. A composed key
 // (Resource + "." + Action, or a Key() method) produces the right runtime value and FAILS the gate,
 // because the literal "raid.tick.create" never appears in the source. This was measured, both
 // directions (see the decision record §Q1). Do not "tidy" the catalogue into Resource/Action fields.
