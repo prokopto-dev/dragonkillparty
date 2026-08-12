@@ -21,7 +21,9 @@
 #
 # TO CLEAR A WAIVER: fix the dependency, run `make osv-scan`, then delete the id from BOTH
 # osv-scanner.toml and this file, and close the tracking issue. Deleting from one is a red build.
-
-GHSA-5p4m-2wfm-xmqj
-GHSA-g7r4-m6w7-qqqr
-GHSA-xffm-g5w8-qvg7
+#
+# THE LIST IS CURRENTLY EMPTY, which is the intended steady state. It held three ids from the first
+# scan of web/pnpm-lock.yaml this repository ever ran — GHSA-xffm-g5w8-qvg7 (#133),
+# GHSA-g7r4-m6w7-qqqr (#134) and GHSA-5p4m-2wfm-xmqj (#135) — and all three were cleared by the
+# dependency bump that closed those issues, ahead of their 2026-11-09 expiry. An empty list means
+# every finding was fixed rather than ignored; it does not mean the gate stopped running.

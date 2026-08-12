@@ -127,6 +127,7 @@ func TestCIFilters_GoFilter_SelectsEveryTestRepoInput(t *testing.T) {
 		{"THIRD_PARTY_NOTICES.txt", "third_party_notices_test.go, web_fonts_subset_test.go"},
 		{"deploy/Dockerfile", "release_gates_test.go, spa_pipeline_test.go, npmrc_test.go"},
 		{".dockerignore", "spa_pipeline_test.go — the build-context allowlist"},
+		{"CONTRIBUTING.md", "contributing_claims_test.go — every `Enforced by:` claim resolves"},
 	} {
 		t.Run(input.path, func(t *testing.T) {
 			t.Parallel()

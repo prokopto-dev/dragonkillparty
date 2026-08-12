@@ -324,8 +324,9 @@ the PAT scope enum and the Phase 2 table seed derive from, and growing it one ke
 later endpoint PR trip "adding a permission key is a schema change — stop and ask" for a key already
 published in canonical §6.
 
-`scripts/verify-spec.py:269-279` does a **quoted exact-substring match against the file text**, so
-every key must appear as a whole quoted literal (`"roster.read"`). A composed key
+`scripts/verify-spec.py` — now `checkPermissionsResolve` in `internal/specgate/rules.go`, issue #127,
+and the port kept this property verbatim — does a **quoted exact-substring match against the file
+text**, so every key must appear as a whole quoted literal (`"roster.read"`). A composed key
 (`Resource + "." + Action`) fails the gate — measured, both directions. Say so in the file's header
 comment. Note also that `test/repo/spec_gate_test.go:383` writes `var Keys = []string{…}` as a
 throwaway fixture; that is not the catalogue's shape, because `.claude/rules/go-idioms.md` bans
