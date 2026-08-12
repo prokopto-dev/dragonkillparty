@@ -43,15 +43,26 @@ runs:
         if [ -f go.mod ]; then echo "exists=true" >> "$GITHUB_OUTPUT"
         else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
 
-    # `cache: true` is the MODULE cache and stays exactly as it is: go.sum is the right key for
-    # $GOMODCACHE, whose contents change only when go.sum does. It is the wrong key for the BUILD
-    # cache, which the next three steps take over — see the block below.
+    # `cache: false`, and the two blocks below are why (issue #157).
+    #
+    # setup-go's cache is not the module cache: its path list is hardcoded to BOTH `go env
+    # GOMODCACHE` and `go env GOCACHE`, archived together under one key derived from go.sum. That key
+    # is right for the modules and wrong for the build cache, so once #153 gave $GOCACHE a rolling
+    # cache of its own, every Go job stored the build cache twice — once in the rolling entry that is
+    # actually restored from, and once inside setup-go's go.sum-keyed archive, which nothing ever
+    # reads back because that key does not roll forward. Measured cold, $GOCACHE here is ~240 MB, or
+    # ~500 MB once -race objects are added: 100–200 MB compressed of duplicate upload, on every run
+    # that changes go.sum, against the shared 10 GB limit whose pressure is what makes LRU evict the
+    # entries that ARE being read.
+    #
+    # setup-go exposes no "modules only" switch — if one ever lands, the module-cache step below
+    # collapses back into this `with:` block.
     - name: Set up Go (from go.mod)
       if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
-        cache: true
+        cache: false
 
     - name: Set up Go (pinned default, pre-Phase-0)
       if: inputs.go == 'true' && steps.gomod.outputs.exists == 'false'
@@ -60,23 +71,67 @@ runs:
         go-version: "1.24"
         cache: false
 
+    # --- The two Go caches, separated (issues #153 and #157) -----------------------------------
+    #
+    # THERE ARE TWO CLASSES OF CACHE HERE AND THEY GET DIFFERENT WRITE POLICIES. The distinction is
+    # the key, not the contents:
+    #
+    #   IMMUTABLE KEY ($GOMODCACHE below, the pnpm store further down). The key is a hash of a
+    #   lockfile, so the entry a branch writes is re-read by that branch's every later push, and once
+    #   `main` writes it every branch reads it through. Saving from a PR is therefore not waste, and
+    #   this is what setup-go's `cache: true` did for the modules — the half of it issue #157 calls
+    #   correct. These steps reproduce that behaviour and nothing else.
+    #
+    #   ROLLING KEY ($GOCACHE below, and ci.yml's Docker layer cache). The key ends in the commit
+    #   sha, so a PR's write is hit by nothing, ever: the next push is a different sha. It burns
+    #   quota against the shared 10 GB limit while evicting the entries that ARE shared. So: RESTORE
+    #   EVERYWHERE, WRITE ON MAIN ONLY.
+    #
+    # Both live HERE rather than in ci.yml because every Go job in every workflow comes through this
+    # action, so one block covers ci.yml, nightly-verify.yml, release.yml and edge.yml at once.
+    - name: Locate the Go caches
+      id: gocaches
+      if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # `go env` rather than literal paths: they are GOOS-dependent, they honour a GOCACHE or
+        # GOMODCACHE the runner image may already set, and a cache that archives the wrong directory
+        # is a silent no-op rather than an error.
+        printf 'build=%s\n' "$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+        printf 'modules=%s\n' "$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        # The TOOLCHAIN that produced the objects (go1.24.6), not go.mod's language version: a
+        # compiler bump invalidates every build-cache entry, so it belongs in that key rather than in
+        # a stale archive nothing will ever hit again. The MODULE cache is deliberately not keyed on
+        # it — module zips are source, identical across compilers, and a toolchain bump that
+        # re-downloaded the whole graph would be a cost with nothing bought.
+        printf 'toolchain=%s\n' "$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
+
+    # $GOMODCACHE: the immutable half. go.sum is exactly the right key — the module cache's contents
+    # change when and only when go.sum does — and the prefix restore-key means a dependency bump
+    # restores the newest previous graph and downloads only what actually moved, rather than starting
+    # cold.
+    - name: Restore and save the Go module cache
+      if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.gocaches.outputs.modules }}
+        key: ${{ runner.os }}-${{ runner.arch }}-gomod-${{ hashFiles('go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-gomod-
+
     # --- The Go build cache, rolled forward (issue #153) ---------------------------------------
     #
-    # setup-go above already archives $GOCACHE alongside $GOMODCACHE, but under go.sum's hash. That
-    # key is right for modules and wrong here: the build cache is invalidated by every source edit,
-    # and an immutable key neither rolls forward nor updates once it exists. The entry restored on a
-    # PR today is therefore the one written the first time this go.sum existed, so every package
-    # touched since recompiles — in every Go job, on every run. This is centralised HERE rather than
-    # in ci.yml because every Go job in every workflow already comes through this action, so one
-    # block covers ci.yml, nightly-verify.yml, release.yml and edge.yml at once.
+    # The build cache is invalidated by every source edit, so an immutable key is the wrong shape for
+    # it twice over: it neither rolls forward nor updates once it exists. Under go.sum's hash — where
+    # setup-go used to archive it — the entry restored on a PR is the one written the first time that
+    # go.sum existed, so every package touched since recompiles, in every Go job, on every run.
     #
     # WRITE ON MAIN, READ EVERYWHERE — the same rule, for the same reason, as the Docker layer cache
-    # in ci.yml's `build / image` job. Actions caches are branch-scoped with read-through to the
-    # default branch, so a PR branch's write is invisible to every other PR and is evicted almost
-    # immediately: it burns quota against the shared 10 GB limit while evicting the entries that ARE
-    # shared. A PR therefore restores only (actions/cache/restore has no post step), and main
-    # restores and saves (actions/cache's post step runs at job end, after the compilation that
-    # filled the cache — saving from a step at the TOP of the job would archive last run's objects).
+    # in ci.yml's `build / image` job. A PR restores only (actions/cache/restore has no post step),
+    # and main restores and saves (actions/cache's post step runs at job end, after the compilation
+    # that filled the cache — saving from a step at the TOP of the job would archive last run's
+    # objects).
     #
     # THE KEY ROLLS. `<os>-<arch>-gobuild-<toolchain>-<job>-<sha>` is unique per commit, so main
     # never hits it exactly and always writes a fresh entry, and restore-keys fall back by prefix to
@@ -97,21 +152,7 @@ runs:
     # can do is let `go test` report a false `(cached)` for a test whose real input is read by a
     # subprocess — which is why every `go test` recipe in the Makefile passes `-count=1`, and why
     # test/repo/gate_cache_test.go now holds that flag in place.
-    - name: Locate the Go build cache
-      id: gobuild
-      if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        # `go env` rather than a literal ~/.cache/go-build: the path is GOOS-dependent, it honours a
-        # GOCACHE the runner image may already set, and a cache that archives the wrong directory is
-        # a silent no-op rather than an error.
-        printf 'dir=%s\n' "$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
-        # The TOOLCHAIN that produced the objects (go1.24.6), not go.mod's language version: a
-        # compiler bump invalidates every entry, so it belongs in the key rather than in a stale
-        # archive nothing will ever hit again.
-        printf 'toolchain=%s\n' "$(go env GOVERSION)" >> "$GITHUB_OUTPUT"
-
+    #
     # Off main: restore, never save. Keep the key and restore-keys of the two steps IDENTICAL —
     # GitHub does not support YAML anchors in workflow or action files, so this is a copy, and
     # TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere is what stops the copies drifting.
@@ -119,21 +160,21 @@ runs:
       if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true' && github.ref != 'refs/heads/main'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.gobuild.outputs.dir }}
-        key: ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-${{ github.job }}-${{ github.sha }}
+        path: ${{ steps.gocaches.outputs.build }}
+        key: ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-${{ github.job }}-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-${{ github.job }}-
-          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-
+          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-${{ github.job }}-
+          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-
 
     - name: Restore and save the Go build cache (main only)
       if: inputs.go == 'true' && steps.gomod.outputs.exists == 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
-        path: ${{ steps.gobuild.outputs.dir }}
-        key: ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-${{ github.job }}-${{ github.sha }}
+        path: ${{ steps.gocaches.outputs.build }}
+        key: ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-${{ github.job }}-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-${{ github.job }}-
-          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gobuild.outputs.toolchain }}-
+          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-${{ github.job }}-
+          ${{ runner.os }}-${{ runner.arch }}-gobuild-${{ steps.gocaches.outputs.toolchain }}-
 
     - name: Set up pnpm
       if: inputs.node == 'true'
@@ -142,11 +183,53 @@ runs:
         version: 9
         run_install: false
 
+    # No `cache:` input here, deliberately, and the pnpm store is cached by the two steps below
+    # instead. setup-node's built-in cache would archive the same store under its OWN key from its
+    # OWN post step, which is issue #157's defect in the Node half: two archives of one directory,
+    # one of which nothing restores from. One cache, one key, one place that says what it holds.
     - name: Set up Node
       if: inputs.node == 'true'
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: "22"
+
+    # --- The pnpm store ------------------------------------------------------------------------
+    #
+    # Nothing cached the pnpm store before this: every web job — `lint / web`, `typecheck`,
+    # `gen / codegen-drift`, `security / licences`, `build / binary`, `test / e2e`, `budget / bundle`
+    # — refetched the whole ~275-package graph from the registry on every run. The store is
+    # content-addressed and `pnpm install --frozen-lockfile` is what every call site runs, so a warm
+    # store turns an install into a link pass.
+    #
+    # IMMUTABLE KEY, so it saves from any branch (see the two-classes note above): the key is the
+    # lockfile's hash, so a branch's write is re-read by its every later push and by every job of the
+    # same run. `web/pnpm-lock.yaml` because web/ holds the only package.json in the repository —
+    # test/repo/npmrc_test.go and osv_scanner_test.go both pin that path.
+    - name: Locate the pnpm store
+      id: pnpmstore
+      if: inputs.node == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # `pnpm store path` rather than a literal ~/.local/share/pnpm/store: the location is
+        # platform-dependent and settable from .npmrc, and archiving the wrong directory would be a
+        # silent no-op. A failure here degrades to an uncached install rather than failing the job —
+        # this is a cache, not a gate — but it says so out loud rather than looking like a cache hit
+        # that never happened.
+        dir="$(pnpm store path --silent 2>/dev/null || true)"
+        if [ -z "$dir" ]; then
+          echo "::warning::could not resolve the pnpm store path; this job installs uncached"
+        fi
+        printf 'dir=%s\n' "$dir" >> "$GITHUB_OUTPUT"
+
+    - name: Restore and save the pnpm store
+      if: inputs.node == 'true' && steps.pnpmstore.outputs.dir != ''
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pnpmstore.outputs.dir }}
+        key: ${{ runner.os }}-${{ runner.arch }}-pnpmstore-${{ hashFiles('web/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-pnpmstore-
 
     # CI's floor is 3.10, which is HIGHER than the 3.9 the scripts themselves require
     # (Makefile PYTHON_REQUIRED, and the guard at the top of each scripts/*.py). The two numbers say

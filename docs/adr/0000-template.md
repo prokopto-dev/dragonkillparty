@@ -43,8 +43,9 @@ One line: what it costs to undo this in two years. Be specific — "a day", "a r
 
 **Rules for writing one of these.**
 
-- Budget one screen, about 900 words. The docs word-count check fails an ADR over budget; over budget
-  usually means two decisions in one file.
+- Budget one screen, about 900 words. **Nothing counts them** — there is no word-count gate, so this
+  one is on you and your reviewer. The count is only a proxy for the rule that matters: over budget
+  usually means two decisions in one file, and that is what to check for.
 - Status values: `proposed` · `accepted` · `superseded by ADR-NNNN` · `deprecated`. Never edit an
   accepted ADR's decision — write a new one and mark the old one superseded, both directions linked.
 - Present tense, second person for instructions. No marketing voice.

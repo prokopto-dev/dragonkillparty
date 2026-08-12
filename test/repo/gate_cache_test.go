@@ -18,6 +18,17 @@
 //   - TestMakefile_EveryGoTestRecipe_ForcesRerun asserts every `go test` this repository runs
 //     carries the flag.
 //   - TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere pins the cache doctrine itself.
+//
+// The other half of a cache that is quieter than it looks is a cache that is not the cache it says
+// it is. `setup-go`'s `cache: true` archived `$GOCACHE` *and* `$GOMODCACHE` together under go.sum's
+// hash, so after the rolling cache landed the build cache was stored twice and the second copy was
+// never read back (issue #157). The remaining tests hold the two apart — and hold the pnpm store to
+// the same rule, because setup-node's built-in `cache:` input is the identical trap in the Node
+// half:
+//
+//   - TestSetupToolchain_ModuleCache_IsItsOwnCache
+//   - TestSetupToolchain_PnpmStore_IsCachedOnce
+//   - TestSetupToolchain_EveryCacheStep_IsAccountedFor
 package repo_test
 
 import (
@@ -242,19 +253,8 @@ func TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere(t *testing.T) {
 
 	action := readRepoFile(t, toolchainActionRel)
 
-	// The module cache is a DIFFERENT cache with a different key, and go.sum is the right key for
-	// it. The rolling build cache below is not a replacement, and turning `cache: true` off as a
-	// duplicate would re-download every module on every job.
-	//
-	// Anchored to the YAML line, not to the string: this file's own comments say `cache: true` in
-	// prose, and a substring match was satisfied by the comment while the setting was off — the
-	// tautology this package exists to avoid, caught by its own negative fixture.
-	require.Regexp(t, `(?m)^\s+cache: true$`, action,
-		"setup-go's module cache must stay on: go.sum is the correct key for $GOMODCACHE (issue #153 "+
-			"keeps it as-is), and the rolling cache below is $GOCACHE only")
-
-	restore := toolchainStep(t, action, "actions/cache/restore@")
-	save := toolchainStep(t, action, "actions/cache@")
+	restore := toolchainCacheStep(t, action, buildCacheRestoreStep)
+	save := toolchainCacheStep(t, action, buildCacheSaveStep)
 
 	require.Contains(t, restore.body, "github.ref != 'refs/heads/main'",
 		"the restore-only step must be the one that runs OFF main:\n%s", restore.body)
@@ -295,56 +295,150 @@ func TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere(t *testing.T) {
 	}
 }
 
-// cacheStep is the parsed shape of one `actions/cache` step in the composite action.
+// The `name:` of every cache step in the composite action. Steps are selected by name rather than by
+// `uses:` because there are now four caches and three of them are `actions/cache@` — the helper this
+// replaced demanded exactly one such step, which the module cache alone would have broken.
+const (
+	moduleCacheStep       = "Restore and save the Go module cache"
+	buildCacheRestoreStep = "Restore the Go build cache"
+	buildCacheSaveStep    = "Restore and save the Go build cache (main only)"
+	pnpmStoreCacheStep    = "Restore and save the pnpm store"
+)
+
+// TestSetupToolchain_ModuleCache_IsItsOwnCache is issue #157: the module cache and the build cache
+// are two caches with two keys, and `setup-go`'s `cache: true` is not a way to have the first one.
+//
+// setup-go's cache path list is hardcoded to BOTH `go env GOMODCACHE` and `go env GOCACHE`, archived
+// under one key derived from go.sum. That key is right for the modules — they change when and only
+// when go.sum does — and wrong for the build cache, which every source edit invalidates. Turning it
+// back on would not "also cache the modules": it would restore the second, stale copy of $GOCACHE
+// this repository already pays a rolling cache to keep warm, and upload it again on every go.sum
+// change.
+//
+// The failure this guards against is silent in both directions. Re-enabling `cache: true` costs
+// quota and nothing else visible; deleting the explicit module cache below makes every Go job
+// re-download the whole graph and shows up only as CI slowly getting slower.
+func TestSetupToolchain_ModuleCache_IsItsOwnCache(t *testing.T) {
+	t.Parallel()
+
+	action := readRepoFile(t, toolchainActionRel)
+
+	// Anchored to the YAML line, not to the string: this file's own comments discuss `cache: true`
+	// in prose, and a substring match on the comment would pass while the setting said something
+	// else — the tautology this package exists to avoid.
+	require.NotRegexp(t, `(?m)^\s+cache: true$`, action,
+		"setup-go's `cache:` must stay false: it archives $GOCACHE alongside $GOMODCACHE under "+
+			"go.sum's hash, so with the rolling build cache below it stores the build cache twice and "+
+			"reads the second copy back never (issue #157). The module cache is the %q step.",
+		moduleCacheStep)
+
+	modules := toolchainCacheStep(t, action, moduleCacheStep)
+	build := toolchainCacheStep(t, action, buildCacheRestoreStep)
+
+	require.NotEqual(t, modules.path, build.path,
+		"the module cache and the build cache must archive DIFFERENT directories — one directory "+
+			"under two keys is exactly the duplication issue #157 is about")
+
+	require.Contains(t, modules.key, "hashFiles('go.sum')",
+		"the module cache must be keyed on go.sum's hash: $GOMODCACHE changes when and only when "+
+			"go.sum does. Got %q", modules.key)
+	require.NotContains(t, modules.key, "github.sha",
+		"the module cache key must NOT roll per commit — that is the build cache's shape, and here it "+
+			"would upload the whole module graph on every push. Got %q", modules.key)
+
+	require.NotEmpty(t, modules.restoreKeys,
+		"without a prefix restore-key a go.sum bump starts from a cold module cache instead of "+
+			"restoring the previous graph and downloading only what moved")
+
+	for _, prefix := range modules.restoreKeys {
+		require.True(t, strings.HasSuffix(prefix, "-"),
+			"a restore-key is matched as a PREFIX; %q does not end in a separator, so it can match a "+
+				"neighbouring key it was never meant to", prefix)
+		require.True(t, strings.HasPrefix(modules.key, prefix),
+			"restore-key %q is not a prefix of the key %q, so it can only ever restore another "+
+				"cache's entry or nothing at all", prefix, modules.key)
+	}
+
+	// Both paths come from `go env`, not from a literal: $GOCACHE and $GOMODCACHE are
+	// platform-dependent and either may be preset by the runner image, and a cache that archives the
+	// wrong directory is a silent no-op rather than an error.
+	require.Contains(t, action, `printf 'modules=%s\n' "$(go env GOMODCACHE)"`,
+		"the module cache's path must be read from `go env GOMODCACHE`")
+	require.Contains(t, action, `printf 'build=%s\n' "$(go env GOCACHE)"`,
+		"the build cache's path must be read from `go env GOCACHE`")
+}
+
+// TestSetupToolchain_PnpmStore_IsCachedOnce holds the Node half to the same rule.
+//
+// `actions/setup-node` has a `cache:` input that archives the pnpm store from its own post step
+// under its own key. Switching it on alongside the explicit cache below would archive one directory
+// twice — issue #157 again, in the half of the toolchain where nothing had been cached at all.
+func TestSetupToolchain_PnpmStore_IsCachedOnce(t *testing.T) {
+	t.Parallel()
+
+	action := readRepoFile(t, toolchainActionRel)
+
+	require.NotRegexp(t, `(?m)^\s+cache: (pnpm|npm|yarn)\s*$`, action,
+		"setup-node must not enable its own package-manager cache: it would archive the same pnpm "+
+			"store a second time, under a second key, from a second post step. The store is cached by "+
+			"the %q step.", pnpmStoreCacheStep)
+
+	store := toolchainCacheStep(t, action, pnpmStoreCacheStep)
+
+	require.Contains(t, store.key, "hashFiles('web/pnpm-lock.yaml')",
+		"the pnpm store must be keyed on the lockfile — web/ holds the only package.json in the "+
+			"repository. Got %q", store.key)
+	require.NotEmpty(t, store.restoreKeys, "without a prefix restore-key a lockfile bump starts cold")
+
+	require.Contains(t, action, `pnpm store path`,
+		"the store's location must be read from `pnpm store path`: it is platform-dependent and "+
+			"settable from .npmrc, so a literal path would archive the wrong directory and look like a "+
+			"cache that simply never hits")
+}
+
+// TestSetupToolchain_EveryCacheStep_IsAccountedFor keeps the inventory closed.
+//
+// docs/design/06-cicd-and-release.md budgets the caches against the 10 GB per-repository limit, and
+// that budget is only meaningful while this action is the one place they are declared. A fifth cache
+// added here without a row there is how a repository ends up evicting the entries it reads to make
+// room for ones it does not.
+func TestSetupToolchain_EveryCacheStep_IsAccountedFor(t *testing.T) {
+	t.Parallel()
+
+	action := readRepoFile(t, toolchainActionRel)
+
+	want := []string{moduleCacheStep, buildCacheRestoreStep, buildCacheSaveStep, pnpmStoreCacheStep}
+
+	require.ElementsMatch(t, want, toolchainCacheStepNames(t, action),
+		"the caches declared in %s have changed. Each is budgeted in "+
+			"docs/design/06-cicd-and-release.md section 4 and each needs a write policy (immutable key "+
+			"-> save anywhere; rolling key -> restore everywhere, save on main). Add the step to this "+
+			"list and to that table in the same change.", toolchainActionRel)
+}
+
+// cacheStep is the parsed shape of one `actions/cache` step in a workflow or composite action.
 type cacheStep struct {
 	body        string
+	uses        string
 	path        string
 	key         string
 	restoreKeys []string
 }
 
-// toolchainStep extracts the single step of the setup-toolchain action whose `uses:` starts with
-// prefix, and parses the cache inputs out of it.
+// parseCacheStep reads the cache inputs out of one step's body.
 //
-// The action is read as text rather than through a YAML library: this package has no YAML
-// dependency, and adding one to parse a file whose shape is asserted line by line anyway would be a
-// dependency decision (AGENTS.md) taken for a test.
-func toolchainStep(t *testing.T, action, prefix string) cacheStep {
-	t.Helper()
+// Steps are read as text rather than through a YAML library: this package has no YAML dependency,
+// and adding one to parse files whose shape is asserted line by line anyway would be a dependency
+// decision (AGENTS.md) taken for a test.
+func parseCacheStep(body string) cacheStep {
+	parsed := cacheStep{body: body}
 
-	var found []string
-
-	for _, step := range strings.Split(action, "\n    - ") {
-		usesIdx := strings.Index(step, "uses: "+prefix)
-		if usesIdx == -1 {
-			continue
-		}
-
-		// `actions/cache@` is a prefix of nothing else, but `actions/cache/restore@` contains
-		// neither — match on the exact `uses:` value so the two steps cannot both answer to one
-		// query.
-		uses := strings.Fields(step[usesIdx+len("uses: "):])[0]
-		if !strings.HasPrefix(uses, prefix) {
-			continue
-		}
-
-		require.Regexp(t, `@[0-9a-f]{40}$`, uses,
-			"every action is pinned to a 40-character commit SHA (PIN001): %s", uses)
-
-		found = append(found, step)
-	}
-
-	require.Lenf(t, found, 1,
-		"expected exactly one `uses: %s...` step in %s, found %d — the build cache is configured "+
-			"here and nowhere else (issue #153)", prefix, toolchainActionRel, len(found))
-
-	step := found[0]
-	parsed := cacheStep{body: step}
-
-	for _, line := range strings.Split(step, "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
 
 		switch {
+		case strings.HasPrefix(trimmed, "uses:"):
+			parsed.uses = strings.Fields(strings.TrimPrefix(trimmed, "uses:"))[0]
 		case strings.HasPrefix(trimmed, "path:"):
 			parsed.path = strings.TrimSpace(strings.TrimPrefix(trimmed, "path:"))
 		case strings.HasPrefix(trimmed, "key:"):
@@ -356,8 +450,70 @@ func toolchainStep(t *testing.T, action, prefix string) cacheStep {
 		}
 	}
 
-	require.NotEmptyf(t, parsed.path, "no `path:` in the %s step", prefix)
-	require.NotEmptyf(t, parsed.key, "no `key:` in the %s step", prefix)
+	return parsed
+}
+
+// isCacheAction reports whether a `uses:` value is one of the two cache actions.
+func isCacheAction(uses string) bool {
+	return strings.HasPrefix(uses, "actions/cache@") || strings.HasPrefix(uses, "actions/cache/restore@")
+}
+
+// toolchainSteps splits the composite action into its steps. A step's body carries the comment lines
+// that follow it, which is harmless: every assertion here matches a YAML key at the start of a
+// trimmed line, and a comment line starts with `#`.
+func toolchainSteps(action string) []string {
+	return strings.Split(action, "\n    - ")[1:]
+}
+
+// toolchainCacheStepNames returns the `name:` of every cache step in the composite action.
+func toolchainCacheStepNames(t *testing.T, action string) []string {
+	t.Helper()
+
+	var names []string
+
+	for _, step := range toolchainSteps(action) {
+		if !strings.HasPrefix(step, "name: ") {
+			continue
+		}
+
+		name := strings.TrimSpace(strings.SplitN(strings.TrimPrefix(step, "name: "), "\n", 2)[0])
+		if !isCacheAction(parseCacheStep(step).uses) {
+			continue
+		}
+
+		names = append(names, name)
+	}
+
+	require.NotEmpty(t, names, "no cache steps parsed out of %s — has its formatting changed?", toolchainActionRel)
+
+	return names
+}
+
+// toolchainCacheStep extracts the single step of the setup-toolchain action named name, and parses
+// the cache inputs out of it.
+func toolchainCacheStep(t *testing.T, action, name string) cacheStep {
+	t.Helper()
+
+	var found []string
+
+	for _, step := range toolchainSteps(action) {
+		if strings.HasPrefix(step, "name: "+name+"\n") {
+			found = append(found, step)
+		}
+	}
+
+	require.Lenf(t, found, 1,
+		"expected exactly one step named %q in %s, found %d — the caches are configured here and "+
+			"nowhere else (issues #153 and #157)", name, toolchainActionRel, len(found))
+
+	parsed := parseCacheStep(found[0])
+
+	require.Regexpf(t, `@[0-9a-f]{40}$`, parsed.uses,
+		"every action is pinned to a 40-character commit SHA (PIN001): %s", parsed.uses)
+	require.Truef(t, isCacheAction(parsed.uses),
+		"step %q is not a cache step; it uses %s", name, parsed.uses)
+	require.NotEmptyf(t, parsed.path, "no `path:` in the %q step", name)
+	require.NotEmptyf(t, parsed.key, "no `key:` in the %q step", name)
 
 	return parsed
 }

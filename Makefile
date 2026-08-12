@@ -449,8 +449,19 @@ seed:
 # find it. PLATFORM is optional: unset for a native host build (CI's `build / image`), set to
 # linux/arm64 by `verify-image-arm64` below, which is what nightly-verify.yml's `image / arm64-cross`
 # job runs (issue #108). Go cross-compiles, so no QEMU is ever needed.
+#
+# BUILDX_CACHE_FROM / BUILDX_CACHE_TO are the layer cache, and this recipe is what reads them (issue
+# #119). They are NOT variables buildx honours — the names are this repository's convention, shared
+# with scripts/release-image.sh, which assembles the same two flags in its own array — so before this
+# they were set by ci.yml's `build / image` job, documented in a five-line comment, and consumed by
+# nothing: the PR image build had no layer cache at all while a comment said it had a careful one.
+# Both are unset for a local `make docker`, and `$${VAR:+...}` then expands to nothing, so a laptop
+# build is exactly what it was. ci.yml's block sets the policy and explains it; keep the two in step.
 docker:
-	docker buildx build $${PLATFORM:+--platform $$PLATFORM} --load -f deploy/Dockerfile -t $(IMAGE):$(VERSION) $(DOCKER_BUILD_ARGS) .
+	docker buildx build $${PLATFORM:+--platform $$PLATFORM} \
+	  $${BUILDX_CACHE_FROM:+--cache-from $$BUILDX_CACHE_FROM} \
+	  $${BUILDX_CACHE_TO:+--cache-to $$BUILDX_CACHE_TO} \
+	  --load -f deploy/Dockerfile -t $(IMAGE):$(VERSION) $(DOCKER_BUILD_ARGS) .
 
 ## verify-image-arm64: cross-build the arm64 image and prove it really is arm64
 # Called by nightly-verify.yml's `image / arm64-cross`. Between #101 deleting the merge-queue job

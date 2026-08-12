@@ -290,30 +290,40 @@ Caches, budgeted against the 10 GB per-repository limit (LRU eviction; cache thr
 
 | Cache | Key | Budget |
 |---|---|---|
-| Go modules (`$GOMODCACHE`, `setup-go`'s `cache: true`) | `go.sum` + Go version | ~1 GB |
+| Go modules (`$GOMODCACHE`, its own `actions/cache`) | `<os>-<arch>-gomod-<hash of go.sum>` | ~1 GB |
 | Go build cache (`$GOCACHE`, rolling) | `<os>-<arch>-gobuild-<toolchain>-<job>-<sha>` | ~200 MB per job lane |
 | golangci-lint | `.golangci.yml` + `go.sum` | ~250 MB |
-| pnpm store | `pnpm-lock.yaml` | ~400 MB |
+| pnpm store | `<os>-<arch>-pnpmstore-<hash of web/pnpm-lock.yaml>` | ~400 MB |
 | Playwright browsers | resolved Playwright version | ~1 GB |
-| Docker layers | `type=gha` | ~1 GB |
+| Docker layers (`type=local`, `mode=max`) | `<os>-<arch>-buildx-<hash of the Dockerfile + both lockfiles>-<sha>` | ~1 GB |
 
-Docker layer caching has one rule that is routinely got wrong: **`cache-to` only on `push:main`;
-`cache-from` everywhere.** Actions caches are branch-scoped with read-through to the default branch,
-so a PR branch's writes are invisible to every other PR and are evicted almost immediately —
-`cache-to` on a PR burns quota for nothing while evicting the caches that *are* shared. `mode=max` is
-also wrong: the final stage is `FROM scratch` with three COPYs, so all the value is in the Node and
-Go builder stages.
+Every one of them except Playwright's is declared in `.github/actions/setup-toolchain` or in
+`ci.yml`'s `build / image` block, and `TestSetupToolchain_EveryCacheStep_IsAccountedFor` keeps that
+inventory closed: a cache added without a row here is a cache evicting the entries this table
+budgets.
 
-**The Go build cache follows the same rule, and it is a different cache from the module cache**
-(issue #153). `setup-go`'s `cache: true` archives both under go.sum's hash, which is the right key
-for `$GOMODCACHE` — it changes only when go.sum does — and the wrong one for `$GOCACHE`, which every
-source edit invalidates: an immutable key never rolls forward and is not rewritten once it exists,
-so each run restores the entry written the first time that go.sum existed and recompiles everything
-touched since. `.github/actions/setup-toolchain` therefore adds a **rolling** `$GOCACHE` cache whose
-key ends in `github.sha`, so the key is never hit exactly and `main` always writes a fresh entry,
-while `restore-keys` fall back by prefix to the newest entry from the same job, then to the newest
-from any job. PRs restore only (`actions/cache/restore`, which has no post step); `main` restores
-and saves (`actions/cache`, whose post step runs at job end, after the compilation that filled it).
+**Two classes of cache, two write policies, and the key is what tells them apart.** A cache keyed on
+a lockfile hash is immutable: the entry a branch writes is re-read by that branch's every later push,
+and once `main` writes it every branch reads it through, so saving from a PR is not waste. That is
+the modules and the pnpm store. A cache whose key rolls per commit is the opposite: a PR's write is
+hit by nothing, ever, because the next push is a different sha — it burns quota against the shared
+10 GB limit while evicting the entries that *are* shared. So a rolling cache **restores everywhere
+and writes only on `push:main`** (`actions/cache/restore` off main, which has no post step; the full
+`actions/cache` on main, whose post step runs at job end after the work that filled it). That is the
+Go build cache and the Docker layers.
+
+**The Go build cache is a different cache from the module cache, and `setup-go` cannot give you just
+one of them** (issues #153 and #157). Its `cache:` input archives `$GOMODCACHE` *and* `$GOCACHE`
+together under go.sum's hash — the right key for the modules, which change only when go.sum does, and
+the wrong one for the build cache, which every source edit invalidates: an immutable key never rolls
+forward and is not rewritten once it exists, so each run restores the entry written the first time
+that go.sum existed and recompiles everything touched since. Since there is no "modules only" switch,
+`setup-toolchain` sets `cache: false` and declares both caches itself: an `actions/cache` on
+`go env GOMODCACHE` keyed on go.sum, and a **rolling** `$GOCACHE` cache whose key ends in
+`github.sha` so it is never hit exactly and `main` always writes a fresh entry, with `restore-keys`
+falling back by prefix to the newest entry from the same job, then to the newest from any job.
+Leaving `cache: true` on alongside the rolling cache stored the build cache twice, and nothing ever
+read the second copy back.
 
 The `<job>` segment buys precision — `test / integration` builds `-race` objects `test / unit`
 never produces — and keeps the several Go jobs of one `main` run from racing to reserve a single
@@ -328,6 +338,29 @@ action ID hashing the compiler, the flags and every input, so a mismatched entry
 warm cache *can* do is let `go test` report a false `(cached)` for a gate whose real input a
 subprocess read — which is why every `go test` recipe in the Makefile passes `-count=1` and
 `test/repo/gate_cache_test.go` holds it there.
+
+**The Docker layer cache is `type=local` for a reason that is worth writing down** (issue #119).
+`type=gha` is the obvious backend and is unusable here: buildx authenticates to the Actions cache
+service with `ACTIONS_RUNTIME_TOKEN`, which GitHub injects into JavaScript actions and never into a
+`run:` step, so a shell invocation of `docker buildx build --cache-to type=gha` has no credentials.
+Exposing the token needs a third-party action — a dependency decision, proposed in issue #163, which
+also covers `scripts/release-image.sh` passing `--cache-from type=gha` from exactly such a step. So
+`build / image` restores an `actions/cache` entry into `/tmp/.buildx-cache` and `make docker` reads
+`BUILDX_CACHE_FROM` / `BUILDX_CACHE_TO` — variables buildx does not honour by itself, which is why
+they did nothing at all until the recipe was taught to pass them through.
+
+`mode=max`, not `mode=min`: the final stage is `FROM scratch` with three COPYs, so `min` — which
+exports only the resulting image's layers — would archive the one part of this build with nothing
+expensive in it, leaving the Node and Go builder stages, where all the time goes, uncached.
+
+Its key **rolls, with a content segment in the middle**:
+`<os>-<arch>-buildx-<hash of deploy/Dockerfile + both lockfiles>-<sha>`. The rolling tail is not
+decoration — Actions cache entries are immutable and `actions/cache` skips its post-job save on an
+exact hit, so a key without one is written the first time it exists and never refreshed: `main` would
+export a fresh cache, swap it into place, and upload nothing ever again. The content segment is what
+the first `restore-key` truncates to, so a fallback lands on the newest entry whose builder stages are
+still reusable before it falls back to the newest entry from any. `ci-budget.yml` measures whether the
+whole arrangement earns its place.
 
 The matrix is deliberately anaemic: one Go version (pinned in `go.mod` with `GOTOOLCHAIN=local`, so a
 runner image bump cannot silently change compilers), one Node version, one OS. The only PR-time
