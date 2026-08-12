@@ -363,7 +363,8 @@ func TestCIRequired_SupplyChainJobs_AreAlwaysOnAndBlocking(t *testing.T) {
 // TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview closes issue #82.
 //
 // `deep` is a draft gate — it reads github.event.pull_request.draft, and three jobs hang off it:
-// build / image, test / e2e and test / importer. The gate assumes leaving draft re-evaluates it,
+// test / e2e — and, when issue #82 was found, build / image and test / importer too. The gate
+// assumes leaving draft re-evaluates it,
 // and that only happens if the workflow LISTENS for the event that clears it. `on: pull_request:`
 // with no `types:` defaults to [opened, synchronize, reopened], which does not include
 // ready_for_review — so a PR opened as a draft, marked ready and merged with no further push

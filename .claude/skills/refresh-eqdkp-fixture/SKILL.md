@@ -78,9 +78,11 @@ gh workflow run fixtures.yml -f version=2.3.39
 # publishes ghcr.io/prokopto-dev/dkp-fixtures:eqdkp-2.3.39
 ```
 
-The package must be **public** so anonymous pulls work from fork PRs. Without that, `test / importer`
-is red for every external contributor — unacceptable, since the migration story is the product's
-main adoption argument.
+The package must be **public** so anonymous pulls work. Nothing that consumes it logs in: the
+nightly importer matrix has no credential configured, and neither does a contributor reproducing an
+import locally or a fork PR. Without that the whole matrix is red every night — unacceptable, since
+the migration story is the product's main adoption argument. (`ci.yml`'s `test / importer` was the
+other consumer until issue #159 moved the suite to nightly.)
 
 Nobody rebuilds a PHP installer locally. If you find yourself doing that in the inner loop, the
 artifact is missing or the pin is wrong.

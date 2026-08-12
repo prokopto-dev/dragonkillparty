@@ -32,8 +32,8 @@ upgrade to people with no ops skills.
       and stays that way until the owner changes it by hand, so this row is load-bearing on the first
       release and after any package is republished under a new name. The release train authenticates
       (issue #113), so a private **product image** passes every gate and fails the officer running the
-      README's `docker pull`; a private `dkp-fixtures` fails the other way, in `test / importer`,
-      which pulls anonymously so a fork PR can.
+      README's `docker pull`; a private `dkp-fixtures` fails the other way, in the nightly importer
+      matrix, which pulls anonymously so that a fork PR or a laptop can.
 
       ```bash
       for p in dragonkillparty dkp-fixtures; do
