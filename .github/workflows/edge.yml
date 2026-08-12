@@ -140,9 +140,12 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: make release-smoke
         # docker run $IMAGE@$DIGEST on an empty volume: first boot, migrations apply, /healthz 200,
-        # /readyz reachable, `dkp version` prints. cosign/gh attestation verification is skipped on
-        # the edge channel (edge images are not release-signed); the script no-ops when the tools are
-        # absent, and this job does not install them.
+        # /readyz answers with a readiness report, `dkp version` prints, the served SPA is the real
+        # build. cosign/gh attestation verification is skipped on the edge channel, which publishes
+        # neither a signature nor an attestation: the script's verification section is OPT-IN on
+        # VERIFY_SUPPLY_CHAIN=1 and this job deliberately leaves it unset. It used to skip on tool
+        # ABSENCE, which was not the same thing — `gh` is preinstalled on GitHub-hosted runners, so
+        # edge ran `gh attestation verify` on an unattested digest with no token (issue #107).
 
   # ---------------------------------------------------------------------------------------------
   # promote — the ONLY job that advances the moving :edge tag, and only if smoke passed. It re-tags
