@@ -4,9 +4,10 @@ package api
 //
 // It belongs in huma.Operation.Extensions, never in Metadata. Metadata is tagged `yaml:"-"` in
 // Huma and is dropped when the document is marshalled, so an operation that declares its permission
-// there produces a spec with no x-dkp-permission — which scripts/verify-spec.sh rejects, because
-// .github/workflows/ci.yml:280 asserts the property against the committed JSON rather than against
-// the in-process registry.
+// there produces a spec with no x-dkp-permission — which `make verify-spec` rejects as SPEC004,
+// because internal/specgate asserts the property against the committed JSON rather than against the
+// in-process registry. internal/specgate.PermissionKey mirrors this constant and
+// TestSpecGate_PermissionKey_MatchesAPI asserts the two agree.
 const ExtensionPermission = "x-dkp-permission"
 
 // ExtensionScopes is the OpenAPI extension key naming the PAT scopes an operation accepts.
@@ -56,15 +57,20 @@ const (
 
 // SentinelPermissions returns the x-dkp-permission values that are NOT catalogue keys.
 //
-// scripts/verify-spec.sh asserts that every other x-dkp-permission value resolves in
-// internal/authz/catalogue.go. That file does not exist yet and is deliberately not created here:
-// .claude/rules/api-endpoints.md calls adding a permission key "a schema change — stop and ask",
-// because `role_permission` is FK-constrained to `permission(key)` and a divergent key is a boot
-// failure. getMeta is public, so PR 4 needs no key at all.
+// `make verify-spec` asserts, as SPEC005, that every other x-dkp-permission value resolves in
+// internal/authz/catalogue.go. That file did not exist when this was written and was deliberately not
+// created here: .claude/rules/api-endpoints.md calls adding a permission key "a schema change — stop
+// and ask", because `role_permission` is FK-constrained to `permission(key)` and a divergent key is a
+// boot failure. getMeta is public, so PR 4 needed no key at all.
 //
 // The consequence is intentional: the first operation that names a real permission — PR 5's
 // /api/v1/guild — fails the spec gate until it also creates the catalogue. That is the gate doing
 // its job, not a gap.
+//
+// internal/specgate.SentinelPermissions() mirrors this list, and
+// TestSpecGate_SentinelPermissions_MatchAPI asserts the two agree: a value that is a sentinel on one
+// side and not on the other is a permission one half of the repository requires a catalogue entry for
+// and the other half forbids one for.
 func SentinelPermissions() []string {
 	return []string{PermissionPublic, PermissionSelf}
 }

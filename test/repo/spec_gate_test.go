@@ -12,17 +12,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Negative fixtures for scripts/verify-spec.py.
+// Negative fixtures for `make verify-spec` — internal/specgate, behind
+// internal/specgate/verifyspec.
 //
 // Every test here builds an openapi/openapi.json that should fail one rule and requires that the
 // gate says so, naming the rule. The positive direction — this repository's real spec passes — is
 // covered by `make check` on every run and by TestSpecGate_RealSpec_Passes below.
 //
-// The reason this file exists at all: verify-spec.py is a merge-blocking gate whose failure modes
-// are all "the spec was wrong in a way regenerating cannot fix". Nobody exercises those by accident,
-// so without fixtures the gate would be a script everybody trusts and nobody has seen work.
+// The reason this file exists at all: the spec gate is merge-blocking and its failure modes are all
+// "the spec was wrong in a way regenerating cannot fix". Nobody exercises those by accident, so
+// without fixtures the gate would be code everybody trusts and nobody has seen work.
+//
+// THE FIXTURES BELOW PREDATE THE IMPLEMENTATION THEY DRIVE. The gate was scripts/verify-spec.py until
+// issue #127 moved it to Go, and every document shape and every assertion here was carried over
+// unchanged — only the runner below knows which language it is. That is the whole reason the move is
+// reviewable: a port that quietly changed what the gate catches would show up as an edit in this file.
 
-// specRuleLine matches the rule ids verify-spec.py prints, e.g. "  [SPEC001] ...".
+// specRuleLine matches the rule ids the gate prints, e.g. "  [SPEC001] ...".
 var specRuleLine = regexp.MustCompile(`\[(SPEC\d{3})\]`)
 
 // firedRules returns the distinct rule ids named in the gate's output.
@@ -42,21 +48,26 @@ func firedRules(output string) []string {
 	return out
 }
 
-// runSpecGate runs verify-spec.py against tree.
+// specGatePackage is the command `make verify-spec` runs.
+const specGatePackage = "./internal/specgate/verifyspec"
+
+// runSpecGate runs the spec gate against tree with the operationId-rename check switched off.
 //
 // A local runner rather than gates_test.go's runGateScript, because that one invokes `bash` and this
-// gate is Python — python3 being the parsing tool this repository already depends on
-// (scripts/check-links.py), so the gate needs no new pin and runs on both Ubuntu CI and a macOS
-// laptop, which `jq` would not.
+// gate is a Go command. It is still run as a SUBPROCESS rather than by calling internal/specgate in
+// process, and that is deliberate: what these fixtures are for is the gate as CI invokes it — exit
+// code and all — and an in-process call would stop covering the command's own env plumbing, which is
+// where the switch below could go wrong. The rule engine is unit-tested directly as well, in
+// internal/specgate/specgate_test.go.
 //
 // DKP_SPEC_BASE_REF is set empty on purpose: the fixture trees have no git history, so the
 // operationId-rename check has nothing to compare against and would fail every fixture for a reason
 // none of them is testing. TestSpecGate_RenamedOperationID_IsRejected covers that rule against a
 // real git repository, and TestMakefile_VerifySpec_StripsBaseRefEnv asserts production strips this.
 // Skipped under -short, and only under -short, for the same reason licence_gate_test.go skips its
-// fixtures: each case pays a python3 interpreter start of roughly 80 ms, and the ~20 cases here put
-// `make test-unit` at the < 5 s budget in AGENTS.md. Raising that budget to fit these would be
-// moving the goalpost; -short is the split the repo already has for exactly this.
+// fixtures: each case pays a `go run` link, and the ~20 cases here put `make test-unit` at the < 5 s
+// budget in AGENTS.md. Raising that budget to fit these would be moving the goalpost; -short is the
+// split the repo already has for exactly this.
 //
 // They are NOT excluded from anything that gates a merge. `make check` runs `make test`, not
 // `make test-unit`; CI's test / integration job does the same; and `gen / spec-drift` runs the gate
@@ -65,14 +76,29 @@ func runSpecGate(t *testing.T, tree string) (output string, exitCode int) {
 	t.Helper()
 
 	if testing.Short() {
-		t.Skip("spec-gate fixtures shell out to python3; run `make test` or `make check`")
+		t.Skip("spec-gate fixtures compile and run the gate command; run `make test` or `make check`")
 	}
 
-	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the script falls back to the real repo")
+	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the gate falls back to the real repo")
 	require.True(t, filepath.IsAbs(tree), "DKP_REPO_ROOT must be absolute, got %q", tree)
 
-	cmd := exec.Command("python3", scriptPath(t, "verify-spec.py"))
-	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree, "DKP_SPEC_BASE_REF=")
+	return runSpecGateCommand(t, tree, "DKP_SPEC_BASE_REF=")
+}
+
+// runSpecGateCommand runs the gate against tree with env appended, returning its combined output and
+// exit code.
+//
+// The working directory is the REAL repository root, not tree: `go run` takes a package path and has
+// to be invoked from inside the module, which the Python this replaced did not — a script needs no
+// module. The tree under test is passed through DKP_REPO_ROOT, which is the seam these fixtures rest
+// on either way, and the gate runs git with that tree as its working directory so
+// TestSpecGate_RenamedOperationID_IsRejected still reads the fixture repository's history.
+func runSpecGateCommand(t *testing.T, tree string, env ...string) (output string, exitCode int) {
+	t.Helper()
+
+	cmd := exec.Command("go", "run", specGatePackage)
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(append(os.Environ(), "DKP_REPO_ROOT="+tree), env...)
 
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -84,7 +110,7 @@ func runSpecGate(t *testing.T, tree string) (output string, exitCode int) {
 		return string(out), exitErr.ExitCode()
 	}
 
-	t.Fatalf("run verify-spec.py: %v\n%s", err, out)
+	t.Fatalf("run %s: %v\n%s", specGatePackage, err, out)
 
 	return "", 0
 }
@@ -540,8 +566,8 @@ func TestSpecGate_RenamedOperationID_IsRejected(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
-		// The only test in this file that shells out to git for four commands. `make test-unit` is
-		// close to its budget; this still runs under `make test`, `make check` and CI's
+		// The only test in this file that shells out to git for four commands of its own. `make
+		// test-unit` is close to its budget; this still runs under `make test`, `make check` and CI's
 		// test / integration job.
 		t.Skip("builds a real git repository; run `make test` or `make check`")
 	}
@@ -575,17 +601,14 @@ func TestSpecGate_RenamedOperationID_IsRejected(t *testing.T) {
 	renamed["paths"].(map[string]any)["/api/v1/things"].(map[string]any)["get"].(map[string]any)["operationId"] = "fetchThing"
 	writeSpec(t, tree, renamed)
 
-	cmd := exec.Command("python3", scriptPath(t, "verify-spec.py"))
-	cmd.Dir = tree
-	// DKP_SPEC_BASE_REF is left at its default so the real origin/main path is exercised.
-	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree)
+	// DKP_SPEC_BASE_REF is left at its default so the real origin/main path is exercised — the gate
+	// resolves it inside the fixture repository, which is what update-ref above put there.
+	out, code := runSpecGateCommand(t, tree)
 
-	out, err := cmd.CombinedOutput()
-
-	require.Error(t, err, "the gate accepted a renamed operationId\n%s", out)
-	require.Contains(t, firedRules(string(out)), "SPEC003", "%s", out)
-	require.Contains(t, string(out), "getThing", "the failure must name the old id\n%s", out)
-	require.Contains(t, string(out), "fetchThing", "the failure must name the new id\n%s", out)
+	require.NotZero(t, code, "the gate accepted a renamed operationId\n%s", out)
+	require.Contains(t, firedRules(out), "SPEC003", "%s", out)
+	require.Contains(t, out, "getThing", "the failure must name the old id\n%s", out)
+	require.Contains(t, out, "fetchThing", "the failure must name the new id\n%s", out)
 }
 
 // TestSpecGate_RealSpec_Passes is the whole-repository control.
@@ -596,13 +619,8 @@ func TestSpecGate_RealSpec_Passes(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
-		t.Skip("shells out to python3 and git; run `make test` or `make check`")
+		t.Skip("compiles the gate command and shells out to git; run `make test` or `make check`")
 	}
-
-	root := repoRoot(t)
-
-	cmd := exec.Command("python3", scriptPath(t, "verify-spec.py"))
-	cmd.Dir = root
 
 	// Compare against HEAD rather than origin/main, and NOT because the rename check is
 	// inconvenient — the base ref is pointed at a revision this test can guarantee exists.
@@ -619,13 +637,11 @@ func TestSpecGate_RealSpec_Passes(t *testing.T) {
 	// (cat-file, show, parse, compare) rather than disabled; comparing the spec against itself is
 	// trivially rename-free. Actual rename DETECTION is covered by
 	// TestSpecGate_RenamedOperationID_IsRejected, which builds a repository with real history.
-	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+root, "DKP_SPEC_BASE_REF=HEAD")
+	out, code := runSpecGateCommand(t, repoRoot(t), "DKP_SPEC_BASE_REF=HEAD")
 
-	out, err := cmd.CombinedOutput()
-
-	require.NoError(t, err, "this repository's own spec must pass the gate\n%s", out)
-	require.Empty(t, firedRules(string(out)), "%s", out)
-	require.NotContains(t, string(out), "rename check is disabled",
+	require.Zero(t, code, "this repository's own spec must pass the gate\n%s", out)
+	require.Empty(t, firedRules(out), "%s", out)
+	require.NotContains(t, out, "rename check is disabled",
 		"the rename check was disabled rather than pointed at HEAD, so this test no longer "+
 			"exercises the git comparison path at all\n%s", out)
 }
@@ -644,7 +660,7 @@ func TestMakefile_VerifySpec_StripsBaseRefEnv(t *testing.T) {
 	t.Parallel()
 
 	if testing.Short() {
-		t.Skip("invokes make and python3; run `make test` or `make check`")
+		t.Skip("invokes make and compiles the gate command; run `make test` or `make check`")
 	}
 
 	cmd := exec.Command("make", "verify-spec")

@@ -23,7 +23,7 @@ die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
 budget_file=web/bundle-budget.json
 [ -f "$budget_file" ] || die "$budget_file is missing — the budget is the contract"
 
-# Read the budget. python3 is already a required tool (verify-spec.py, check-links.py).
+# Read the budget. python3 is already a required tool (check-links.py, dc-publish.py).
 max=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_gzip_bytes"])' "$budget_file") \
 	|| die "could not read max_gzip_bytes from $budget_file"
 

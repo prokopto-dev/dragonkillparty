@@ -6,8 +6,8 @@ import (
 
 // WebhookPlaceholderEvent is the name of the single placeholder entry in the `webhooks` block.
 //
-// Exported so the test and scripts/verify-spec.sh can refer to it by name rather than by a string
-// literal repeated in three places.
+// Exported so the test and the spec gate can refer to it by name rather than by a string literal
+// repeated in three places.
 const WebhookPlaceholderEvent = "ping"
 
 // webhookPlaceholder returns the OpenAPI 3.1 `webhooks` block.
