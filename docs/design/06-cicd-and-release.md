@@ -187,7 +187,7 @@ change.
 |---|---|
 | `vet` `test-unit` `test` `test-importer` `build` `docker` `verify-generated` | `lint-repo` `lint-go` `lint-web` `verify-spec` `test-property` `test-golden` `test-migrations` `test-authz` `test-e2e` `api-breaking` `api-changelog-comment` `budget-bundle` `docs-build` `docs-links` `smoke-local` `test-upgrade` `verify-action-pins` |
 | | Release: `release-version` `release-image` `release-manifest` `release-sign` `release-sbom` `release-refdb` `release-smoke` `release-promote` `release-promote-rc` `release-notes` `release-failure-issue` |
-| | Nightly: `verify-postgres` `soak-jobs` `upgrade-ladder-enumerate` `test-upgrade-ladder` `nightly-report` |
+| | Nightly: `verify-postgres` `soak-jobs` `upgrade-ladder-enumerate` `test-upgrade-ladder` `verify-image-arm64` `nightly-report` |
 | | Fixtures: `fixture-gate` `fixture-build` `fixture-seed` `fixture-capture` `fixture-verify` `fixture-publish` `fixture-manifest` |
 
 ---
@@ -487,6 +487,20 @@ Platforms: `linux/amd64`, `linux/arm64`, `linux/arm/v7`. The last exists for old
 which are over-represented in this audience **[assumption — named in
 `docs/development/verify-before-phase-0.md`]**; a pure-Go binary makes a third architecture cost one
 more `go build`.
+
+**arm64 is built before the release train, not only during it.** `nightly-verify.yml`'s
+`image / arm64-cross` runs `make verify-image-arm64` — `PLATFORM=linux/arm64 make docker` on the
+usual amd64 runner, then `scripts/verify-image-arch.sh`. Without it, arm64 is built in exactly one
+place (release.yml's per-arch matrix, which is `fail-fast`), so a `GOARCH`-conditional build tag, a
+base-image assumption or a cgo dependency arriving through a bump is discovered while cutting a
+release, after the tag exists (issue #108; the merge-queue job that claimed this coverage never ran,
+and #101 deleted it). The script checks two things and the second is the load-bearing one: buildx
+writes the image config's architecture from `--platform`, so `docker image inspect` reports what the
+build was *asked* for, while the ELF machine type of `/usr/local/bin/dkp` inside the image reports
+what it *produced*. Nothing in CI boots an arm64 image — that is what would need the QEMU banned
+above — so those bytes are the only evidence available that `TARGETARCH` is still reaching
+`go build`. Nightly rather than per-PR by §4's rule: an arm64-only break is not deterministic given a
+typical diff, and it costs a whole image build.
 
 ### Tags
 

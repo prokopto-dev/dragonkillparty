@@ -488,6 +488,44 @@ func TestCI_LintRepoJob_HasTheGoToolchain(t *testing.T) {
 			"bare `uses:` installs nothing\n%s", job)
 }
 
+// TestCI_LintRepoJob_PassesPullRequestContext is the same kind of pin for ADR001, and it is the
+// single line standing between that gate and the state #85 found it in.
+//
+// ADR001 needs two things no grep over the tree can see: which paths the PR changed, and whether
+// the PR body carries an `adr: n/a — <reason>` line. Both arrive from this env block. Without them
+// the rule cannot tell "not a pull request" from "a pull request nobody described", so it skips —
+// and a skip prints a note and exits 0. Deleting two lines of YAML would therefore restore exactly
+// the documented-but-unenforced state the gate was written to end, with nothing going red to say
+// so.
+//
+// The body must be passed as an ENV VALUE and never interpolated into the `run:` line: it is
+// attacker-controlled text on a fork PR, and `run: make lint-repo "${{ … }}"` would be a shell
+// injection with a straight path to the runner.
+func TestCI_LintRepoJob_PassesPullRequestContext(t *testing.T) {
+	t.Parallel()
+
+	ci := readRepoFile(t, ".github/workflows/ci.yml")
+
+	job := jobBlock(t, ci, "lint-repo:")
+
+	require.Contains(t, job, "DKP_ADR_BASE_REF: ${{ github.event.pull_request.base.sha }}",
+		"ci.yml's lint-repo job must pass the PR base sha: without it ADR001 cannot compute the "+
+			"changed paths and skips, which is the unenforced state #85 reported\n%s", job)
+	require.Contains(t, job, "DKP_ADR_PR_BODY: ${{ github.event.pull_request.body }}",
+		"ci.yml's lint-repo job must pass the PR body: the `adr: n/a — <reason>` escape hatch "+
+			"lives there, so without it every triggering PR fails with no way to satisfy it\n%s", job)
+
+	for _, line := range strings.Split(job, "\n") {
+		if !strings.Contains(line, "run:") {
+			continue
+		}
+
+		require.NotContains(t, line, "github.event.pull_request.body",
+			"the PR body is untrusted text from whoever opened the PR. It must reach the gate as "+
+				"an env value, never interpolated into a run: line\n  %s", line)
+	}
+}
+
 // TestShippedLock_MalformedManifest_FailsVerify closes the vacuous-pass hole.
 //
 // A gate that skips what it cannot parse reports green on a truncated, half-written or hand-mangled

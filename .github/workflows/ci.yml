@@ -245,6 +245,18 @@ jobs:
         with:
           go: "true"
       - name: Architectural grep gates and the licence firewall
+        env:
+          # The pull-request context ADR001 reads. Both are EMPTY on push and merge_group, which is
+          # how the rule knows it is not looking at a PR and skips; on a pull_request they are what
+          # makes it run at all. Deleting these two lines does not fail anything — it turns the ADR
+          # gate into a permanent, silent skip, which is the state #85 found it in. That is why
+          # TestCI_LintRepoJob_PassesPullRequestContext pins them.
+          #
+          # The body is UNTRUSTED input written by whoever opened the PR, so it arrives as an env
+          # value and is never interpolated into the `run:` line. GitHub's script-injection
+          # mitigation, and the reason this is an `env:` block rather than an argument.
+          DKP_ADR_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          DKP_ADR_PR_BODY: ${{ github.event.pull_request.body }}
         run: make lint-repo
         # Bans, each with a named rule id and a file:line in the failure message:
         #   sql.Open / *sql.DB / .Query( / .Exec( outside internal/store
@@ -255,6 +267,9 @@ jobs:
         #   `-update` in any command a CI job runs (the golden-file rewrite fence)
         #   DDL inside a goose `-- +goose Down` block (migrations are forward-only)
         #   a `uses:` line ending in a tag rather than a 40-char SHA
+        #   a hand-written string-enum CHECK in db/schema.hcl, outside the GENERATED markers
+        #   a PR touching go.mod (new direct dependency), deploy/Dockerfile, db/schema.hcl or
+        #     adding a top-level internal/ package, with no ADR and no `adr: n/a — <reason>` line
         #   pdh_ / gen_class / plus_exchange / __multidkp2event outside
         #     internal/importer/legacy_names.go and internal/api/compat  [AGPL firewall]
 
