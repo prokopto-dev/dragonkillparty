@@ -28,7 +28,7 @@ import re
 import sys
 from pathlib import Path
 
-# The repository's Python floor. See scripts/verify-spec.py for why it is 3.9 and not 3.10;
+# The repository's Python floor. See the Makefile's PYTHON_REQUIRED for why it is 3.9 and not 3.10;
 # test/repo/python_floor_test.go asserts every scripts/*.py declares the same number and still
 # parses at it. This file already had the future import above, which is what kept it off the list of
 # scripts issue #83 was about — the guard is here so the floor is declared everywhere it applies.

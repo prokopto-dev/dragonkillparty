@@ -82,8 +82,8 @@ func TestMeta_Operation_DeclaresExplicitEmptySecurity(t *testing.T) {
 	require.Empty(t, op.Get.Security, "getMeta is public and must require no security scheme")
 	require.Equal(t, PermissionPublic, op.Get.Extensions[ExtensionPermission])
 
-	// The marshalled form is what SDK generators and scripts/verify-spec.py read, so assert on it
-	// rather than trusting that the in-memory shape survives.
+	// The marshalled form is what SDK generators and `make verify-spec` read, so assert on it rather
+	// than trusting that the in-memory shape survives.
 	raw, err := doc.MarshalJSON()
 	require.NoError(t, err)
 

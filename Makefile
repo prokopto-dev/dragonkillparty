@@ -50,11 +50,16 @@ export IMAGE VERSION COMMIT DATE
 GO_REQUIRED    := $(shell awk '/^go /{print $$2; exit}' go.mod)
 
 # python3 is the third toolchain this repository needs, and until issue #83 it was the only one that
-# was never declared: `make docs-links` and `make verify-spec` are Python, and a too-old interpreter
-# made the SPEC GATE fail on a tree whose spec was fine. 3.9 because macOS's /usr/bin/python3 is
-# 3.9.6 and both gates are deliberately runnable on a laptop's stock interpreter — nothing here
-# installs Python. Each script re-declares this number and checks it itself, because most of them are
-# also run directly; test/repo/python_floor_test.go fails if the copies disagree.
+# was never declared: `make docs-links` is Python, and a too-old interpreter made a gate fail on a
+# tree whose subject was fine. 3.9 because macOS's /usr/bin/python3 is 3.9.6 and the gate is
+# deliberately runnable on a laptop's stock interpreter — nothing here installs Python. Each script
+# re-declares this number and checks it itself, because most of them are also run directly;
+# test/repo/python_floor_test.go fails if the copies disagree.
+#
+# The gate #83 actually broke was the SPEC gate, and that one is no longer Python: `make verify-spec`
+# is internal/specgate now (issue #127), so a wrong interpreter can no longer be reported as spec
+# drift. The floor stays because `make docs-links` and scripts/dc-publish.py are still Python and the
+# failure shape was never specific to the spec.
 #
 # Deliberately no PYTHON ?= override variable to go with it. The recipes below name `python3`
 # literally, for the same reason verify-spec's recipe strips DKP_SPEC_BASE_REF: an interpreter a
@@ -145,18 +150,19 @@ setup:
 		exit 1; \
 	fi; \
 	printf '  go %s satisfies the go %s directive in go.mod\n' "$$have" "$$want"
-	@# python3, for `make docs-links` and `make verify-spec`. Checked here rather than discovered
-	@# when a gate fails: an interpreter below the floor made verify-spec.py die at import and read
-	@# as spec drift (issue #83). Nothing is installed — the floor is low enough that every supported
-	@# platform's stock python3 clears it.
+	@# python3, for `make docs-links`. Checked here rather than discovered when a gate fails: an
+	@# interpreter below the floor made the old verify-spec.py die at import and read as spec drift
+	@# (issue #83). That gate is Go now (#127); this check remains because the docs-link gate is still
+	@# Python and the failure shape was never specific to the spec. Nothing is installed — the floor is
+	@# low enough that every supported platform's stock python3 clears it.
 	@command -v python3 >/dev/null 2>&1 || { \
 		printf '\033[31m  python3 is not installed or not on PATH\033[0m\n'; \
-		printf '  `make docs-links` and `make verify-spec` need python3 >= %s\n' '$(PYTHON_REQUIRED)'; \
+		printf '  `make docs-links` needs python3 >= %s\n' '$(PYTHON_REQUIRED)'; \
 		exit 1; }
 	@have=$$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])'); want='$(PYTHON_REQUIRED)'; \
 	if [ "$$(printf '%s\n%s\n' "$$want" "$$have" | sort -V | head -1)" != "$$want" ]; then \
 		printf '\033[31m  python3 %s is too old\033[0m — `make check` needs python3 >= %s\n' "$$have" "$$want"; \
-		printf '  The spec and docs-link gates are Python; an older one fails them for the wrong reason.\n'; \
+		printf '  The docs-link gate is Python; an older one fails it for the wrong reason.\n'; \
 		exit 1; \
 	fi; \
 	printf '  python3 %s satisfies the >= %s floor\n' "$$have" "$$want"
@@ -655,12 +661,20 @@ mockup-site:
 # vale and lychee in Phase 0 PR 11 where the docs site and its gates land. Adding it here would have
 # meant a third pinned tool that did not answer the question the job asks.
 #
+# GO, NOT PYTHON, since issue #127. This was `python3 scripts/verify-spec.py`, and issue #83 is what
+# that cost: an interpreter below the floor made the script raise at import — before it read a byte of
+# the spec — so `make check` reported the SPEC GATE failing on a tree whose spec was fine, pointing at
+# openapi/openapi.json, the one file nobody may hand-edit. `go` is pinned by go.mod and GOTOOLCHAIN is
+# local, so the gate cannot now fail for a reason that has nothing to do with its subject. `go run`
+# rather than a built binary, as scripts/gen-enums.sh runs internal/ledger/enumgen: the package imports
+# only the standard library, so this compiles in well under a second and needs nothing in `make setup`.
+#
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo. DKP_SPEC_BASE_REF is stripped for the
 # same class of reason: an empty value disables the operationId-rename check, and that switch exists
 # only so the negative fixtures in test/repo can run against a tree with no git history. A value
 # leaking in from a developer's shell would turn a merge-blocking gate green.
 verify-spec:
-	@env -u DKP_REPO_ROOT -u DKP_SPEC_BASE_REF python3 scripts/verify-spec.py
+	@env -u DKP_REPO_ROOT -u DKP_SPEC_BASE_REF $(GO) run ./internal/specgate/verifyspec
 
 ## eval-example-endpoint: LOCAL agent-eval of the two worked-example documents
 # Hands a fresh agent session nothing but the repo plus internal/api/EXAMPLE_ENDPOINT.md and
