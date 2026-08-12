@@ -1268,8 +1268,15 @@ or source-available licence in the runtime dependency graph, and the **AGPL fire
 identifiers outside `internal/importer/legacy_names.go` and `internal/api/compat/` (canonical §15) —
 an agent asked to "match EQdkp behaviour" will otherwise paste AGPL code helpfully and disastrously.
 
-Of these, `govulncheck`, the licence gate and the AGPL firewall run today; the nightly `govulncheck`
-leg, `osv-scanner` and Trivy do not. SECURITY.md carries the authoritative live/planned split.
+Of these, `govulncheck`, `osv-scanner`, the licence gate and the AGPL firewall run today; the nightly
+`govulncheck` leg and Trivy do not. SECURITY.md carries the authoritative live/planned split.
+
+The two vulnerability scanners are deliberately kept as two. `govulncheck` is reachability-aware and
+Go-only; `osv-scanner` is reachability-blind and reads both `go.mod` and `web/pnpm-lock.yaml`. On the
+Go graph that makes `osv-scanner` the noisier of the pair, which is precisely why it does not replace
+`govulncheck` — and on the npm graph, where nothing looked at all before it, blindness beats absence.
+Its first run found three advisories in transitive devDependencies (#133, #134, #135); each is waived
+in `osv-scanner.toml` with a filed issue and an expiry date rather than by relaxing the gate.
 
 **Vulnerability response** (`SECURITY.md`, short and actually followed): GitHub Private Vulnerability
 Reporting or `security@`; acknowledgement 3 business days; triage 7 days with CVSS **and** a
@@ -1294,7 +1301,7 @@ code it constrains, or it becomes a grandfathering exercise.
 
 | Phase | Controls landing |
 |---|---|
-| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore. *Landed: the grep gates, SHA pinning, the licence gate, the AGPL firewall, `govulncheck` and `ignore-scripts` (as a committed `.npmrc` default, not only as a flag at each call site). Outstanding: CI secret scanning, the image and migrate-on-boot.* |
+| **0** | Grep and lint gates (B3, B4); Actions pinned to SHAs; `ignore-scripts`; licence gate; AGPL firewall grep; `govulncheck`; secret scanning; `FROM scratch` image; migrate-on-boot snapshot and auto-restore. *Landed: the grep gates, SHA pinning, the licence gate, the AGPL firewall, `govulncheck`, `osv-scanner` over both dependency graphs, the advisory `atlas migrate lint`, and `ignore-scripts` (as a committed `.npmrc` default, not only as a flag at each call site). Outstanding: CI secret scanning, the image and migrate-on-boot.* |
 | **1** | Append-only triggers **and the tests that assert they fire**; `actor_is_beneficiary`; mandatory `reason`; strategy purity gate |
 | **2** | argon2id; sessions; **MFA/TOTP enrolment and step-up**; the permission catalogue; the capability floor; the authz matrix; first-run bootstrap; Discord OAuth and OIDC; **`internal/net/safehttp` and its grep gate**; audit hash chain; rate limiting; idempotency |
 | **3** | Security headers and CSP on the server-rendered surfaces; the class-colour contrast validator; the i18n lint rule (no bare strings, so nothing user-facing bypasses escaping later) |
@@ -1406,7 +1413,8 @@ continuously" carries the authoritative list of which rows run today.
 | Gate | Form |
 |---|---|
 | Reachable dependency vulnerabilities | `govulncheck ./...` — live, required, not `continue-on-error`. The nightly leg is not wired up yet |
-| All-ecosystem vulnerabilities | `osv-scanner`, `pnpm audit --audit-level high` |
+| All-ecosystem vulnerabilities | `osv-scanner` over `go.mod` **and** `web/pnpm-lock.yaml` — live, required, not `continue-on-error`. Waivers are `[[IgnoredVulns]]` entries in `osv-scanner.toml`, each carrying a filed issue and an `ignoreUntil` expiry. `pnpm audit` is not planned alongside it: a second npm scanner is a second set of waivers to keep in step |
+| Migration safety | `atlas migrate lint` — destructive, data-dependent and backward-incompatible change analysis over `db/migrations-sqlite/`. **Advisory** today (issue #131), advisory by construction rather than by `continue-on-error`; #136 tracks promotion. Additive to MIG001–003, the fresh-install fingerprint and the populated-upgrade gate, none of which Atlas can express |
 | Go SAST | `gosec`, with every `#nosec` requiring a justification comment (asserted by a test) |
 | Custom repo rules | `semgrep`: SQL string building, `http.Client` outside `safehttp`, `sql.Open` outside `store`, `time.Now` outside `clock`, `dangerouslySetInnerHTML`, missing `Security`, floats in ledger or strategy |
 | Deep SAST | CodeQL (Go + JS), advisory pre-1.0, blocking after |
@@ -1427,7 +1435,7 @@ continuously" carries the authoritative list of which rows run today.
 | Fuzzing | Log parsers, PHP-serialize reader, zip reader, cursor decoder, markdown sanitiser — smoke on PRs, 10 min each nightly |
 | Concurrency and idempotency | Two simultaneous full-balance bids → exactly one success; 100× replay → one effect |
 | Enumeration and timing | Login and reset responses identical for existing and non-existing accounts |
-| Licence gate + AGPL firewall | `scripts/licence-gate.sh` over `go list -deps ./...`, unioned across the release platforms; the EQdkp identifier grep (AGPL001) in `scripts/repo-gates.sh`. Both live. Allowlist-based (LIC001 denied, LIC002 unrecognised, LIC003 embedded third-party copyleft). The gate covers the **Go** graph only — `web/` does not exist yet, and the PR that scaffolds it (Phase 0 PR 6) must extend the gate to `pnpm-lock.yaml` or the SPA's dependencies ship unchecked |
+| Licence gate + AGPL firewall | `internal/licence` (`make licence-gate`), over **both** graphs; the EQdkp identifier grep (AGPL001) in `scripts/repo-gates.sh`. All live. Allowlist-based and fail-closed (LIC001 denied, LIC002 unrecognised or not on the allowlist, LIC003 embedded third-party copyleft). **Go:** the runtime module graph, `go list -deps ./...` without `-test`, unioned across the release platforms — a module reachable only from a dependency's own test binary is not linked into `dkp`. **JS:** the whole `web/` graph via `pnpm licenses list --json`, not just `--prod`, against the same closed allowlist plus two reviewed permissive extras (Python-2.0, CC-BY-4.0); an SPDX expression passes only when every token in it does, which over-denies rather than admitting a copyleft branch. The JS half needs pnpm, so it prints a note and is skipped on the Go-only test runners; the required `security / licences` job installs Node and pnpm and runs unconditionally, which is where a bad JS licence fails the build |
 | Goroutine leaks | `goleak` in `TestMain` for `events`, `webhook`, `bids`, `jobs`, `server` |
 
 **Two meta-rules protect the tests themselves**, because in an agent-heavy codebase the fastest path

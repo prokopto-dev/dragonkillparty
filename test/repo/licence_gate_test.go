@@ -1,4 +1,5 @@
-// Negative fixture tests for scripts/licence-gate.sh — the dependency licence gate.
+// Negative fixture tests for the dependency licence gate (internal/licence, run by
+// `make licence-gate`).
 //
 // The fixtures are self-contained Go modules in t.TempDir(): a root module with one dependency
 // wired in by a filesystem `replace`, so `go list` resolves the whole graph OFFLINE and no module
@@ -8,8 +9,15 @@
 //
 // The gate reads each module's licence from `{{.Module.Dir}}`, which follows a `replace` to the
 // local directory exactly as it follows a cache-resident module to $GOMODCACHE. The fixtures need
-// no cooperation from the gate: there is no test-only environment variable and no branch in
-// licence-gate.sh that exists for these tests.
+// no cooperation from the gate: there is no test-only environment variable and no branch in the
+// gate that exists for these tests.
+//
+// Every fixture here predates the move of the classifier from scripts/licence-gate.sh to Go (issue
+// #130) and carried over UNCHANGED, which is the point: the gate was rewritten, and the same trees
+// that made it go red still make it go red, naming the same rules. These tests are the black-box
+// half — they drive the whole gate, exactly as `make licence-gate` and CI do. The classifier's own
+// patterns are unit-tested directly in internal/licence/classify_test.go, which is the testability
+// the move was for; neither layer replaces the other.
 //
 // The rules in gates_test.go's package doc apply here too, with one deliberate departure. Those
 // tests assert `require.NotContains(t, out, tree)` because repo-gates.sh reports repo-root-relative
@@ -19,6 +27,7 @@
 package repo_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +36,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/licence"
 )
 
 // The fabricated dependency every fixture hangs off. The path is under example.com, which is
@@ -330,7 +341,45 @@ func licenceGate(t *testing.T, opts fixtureOptions) (output string, exitCode int
 	tree := t.TempDir()
 	writeLicenceFixture(t, tree, opts)
 
-	return runGateScript(t, scriptPath(t, "licence-gate.sh"), tree)
+	return runLicenceGate(t, tree)
+}
+
+// runLicenceGate runs the licence gate against tree, returning its combined output and exit code.
+//
+// This is runGateScript's counterpart for the gate that is no longer a script, and it keeps that
+// helper's two guards for the same reasons: DKP_REPO_ROOT must be absolute, because the gate
+// resolves a module graph in it from a different working directory, and it must never be empty,
+// because the gate then falls back to the working directory and would inspect the real checkout
+// while every negative fixture above went green for the wrong reason.
+//
+// It runs the gate the way `make licence-gate` and CI run it — `go run` from the repo root — rather
+// than calling licence.Run in-process. In-process would be faster, but it would stop exercising the
+// exit status, the DKP_REPO_ROOT resolution and the entry point that actually ships in the Makefile,
+// which are three of the things these fixtures exist to keep honest. The compile lands in the build
+// cache once and every later fixture reuses it.
+func runLicenceGate(t *testing.T, tree string) (output string, exitCode int) {
+	t.Helper()
+
+	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the gate falls back to the working directory")
+	require.True(t, filepath.IsAbs(tree), "DKP_REPO_ROOT must be absolute, got %q", tree)
+
+	cmd := exec.Command("go", "run", "./internal/licence/cmd/licence", "gate")
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree)
+
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return string(out), 0
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return string(out), exitErr.ExitCode()
+	}
+
+	t.Fatalf("run the licence gate: %v\n%s", err, out)
+
+	return "", 0
 }
 
 // TestLicenceGate_DeniedLicence_FailsGate is the acceptance criterion from
@@ -627,59 +676,7 @@ func TestLicenceGate_NoticeProse_DoesNotFalselyFire(t *testing.T) {
 	}
 }
 
-// TestLicenceGate_AllowlistAndClassifier_DoNotDrift asserts every licence the classifier can
-// recognise has an explicit decision recorded against it.
-//
-// The script's own comment promises that adding a pattern to allow_hits for a licence nobody
-// decided about is caught. That promise is only kept while the two lists agree: an id that
-// allow_hits can emit but `allowed` does not name would otherwise be a licence the gate recognises
-// and silently permits whenever it appears alongside a recognised-and-allowed one.
-func TestLicenceGate_AllowlistAndClassifier_DoNotDrift(t *testing.T) {
-	t.Parallel()
-
-	b, err := os.ReadFile(scriptPath(t, "licence-gate.sh"))
-	require.NoError(t, err)
-
-	script := string(b)
-
-	// Ids allow_hits can emit: every h="$h <id>" inside its body.
-	allowBody := between(t, script, "allow_hits() {", "\n}")
-	emitted := regexp.MustCompile(`h="\$h ([A-Za-z0-9.-]+)"`).FindAllStringSubmatch(allowBody, -1)
-	require.NotEmpty(t, emitted, "no ids parsed out of allow_hits — has the script changed shape?")
-
-	// Ids `allowed` accepts: the case pattern in its body.
-	allowedBody := between(t, script, "allowed() {", "\n}")
-	accepted := regexp.MustCompile(`(?m)^\s+([A-Za-z0-9.\- |]+)\)\s+return 0`).FindStringSubmatch(allowedBody)
-	require.NotNil(t, accepted, "could not parse the allowlist case arm")
-
-	permitted := make(map[string]bool)
-	for _, id := range strings.Split(accepted[1], "|") {
-		permitted[strings.TrimSpace(id)] = true
-	}
-
-	for _, m := range emitted {
-		require.True(t, permitted[m[1]],
-			"allow_hits can classify a licence as %q, but `allowed` does not name it. Either add it "+
-				"to the allowlist as a deliberate licence decision, or move it to deny_hits — an id "+
-				"in neither list is a licence the gate recognises and nobody decided about.", m[1])
-	}
-}
-
-// between returns the text of script between the first occurrence of start and the next end.
-func between(t *testing.T, script, start, end string) string {
-	t.Helper()
-
-	i := strings.Index(script, start)
-	require.NotEqual(t, -1, i, "marker %q not found in the script", start)
-
-	rest := script[i+len(start):]
-	j := strings.Index(rest, end)
-	require.NotEqual(t, -1, j, "end marker %q not found after %q", end, start)
-
-	return rest[:j]
-}
-
-// TestLicenceGate_PlatformSubset_CoversTheFullMatrix enforces the claim the PLATFORMS comment
+// TestLicenceGate_PlatformSubset_CoversTheFullMatrix enforces the claim the gatePlatforms comment
 // makes, rather than leaving it as prose that was true once.
 //
 // The gate queries one GOARCH per GOOS on the grounds that build constraints which add a MODULE are
@@ -724,24 +721,18 @@ func TestLicenceGate_PlatformSubset_CoversTheFullMatrix(t *testing.T) {
 		return set
 	}
 
-	// What the gate actually queries, read from the script rather than restated here. Hardcoding
-	// the three platforms would make this a test of this file's own constant: reducing PLATFORMS to
-	// linux alone would still pass, which is exactly the drift the test exists to catch.
-	b, err := os.ReadFile(scriptPath(t, "licence-gate.sh"))
-	require.NoError(t, err)
-
-	m := regexp.MustCompile(`(?m)^PLATFORMS="([^"]+)"`).FindStringSubmatch(string(b))
-	require.NotNil(t, m, "could not read PLATFORMS out of scripts/licence-gate.sh")
-
+	// What the gate actually queries, read from the gate rather than restated here. Hardcoding the
+	// three platforms would make this a test of this file's own constant: reducing GatePlatforms to
+	// linux alone would still pass, which is exactly the drift the test exists to catch. It used to
+	// be regexed out of the shell script's PLATFORMS line; asking the package is the same assertion
+	// with the parsing removed.
 	var gatePlatforms [][2]string
 
-	for _, p := range strings.Fields(m[1]) {
-		parts := strings.SplitN(p, "/", 2)
-		require.Len(t, parts, 2, "malformed platform %q in PLATFORMS", p)
-		gatePlatforms = append(gatePlatforms, [2]string{parts[0], parts[1]})
+	for _, p := range licence.GatePlatforms() {
+		gatePlatforms = append(gatePlatforms, [2]string{p.GOOS, p.GOARCH})
 	}
 
-	require.NotEmpty(t, gatePlatforms, "PLATFORMS is empty")
+	require.NotEmpty(t, gatePlatforms, "licence.GatePlatforms() is empty")
 
 	queried := union(gatePlatforms)
 
@@ -763,8 +754,146 @@ func TestLicenceGate_PlatformSubset_CoversTheFullMatrix(t *testing.T) {
 	for m := range full {
 		require.True(t, queried[m],
 			"module %q is in the full release matrix but not in the three platforms "+
-				"scripts/licence-gate.sh queries, so its licence is never classified. Add the "+
-				"platform that resolves it to PLATFORMS.", m)
+				"licence.GatePlatforms() queries, so its licence is never classified. Add the "+
+				"platform that resolves it to gatePlatforms in internal/licence.", m)
+	}
+}
+
+// TestLicenceModules_FeedsTheNoticesGenerator covers the other consumer of the shared enumeration.
+//
+// scripts/third-party-notices.sh redirects `licence modules` into a file and walks it with
+// `IFS=$'\t' read -r path version dir`. Nothing else runs that subcommand: `make check` does not
+// regenerate the notices file, so a break in this output shape would first be seen by goreleaser's
+// before-hook at RELEASE time, on the one run where nobody wants a surprise. This is that coverage.
+//
+// It asserts the contract the script depends on, not the contents: three tab-separated fields, a
+// module path in the first, and a directory that exists in the third — because an empty Dir is how
+// the generator silently emits "(no licence file found)" for a module whose licence is sitting in
+// the cache.
+func TestLicenceModules_FeedsTheNoticesGenerator(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("resolves the module graph across the release platforms; run `make test` or `make check`")
+	}
+
+	cmd := exec.Command("go", "run", "./internal/licence/cmd/licence", "modules")
+	cmd.Dir = repoRoot(t)
+
+	out, err := cmd.Output()
+	require.NoError(t, err, "go run licence modules\n%s", out)
+
+	rows := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	require.NotEmpty(t, rows, "the notices generator refuses to write an empty file, and so should this")
+
+	seen := make(map[string]bool, len(rows))
+
+	for _, row := range rows {
+		fields := strings.Split(row, "\t")
+		require.Lenf(t, fields, 3,
+			"every row must be path\\tversion\\tdir — scripts/third-party-notices.sh splits on tabs "+
+				"and a fourth field would land in $dir: %q", row)
+
+		path, dir := fields[0], fields[2]
+
+		require.NotEmptyf(t, path, "a row with no module path: %q", row)
+		require.Falsef(t, seen[path],
+			"module %q appears twice, so its licence text would be reproduced twice in "+
+				"THIRD_PARTY_NOTICES.txt — the union across platforms must be deduplicated", path)
+		seen[path] = true
+
+		info, err := os.Stat(dir)
+		require.NoErrorf(t, err,
+			"module %q reports a directory the generator cannot read, so its licence would be "+
+				"replaced by '(no licence file found)' in the shipped attribution file", path)
+		require.Truef(t, info.IsDir(), "%s is not a directory", dir)
+	}
+
+	require.NotContains(t, seen, "github.com/prokopto-dev/dragonkillparty",
+		"the main module is not a dependency of itself and owes itself no attribution")
+}
+
+// TestLicence_IsNotLinkedIntoTheBinary keeps the gate on the tooling side of the line.
+//
+// internal/licence is repo tooling with its own main package, which is a deviation from "cmd/dkp is
+// the only binary" and is allowed on exactly one condition: an operator never gets it. A product
+// package importing the gate — for a "what licence is this" endpoint, for a doctor check — would put
+// a classifier, a `go list` shell-out and an ANSI report inside the shipped binary, and nothing else
+// in the repo would notice.
+//
+// AGENTS.md's repo map states this; this is the mechanism behind the statement.
+func TestLicence_IsNotLinkedIntoTheBinary(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("resolves the binary's package graph; run `make test` or `make check`")
+	}
+
+	cmd := exec.Command("go", "list", "-deps", "./cmd/dkp")
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+
+	out, err := cmd.Output()
+	require.NoError(t, err, "go list -deps ./cmd/dkp")
+
+	packages := strings.Split(string(out), "\n")
+	require.NotEmpty(t, packages, "the binary's package graph resolved to nothing")
+
+	for _, p := range packages {
+		require.NotContainsf(t, strings.TrimSpace(p), "internal/licence",
+			"%s is in the shipped binary's package graph. internal/licence is repo tooling: it "+
+				"shells out to `go list`, writes ANSI to stdout and carries the whole licence "+
+				"denylist. None of that belongs in the binary a volunteer officer runs.", p)
+	}
+}
+
+// TestLicencePlatforms_CoverTheGoreleaserBuildMatrix ties the one platform list to the one that
+// decides what actually ships.
+//
+// scripts/third-party-notices.sh carried the instruction as a comment — "keep in step with
+// .goreleaser.yaml's build matrix" — which is exactly the kind of promise the consolidation in
+// issue #130 was meant to stop relying on. A platform added to the release and not to
+// internal/licence is a binary whose runtime graph is neither classified by the licence gate nor
+// attributed in THIRD_PARTY_NOTICES.txt, and nothing about that fails.
+//
+// A superset is fine and is the current state: licence.ReleasePlatforms() also carries linux/arm,
+// which goreleaser does not build. Over-covering costs one paragraph of notices; under-covering
+// costs the firewall.
+func TestLicencePlatforms_CoverTheGoreleaserBuildMatrix(t *testing.T) {
+	t.Parallel()
+
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".goreleaser.yaml"))
+	require.NoError(t, err)
+
+	// The `builds:` entry's goos/goarch lists. Read with a narrow regexp rather than a YAML parser:
+	// AGENTS.md requires a human to approve a dependency, and one 12-line block does not earn one.
+	// A shape change fails here with this message rather than passing vacuously.
+	list := func(key string) []string {
+		m := regexp.MustCompile(`(?m)^    ` + key + `:\n((?:      - \w+\n)+)`).FindStringSubmatch(string(b))
+		require.NotNilf(t, m, "could not read the builds %s list out of .goreleaser.yaml", key)
+
+		var values []string
+		for _, line := range strings.Split(strings.TrimSpace(m[1]), "\n") {
+			values = append(values, strings.TrimPrefix(strings.TrimSpace(line), "- "))
+		}
+
+		return values
+	}
+
+	goos, goarch := list("goos"), list("goarch")
+	require.NotEmpty(t, goos)
+	require.NotEmpty(t, goarch)
+
+	released := licence.ReleasePlatforms()
+
+	for _, system := range goos {
+		for _, arch := range goarch {
+			p := licence.Platform{GOOS: system, GOARCH: arch}
+			require.Containsf(t, released, p,
+				"goreleaser builds %s, but licence.ReleasePlatforms() does not list it. Its runtime "+
+					"graph is then neither licence-classified nor attributed in "+
+					"THIRD_PARTY_NOTICES.txt — add it to releasePlatforms in internal/licence.", p)
+		}
 	}
 }
 
@@ -774,7 +903,7 @@ func TestLicenceGate_PlatformSubset_CoversTheFullMatrix(t *testing.T) {
 // stderr. A gate that folds stderr into its output sees a non-empty result, parses no modules, and
 // reports success having examined nothing — while ci-required positively asserts the job ran.
 //
-// The script's header claims it has no vacuous-pass path. This is the test that makes that true.
+// The gate's package doc claims it has no vacuous-pass path. This is the test that makes that true.
 func TestLicenceGate_NoPackages_FailsGate(t *testing.T) {
 	t.Parallel()
 
@@ -782,7 +911,7 @@ func TestLicenceGate_NoPackages_FailsGate(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tree, "go.mod"),
 		[]byte("module fixture\n\ngo 1.26\n"), 0o644))
 
-	out, code := runGateScript(t, scriptPath(t, "licence-gate.sh"), tree)
+	out, code := runLicenceGate(t, tree)
 
 	require.NotZero(t, code,
 		"a module with no packages must be an error — the gate resolved nothing\n%s", out)
@@ -916,7 +1045,7 @@ func TestLicenceGate_RealTree_Passes(t *testing.T) {
 	t.Parallel()
 
 	root := repoRoot(t)
-	out, code := runGateScript(t, scriptPath(t, "licence-gate.sh"), root)
+	out, code := runLicenceGate(t, root)
 
 	require.Zero(t, code, "the repository's own runtime dependencies must pass the gate\n%s", out)
 	require.NotContains(t, out, "LIC001", "%s", out)
@@ -963,13 +1092,13 @@ func TestMakefile_LicenceGate_StripsRepoRootEnv(t *testing.T) {
 }
 
 // TestLicenceGate_HonoursRepoRootOverride guards the mechanism every other test in this file rests
-// on. If licence-gate.sh stopped honouring DKP_REPO_ROOT it would silently scan the real repo, and
+// on. If the gate stopped honouring DKP_REPO_ROOT it would silently scan the real repo, and
 // every negative fixture above would go green for the wrong reason.
 func TestLicenceGate_HonoursRepoRootOverride(t *testing.T) {
 	t.Parallel()
 
 	empty := t.TempDir()
-	out, code := runGateScript(t, scriptPath(t, "licence-gate.sh"), empty)
+	out, code := runLicenceGate(t, empty)
 
 	require.NotZero(t, code, "a tree with no go.mod must be an error, never a silent pass\n%s", out)
 	require.Contains(t, strings.ToLower(out), "no go.mod",

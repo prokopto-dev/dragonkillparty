@@ -51,6 +51,48 @@ env "sqlite" {
     // at runtime. Atlas's own format would need a second parser in the binary.
     format = goose
   }
+
+  // The analyzer policy for `atlas migrate lint` (issue #131). Declared here for the same reason
+  // as `dev` and `migration` above: one declaration, not a flag list repeated at each call site.
+  //
+  // WHICH migrations get analysed is NOT declared here, and that omission is deliberate. Atlas
+  // rejects `--latest` when the config carries a `lint { git { … } }` block ("--latest and
+  // --git-base are mutually exclusive"), and both selections are needed: scripts/migrate-lint.sh
+  // uses `--git-base` so that only the migrations a branch ADDS are analysed — shipped migrations
+  // are frozen, so a diagnostic on one is not actionable by the author who trips over it — and
+  // falls back to `--latest` where there is no base ref, which is also how the negative fixture in
+  // test/repo drives the script against a fabricated directory in t.TempDir(). Declaring the git
+  // block here would make that fixture unrunnable and the gate untested.
+  //
+  // `error = true` on each analyzer makes `atlas migrate lint` exit non-zero on a diagnostic. That
+  // is Atlas's opinion, not this repository's verdict: the ADVISE/ENFORCE decision belongs to
+  // scripts/migrate-lint.sh, which is advisory by construction today (#136 tracks the promotion).
+  // Setting them to false instead would throw the finding away here and leave the script with
+  // nothing to report.
+  lint {
+    // DS1xx — dropping a schema, a table or a non-virtual column. The analyzer this is here for:
+    // SQLite's 12-step table rebuild is `CREATE new / INSERT SELECT / DROP old / RENAME`, and a
+    // mistyped column list in the INSERT silently drops that column's data on a populated database
+    // while passing every fresh-install check.
+    destructive {
+      error = true
+    }
+
+    // MF1xx — a change whose safety depends on the data already in the table: adding a NOT NULL
+    // column with no default, adding a UNIQUE index over values that may already collide. These
+    // are the ones that pass on a maintainer's empty dev database and fail on a guild's ten years
+    // of DKP, which is this project's worst bug class.
+    data_depend {
+      error = true
+    }
+
+    // BC1xx — a change that breaks a client still running the previous version. Migration-on-boot
+    // means the binary and the schema move together, so the window is short; it is not zero,
+    // because an officer can roll a binary back over a migrated database.
+    incompatible {
+      error = true
+    }
+  }
 }
 
 // The Postgres target is post-1.0 (docs/design/06-cicd-and-release.md, `make verify-postgres`).
