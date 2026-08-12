@@ -7,7 +7,7 @@
 // `**/*_test.go` against `main`, and `ci-budget.yml` measuring the last 200 runs weekly.
 //
 // The cost is not the cost of an ordinary stale sentence, which is why this is a gate rather than a
-// review note. `ADR001`'s header in scripts/repo-gates.sh says it about the same class of defect and
+// review note. `ADR001`'s header in internal/repogate says it about the same class of defect and
 // the reasoning transfers exactly: an agent reading the claim concludes the gate will catch it, and a
 // reviewer reading the same line concludes CI already asked. Neither was true. The DCO row is the one
 // that bites hardest — a first-time contributor who believes it pushes ten commits, gets a red

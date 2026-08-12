@@ -22,7 +22,9 @@ then the service. Skip a step and `sqlc` fails to compile the query, or the buil
 unsatisfied interface — both are fast, both are the point.
 
 - Raw SQL lives **only** in `db/queries/*.sql`. `db.Query`/`db.Exec`/`sql.Open` outside
-  `internal/store` is a repo grep gate in `scripts/repo-gates.sh`.
+  `internal/store` is repo gate `SQL001`/`SQL002` — AST analyzers in `internal/repogate`, run by
+  `scripts/repo-gates.sh`. They read the call site, so a zero-argument `r.URL.Query()` is not a hit
+  and a receiver renamed to `conn` still is.
 - `internal/store/sqlitegen/` and `internal/store/pggen/` are generated. Never hand-edit; run
   `make gen` and commit the diff. `verify-generated` fails on drift.
 - `emit_pointers_for_null_types: true` — NULL is a compile-visible concept, not a silent `""`.

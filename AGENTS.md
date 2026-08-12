@@ -34,8 +34,8 @@ resolves to a real target, not that every target appears here.)
 
 ## Repo map — the rule is attached to the directory
 
-- `cmd/dkp/` — the only SHIPPED binary. Cobra wiring only, no logic. (`internal/licence/cmd/`
-  below is repo tooling and never reaches an operator.)
+- `cmd/dkp/` — the only SHIPPED binary. Cobra wiring only, no logic. (`internal/licence/cmd/` and
+  `internal/repogate/cmd/` below are repo tooling and never reach an operator.)
 - `internal/api/` — the **only** tree where an HTTP route may be declared. Copy
   `internal/api/EXAMPLE_ENDPOINT.md` end to end before writing a new endpoint.
 - `internal/store/` — the **only** package that may hold `*sql.DB` or call `sql.Open`. Every
@@ -49,6 +49,12 @@ resolves to a real target, not that every target appears here.)
   runtime-graph platform union, shared with `scripts/third-party-notices.sh`. Tooling, not
   product: stdlib only, and not linked into `dkp` — a test asserts the binary's package graph
   never reaches it. Adding a licence to the allowlist is a human decision.
+- `internal/repogate/` — the architectural gate engine `make lint-repo` runs: the laws above, the
+  money rules, the supply-chain pins and the AGPL firewall (`scripts/repo-gates.sh` is the shim
+  that points it at a tree). Config-shaped rules are a typed catalogue; the Go-syntax laws are
+  `go/parser` analyzers. Same terms as `internal/licence`: tooling, stdlib only, not linked into
+  `dkp`. Every rule keeps a negative fixture in `test/repo/` — a gate nobody has seen go red is a
+  gate nobody knows works.
 - `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations. The regions
   you do not edit are the enum CHECKs between the `GENERATED` markers: the `ledger_batch` pair from
   `internal/ledger/kinds`, the `audit_log` pair (`actor_kind`, `outcome`) from `internal/audit/kinds`

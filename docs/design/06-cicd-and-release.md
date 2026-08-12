@@ -200,7 +200,7 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | Job | Runs when | Budget | Status |
 |---|---|---|---|
 | `changes` | always, unskippable | 8 s | required |
-| `lint / repo` — grep gates + licence firewall | always | 15 s | required |
+| `lint / repo` — architectural gates + licence firewall | always | 15 s | required |
 | `lint / go` — gofumpt, golangci-lint | go changed | 75 s | required |
 | `lint / web` — eslint, prettier | web changed | 40 s | required |
 | `security / licences` — Go runtime graph + JS production graph, closed allowlist | always | 45 s | required |

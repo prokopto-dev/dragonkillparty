@@ -30,6 +30,7 @@ and one link is cheaper than one argument.
 | [0015](0015-nocturne-dark-only-design-tokens.md) | Nocturne, dark-only, plain CSS and design tokens | accepted | Plain CSS with custom properties; one dark palette themed by overriding token values; status colours added |
 | [0016](0016-bespoke-licence-classifier.md) | A bespoke licence classifier | accepted | A similarity classifier reports a rider's permissive base; this one evaluates every pattern and any denial wins |
 | [0017](0017-mockup-build-on-a-real-html5-parser.md) | Mockup build on a real HTML5 parser | accepted | `x/net/html` replaces a regex parser; the tokenizer rewrites, the tree builder verifies |
+| [0018](0018-repo-gates-as-a-go-engine.md) | Repository gates as a Go engine | accepted | A typed rule catalogue plus `go/parser` analyzers; the rules must read a tree that does not build, which is what rules out `go/analysis` |
 
 ## When an ADR is required
 

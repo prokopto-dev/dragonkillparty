@@ -54,7 +54,8 @@ type Service struct {
 now := s.clock.Now() // Micros
 ```
 
-`time.Now` is banned outside `internal/clock` — repo grep gate in `scripts/repo-gates.sh`. Time is
+`time.Now` is banned outside `internal/clock` — repo gate `CLOCK001`, an AST analyzer in
+`internal/repogate` that `scripts/repo-gates.sh` runs, so an aliased import does not defeat it. Time is
 `core.Micros` (int64 Unix microseconds, UTC); see canonical conventions §2 for the wire form.
 
 Time-dependent tests use `testing/synctest`, never `time.Sleep`. `time.Sleep` is grep-banned in
