@@ -173,15 +173,17 @@ func checkSecurityAndPermission(rep *report, ops []operation) []string {
 // Key() method) produces the right runtime value and fails this gate, because the literal never
 // appears in the source. Parsing the Go instead would accept a composed key and lose the property.
 func checkPermissionsResolve(rep *report, root string, permissions []string) {
-	real := slices.DeleteFunc(slices.Clone(permissions), func(p string) bool {
+	// Every permission that is not one of the two sentinels, which are allowlisted rather than
+	// catalogued. Named for what it holds rather than `real`, which is a Go builtin.
+	mustResolve := slices.DeleteFunc(slices.Clone(permissions), func(p string) bool {
 		return slices.Contains(SentinelPermissions(), p)
 	})
-	if len(real) == 0 {
+	if len(mustResolve) == 0 {
 		return
 	}
 
-	quoted := make([]string, 0, len(real))
-	for _, p := range real {
+	quoted := make([]string, 0, len(mustResolve))
+	for _, p := range mustResolve {
 		quoted = append(quoted, fmt.Sprintf("%q", p))
 	}
 
@@ -204,7 +206,7 @@ func checkPermissionsResolve(rep *report, root string, permissions []string) {
 
 	catalogue := string(src)
 
-	for _, permission := range real {
+	for _, permission := range mustResolve {
 		if !strings.Contains(catalogue, `"`+permission+`"`) {
 			rep.violation("SPEC005",
 				"permission %q is not in %s. A divergent key is a boot failure, not a 403.",
