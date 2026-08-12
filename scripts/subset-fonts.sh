@@ -45,7 +45,7 @@
 
 set -euo pipefail
 # DKP_REPO_ROOT points the script at a tree other than this checkout, the same mechanism
-# scripts/repo-gates.sh and scripts/licence-gate.sh use, so a test can drive it against a fixture.
+# scripts/repo-gates.sh and the licence gate use, so a test can drive it against a fixture.
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
 # --- Pinned inputs --------------------------------------------------------------------------------

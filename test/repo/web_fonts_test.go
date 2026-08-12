@@ -16,7 +16,7 @@ import (
 // (headings). Loaded self-hosted, not through the Google Fonts @import the source sheet uses — the
 // binary serves the SPA offline and a render-blocking third-party request contradicts that."
 //
-// Nothing else in the repository can check this. scripts/licence-gate.sh and
+// Nothing else in the repository can check this. The licence gate (internal/licence) and
 // scripts/third-party-notices.sh both read the GO module graph (`go list -deps ./cmd/dkp`), and a
 // font is not a module, so a vendored face is invisible to the licence machinery — it can be added,
 // or deleted, or left unattributed, and every existing gate stays green. These tests are that gate.

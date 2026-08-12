@@ -1427,7 +1427,7 @@ continuously" carries the authoritative list of which rows run today.
 | Fuzzing | Log parsers, PHP-serialize reader, zip reader, cursor decoder, markdown sanitiser — smoke on PRs, 10 min each nightly |
 | Concurrency and idempotency | Two simultaneous full-balance bids → exactly one success; 100× replay → one effect |
 | Enumeration and timing | Login and reset responses identical for existing and non-existing accounts |
-| Licence gate + AGPL firewall | `scripts/licence-gate.sh` over `go list -deps ./...`, unioned across the release platforms; the EQdkp identifier grep (AGPL001) in `scripts/repo-gates.sh`. Both live. Allowlist-based (LIC001 denied, LIC002 unrecognised, LIC003 embedded third-party copyleft). The gate covers the **Go** graph only — `web/` does not exist yet, and the PR that scaffolds it (Phase 0 PR 6) must extend the gate to `pnpm-lock.yaml` or the SPA's dependencies ship unchecked |
+| Licence gate + AGPL firewall | `internal/licence` (`make licence-gate`) over `go list -deps ./...`, unioned across the release platforms; the EQdkp identifier grep (AGPL001) in `scripts/repo-gates.sh`. Both live. Allowlist-based (LIC001 denied, LIC002 unrecognised, LIC003 embedded third-party copyleft). The gate covers the **Go** graph only — `web/` does not exist yet, and the PR that scaffolds it (Phase 0 PR 6) must extend the gate to `pnpm-lock.yaml` or the SPA's dependencies ship unchecked |
 | Goroutine leaks | `goleak` in `TestMain` for `events`, `webhook`, `bids`, `jobs`, `server` |
 
 **Two meta-rules protect the tests themselves**, because in an agent-heavy codebase the fastest path

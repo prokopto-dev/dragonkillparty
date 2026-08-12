@@ -745,7 +745,7 @@ this file. The PR-level plan here is authoritative for PR *content*; ROADMAP num
 **Files touched.**
 
 ```
-scripts/licence-gate.sh
+internal/licence/
 Makefile  .github/actions/setup-toolchain/action.yml
 .github/workflows/ci.yml
 test/repo/{licence_gate_test.go,ci_required_test.go}
@@ -753,7 +753,7 @@ test/repo/{licence_gate_test.go,ci_required_test.go}
 
 **Acceptance criteria.**
 
-- `scripts/licence-gate.sh` fails on any copyleft (GPL, AGPL, LGPL, EPL, CDDL, CC BY-SA),
+- The licence gate (`make licence-gate`, `internal/licence`) fails on any copyleft (GPL, AGPL, LGPL, EPL, CDDL, CC BY-SA),
   non-commercial (CC BY-NC/ND) or source-available (BUSL, SSPL, Elastic, FSL, PolyForm) licence, and
   on a restriction rider layered over a permissive grant (Commons Clause, the JSON licence, BSD-4's
   advertising clause). Fixture modules in `t.TempDir()` prove each fires, wired in by a filesystem
