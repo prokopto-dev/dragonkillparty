@@ -83,7 +83,10 @@ the support workflow ("paste me the request id").
 ## Tests
 
 - Table-driven, named `TestThing_Condition_Expectation` (`TestBalance_AfterReversal_ReturnsOriginal`).
-- `t.Parallel()` in every test. Suites run `-race -shuffle=on -count=1`.
+- `t.Parallel()` in every test. Suites run `-race`; `-shuffle=on -count=1` on the packages that
+  reach their subject through a subprocess, and over the whole suite in the nightly
+  `suite / shuffled` job (ADR-0020). Write for a shuffled order regardless — the nightly re-roll is
+  what finds order-dependence, and it files an issue against whoever's package it lands in.
 - **`require`, never `assert`.** `testify/assert` continues after a failed assertion, so one broken
   invariant produces a page of cascading noise and the real first failure scrolls away. Banned by a
   `golangci-lint` `depguard` rule on `github.com/stretchr/testify/assert`.

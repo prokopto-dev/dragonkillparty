@@ -4,15 +4,22 @@
 // counts `skipped` as success — it has to, or a path-filtered job would wedge every PR — so a job
 // that a wrong filter skipped is indistinguishable from a job that was correctly filtered out. The
 // header of ci.yml's own filter block names this failure mode and fixes it three times:
-// scripts/** and .githooks/** are pinned to `go` so their negative fixtures in test/repo run;
-// internal/api/EXAMPLE_ENDPOINT.md and db/RECIPES.md are pinned to `go` so the snippet-compile gate
-// runs; internal/migrate/** and the migration fixtures are pinned to `db` so test / migrations runs.
+// scripts/** and .githooks/** are pinned to `code` so their negative fixtures in test/repo run;
+// internal/api/EXAMPLE_ENDPOINT.md and db/RECIPES.md are pinned to `code` so the snippet-compile
+// gate runs; internal/migrate/** and the migration fixtures are pinned to `db` so test / migrations
+// runs.
 //
 // Issue #94 is the same omission left unfixed for the fourth case: test/repo runs under `make
 // test-unit` and `make test`, both gated on `go`, but design_tokens_test.go, e2e_gate_test.go,
 // web_fonts_test.go, web_fonts_subset_test.go and npmrc_test.go read their INPUTS from web/ and
 // docs/design/. A web-only PR selected `web` and not `go`, so every job that runs those tests was
 // skipped and ci-required reported green — observed on PR #91, which changed five of these files.
+//
+// Issue #159 then split `go` in two, which is the same hazard from the other end: the heavy suites
+// gate on the narrower `code`, and every pattern left behind in `go` needs a suite that still runs
+// on it. TestCIFilters_CodeFilter_IsASubsetOfGo and
+// TestCIFilters_GoOnlyPatterns_HaveAShortRunningReader are the two halves of that argument, and
+// TestCIFilters_ClosureFilters_CoverTheirDependencies keeps the two derived filters derived.
 package repo_test
 
 import (
@@ -29,19 +36,44 @@ import (
 // the inline `filters: |` block, a dash, and a single-quoted glob.
 var filterEntryRe = regexp.MustCompile(`^ {14}- '([^']+)'\s*$`)
 
-// pathFilterPatterns returns the glob patterns declared for one filter in ci.yml's `changes` job.
+// filterAnchorRe matches an inserted YAML anchor — `- *build`, `- *code`, `- *api`.
+var filterAnchorRe = regexp.MustCompile(`^\s*- \*([a-z][a-z0-9-]*)\s*$`)
+
+// pathFilterPatterns returns the glob patterns declared for one filter in ci.yml's `changes` job,
+// with every YAML anchor EXPANDED.
 //
-// The `*build` YAML anchor is skipped rather than expanded: it carries the Makefile and the
-// setup-toolchain action, neither of which is an input any assertion below names.
+// Expansion is what makes the assertions below mean anything now that the filters nest (issue
+// #159): `go` is `*code` plus a handful of patterns, and a reader that skipped the anchor would
+// conclude that `go` no longer selects scripts/** or deploy/** — the opposite of the truth, and in
+// the direction that reads as "this coverage was deleted". dorny/paths-filter flattens a nested
+// sequence recursively, which is what makes the nesting legal in the first place; this mirrors it.
 func pathFilterPatterns(t *testing.T, workflow, filter string) []string {
 	t.Helper()
+
+	return expandFilter(t, workflow, filter, nil)
+}
+
+// expandFilter is pathFilterPatterns with the cycle guard an anchor graph needs.
+func expandFilter(t *testing.T, workflow, filter string, seen []string) []string {
+	t.Helper()
+
+	for _, s := range seen {
+		require.NotEqualf(t, s, filter,
+			"ci.yml's filters reference each other in a cycle through %q (%v) — a cycle is not valid "+
+				"YAML and the workflow would not load", filter, seen)
+	}
+
+	seen = append(seen, filter)
 
 	lines := strings.Split(workflow, "\n")
 
 	start := -1
 
+	// `filter:` or `filter: &anchor` — a filter that is reused by another one declares an anchor on
+	// the same line.
 	for i, l := range lines {
-		if l == "            "+filter+":" {
+		if trimmed := strings.TrimSpace(l); strings.HasPrefix(l, "            "+filter+":") &&
+			(trimmed == filter+":" || strings.HasPrefix(trimmed, filter+": &")) {
 			start = i + 1
 
 			break
@@ -65,8 +97,10 @@ func pathFilterPatterns(t *testing.T, workflow, filter string) []string {
 			continue
 		}
 
-		if strings.HasPrefix(strings.TrimSpace(l), "- *") {
-			continue // the *build anchor
+		if m := filterAnchorRe.FindStringSubmatch(l); m != nil {
+			patterns = append(patterns, expandFilter(t, workflow, m[1], seen)...)
+
+			continue
 		}
 
 		break // the next filter, or the end of the block
@@ -75,6 +109,17 @@ func pathFilterPatterns(t *testing.T, workflow, filter string) []string {
 	require.NotEmptyf(t, patterns, "no patterns parsed for the %q filter", filter)
 
 	return patterns
+}
+
+// selects reports whether a filter's patterns select a repo-relative path.
+func selects(patterns []string, path string) bool {
+	for _, p := range patterns {
+		if matchesPattern(p, path) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // matchesPattern reports whether one dorny/paths-filter glob selects a repo-relative path.
@@ -156,4 +201,163 @@ func TestCIFilters_GoFilter_SelectsEveryTestRepoInput(t *testing.T) {
 				input.path, input.reader)
 		})
 	}
+}
+
+// TestCIFilters_CodeFilter_IsASubsetOfGo is the safety argument for issue #159's split, in one
+// assertion.
+//
+// The heavy suites moved from `go` to the narrower `code`. That is only safe while `go` remains a
+// strict superset: every input issue #94 pinned to `go` must still select `test / unit`, which is
+// where the suites that read those inputs run under -short. Nesting the filters (`go` is `*code`
+// plus a list) makes it structurally true; this is what notices when somebody unpicks the nesting
+// and copies the patterns instead.
+func TestCIFilters_CodeFilter_IsASubsetOfGo(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+
+	code := pathFilterPatterns(t, workflow, "code")
+	inGo := make(map[string]bool)
+
+	for _, p := range pathFilterPatterns(t, workflow, "go") {
+		inGo[p] = true
+	}
+
+	for _, p := range code {
+		require.Truef(t, inGo[p],
+			"the `code` filter selects %q and the `go` filter does not. `go` must stay a superset: the "+
+				"heavy suites gate on `code`, and `test / unit` — the job that runs test/repo's -short "+
+				"suites on a web-only PR — gates on `go` (issue #159).", p)
+	}
+
+	require.Greater(t, len(inGo), len(code),
+		"`go` and `code` now select the same patterns, so the split buys nothing and one of them "+
+			"should go. `go` exists to carry the non-source inputs of test/repo (issue #94).")
+}
+
+// TestCIFilters_GoOnlyPatterns_HaveAShortRunningReader is the OTHER direction, and the one that can
+// actually lose coverage.
+//
+// A pattern in `go` but not in `code` is a file that no longer reaches `test / integration`. That
+// is fine exactly when the suite reading it also runs under -short, because `test / unit` still
+// fires on `go` — and it is a silent hole the moment that suite gains a `testing.Short()` skip.
+// Each row below is that argument, made once and then checked on every run.
+func TestCIFilters_GoOnlyPatterns_HaveAShortRunningReader(t *testing.T) {
+	t.Parallel()
+
+	// Every pattern `go` carries and `code` does not, with the suite that still polices it. A new
+	// entry in this table is a decision to stop running the full suite on that input.
+	readers := map[string]string{
+		"web/src/**":               "test/repo/design_tokens_test.go",
+		"web/e2e/**":               "test/repo/e2e_gate_test.go",
+		"web/playwright.config.ts": "test/repo/e2e_gate_test.go",
+		"docs/design/09-frontend-and-design-system.md": "test/repo/design_tokens_test.go",
+		"docs/design/mockups/**":                       "test/repo/mockup_gates_test.go",
+		"NOTICE":                                       "test/repo/web_fonts_test.go",
+		"THIRD_PARTY_NOTICES.txt":                      "test/repo/third_party_notices_test.go",
+		".dockerignore":                                "test/repo/spa_pipeline_test.go",
+		"CONTRIBUTING.md":                              "test/repo/contributing_claims_test.go",
+	}
+
+	workflow := readCIWorkflow(t)
+
+	inCode := make(map[string]bool)
+	for _, p := range pathFilterPatterns(t, workflow, "code") {
+		inCode[p] = true
+	}
+
+	var goOnly []string
+
+	for _, p := range pathFilterPatterns(t, workflow, "go") {
+		if !inCode[p] {
+			goOnly = append(goOnly, p)
+		}
+	}
+
+	require.ElementsMatch(t, keysOf(readers), goOnly,
+		"the patterns `go` carries beyond `code` have changed. Each one is a file that no longer "+
+			"reaches `test / integration`, so each needs a suite that runs under -short and therefore "+
+			"still runs in `test / unit`. Name it in this table in the same change (issue #159).")
+
+	for pattern, reader := range readers {
+		t.Run(pattern, func(t *testing.T) {
+			t.Parallel()
+
+			body := readRepoFile(t, reader)
+
+			require.NotContainsf(t, body, "testing.Short()",
+				"%s is the only thing still policing %s on a web-only PR — that pattern is in the `go` "+
+					"filter and not in `code`, so `test / integration` no longer runs on it. This file "+
+					"now skips under -short, which means `test / unit` does not run it either and the "+
+					"input is policed by nothing. Either drop the skip or put %s back in the `code` "+
+					"filter (issue #159).", reader, pattern, pattern)
+		})
+	}
+}
+
+// TestCIFilters_ClosureFilters_CoverTheirDependencies keeps the two derived filters derived.
+//
+// `pointmath` and `authz` are not "the directories somebody thought of" — each is the dependency
+// closure of the packages its job runs, and a closure grows when somebody adds an import. That is
+// the whole failure mode: `test / property` gated on internal/ledger and internal/strategy would
+// stop running the day the ledger starts importing a package the filter never heard of, and the
+// skip would count as success. So the closure is recomputed here rather than reviewed.
+func TestCIFilters_ClosureFilters_CoverTheirDependencies(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("shells out to `go list -deps`; runs under `make test`")
+	}
+
+	workflow := readCIWorkflow(t)
+	module := modulePath(t)
+
+	for _, tc := range []struct {
+		filter   string
+		job      string
+		packages []string
+	}{
+		{
+			filter: "pointmath",
+			job:    "test / property and test / coverage-floor",
+			// What `make test-property` and `make test-coverage-floor` run.
+			packages: []string{
+				"./internal/ledger/...", "./internal/strategy/...", "./internal/audit/kinds",
+				"./internal/account/kinds", "./internal/schemaenum",
+			},
+		},
+		{
+			filter: "authz",
+			job:    "test / authz-matrix",
+			// `make test-authz` is a Phase 2 stub, so this is the surface it will enumerate from
+			// rather than a recipe's package list: the matrix is derived from the Huma registry.
+			packages: []string{"./internal/api/...", "./internal/authz/..."},
+		},
+	} {
+		t.Run(tc.filter, func(t *testing.T) {
+			t.Parallel()
+
+			patterns := pathFilterPatterns(t, workflow, tc.filter)
+
+			for _, pkg := range goListDeps(t, tc.packages) {
+				dir := strings.TrimPrefix(pkg, module+"/")
+				if dir == pkg {
+					continue // not this module: the standard library and the third-party graph
+				}
+
+				require.Truef(t, selects(patterns, dir+"/x.go"),
+					"ci.yml's `%s` filter does not select %s, which %s depends on. A change there can "+
+						"break that job, the filter would skip it, and ci-required counts a skip as "+
+						"success. Add '%s/**' to the filter (issue #159).", tc.filter, dir, tc.job, dir)
+			}
+		})
+	}
+}
+
+// goListDeps returns the transitive dependency closure of package patterns, this module's packages
+// and everything else, exactly as the toolchain reports it.
+func goListDeps(t *testing.T, patterns []string) []string {
+	t.Helper()
+
+	return goListPackages(t, append([]string{"-deps"}, patterns...))
 }

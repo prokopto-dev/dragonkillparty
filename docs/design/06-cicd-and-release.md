@@ -210,23 +210,42 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `gen / codegen-drift` — `make gen`, then a clean tree | always | 80 s | required |
 | `gen / spec-drift` — spec properties codegen cannot see | api/go changed | 30 s | required |
 | `test / unit` | go changed | 60 s | required |
-| `test / property` — `testing/quick`, base seed printed | go changed | 60 s | required |
-| `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | go changed | 60 s | required |
+| `test / property` — `testing/quick`, base seed printed | pointmath changed | 60 s | required |
+| `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | pointmath changed | 60 s | required |
 | `test / golden` — plus a non-decreasing fixture count | go changed | 45 s | required |
-| `test / integration` — real SQLite, real triggers, goleak | go/db changed | 130 s | required |
+| `test / integration` — real SQLite, real triggers, goleak | code/db changed | 130 s | required |
 | `test / migrations` — fresh install, N-1, row invariants, auto-restore; plus `atlas migrate lint`, **advisory** | db changed | 110 s | required |
-| `test / authz-matrix` — every operation × every principal | api/go changed | 60 s | required |
+| `test / authz-matrix` — every operation × every principal | authz changed | 60 s | required |
 | `api / breaking-change` — oasdiff + sticky changelog comment | api changed | 45 s | required |
 | `build / binary` — uploads the artifact everything reuses | always | 165 s | required |
-| `build / image` — amd64, `--load`, first-boot smoke | non-draft | 60 s | required |
+| `build / image` — amd64, `--load`, first-boot smoke | **post-merge** (not a PR) | 60 s | required |
 | `test / e2e` — Playwright, sharded ×2, `--retries=0` | non-draft | 150 s | required |
-| `test / importer` — MariaDB fixtures via testcontainers | importer changed + non-draft | 210 s | required |
 | `budget / bundle` — SPA initial route ≤ 250 KB gz | web changed | 10 s | required |
 | `docs / build` — embed.FS link resolution, `dkp:exec` blocks | docs/go changed | 40 s | required |
 | `ci-required` | always | 5 s | **the only check in branch protection** |
 
 There is no "required in queue" tier. Two `mq / *` rows sat here until issue #101; section 2 records
 why they were deleted rather than enabled, and #108 and #109 track what they claimed to cover.
+
+**The path filters nest, and `go` is wider than `code` (issue #159).** `build` — the Makefile and
+`setup-toolchain` — is in every filter, because every job is `make <target>`. `code` is `build` plus
+the product's sources and the inputs only the *full* suite reads; the heavy suites gate on it.
+`go` is `code` plus the non-Go files a `test/repo` suite reads — stylesheets, the mockups, `NOTICE`,
+`CONTRIBUTING.md` — so a web-only PR still runs `test / unit`, where those suites execute under
+`-short`, while `test / integration`, `test / property` and `test / coverage-floor` no longer rebuild
+the world because a mockup was refreshed. `pointmath` and `authz` are dependency closures, not
+judgement calls: `test/repo/ci_path_filters_test.go` recomputes each with `go list -deps` and fails
+if an import escapes its filter.
+
+**`test / importer` is not in this table any more, and that is issue #159.** It ran one fixture, on
+PRs that touched the importer, for about ten minutes. `nightly-verify.yml` runs all six every night
+— the four EQdkp versions, the hostile fixture and the anonymised real dump — and files an issue on
+a failure instead of blocking a parser fix, which is exactly what section 3 says that lane is for.
+`build / image` moved for the same reason and only as far as the next tier: its amd64 build and
+first-boot smoke run on `main` immediately after the merge, in nightly's arm64 cross-build, and in
+`release.yml`'s `smoke` gate against the published digest before any moving tag advances. What a PR
+can break about the image — the Dockerfile's hardening, the SPA stage, the build-context allowlist —
+is still checked on every PR by `test/repo`'s `release_gates_test.go` and `spa_pipeline_test.go`.
 
 **Required versus advisory, as a rule rather than a list:** a check is required if and only if its
 failure is (a) deterministic given the PR's diff and (b) actionable by the PR author. Image CVE
@@ -387,9 +406,10 @@ first-class distribution channel and `modernc.org/sqlite` file locking, path sep
 
 `ci.yml` uses `pull_request`, never `pull_request_target`, so untrusted code never sees a secret.
 `permissions: contents: read` at workflow level, elevated per job with the minimum scope.
-`build / image` builds but pushes only when the head repo is this repo. Fixture and refdb OCI
-artifacts are **public packages** so anonymous pulls work from forks — without that, `test / importer`
-is red for every external contributor, and the importer is the whole migration story.
+`build / image` builds but pushes only when the head repo is this repo — and since issue #159 it does
+not run on a PR at all, so a fork PR never reaches it. Fixture and refdb OCI artifacts are **public
+packages** so anonymous pulls work without a credential: the nightly importer matrix and the nightly
+upgrade ladder do not log in, and neither can a contributor reproducing either locally.
 
 ### The aggregate gate, and the hole it opens
 
@@ -398,23 +418,25 @@ reports and the PR waits forever. `ci-required` with `if: always()` over `needs.
 but opens a second hole — `skipped` must count as success, so a job accidentally skipped by a wrong
 `if:` passes silently.
 
-Three mitigations, all of which assert the **shape** of the run rather than only its colour:
+Four mitigations, all of which assert the **shape** of the run rather than only its colour:
 
 1. `changes` has no `if:` and cannot be skipped. It is the fixed point everything else is measured
    against.
 2. Jobs that are unconditional (`changes`, `lint-repo`, `typecheck`, `codegen-drift`, `build-binary`)
    are asserted to be exactly `success`, not "success or skipped".
-3. When `changes.outputs.deep == 'true'`, the deep jobs (`build-image`, `test-e2e`) are asserted
-   **not** to be in state `skipped`. `test-importer` is deep *and* path-filtered, so it is asserted
-   the same way whenever the importer filter also selected — its legitimate skip is "the importer
-   did not change", never "this PR was a draft when the run started".
+3. When `changes.outputs.deep == 'true'`, the deep jobs (`test-e2e`) are asserted **not** to be in
+   state `skipped`. Their legitimate skip is "this PR is a draft", never a mis-scoped filter.
+4. When `changes.outputs.postmerge == 'true'` — any run that is not a pull request — the post-merge
+   jobs (`build-image`) are asserted the same way. That tier is skipped on *every* PR by design,
+   which is the #101 shape, and this assertion is the only thing separating "runs later" from "runs
+   nowhere". `TestCIRequired_PostMergeJobs_AreAssertedNotSkipped` keeps the two lists in step.
 
-**A fourth mitigation, because three were not enough (issue #82).** `deep` reads
+**A fifth mitigation, because the first three were not enough (issue #82).** `deep` reads
 `github.event.pull_request.draft`, so the whole tier depends on the workflow being re-run when the PR
 leaves draft. `on: pull_request:` with no `types:` defaults to `[opened, synchronize, reopened]`,
 which does **not** include `ready_for_review` — so a PR opened as a draft, marked ready and merged
-with no further push reached `main` with `test / e2e`, `test / importer` and `build / image` never
-having run, and `ci-required` green throughout. That is the flow this document recommends, not an
+with no further push reached `main` with `test / e2e` — and, at the time, `test / importer` and
+`build / image` — never having run, and `ci-required` green throughout. That is the flow this document recommends, not an
 unusual one, and neither fallback existed: there is no merge queue, so `merge_group` never fires, and
 `push` happens after the merge. `ci.yml` therefore names all four types explicitly — declaring
 `types:` replaces the default list rather than extending it, so `synchronize` has to be restated or
@@ -549,7 +571,7 @@ written down.
 |---|---|---|---|
 | `ghcr.io/prokopto-dev/dragonkillparty` | public | every officer running the documented `docker pull …:1` | the user, silently — the release train logs in, so CI stays green |
 | `ghcr.io/prokopto-dev/dkp-refdb` | public | `nightly-verify.yml`'s `upgrade-ladder`, which does not log in; anyone reproducing an upgrade locally | the nightly upgrade ladder |
-| `ghcr.io/prokopto-dev/dkp-fixtures` | public | `ci.yml`'s `test / importer` and the nightly importer matrix, neither of which logs in — and a fork PR has no credential to use even in principle (§1) | `test / importer`, hardest on the fork PR |
+| `ghcr.io/prokopto-dev/dkp-fixtures` | public | the nightly importer matrix, which does not log in; anyone reproducing an import locally. It was also `ci.yml`'s `test / importer` until #159 moved that job to nightly, and a fork PR had no credential to use even in principle (§1) | the nightly importer matrix |
 
 **Who and when: the repository owner, once per package, immediately after that package's first
 successful publish** — GitHub → the repository → Packages → the package → Package settings → Change
@@ -566,8 +588,8 @@ releasable checklist and the third is checkable only afterwards — which is how
 **Logging in fixed the release train, not CI as a whole.** Issue #113 fixed a `release.yml` smoke job
 that pulled the published digest anonymously, and `TestReleaseWorkflows_EveryGHCRJob_LogsInFirst`
 holds every GHCR-touching job to that rule — across `release.yml` and `edge.yml`, which are the
-workflows that write to the registry. Nothing else logs in, deliberately: `test / importer` and the
-nightly jobs consume artifacts a **fork PR** must be able to pull, and a fork has no credential to
+workflows that write to the registry. Nothing else logs in, deliberately: the nightly jobs consume
+artifacts that a **fork PR**, or a contributor's laptop, must be able to pull with no credential to
 offer. So the two consequences run in opposite directions, and both are worth knowing before the
 first tag:
 

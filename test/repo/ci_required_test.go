@@ -195,11 +195,19 @@ func onBlock(t *testing.T, workflow string) []string {
 func deepAssertion(t *testing.T, workflow string) string {
 	t.Helper()
 
-	const marker = `if [ "$DEEP" = "true" ]; then`
+	return tierAssertion(t, workflow, "DEEP")
+}
+
+// tierAssertion returns the body of one of ci-required's `if [ "$TIER" = "true" ]` blocks — the
+// assertion that a job gated on that tier was not silently skipped on a run where it had to fire.
+func tierAssertion(t *testing.T, workflow, variable string) string {
+	t.Helper()
+
+	marker := `if [ "$` + variable + `" = "true" ]; then`
 
 	start := strings.Index(workflow, marker)
-	require.NotEqual(t, -1, start,
-		"ci-required's Gate step no longer contains the `if [ \"$DEEP\" = \"true\" ]` assertion")
+	require.NotEqualf(t, -1, start,
+		"ci-required's Gate step no longer contains the `%s` assertion", marker)
 
 	// The block ends at the `fi` closing it: the first line at the same indentation as the `if`.
 	indent := ""
@@ -210,13 +218,13 @@ func deepAssertion(t *testing.T, workflow string) string {
 	rest := workflow[start:]
 
 	end := strings.Index(rest, "\n"+indent+"fi\n")
-	require.NotEqual(t, -1, end, "the DEEP assertion block is unterminated")
+	require.NotEqualf(t, -1, end, "the %s assertion block is unterminated", variable)
 
 	return rest[:end]
 }
 
-// deepGatedJobs returns every job whose `if:` reads needs.changes.outputs.deep.
-func deepGatedJobs(t *testing.T, workflow string) []string {
+// tierGatedJobs returns every job whose `if:` reads one of the `changes` tier outputs.
+func tierGatedJobs(t *testing.T, workflow, output string) []string {
 	t.Helper()
 
 	var (
@@ -231,16 +239,23 @@ func deepGatedJobs(t *testing.T, workflow string) []string {
 			continue
 		}
 
-		if strings.HasPrefix(l, "    if:") && strings.Contains(l, "needs.changes.outputs.deep") {
+		if strings.HasPrefix(l, "    if:") && strings.Contains(l, "needs.changes.outputs."+output) {
 			jobs = append(jobs, current)
 		}
 	}
 
-	require.NotEmpty(t, jobs,
-		"no job in ci.yml gates on needs.changes.outputs.deep — the draft tier has been removed, or "+
-			"the `if:` lines no longer parse")
+	require.NotEmptyf(t, jobs,
+		"no job in ci.yml gates on needs.changes.outputs.%s — that tier has been removed, or the "+
+			"`if:` lines no longer parse", output)
 
 	return jobs
+}
+
+// deepGatedJobs returns every job whose `if:` reads needs.changes.outputs.deep.
+func deepGatedJobs(t *testing.T, workflow string) []string {
+	t.Helper()
+
+	return tierGatedJobs(t, workflow, "deep")
 }
 
 // alwaysOnAssertion returns the jq expression in ci-required's Gate step that names the jobs which
@@ -415,6 +430,31 @@ func TestCIRequired_DeepGatedJobs_AreAssertedNotSkipped(t *testing.T) {
 			"job %q is gated on needs.changes.outputs.deep but is not named in ci-required's "+
 				"`if [ \"$DEEP\" = \"true\" ]` block. ci-required counts a skip as success, so on a "+
 				"reviewable PR that job can be skipped and merged past. Add it to the assertion in "+
+				".github/workflows/ci.yml.", job)
+	}
+}
+
+// TestCIRequired_PostMergeJobs_AreAssertedNotSkipped is the deep-tier assertion above applied to
+// the tier issue #159 added, and it is the assertion that makes that tier legitimate at all.
+//
+// A post-merge job is SKIPPED on every pull request by design. That is the exact shape issue #101
+// deleted two jobs for — `mq / image-arm64` and `mq / upgrade-from-latest-release` sat in
+// ci-required's needs, never ran, and reported satisfied on every PR — and the only thing that
+// distinguishes `build / image` from them is that its skip is asserted against on the runs where it
+// must not happen. Without this block a typo in the `postmerge` output would produce a job that
+// never runs anywhere and a checks list that never says so.
+func TestCIRequired_PostMergeJobs_AreAssertedNotSkipped(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+	assertion := tierAssertion(t, workflow, "POSTMERGE")
+
+	for _, job := range tierGatedJobs(t, workflow, "postmerge") {
+		require.Containsf(t, assertion, `"`+job+`"`,
+			"job %q is gated on needs.changes.outputs.postmerge but is not named in ci-required's "+
+				"`if [ \"$POSTMERGE\" = \"true\" ]` block. It is skipped on every PR by design, so "+
+				"nothing else would notice if it stopped running on main either — which is a job that "+
+				"exists in the needs list and nowhere else (issue #101). Add it to the assertion in "+
 				".github/workflows/ci.yml.", job)
 	}
 }

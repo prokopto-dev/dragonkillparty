@@ -150,7 +150,7 @@ and `DCO`. Everything else reports into `ci-required`.
 |---|---|
 | `gen` | `verify-generated` — `make gen` then `git diff --exit-code`. Runs always. |
 | `lint` | `go` (gofumpt, vet, golangci-lint, staticcheck) · `web` (eslint, prettier, `tsc --noEmit`) · `repo` (the architectural gates in `internal/repogate` + the licence firewall) |
-| `test` | `go-unit` (`-race -shuffle=on`) · `go-integration` · `contract` (oasdiff breaking-change, `operationId` set diff, SDK regen diff) · `migrations` · `importer` · `e2e` |
+| `test` | `go-unit` · `go-integration` (both `-race`; `-shuffle=on -count=1` on the packages that shell out, and over everything in the nightly `suite / shuffled` job — ADR-0020) · `contract` (oasdiff breaking-change, `operationId` set diff, SDK regen diff) · `migrations` · `e2e`. The importer suite is nightly (#159) |
 | `build` | `binary` (pnpm build → `go build`, uploads the artifact every other job reuses) · `image` |
 | `security` | `govulncheck` (`govulncheck ./...`, reachable vulnerabilities) · `licences` (GPL/AGPL/LGPL/CC BY-NC in the runtime module graph). Both unconditional and required. `secrets` (gitleaks) is not wired up yet — see SECURITY.md |
 | `docs` | link resolution, Pages build, executable fenced blocks |
@@ -208,8 +208,8 @@ reviewer, so an expected output cannot be rewritten without one; golden `-update
 coverage floor over the ledger, strategy and enum-catalogue packages is a required job
 (`make test-coverage-floor`), so deleting a test there goes red; raising the bundle budget means
 editing the CODEOWNERS-protected `web/bundle-budget.json`; and the guardrails that matter most — the
-append-only trigger, `-race`, `-shuffle`, codegen drift, the licence gate — cannot be weakened from a
-`_test.go` file at all.
+append-only trigger, `-race`, `-count=1` on the shell-out packages, codegen drift, the licence gate —
+cannot be weakened from a `_test.go` file at all.
 
 **Nothing in CI reads your assertions**, and you should know exactly where that leaves this rule. No
 job diffs `**/*_test.go` against `main`, so a loosened `Equal` in a package with no coverage floor
