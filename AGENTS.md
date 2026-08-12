@@ -25,12 +25,28 @@ is a bug worth reporting.
 | new migration | `make migration NAME=<snake_case>` | — |
 | seed a dev guild | `make seed` | — |
 | container image | `make docker` | ~90 s |
+| inner loop — laws + linters + type checks, no tests | `make check-fast` | ~25 s |
 | **everything CI runs** | **`make check`** | **~60 s** |
 
 Run `make check` before claiming a task is done. If you are told to run a command that is not in
 this table, add the Makefile target *and* this row in the same change — never invent one. (The
 Makefile also has a few internal helpers, such as `fmt` and `build`; CI checks that every row here
 resolves to a real target, not that every target appears here.)
+
+**`check-fast` is for the edit-compile-lint cycle, `check` is the gate.** `check-fast` is
+`lint-repo` + `lint-go` + `vet`: the four laws, the money rules, gofumpt, golangci-lint, `go vet`,
+staticcheck and `tsc`. It runs no tests, no coverage floor, no licence gate and no eslint, so it
+cannot tell you the change works — only that the tree is coherent. Reach for it between edits;
+`make check` is still what "done" means, and the pre-push hook does not accept the faster one
+instead.
+
+The test suite **caches**: `go test`'s result cache is on for every package that cannot spawn a
+subprocess, so a second `make test` over an unchanged package prints `(cached)` rather than running
+it again. Packages that shell out (`test/repo`, `internal/api`, `internal/core`, `internal/licence`,
+`internal/repogate`, `internal/specgate`) always re-run — the cache cannot see what a subprocess
+reads, so a cached pass there would be a gate reporting green on the change it exists to catch.
+`-shuffle=on` runs nightly over the whole suite rather than on every push; if you want it locally,
+`DKP_TEST_SHUFFLE=on make test`.
 
 ## Repo map — the rule is attached to the directory
 

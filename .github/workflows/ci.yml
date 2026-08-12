@@ -17,6 +17,22 @@
 # `build / binary` uploads an artifact precisely so no other job rebuilds; a second Go+Vite build
 # would put e2e past nine minutes on its own. ci-budget.yml measures the last 200 runs weekly.
 #
+# THREE TIERS, and the tier is the `if:` (issue #159):
+#   per-PR      the default. Everything below without a tier note.
+#   deep        non-draft PRs and queue runs: `test / e2e`.
+#   post-merge  not a pull request at all: `build / image`, whose amd64 build and first-boot smoke
+#               is the last check whose failure a PR author can neither cause nor usefully act on.
+# `test / importer` used to be a fourth, deep-and-path-filtered case; it is nightly-verify.yml's
+# now, where the whole fixture matrix runs. Both moves are honest only because ci-required asserts
+# each tier ran when its condition held — a skip that nobody asserts against is a green tick for
+# work nobody did, which is what #101 deleted two jobs for.
+#
+# THE PER-PR TEST SUITE CACHES (issue #155). `make test` runs in two lanes: packages that can spawn
+# a subprocess keep `-shuffle=on -count=1`, and everything else may be served from `go test`'s
+# result cache, so a re-push with no source change reports `(cached)` for the packages it did not
+# touch. `-shuffle=on` still runs over the whole suite every night — nightly-verify.yml's
+# `suite / shuffled`. See the Makefile's GATE_DIRS block for why the split is where it is.
+#
 # ACTION PINS — third-party actions are pinned to a full commit SHA with the version in a trailing
 # comment. Do not add an action without a SHA: `lint / repo` fails on any `uses:` ending in a bare
 # tag (PIN001), and Renovate's `helpers:pinGitHubActionDigests` maintains the digests thereafter.
@@ -40,8 +56,8 @@ on:
     # `github.event.pull_request.draft`, and the whole draft tier assumes leaving draft
     # re-evaluates it. It does not, unless the workflow listens for the event that clears the gate:
     # a PR opened as a draft, marked ready and merged with no further push reached `main` with
-    # `test / e2e`, `test / importer` and `build / image` never having run, and `ci-required` green
-    # the whole way — which is exactly the flow CONTRIBUTING.md documents. There is no merge queue
+    # `test / e2e` (and, at the time, `test / importer` and `build / image`) never having run, and
+    # `ci-required` green the whole way — exactly the flow CONTRIBUTING.md documents. No merge queue
     # (`required_merge_queue: null`), so `merge_group` is not a fallback, and `push` is after the
     # merge rather than before it. TestCIWorkflow_PullRequestTrigger_ListensForReadyForReview pins
     # this list.
@@ -89,18 +105,35 @@ jobs:
     timeout-minutes: 3
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      code: ${{ steps.filter.outputs.code }}
       web: ${{ steps.filter.outputs.web }}
       db: ${{ steps.filter.outputs.db }}
       api: ${{ steps.filter.outputs.api }}
-      importer: ${{ steps.filter.outputs.importer }}
+      authz: ${{ steps.filter.outputs.authz }}
+      pointmath: ${{ steps.filter.outputs.pointmath }}
       docs: ${{ steps.filter.outputs.docs }}
       # deep == "run the expensive jobs". Draft PRs get lint + unit only.
       #
       # `merge_group` is a term here for the reason the trigger comment above gives, and it is not an
       # escape hatch from a path filter — those were removed with the mq jobs (#101). It says a queue
       # run, should one ever happen, is a deep run and not a draft one; without it a queue run would
-      # skip build / image and test / e2e, and ci-required's DEEP assertion would not fire.
+      # skip test / e2e and ci-required's DEEP assertion would not fire.
       deep: ${{ github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.draft == false) }}
+      # postmerge == "this run is not a pull request", so it is main after a merge, or a queue run.
+      # The tier issue #159 added, and it holds exactly one job: `build / image`.
+      #
+      # It is NOT the draft gate with a different name. `deep` says "this PR is reviewable, so pay
+      # for the expensive checks"; this says "the PR is already merged, so this check is no longer
+      # buying the author anything a reviewer can act on". The amd64 image build plus its first-boot
+      # smoke is five to six minutes on the PR path for a failure mode a PR almost never introduces
+      # — and the parts of it that a PR CAN introduce (the Dockerfile's hardening, the SPA build
+      # stage, the context allowlist) are policed on every PR by test/repo's release_gates_test.go
+      # and spa_pipeline_test.go, which read deploy/** through the `go` filter.
+      #
+      # A job that never runs on a PR and sits in ci-required's needs is the #101 shape — skipped
+      # counts as success — so this one is asserted NOT skipped when postmerge is true, exactly as
+      # the deep jobs are. See ci-required's Gate step.
+      postmerge: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: filter
@@ -115,47 +148,84 @@ jobs:
           # lint / go and test / unit and reported green through ci-required. A filter that
           # excludes the file defining a job is the same defect as a target that exits 0 without
           # doing the work — and half-fixing it, for the `go` filter only, would leave lint / web,
-          # budget / bundle, test / importer and test / migrations with exactly that hole.
+          # budget / bundle and test / migrations with exactly that hole.
+          #
+          # THE FILTERS ARE NESTED, and the nesting is the anti-silent-skip rule from the paragraph
+          # above meeting issue #159's "stop running the 8-minute suites on a mockup refresh".
+          #
+          #   build      the Makefile and the toolchain action: in EVERY filter, for the reason
+          #              above — every job is `make <target>` and gets its tools from that action
+          #   code       *build plus the product's own sources and everything ONLY the full suite
+          #              reads. The heavy suites gate on this
+          #   go         *code plus the non-Go files a test/repo suite reads. `test / unit` and
+          #              `lint / go`'s neighbours gate on this
+          #
+          # `go` is therefore a strict superset of `code`, which is what makes the narrowing safe:
+          # every input pinned to `go` by issue #94 still selects `test / unit`, and every suite
+          # those inputs justify runs there under -short. What a web-only or mockup-only PR now
+          # skips is `test / integration`, `test / property`, `test / coverage-floor` and
+          # `test / authz-matrix` — none of which reads a stylesheet. A pattern may only be in `go`
+          # rather than `code` when the suite that reads it is NOT skipped by -short, and
+          # test/repo/ci_path_filters_test.go names each one with its reader and checks that.
           filters: |
             build: &build
               - 'Makefile'
               - '.github/actions/setup-toolchain/**'
-            go:
+            code: &code
               - *build
               - '**/*.go'
               - 'go.mod'
               - 'go.sum'
               - '.golangci.yml'
-              # The gate scripts, on the `go` filter alone rather than in the *build anchor.
-              # Their negative fixtures live in test/repo and run under `make test`, so a change
-              # here must reach `test / integration` or a scripts-only PR edits a gate and runs
-              # none of the tests that prove it fires. Putting them in *build would have been the
-              # lazy way to get that, and would also drag in the web, api, docs and importer jobs,
-              # none of which can be affected by a shell gate.
+              # The gate scripts, in `code` rather than in the *build anchor. Their negative
+              # fixtures live in test/repo and run under `make test`, so a change here must reach
+              # `test / integration` or a scripts-only PR edits a gate and runs none of the tests
+              # that prove it fires. Putting them in *build would have been the lazy way to get
+              # that, and would also drag in the web, api and docs jobs, none of which can be
+              # affected by a shell gate.
               - 'scripts/**'
-              # The two worked-example documents, on the `go` filter for the same reason as the gate
+              # The two worked-example documents, in `code` for the same reason as the gate
               # scripts. TestDocs_ExampleEndpointSnippets_Compile (internal/api) extracts and
               # rebuilds every fence in them and runs under `make test`; without these two lines a
               # docs-only edit to EXAMPLE_ENDPOINT.md — which selects only the `docs` filter, not
-              # `go`/`db` — would SKIP `test / integration` and the snippet gate would silently stop
-              # running on the exact files it polices. That is the self-concealing omission the header
-              # above warns about, so the anti-rot gate is anchored to its own inputs here.
+              # `code`/`db` — would SKIP `test / integration` and the snippet gate would silently
+              # stop running on the exact files it polices. That is the self-concealing omission the
+              # header above warns about, so the anti-rot gate is anchored to its own inputs here.
               - 'internal/api/EXAMPLE_ENDPOINT.md'
               - 'db/RECIPES.md'
               # The tracked git hooks, for the same reason as scripts/** above: test/repo's
               # githooks_test runs .githooks/pre-commit and pre-push under `make test`, so a
               # hooks-only change must reach `test / integration` to exercise that gate.
               - '.githooks/**'
-              # CONTRIBUTING.md, for the same reason again: contributing_claims_test.go resolves
-              # every workflow, path and CI job its "Enforced by:" blocks cite (#139), and the file
-              # is markdown, so without this line it selects `docs` alone and the gate SKIPS on the
-              # one file it polices. A false enforcement promise is added by editing exactly this
-              # file and nothing else, which is the change that would run none of it.
-              - 'CONTRIBUTING.md'
-              # The web and design-doc INPUTS of test/repo, pinned to `go` for the same reason as
-              # the three blocks above — issue #94. test/repo runs under `make test-unit` and
-              # `make test`, both gated on `go`, but five of its suites read their inputs from
-              # web/ and docs/design/ instead:
+              # The skills' verify scripts: gate_cache_test.go scans .claude/skills for `go test`
+              # invocations that dropped -count=1, and that suite runs under `make test`.
+              - '.claude/skills/**'
+              # The golden files themselves, which were in no filter but `db`'s migrations subset:
+              # `test / golden` asserts the fixture count is non-decreasing versus origin/main and
+              # the parser suite reads them, so a PR that deleted a golden case selected nothing and
+              # ran neither. Same self-concealing omission as the four blocks above, found while
+              # splitting this filter.
+              - 'test/golden/**'
+              # .npmrc and deploy/** are the two test/repo inputs that do NOT qualify for the `go`
+              # tier below, and they are here rather than there because their readers are
+              # -short-SKIPPED: TestNpmrc_SuppressesALifecycleScript installs a fixture with pnpm
+              # and runs only in the full suite, so `test / unit` would not cover a change to
+              # either. Same rule as everything in `go`, applied honestly in the other direction.
+              #
+              # deploy/** was in NO filter at all before issue #94, yet release_gates_test.go
+              # polices the Dockerfile's hardening (FROM scratch, USER 65532, VOLUME /data, the
+              # HEALTHCHECK that must not touch the database) and spa_pipeline_test.go polices the
+              # web stage and the context allowlist — so a Dockerfile-only PR ran none of them.
+              # Those two are the whole PR-time story for the image now that `build / image` is
+              # post-merge, which is the other reason this line is in the narrower filter.
+              - '.npmrc'
+              - 'web/.npmrc'
+              - 'deploy/**'
+            go:
+              - *code
+              # THE TEST/REPO INPUTS THAT ARE NOT SOURCE — issue #94, and the reason `go` still
+              # exists as a wider filter than `code`. test/repo runs under `make test-unit` and
+              # `make test`; five of its suites read their inputs from web/ and docs/design/:
               #
               #   design_tokens_test.go  tokens.css, base.css, web/src/routes/design.*,
               #                          web/src/components/*.css, docs/design/09 section 2, and
@@ -163,7 +233,7 @@ jobs:
               #   e2e_gate_test.go       web/e2e/axe-allowlist.json, web/playwright.config.ts
               #   web_fonts_test.go      fonts.css, web/src/assets/fonts/**, NOTICE
               #   web_fonts_subset_test  the vendored subsets and THIRD_PARTY_NOTICES.txt
-              #   npmrc_test.go          .npmrc and web/.npmrc
+              #   mockup_gates_test.go   the five .dc.html surfaces, index.html and harness/**
               #
               # Without these lines a web-only PR selects `web` and not `go`, every job that runs
               # test/repo is SKIPPED, and ci-required counts a skip as success — so an untokenised
@@ -172,32 +242,30 @@ jobs:
               # font landing with no licence record all report green. PR #91 changed five of these
               # files and ran none of the tests that police them.
               #
-              # The cost is a Go test run on web-only PRs; none of the jobs it adds is on the
-              # critical path (changes -> build / binary -> test / e2e), so the wall-clock budget in
-              # the header is unaffected.
+              # EVERY reader named here runs under -short, which is what lets issue #159 keep them
+              # out of `code`: `test / unit` still runs on a web-only PR and still polices all of
+              # them, while the four heavy suites no longer rebuild the world because a mockup was
+              # refreshed. test/repo/ci_path_filters_test.go pairs each pattern with its reader and
+              # fails if that reader ever gains a `testing.Short()` skip.
               - 'web/src/**'
               - 'web/e2e/**'
               - 'web/playwright.config.ts'
-              - '.npmrc'
-              - 'web/.npmrc'
               - 'docs/design/09-frontend-and-design-system.md'
               # The whole mockups tree, not just the sheet design_tokens_test.go diffs against:
               # mockup_gates_test.go publishes all five surfaces and runs MOCK001-004 over the
               # result, so its inputs are the .dc.html files, index.html and harness/**. Without
-              # this a mockup REFRESH — the one change most likely to introduce a binding the
-              # runtime cannot resolve — would select `docs` and skip the gate that exists to catch
-              # exactly that.
+              # this a mockup REFRESH — the change most likely to introduce a binding the runtime
+              # cannot resolve — would select `docs` and skip the gate that exists to catch that.
               - 'docs/design/mockups/**'
               - 'NOTICE'
               - 'THIRD_PARTY_NOTICES.txt'
-              # The image definition, on the `go` filter for the same reason and found the same way.
-              # deploy/** was in NO filter at all, yet release_gates_test.go polices the Dockerfile's
-              # hardening (FROM scratch, USER 65532, VOLUME /data, the HEALTHCHECK that must not
-              # touch the database) and spa_pipeline_test.go polices the web stage and the context
-              # allowlist — so a Dockerfile-only PR ran none of them. `build / image` covers whether
-              # the image BUILDS; these cover whether it is the image the design specifies.
-              - 'deploy/**'
               - '.dockerignore'
+              # CONTRIBUTING.md: contributing_claims_test.go resolves every workflow, path and CI
+              # job its "Enforced by:" blocks cite (#139), and the file is markdown, so without this
+              # line it selects `docs` alone and the gate SKIPS on the one file it polices. A false
+              # enforcement promise is added by editing exactly this file and nothing else, which is
+              # the change that would run none of it.
+              - 'CONTRIBUTING.md'
             web:
               - *build
               - 'web/**'
@@ -216,17 +284,43 @@ jobs:
               - 'test/migrations/**'
               - 'test/fixtures/migrations/**'
               - 'test/golden/migrations/**'
-            api:
+            api: &api
               - *build
               - 'internal/api/**'
               - 'internal/authz/**'
               - 'openapi/**'
               - 'clients/**'
-            importer:
+            # The authorization matrix is enumerated from the Huma registry, so its inputs are the
+            # api surface PLUS the packages that surface is built out of: a type change in
+            # internal/core or a store signature can move a verdict without touching internal/api.
+            # This list is not judgement — it is `go list -deps ./internal/api/... ./internal/authz/...`
+            # restricted to this module, and TestCIFilters_AuthzFilter_CoversTheDependencyClosure
+            # recomputes it, so a new import fails here rather than skipping the matrix.
+            authz:
+              - *api
+              - 'go.mod'
+              - 'go.sum'
+              - 'internal/clock/**'
+              - 'internal/core/**'
+              - 'internal/guild/**'
+              - 'internal/store/**'
+            # The point-math suites: `make test-property` and `make test-coverage-floor`. Same
+            # construction as `authz` above and the same test — the dependency closure of the
+            # packages those two targets name, and nothing wider. These were on the `go` filter,
+            # which meant a mockup refresh or a NOTICE edit ran 200 property checks and a coverage
+            # floor over the ledger (issue #159).
+            pointmath:
               - *build
-              - 'internal/importer/**'
-              - 'test/fixtures/eqdkp/**'
-              - 'db/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'internal/account/kinds/**'
+              - 'internal/audit/kinds/**'
+              - 'internal/clock/**'
+              - 'internal/core/**'
+              - 'internal/ledger/**'
+              - 'internal/schemaenum/**'
+              - 'internal/store/**'
+              - 'internal/strategy/**'
             docs:
               - *build
               - 'docs/**'
@@ -288,7 +382,10 @@ jobs:
   lint-go:
     name: lint / go
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    # `code`, not `go`: golangci-lint reads Go sources and .golangci.yml. A stylesheet, a mockup or
+    # a NOTICE edit cannot change its verdict, and the suites that DO read those files are gated on
+    # the wider filter (issue #159).
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -523,7 +620,7 @@ jobs:
   test-property:
     name: test / property
     needs: [changes, codegen-drift]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.pointmath == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -556,7 +653,7 @@ jobs:
   test-coverage-floor:
     name: test / coverage-floor
     needs: [changes, codegen-drift]
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.pointmath == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
@@ -601,7 +698,11 @@ jobs:
   test-integration:
     name: test / integration
     needs: [changes, codegen-drift]
-    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.db == 'true'
+    # `code`, not `go` (issue #159). This is the 8-minute job and it was running on every mockup
+    # refresh, every NOTICE edit and every stylesheet change, because those files are pinned to
+    # `go` so that test/repo's -short suites reach `test / unit`. They still do; what they no
+    # longer do is drag the full race suite in behind them.
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.db == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 8
     steps:
@@ -716,7 +817,7 @@ jobs:
   test-authz:
     name: test / authz-matrix
     needs: [changes, codegen-drift]
-    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.authz == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
@@ -816,7 +917,18 @@ jobs:
   build-image:
     name: build / image
     needs: [changes, build-binary]
-    if: needs.changes.outputs.deep == 'true'
+    # POST-MERGE, not per-PR (issue #159). It is five to six minutes of Vite + Go + image build for
+    # a failure a PR rarely causes, and the parts a PR CAN cause are already policed on the PR path
+    # by test/repo: release_gates_test.go on the Dockerfile's hardening, spa_pipeline_test.go on the
+    # web stage and the build-context allowlist, both gated on deploy/** via `code`. What is left
+    # here — does the image actually build, boot, answer /healthz then /readyz, and fit the size
+    # budget — now runs on main immediately after the merge, in nightly's arm64 cross-build, and as
+    # release.yml's `smoke` gate against the published digest before any moving tag advances.
+    #
+    # The layer-cache doctrine below is unchanged and still load-bearing: main writes, a queue run
+    # reads. See ci-required's POSTMERGE assertion for why a job nobody runs on a PR is still safe
+    # to leave in the needs list.
+    if: needs.changes.outputs.postmerge == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
@@ -971,18 +1083,19 @@ jobs:
           name: playwright-trace-${{ matrix.shard }}
           path: web/test-results/
 
-  test-importer:
-    name: test / importer
-    needs: changes
-    if: needs.changes.outputs.importer == 'true' && needs.changes.outputs.deep == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/setup-toolchain
-      - run: make test-importer
-        # Pulls the MariaDB data directories published by fixtures.yml as PUBLIC OCI artifacts, so
-        # a fork PR pulls them anonymously and nobody ever runs a PHP installer locally.
+  # ---------------------------------------------------------------------------------------------
+  # There was a `test / importer` job here, gated on `importer && deep` with a 10-minute timeout.
+  # Issue #159 moved it to nightly-verify.yml, which is where the coverage always was: this job ran
+  # ONE fixture on a PR that touched the importer, and `importer / ${{ matrix.fixture }}` runs all
+  # six every night — the four EQdkp versions, the hostile fixture and the anonymised real dump —
+  # with a failure filing an issue rather than blocking a parser fix. The `importer` path filter went
+  # with it; internal/importer/** is Go, so `code` still selects the suites that read it.
+  #
+  # The trade is stated rather than hidden: a PR that breaks the importer is now found by the
+  # nightly rather than by its own checks list. That is the tier this repository already puts
+  # container-bound, fixture-driven, ten-minute checks in, and the importer's own risk register (R1)
+  # is answered by breadth every night, not by one fixture per PR.
+  # ---------------------------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------------------------
   # budgets — required despite living under a soft-sounding name. A budget is required if and only
@@ -998,6 +1111,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # scripts/budget-bundle.sh reads web/bundle-budget.json's max_gzip_bytes with python3 and
+          # this job declared nothing, so the interpreter was whatever the runner image shipped
+          # (issue #164 — the #83 defect class). If it ever moves, the bundle budget fails as though
+          # the BUNDLE were wrong, in a job whoever bumped the image never touched.
+          python: "true"
       - run: make budget-bundle
         # SPA initial route <= 250 KB gzipped, and <= +5% versus the last release. Breaching it
         # legitimately is a one-line edit to web/bundle-budget.json — reviewed, in the diff, by a
@@ -1044,11 +1163,13 @@ jobs:
   # Path-filtered jobs plus required status checks is the classic way to wedge a repo: a skipped job
   # never reports and the PR waits forever. `if: always()` over `needs.*.result` fixes that, but it
   # opens a second hole, because `skipped` must count as success — so a job accidentally skipped by
-  # a wrong `if:` would pass silently. Three mitigations, all of which assert the SHAPE of the run
+  # a wrong `if:` would pass silently. Four mitigations, all of which assert the SHAPE of the run
   # rather than only its colour:
   #   1. `changes` has no `if:` and cannot be skipped.
   #   2. Jobs that must always run are asserted to be exactly "success", not "success or skipped".
   #   3. When `deep == true`, the deep jobs are asserted NOT to be in state "skipped".
+  #   4. When `postmerge == true`, the post-merge jobs are asserted the same way — the assertion
+  #      that keeps a tier nobody runs on a PR from being a tier nobody runs at all (issue #159).
   # ---------------------------------------------------------------------------------------------
   ci-required:
     name: ci-required
@@ -1075,7 +1196,6 @@ jobs:
       - build-binary
       - build-image
       - test-e2e
-      - test-importer
       - bundle-budget
       - docs-build
     runs-on: ubuntu-24.04
@@ -1085,7 +1205,7 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
           DEEP: ${{ needs.changes.outputs.deep }}
-          IMPORTER: ${{ needs.changes.outputs.importer }}
+          POSTMERGE: ${{ needs.changes.outputs.postmerge }}
         run: |
           set -euo pipefail
 
@@ -1121,23 +1241,31 @@ jobs:
           #    indistinguishable from a correct path filter.
           if [ "$DEEP" = "true" ]; then
             skipped=$(jq -rn --argjson r "$RESULTS" '
-              ["build-image","test-e2e"]
+              ["test-e2e"]
               | map(select($r[.].result == "skipped")) | join(", ")')
             if [ -n "$skipped" ]; then
               echo "::error::ci-required: deep jobs were skipped on a non-draft run: ${skipped}"
               exit 1
             fi
+          fi
 
-            # test-importer is deep AND path-filtered, so unlike the two above it is legitimately
-            # skipped when the importer did not change — but a skip when it DID change is the same
-            # defect, and until now nothing said so.
-            if [ "$IMPORTER" = "true" ]; then
-              result=$(jq -rn --argjson r "$RESULTS" '$r["test-importer"].result')
-              if [ "$result" = "skipped" ]; then
-                echo "::error::ci-required: test-importer was skipped on a non-draft run that changed the importer"
-                exit 1
-              fi
+          # 4. The same assertion for the post-merge tier (issue #159). `build / image` is skipped on
+          #    every PR by design, which is exactly the shape #101 deleted two jobs for — a job that
+          #    reports satisfied without running. The difference is that this one DOES run, on main
+          #    and in a queue, and this is what proves it: on any run that is not a pull request it
+          #    must not be in state "skipped".
+          #
+          #    EVERY job gated on `postmerge` must be named here, for the same reason as the deep
+          #    list above, and TestCIRequired_PostMergeJobs_AreAssertedNotSkipped keeps the two in
+          #    step.
+          if [ "$POSTMERGE" = "true" ]; then
+            skipped=$(jq -rn --argjson r "$RESULTS" '
+              ["build-image"]
+              | map(select($r[.].result == "skipped")) | join(", ")')
+            if [ -n "$skipped" ]; then
+              echo "::error::ci-required: post-merge jobs were skipped on a non-PR run: ${skipped}"
+              exit 1
             fi
           fi
 
-          echo "ci-required: green (deep=${DEEP})"
+          echo "ci-required: green (deep=${DEEP} postmerge=${POSTMERGE})"

@@ -81,15 +81,11 @@ func TestE2E_MakeTarget_DoesRealWork(t *testing.T) {
 func TestE2E_CIJob_InstallsNode(t *testing.T) {
 	t.Parallel()
 
-	workflow := readCIWorkflow(t)
-
-	start := strings.Index(workflow, "\n  test-e2e:\n")
-	require.NotEqual(t, -1, start, "ci.yml has no test-e2e job")
-
-	job := workflow[start:]
-	if next := strings.Index(job[1:], "\n  test-importer:"); next != -1 {
-		job = job[:next]
-	}
+	// jobBlock, rather than this job's text up to a NAMED neighbour: the neighbour used to be
+	// `test-importer`, issue #159 moved that job to nightly-verify.yml, and a boundary that no
+	// longer matches silently widens the search to the rest of the file — where `node: "true"`
+	// appears in three other jobs and the assertion below would pass without reading this one.
+	job := jobBlock(t, readCIWorkflow(t), "test-e2e:")
 
 	require.Contains(t, job, `node: "true"`,
 		"ci.yml's test-e2e job must request Node from setup-toolchain: Playwright is a Node tool and "+

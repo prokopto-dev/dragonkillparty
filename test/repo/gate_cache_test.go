@@ -10,13 +10,20 @@
 // `bash scripts/repo-gates.sh`, `make licence-gate`, `go run ./internal/migrate/shippedlock`,
 // `python3`, `eslint`, `pnpm`. Change the very script a gate polices and that gate's Go inputs are
 // byte-identical, so `go test` is entitled to report `ok (cached)` having executed nothing — the
-// gate reports green on exactly the change it exists to catch. `-count=1` is what forbids that, and
-// this file is what keeps `-count=1` where it is:
+// gate reports green on exactly the change it exists to catch. `-count=1` is what forbids that.
+//
+// Issue #155 decided WHERE it is forbidden, rather than everywhere: the suite runs in two lanes,
+// and the flag is mandatory on the one that can shell out and pure cost on the other. That decision
+// is only safe while the lanes are what they claim to be, which is what this file now holds:
 //
 //   - TestGoTest_ResultCache_MissesASubprocessInput_UnlessCountOne demonstrates the false hit on a
 //     fixture, so the hazard is an executable fact rather than a comment somebody trims.
 //   - TestMakefile_EveryGoTestRecipe_ForcesRerun asserts every `go test` this repository runs
-//     carries the flag.
+//     either carries the flag or is a cacheable-lane invocation that names no gate package.
+//   - TestGoTestLanes_Partition_TheWholeModule asserts the two lanes are a partition of
+//     `go list ./...`, so no package can quietly fall out of the suite between them.
+//   - TestGoTestLanes_EveryPackageThatCanShellOut_IsInTheGateLane asserts the gate lane really is
+//     every package that can spawn a subprocess, minus two exemptions argued by name.
 //   - TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere pins the cache doctrine itself.
 //
 // The other half of a cache that is quieter than it looks is a cache that is not the cache it says
@@ -172,13 +179,24 @@ func TestGate(t *testing.T) {
 }
 
 // TestMakefile_EveryGoTestRecipe_ForcesRerun asserts that every `go test` this repository runs —
-// from the Makefile, from a gate script, from a git hook, from a skill's verify script — passes
-// `-count=1`.
+// from the Makefile, from a gate script, from a git hook, from a skill's verify script — either
+// passes `-count=1` or is a cacheable-lane invocation that provably reaches no gate package.
 //
 // Whole-file scan rather than a list of known recipes: the next `go test` somebody adds is the one
-// that would be missed, and it is also the one most likely to be a new gate. The single exemption
-// is a benchmark recipe that runs no tests at all, and the test checks that the exemption is that
-// narrow rather than trusting the word `-bench`.
+// that would be missed, and it is also the one most likely to be a new gate. There are exactly two
+// exemptions and each is checked rather than trusted:
+//
+//   - a benchmark recipe that runs no tests at all (`-bench` with an empty `-run`), because
+//     `go test` never caches a benchmark and `-count` there means "how many samples";
+//   - a cacheable-lane invocation, which must name $(TEST_CACHE_FLAGS) — the ONE switch that puts
+//     the pair back for the nightly shuffled run — and must be in the Makefile, so no script can
+//     opt itself into caching. The second half of the exemption is checked by expanding the recipe
+//     with `make -n` below, which is what turns "it says TEST_CACHE_FLAGS" into "it runs no gate
+//     package uncounted".
+//
+// Splitting each line at every `go test` occurrence, rather than testing the line as a whole, is
+// load-bearing: the two lanes live on one backslash-continued line in the `gotest` macro, and a
+// whole-line check would see the gate lane's `-count=1` and pass the cacheable lane on it.
 func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 	t.Parallel()
 
@@ -189,7 +207,7 @@ func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 		files = append(files, shellFilesUnder(t, filepath.Join(root, filepath.FromSlash(tree)))...)
 	}
 
-	checked := 0
+	checked, cacheable := 0, 0
 
 	for _, path := range files {
 		body, err := os.ReadFile(path)
@@ -198,6 +216,8 @@ func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 		rel, err := filepath.Rel(root, path)
 		require.NoError(t, err, "relativise %s", path)
 
+		isMakefile := rel == "Makefile"
+
 		for _, line := range strings.Split(lineContinuation.ReplaceAllString(string(body), " "), "\n") {
 			// A comment mentioning `go test` is prose about the rule, not a breach of it — the same
 			// treatment scripts/repo-gates.sh gives every gate it runs.
@@ -205,31 +225,41 @@ func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 				continue
 			}
 
-			if !goTestInvocationRe.MatchString(line) {
-				continue
+			for _, invocation := range goTestInvocations(line) {
+				checked++
+
+				// `-bench` with an empty `-run` selects zero tests, and `go test` never caches a
+				// benchmark result, so `-count` there means "how many samples" and must stay free.
+				// Requiring the empty `-run` keeps the exemption honest: a `-bench` recipe that ALSO
+				// ran tests would otherwise slip through it. Matched as a prefix because make doubles
+				// the dollar — `-run '^$$'` in the Makefile is `-run '^$'` in a script.
+				if strings.Contains(invocation, "-bench") {
+					require.Contains(t, invocation, `-run '^$`,
+						"%s runs benchmarks without an empty `-run`, so it also runs tests and cannot be "+
+							"exempt from -count=1:\n%s", rel, strings.TrimSpace(invocation))
+
+					continue
+				}
+
+				if strings.Contains(invocation, cacheFlagsVar) {
+					require.Truef(t, isMakefile,
+						"%s opts a `go test` out of -count=1 with %s. The cacheable lane is a Makefile "+
+							"decision, checked by expanding the recipe; a script that names the variable "+
+							"is not covered by that check:\n%s", rel, cacheFlagsVar, strings.TrimSpace(invocation))
+
+					cacheable++
+
+					continue
+				}
+
+				require.Contains(t, invocation, "-count=1",
+					"%s runs `go test` without -count=1 and without %s. go test's result cache tracks "+
+						"files read through Go, NOT files a subprocess reads, so a gate that shells out "+
+						"reports `ok (cached)` when only its script or workflow changed — green on the "+
+						"change it exists to catch (issue #153, docs/design/04-testing.md). The "+
+						"invocation:\n%s",
+					rel, cacheFlagsVar, strings.TrimSpace(invocation))
 			}
-
-			checked++
-
-			// `-bench` with an empty `-run` selects zero tests, and `go test` never caches a
-			// benchmark result, so `-count` there means "how many samples" and must stay free.
-			// Requiring the empty `-run` keeps the exemption honest: a `-bench` recipe that ALSO ran
-			// tests would otherwise slip through it. Matched as a prefix because make doubles the
-			// dollar — `-run '^$$'` in the Makefile is `-run '^$'` in a script.
-			if strings.Contains(line, "-bench") {
-				require.Contains(t, line, `-run '^$`,
-					"%s runs benchmarks without an empty `-run`, so it also runs tests and cannot be "+
-						"exempt from -count=1:\n%s", rel, strings.TrimSpace(line))
-
-				continue
-			}
-
-			require.Contains(t, line, "-count=1",
-				"%s runs `go test` without -count=1. go test's result cache tracks files read through "+
-					"Go, NOT files a subprocess reads, so a gate that shells out reports `ok (cached)` "+
-					"when only its script or workflow changed — green on the change it exists to catch "+
-					"(issue #153, docs/design/04-testing.md). The line:\n%s",
-				rel, strings.TrimSpace(line))
 		}
 	}
 
@@ -238,6 +268,265 @@ func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 	require.GreaterOrEqual(t, checked, 5,
 		"only %d `go test` invocations found across the Makefile, scripts/, .githooks/ and "+
 			".claude/skills/ — the scan is broken, not the repository", checked)
+	require.NotZero(t, cacheable,
+		"no `go test` recipe names %s, so issue #155's cacheable lane has been removed. That is a "+
+			"legitimate decision — it is issue #155's Option 1 — but it makes the branch above dead "+
+			"code, so delete it in the same change rather than leaving an exemption nothing uses",
+		cacheFlagsVar)
+}
+
+// cacheFlagsVar is the Makefile variable that opts an invocation into the cacheable lane. Naming it
+// once keeps the test and the failure messages in step with the Makefile.
+const cacheFlagsVar = "$(TEST_CACHE_FLAGS)"
+
+// goTestInvocations splits one logical line into its `go test` invocations — from each occurrence
+// to the start of the next.
+//
+// The `gotest` macro runs both lanes on a single backslash-continued line, so a whole-line rule
+// would let the gate lane's `-count=1` vouch for the cacheable lane beside it.
+func goTestInvocations(line string) []string {
+	spans := goTestInvocationRe.FindAllStringIndex(line, -1)
+
+	var out []string
+
+	for i, span := range spans {
+		end := len(line)
+		if i+1 < len(spans) {
+			end = spans[i+1][0]
+		}
+
+		out = append(out, line[span[0]:end])
+	}
+
+	return out
+}
+
+// TestMakefile_CacheableRecipes_NameNoGatePackage is the half of the exemption above that a text
+// scan cannot do: it EXPANDS each test recipe with `make -n` and resolves the packages the
+// cacheable invocations actually select.
+//
+// `$(COVERAGE_FLOOR_PACKAGES)` and friends are variables, so reading the Makefile tells you nothing
+// about which packages they name — and "the cacheable lane runs no gate package" is precisely a
+// claim about which packages they name. A recipe that dropped `-count=1` and then added
+// `./test/repo/...` to its list would be the false-cache defect back again, wearing the shape of a
+// reviewed exemption.
+//
+// `make -n` and not a re-implementation of make: the expansion has to be the one that runs. The
+// Makefile deliberately keeps `$(MAKE)` out of these recipes so that a dry run stays a dry run —
+// make executes a recipe line containing $(MAKE) even under -n.
+func TestMakefile_CacheableRecipes_NameNoGatePackage(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("dry-runs make and resolves package patterns with `go list`; runs under `make test`")
+	}
+
+	lanes := testLanes(t)
+	targets := makeTestTargets(t)
+	checked := 0
+
+	for _, target := range targets {
+		expanded := lineContinuation.ReplaceAllString(makeDryRun(t, target), " ")
+
+		for _, invocation := range goTestInvocations(expanded) {
+			if strings.Contains(invocation, "-count=1") || strings.Contains(invocation, "-bench") {
+				continue
+			}
+
+			// The two-lane macro passes the complement as a shell variable, and the lane split that
+			// computed it is visible in the same expanded recipe. Requiring both is what stops
+			// `$cache` meaning whatever the reader hopes it means.
+			if strings.Contains(invocation, "$cache") {
+				require.Containsf(t, expanded, `? "gate " : "cache "`,
+					"`make %s` runs `go test ... $cache` but its recipe does not compute the lanes, so "+
+						"the variable is not the complement this test verified:\n%s", target, expanded)
+
+				checked++
+
+				continue
+			}
+
+			for _, pkg := range goListPackages(t, packagePatterns(invocation)) {
+				require.Equalf(t, laneCacheable, lanes[pkg],
+					"`make %s` runs %s without -count=1, and that package is in the GATE lane: its "+
+						"tests, or the code under them, can spawn a subprocess whose reads `go test`'s "+
+						"result cache cannot see. Either keep -count=1 on this recipe or move the "+
+						"package out of GATE_DIRS with an argument for why its subprocesses are "+
+						"hermetic (issue #155). The invocation:\n%s",
+					target, pkg, strings.TrimSpace(invocation))
+
+				checked++
+			}
+		}
+	}
+
+	require.NotZero(t, checked,
+		"no cacheable `go test` invocation was resolved out of %v — the dry run or the pattern "+
+			"parsing is broken, not the Makefile", targets)
+}
+
+// The two lanes `make test-lanes` prints.
+const (
+	laneGate      = "gate"
+	laneCacheable = "cache"
+)
+
+// TestGoTestLanes_Partition_TheWholeModule asserts the split is a PARTITION of the module.
+//
+// The suite runs as two `go test` invocations now, so a package in neither lane is a package that
+// stopped being tested — and it would stop silently, because both invocations still exit 0. A
+// package in both is the milder defect of running everything twice. The complement is computed with
+// a `grep -v`-shaped regex over `go list`, which is exactly the kind of expression that quietly
+// stops matching what its author meant.
+func TestGoTestLanes_Partition_TheWholeModule(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("shells out to make and go list; runs under `make test`")
+	}
+
+	lanes := testLanes(t)
+
+	var gate, cacheable []string
+
+	for pkg, lane := range lanes {
+		switch lane {
+		case laneGate:
+			gate = append(gate, pkg)
+		case laneCacheable:
+			cacheable = append(cacheable, pkg)
+		default:
+			t.Fatalf("`make test-lanes` printed the unknown lane %q for %s", lane, pkg)
+		}
+	}
+
+	all := goListPackages(t, []string{"./..."})
+
+	require.ElementsMatch(t, all, keysOf(lanes),
+		"the two test lanes are not a partition of `go list ./...`. A package in NEITHER lane is "+
+			"tested by nothing while both `go test` invocations still exit 0; the suite would report "+
+			"green having skipped it (issue #155). Check GATE_RE in the Makefile.")
+
+	require.NotEmpty(t, gate,
+		"the gate lane is empty, so `make test` runs nothing with -count=1 and every shell-out gate "+
+			"in this directory can report a cached pass")
+	require.NotEmpty(t, cacheable,
+		"the cacheable lane is empty, so issue #155 bought nothing — every package would still be "+
+			"re-run on every push")
+}
+
+// execCallRe matches a call that spawns a subprocess. `exec.Command` and `exec.CommandContext` are
+// the two constructors; a package that holds neither cannot start one on its own.
+var execCallRe = regexp.MustCompile(`\bexec\.Command(Context)?\(`)
+
+// hermeticExecPackages are the packages that CAN spawn a subprocess and are deliberately cacheable
+// anyway, because what they spawn reads nothing the result cache is blind to.
+//
+// This is the reviewable part of the rule. Each entry costs somebody an argument, and the test
+// below re-checks the premise — that the package really does still exec — so an exemption cannot
+// outlive the code that needed it.
+var hermeticExecPackages = map[string]string{
+	"internal/store": "store_test.go re-execs its OWN test binary (os.Args[0]) to observe a " +
+		"subtest's failure output. The binary is content-addressed by the build, so the cache " +
+		"already tracks the only input that subprocess reads.",
+	"internal/migrate/shippedlock": "history.go and fixture_test.go drive `git` against a " +
+		"repository the test creates in t.TempDir(). Nothing outside that temporary tree is read, " +
+		"and the tree is written by the test on every run.",
+}
+
+// TestGoTestLanes_EveryPackageThatCanShellOut_IsInTheGateLane is the assertion the lane split rests
+// on: `-count=1` is where the subprocesses are.
+//
+// The signal is the package's SOURCES, test and non-test alike, and the non-test half is not
+// padding. internal/licence's tests name no `exec.Command` at all and still shell out, because
+// RuntimeModules does it for them — a scan of `*_test.go` would have called that package cacheable
+// and been wrong. `go list -deps -test | grep os/exec` is the other tempting signal and is useless:
+// nearly every test binary in the module reaches os/exec through some dependency.
+func TestGoTestLanes_EveryPackageThatCanShellOut_IsInTheGateLane(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("shells out to make and walks the module; runs under `make test`")
+	}
+
+	root := repoRoot(t)
+	lanes := testLanes(t)
+	module := modulePath(t)
+
+	execs := map[string]bool{} // repo-relative package dir -> can spawn a subprocess
+
+	require.NoError(t, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			// Neither tree holds a Go package this module compiles, and both are large.
+			if name := d.Name(); name == "node_modules" || name == ".git" {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+
+		if !execCallRe.Match(body) {
+			return nil
+		}
+
+		rel, relErr := filepath.Rel(root, filepath.Dir(path))
+		if relErr != nil {
+			return relErr
+		}
+
+		execs[filepath.ToSlash(rel)] = true
+
+		return nil
+	}), "walk the module for exec.Command call sites")
+
+	require.NotEmpty(t, execs, "no exec.Command call site found anywhere — the scan is broken")
+
+	for dir := range execs {
+		pkg := module + "/" + dir
+
+		lane, listed := lanes[pkg]
+		if !listed {
+			continue // not a package `go list ./...` reports: a testdata fixture, or an excluded tree
+		}
+
+		if reason, exempt := hermeticExecPackages[dir]; exempt {
+			require.Equalf(t, laneCacheable, lane,
+				"%s is named in hermeticExecPackages but is in the gate lane. Remove the exemption or "+
+					"the GATE_DIRS entry — an argument for caching a package that is not cached is one "+
+					"more thing for the next reader to disprove.\n%s", dir, reason)
+
+			continue
+		}
+
+		require.Equalf(t, laneGate, lane,
+			"%s can spawn a subprocess and is in the CACHEABLE lane. `go test`'s result cache tracks "+
+				"the files a test reads through Go, never the files its subprocess reads, so this "+
+				"package can report `ok (cached)` after the thing it actually inspects changed. Add it "+
+				"to GATE_DIRS in the Makefile, or — if what it spawns reads nothing outside a tree the "+
+				"test itself writes — add it to hermeticExecPackages with that argument (issue #155).",
+			dir)
+	}
+
+	// The exemptions are re-derived rather than trusted: a package that stopped shelling out should
+	// lose its exemption, not keep a comment explaining a subprocess nobody runs any more.
+	for dir, reason := range hermeticExecPackages {
+		require.Truef(t, execs[dir],
+			"%s is exempted from the gate lane on the grounds that its subprocesses are hermetic, but "+
+				"it no longer calls exec.Command at all. Delete the exemption.\n%s", dir, reason)
+	}
 }
 
 // TestSetupToolchain_GoBuildCache_WritesOnMainReadsEverywhere pins the rolling `$GOCACHE` cache
@@ -516,6 +805,160 @@ func toolchainCacheStep(t *testing.T, action, name string) cacheStep {
 	require.NotEmptyf(t, parsed.key, "no `key:` in the %q step", name)
 
 	return parsed
+}
+
+// testLanes runs `make test-lanes` and returns the lane of every package in the module.
+//
+// The Makefile is asked rather than re-derived: the recipes that run the suite expand the same
+// definition, so what this parses is what CI runs. Re-implementing the regex here would test a
+// second copy of it.
+func testLanes(t *testing.T) map[string]string {
+	t.Helper()
+
+	lanes := map[string]string{}
+
+	for _, line := range strings.Split(strings.TrimSpace(makeOutput(t, "test-lanes")), "\n") {
+		fields := strings.Fields(line)
+		require.Lenf(t, fields, 2, "`make test-lanes` printed %q, want `<lane> <package>`", line)
+
+		_, duplicate := lanes[fields[1]]
+		require.Falsef(t, duplicate,
+			"`make test-lanes` printed %s twice, so it is in both lanes and the suite runs it twice",
+			fields[1])
+
+		lanes[fields[1]] = fields[0]
+	}
+
+	require.NotEmpty(t, lanes, "`make test-lanes` printed nothing")
+
+	return lanes
+}
+
+// makeTestTargets returns the Makefile targets whose recipe runs `go test`, directly or through the
+// two-lane macro.
+//
+// Derived from the Makefile rather than listed, for the reason the whole-file scan above exists:
+// the next test target somebody adds is the one a hand-maintained list would miss. The macro case
+// is the one that matters most — `test` and `test-unit` invoke `$(call gotest,…)`, so a scan for
+// the literal `go test` in a recipe line would skip exactly the two targets the lane split governs
+// and still report a healthy count from the others.
+func makeTestTargets(t *testing.T) []string {
+	t.Helper()
+
+	body := lineContinuation.ReplaceAllString(readRepoFile(t, "Makefile"), " ")
+	targetRe := regexp.MustCompile(`^([a-z][a-z0-9-]*):`)
+
+	var (
+		targets []string
+		current string
+	)
+
+	for _, line := range strings.Split(body, "\n") {
+		if m := targetRe.FindStringSubmatch(line); m != nil {
+			current = m[1]
+
+			continue
+		}
+
+		if !strings.HasPrefix(line, "\t") || current == "" {
+			continue
+		}
+
+		if goTestInvocationRe.MatchString(line) || strings.Contains(line, "$(call gotest,") {
+			targets = append(targets, current)
+			current = "" // one entry per target, however many recipe lines it has
+		}
+	}
+
+	require.NotEmpty(t, targets, "no Makefile target runs `go test` — has the recipe format changed?")
+
+	// The two-lane targets by name, because they are the reason this test exists: if the macro is
+	// ever renamed or inlined, the scan above could still return a plausible list without them.
+	for _, want := range []string{"test", "test-unit"} {
+		require.Containsf(t, targets, want,
+			"`make %s` was not recognised as a test target, so its lanes were never checked. The scan "+
+				"looks for a `go test` invocation or `$(call gotest,` in a recipe line — teach it the "+
+				"new shape rather than leaving the two headline targets unexamined.", want)
+	}
+
+	return targets
+}
+
+// makeDryRun returns the recipe `make -n <target>` would run, fully expanded.
+func makeDryRun(t *testing.T, target string) string {
+	t.Helper()
+
+	return makeOutput(t, "-n", target)
+}
+
+// makeOutput runs make in the repository root and returns its stdout.
+func makeOutput(t *testing.T, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("make", append([]string{"--no-print-directory"}, args...)...)
+	cmd.Dir = repoRoot(t)
+
+	out, err := cmd.Output()
+	require.NoErrorf(t, err, "make %s\n%s", strings.Join(args, " "), out)
+
+	return string(out)
+}
+
+// packagePatterns returns the `./...`-shaped package arguments of one `go test` invocation.
+//
+// Only the patterns are wanted, so anything that is not one — a flag, a redirection, the tail of
+// the surrounding shell command — is dropped. A pattern this misses becomes a package the caller
+// does not check, which is why the caller also asserts it resolved something.
+func packagePatterns(invocation string) []string {
+	var patterns []string
+
+	for _, field := range strings.Fields(invocation) {
+		if strings.HasPrefix(field, "./") {
+			patterns = append(patterns, strings.TrimRight(field, `)"'`))
+		}
+	}
+
+	return patterns
+}
+
+// goListPackages expands package patterns to import paths.
+func goListPackages(t *testing.T, patterns []string) []string {
+	t.Helper()
+
+	if len(patterns) == 0 {
+		return nil
+	}
+
+	cmd := exec.Command("go", append([]string{"list"}, patterns...)...)
+	cmd.Dir = repoRoot(t)
+
+	out, err := cmd.Output()
+	require.NoErrorf(t, err, "go list %s\n%s", strings.Join(patterns, " "), out)
+
+	packages := strings.Fields(string(out))
+	require.NotEmptyf(t, packages, "go list %s matched no package", strings.Join(patterns, " "))
+
+	return packages
+}
+
+// modulePath returns the module path from go.mod.
+func modulePath(t *testing.T) string {
+	t.Helper()
+
+	m := regexp.MustCompile(`(?m)^module\s+(\S+)\s*$`).FindStringSubmatch(readRepoFile(t, "go.mod"))
+	require.NotNil(t, m, "go.mod has no `module` directive")
+
+	return m[1]
+}
+
+// keysOf returns the keys of a map, for an ElementsMatch against a list.
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+
+	return out
 }
 
 // goEnv returns one `go env` value.

@@ -57,9 +57,12 @@ jobs:
       - run: echo "running nightly for ${{ github.repository }}"
 
   # ---------------------------------------------------------------------------------------------
-  # importer — the full EQdkp Plus matrix. ci.yml runs this only when the importer, schema or
-  # fixtures change; here it runs against EVERY fixture every night, because importer fidelity is
-  # risk R1 and a guild that loses faith on day one does not come back.
+  # importer — the full EQdkp Plus matrix, and since issue #159 the ONLY place the importer suite
+  # runs. ci.yml had a `test / importer` job gated on `importer && deep`: ten minutes of MariaDB
+  # containers on a PR, for ONE fixture. This runs all six every night, because importer fidelity is
+  # risk R1 and a guild that loses faith on day one does not come back — and because a failure here
+  # files an issue instead of blocking a parser fix, which is this file's own rule for what belongs
+  # in it: not deterministic given a PR's diff, and expensive.
   # ---------------------------------------------------------------------------------------------
   importer:
     name: importer / ${{ matrix.fixture }}
@@ -79,6 +82,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # `make test-importer` is a Go test binary driving testcontainers once Phase 5 fills the
+          # stub, and every input of this action defaults to "false" — so with no `with:` block the
+          # job installed nothing and ran on whatever Go the runner image shipped (issue #164, the
+          # #156 defect class). The job this closes it for is the one issue #159 moved here from
+          # ci.yml; the defect moved with it and is fixed in its new home.
+          go: "true"
       - env:
           FIXTURE: ${{ matrix.fixture }}
         run: make test-importer
@@ -123,6 +133,55 @@ jobs:
         # count is read at runtime and a malformed value fails the tests rather than falling back to
         # 200 — a typo'd 2O000 that quietly ran the PR count would report a deep run that never
         # happened.
+
+  # ---------------------------------------------------------------------------------------------
+  # suite / shuffled — the whole Go suite with `-shuffle=on -count=1`, which the per-PR run no
+  # longer carries (issue #155).
+  #
+  # THIS JOB IS THE OTHER HALF OF A DECISION, not a nightly nice-to-have. `go test`'s result cache
+  # is what makes an unchanged package report `(cached)` instead of re-running, and both flags
+  # defeat it: `-count=1` by definition, and `-shuffle=on` because its seed is the wall clock and
+  # `-test.shuffle` is not in the cacheable flag set. So the PR path gave them up for the packages
+  # that can be cached safely, and what shuffle actually buys had to keep happening somewhere.
+  #
+  # It buys order-dependence found OVER TIME. A fixed seed shuffles once and forever; a re-rolled
+  # one explores a different order every run, which is why internal/*/kinds, internal/authz's
+  # catalogue, internal/api's error and permission tables and internal/clock all cite it by name as
+  # the reason they return copies rather than package-level slices. A nightly re-roll keeps finding
+  # that class of bug; it finds it a day later than a per-PR re-roll would, against a smaller diff
+  # than a week of merges, and it does not make every PR pay for the search.
+  #
+  # ONE ENV VAR AND NO SECOND CODE PATH — the shape property-deep above already uses for
+  # DKP_PROPERTY_CHECKS, and for the same reason: a nightly suite that COMPILED differently from the
+  # per-PR one is a nightly suite that can go green while the real one is broken. DKP_TEST_SHUFFLE
+  # is read by the Makefile's TEST_CACHE_FLAGS and puts `-shuffle=$(value) -count=1` back on the
+  # cacheable lane. A malformed value fails in `go test` rather than falling back to no shuffle.
+  #
+  # Both suites, because they select different tests: `make test-unit` is -short, `make test` is
+  # -race and runs the integration and gate suites the -short run skips.
+  # ---------------------------------------------------------------------------------------------
+  shuffled-suite:
+    name: suite / shuffled
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DKP_TEST_SHUFFLE: "on"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+          # The same tools `test / integration` installs, and for the same reasons: internal/core's
+          # TestLintBan_* meta-tests exec golangci-lint, test/repo's githooks_test needs gofumpt to
+          # exercise the hooks, its atlas_lock and new_migration suites need atlas, and
+          # python_floor_test re-parses scripts/*.py at the declared floor. Without them those
+          # suites skip, and a shuffled run that skipped the shell-out gates would be a shuffled run
+          # of the half that was never at issue.
+          tools: "golangci-lint gofumpt atlas"
+          python: "true"
+      - run: make test-unit
+      - run: make test
 
   # ---------------------------------------------------------------------------------------------
   # postgres — convergence only, not a supported engine in 1.0. Ninety nightly seconds that keep
@@ -360,6 +419,7 @@ jobs:
       - guard
       - importer
       - property-deep
+      - shuffled-suite
       - postgres-convergence
       - image-arm64
       - river-soak

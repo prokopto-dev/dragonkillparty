@@ -129,7 +129,7 @@ printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)
 endef
 
 .PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
-        lint vet migration seed docker check \
+        test-lanes lint vet migration seed docker check check-fast \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
         lint-repo lint-go lint-web lint-migrations licence-gate govulncheck osv-scan \
         bench-clone verify-action-pins \
@@ -268,35 +268,102 @@ gen:
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
 
-# `-count=1` ON EVERY RECIPE BELOW IS A GATE, NOT A HABIT (docs/design/04-testing.md, "Flake
-# policy"; issue #153). It disables `go test`'s RESULT cache, and since Phase 0's rolling $GOCACHE
-# (.github/actions/setup-toolchain) that cache arrives WARM on CI runners rather than cold, which
-# turns a formerly moot flag into the thing standing between a gate and a false pass.
+# THE TWO TEST LANES (issues #153 and #155). `-count=1` is a GATE on one of them and a pure cost on
+# the other, and until #155 it was on both.
 #
-# The result cache is keyed on the files and environment a test reads THROUGH GO. It cannot see what
-# a SUBPROCESS reads. Most of test/repo is subprocesses — `bash scripts/repo-gates.sh`, `make
-# licence-gate`, `go run ./internal/migrate/shippedlock`, `python3`, `eslint` — so editing the very
-# script a gate polices can leave that gate's Go inputs byte-identical, and the package then reports
-# `ok (cached)` having executed nothing: green on the change it exists to catch.
+# `go test`'s RESULT cache is keyed on the files and environment a test reads THROUGH GO. It cannot
+# see what a SUBPROCESS reads. Change the very script, fixture or tree a gate polices and that
+# gate's Go inputs are byte-identical, so the package reports `ok (cached)` having executed nothing
+# — green on exactly the change it exists to catch. test/repo/gate_cache_test.go demonstrates that
+# false hit on a fixture rather than asserting it.
 #
-# It is belt AND braces, deliberately. A test that happens to `os.Stat` the script it runs — which is
-# what test/repo's scriptPath helper does — invalidates its own cache entry on size or mtime, so
-# SOME gates are incidentally safe. That is an accident of a helper, not a property of the suite: it
-# does not cover a gate reached through `make`, and it is one refactor away from being untrue.
-# `-shuffle=on` also happens to defeat the result cache, and is likewise not this guard — it is
-# there for shared-state bugs. test/repo/gate_cache_test.go demonstrates the false hit on a fixture
-# and holds `-count=1` on every recipe here.
+# THE GATE LANE is every package that can spawn a subprocess at all, from its tests or from the
+# code under them, and it keeps `-shuffle=on -count=1` unconditionally:
 #
-# Scoped to test recipes, deliberately: `-count=1` is not a build-cache flag and costs nothing in
-# compilation. Unchanged packages still skip the compiler; only the RUN is repeated.
+#   test/repo          bash scripts/repo-gates.sh, make licence-gate, python3, eslint, make itself
+#   internal/core      TestLintBan_* exec golangci-lint over testdata/lintfixtures
+#   internal/api       the snippet-compile gate shells out to go build, sqlc and atlas
+#   internal/licence   RuntimeModules runs `go list` over a module tree
+#   internal/repogate  the ADR and SHIPPED.lock rules run git
+#   internal/specgate  the operationId-rename check runs git against the base revision
+#
+# Everything else may cache. The cacheable lane is the COMPLEMENT, computed with `go list` rather
+# than listed — a new package is cacheable by default and nothing has to remember to add it
+# anywhere. `make test-lanes` prints the split; test/repo asserts the two lanes partition
+# `go list ./...` exactly (no package can fall out of the suite) and that every package whose
+# sources call exec.Command is in the gate lane or in a named exemption.
+#
+# Two such packages are deliberately NOT in the gate lane, because what they run is HERMETIC:
+# internal/store re-execs its OWN test binary (content-addressed, so the cache tracks the only input
+# that subprocess reads), and internal/migrate/shippedlock drives `git` over a repository the test
+# creates in t.TempDir(). Both are argued by name in test/repo/gate_cache_test.go, where a third one
+# would have to be argued too — the exemption is the reviewable part, not the rule.
+GATE_DIRS      := test/repo internal/api internal/core internal/licence internal/repogate \
+                  internal/specgate
+empty          :=
+space          := $(empty) $(empty)
+MODULE         := $(shell awk '/^module /{print $$2; exit}' go.mod)
+GATE_RE        := ^$(MODULE)/($(subst $(space),|,$(GATE_DIRS)))(/|$$)
+#
+# -shuffle=on IS NOT ON THE PR PATH ANY MORE, and that is the cost #155 weighed rather than a
+# tidy-up. Its seed is the wall clock and `-test.shuffle` is not in `go test`'s cacheable flag set,
+# so a shuffled run is never cached even with `-count=1` gone — the two flags have to leave the
+# cacheable lane together or the lane does not cache at all. What shuffle buys is order-dependence
+# found OVER TIME, which is a property of running it repeatedly, not of running it on your diff:
+# nightly-verify.yml's `suite / shuffled` job runs the whole suite with DKP_TEST_SHUFFLE=on every
+# night and files an issue on a failure. One env var and no second code path — the shape nightly's
+# property job already uses for DKP_PROPERTY_CHECKS — so the nightly suite cannot compile
+# differently from the one a PR runs. A malformed value fails loudly in `go test` rather than
+# falling back to no shuffle, because a nightly that quietly ran the PR configuration would report
+# a run that never happened.
+TEST_CACHE_FLAGS := $(if $(DKP_TEST_SHUFFLE),-shuffle=$(DKP_TEST_SHUFFLE) -count=1,)
+
+# lanes_cmd — print the split. ONE definition, two consumers: the `test-lanes` target below and the
+# `gotest` macro, so the split test/repo asserts is the split that runs.
+#
+# Deliberately not a `$(MAKE) test-lanes` sub-make: make executes a recipe line containing $(MAKE)
+# even under `-n`, and test/repo dry-runs these targets to read their expanded `go test` flags — a
+# sub-make there would silently run the whole suite from inside a test.
+define lanes_cmd
+$(GO) list $(PKG) | awk -v re='$(GATE_RE)' '{ print ($$0 ~ re ? "gate " : "cache ") $$0 }'
+endef
+
+# gotest <flags> — run the suite in its two lanes.
+#
+# `set -e` is not decoration, and the reason is the one verify-generated records: a recipe is ONE
+# shell invocation and make judges it by the LAST command's status, so `;`-chained lanes would
+# report green whenever the gate lane failed and the cacheable lane passed.
+#
+# An empty lane is a hard failure: a `go test` with no package argument tests the current directory,
+# and a suite that quietly stopped running half of itself is the vacuous green this Makefile fails
+# targets for elsewhere.
+define gotest
+set -e; \
+lanes=$$($(lanes_cmd)); \
+gate=$$(printf '%s\n' "$$lanes" | awk '$$1 == "gate" { print $$2 }'); \
+cache=$$(printf '%s\n' "$$lanes" | awk '$$1 == "cache" { print $$2 }'); \
+[ -n "$$gate" ]  || { printf '\033[31m  the gate lane is empty\033[0m — `make test-lanes` matched no %s package\n' '$(GATE_DIRS)'; exit 1; }; \
+[ -n "$$cache" ] || { printf '\033[31m  the cacheable lane is empty\033[0m — `make test-lanes` printed no packages outside the gate lane\n'; exit 1; }; \
+$(GO) test $(1) $(TEST_CACHE_FLAGS) $$cache; \
+$(GO) test $(1) -shuffle=on -count=1 $$gate
+endef
 
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
-	@$(GO) test -short -shuffle=on -count=1 $(PKG)
+	@$(call gotest,-short)
 
 ## test: integration tests against a real SQLite database (budget ~30s)
 test:
-	@$(GO) test -race -shuffle=on -count=1 $(PKG)
+	@$(call gotest,-race)
+
+# test-lanes: print the two lanes of the Go test suite, one `gate <pkg>` or `cache <pkg>` per line.
+#
+# The single authority for the split: the recipes above consume it, and
+# test/repo/gate_cache_test.go asserts what it prints. Deliberately absent from the AGENTS.md
+# canonical table — nobody types it; it exists so the Makefile and the test cannot disagree about
+# which packages may be served from `go test`'s result cache.
+test-lanes:
+	@$(lanes_cmd)
 
 ## test-property: the ledger and strategy properties — 200 checks per PR (budget ~10s)
 # The four flagship properties plus their strategy-level twins: P1 conservation, P2 exact splits,
@@ -312,8 +379,14 @@ test:
 # licence gate's "matched no packages" check exists for. So the recipe counts the tests that actually
 # ran and fails at zero. `set -o pipefail` is not needed here because the output is captured rather
 # than piped, and the capture's exit status is checked directly.
+#
+# Cacheable (issue #155): neither package reaches its subject through a subprocess, so a cached
+# result here is a correct one. `-v` and `-run` are both in `go test`'s cacheable flag set and a
+# cached package REPLAYS its stored output, so the `=== RUN` count below still sees every property
+# that ran; DKP_PROPERTY_CHECKS is read with os.Getenv, which the cache tracks, so the nightly
+# 20,000-case run can never be served from the 200-case entry.
 test-property:
-	@out=$$($(GO) test -count=1 -shuffle=on -v -run '^TestProperty_' \
+	@out=$$($(GO) test $(TEST_CACHE_FLAGS) -v -run '^TestProperty_' \
 		./internal/ledger/... ./internal/strategy/... 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out"; \
 	n=$$(printf '%s\n' "$$out" | grep -cE '^=== RUN[[:space:]]+TestProperty_' || true); \
@@ -356,8 +429,13 @@ test-property:
 COVERAGE_FLOOR          := 95
 COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
                            ./internal/account/kinds ./internal/schemaenum ./internal/strategy
+#
+# Cacheable (issue #155), for the same reason as test-property: none of these packages shells out.
+# A cached package replays its `ok ... coverage: N%` line, so the awk below measures the same
+# number it would have measured on a re-run — and the "measured fewer packages than expected" guard
+# still fires, because a package with no test files prints no coverage line whether cached or not.
 test-coverage-floor:
-	@out=$$($(GO) test -count=1 -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
+	@out=$$($(GO) test $(TEST_CACHE_FLAGS) -cover $(COVERAGE_FLOOR_PACKAGES) 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
 	printf '%s\n' "$$out" | awk -v floor='$(COVERAGE_FLOOR)' -v want="$$(printf '%s' '$(COVERAGE_FLOOR_PACKAGES)' | wc -w | tr -d '[:space:]')" ' \
 		/^ok/ && /coverage:/ { \
 			for (i = 1; i <= NF; i++) if ($$i == "coverage:") { pct = $$(i + 1); sub(/%$$/, "", pct) } \
@@ -557,6 +635,23 @@ generated-digest:
 # in the checks list and so the nightly lane can re-run just those tests at 20,000 checks.
 check: verify-commands lint vet test test-coverage-floor
 	@printf '\033[32m  make check complete\033[0m\n'
+
+## check-fast: the inner loop — the laws, the linters and the type checkers, NO test suite (~25s)
+# For the edit-compile-lint cycle, and for that only. `make check` above is still the gate: run it
+# before claiming a task is done, and the pre-push hook runs the formatting half of it whatever you
+# type here (issue #159).
+#
+# What it deliberately does NOT include, since a fast target nobody trusts is worse than no fast
+# target: the whole test suite, the coverage floor, the licence gate (a `go list` over the module
+# graph) and eslint (a pnpm install away). What it DOES include is everything that answers "is this
+# tree even coherent" — lint-repo is the architectural laws, and it is 15 seconds and the cheapest
+# gate in the repository; lint-go is gofumpt plus golangci-lint; vet is build + go vet +
+# staticcheck + tsc.
+#
+# Ordered cheapest-first on purpose: a law violation should be the first thing you read, not the
+# thing you find after waiting for tsc.
+check-fast: lint-repo lint-go vet
+	@printf '\033[32m  make check-fast complete\033[0m — run \033[36mmake check\033[0m before you call it done\n'
 
 ## status: which targets are still stubbed, and the roadmap phase that fills each in
 # Derived from the `notyet` call sites — never hand-maintained. A target that starts doing real
@@ -837,8 +932,12 @@ test-authz:
 # snapshot/auto-restore path, the downgrade refusal, and the upgrade of a POPULATED ledger across a
 # table rebuild. Not -short: every one of these applies real migrations to a real database, which is
 # the only way any of them mean anything.
+#
+# Cacheable (issue #155): the suite drives the migrator in-process and reads the migration set
+# through go:embed, which is compiled in — a changed migration changes the build id and misses the
+# cache. Nothing here reaches its subject through a subprocess.
 test-migrations:
-	@$(GO) test -count=1 ./test/migrations/...
+	@$(GO) test $(TEST_CACHE_FLAGS) ./test/migrations/...
 
 # test-e2e used to live here as a stub. It does real work now and has moved above the divider with
 # the rest of the hand-runnable targets, for the same reason test-property and test-coverage-floor

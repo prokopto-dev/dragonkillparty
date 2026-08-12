@@ -52,7 +52,7 @@ ledger's invariants stop being tested.
 
 | Concern | Choice | Why this one |
 |---|---|---|
-| Runner | stdlib `go test`, always `-shuffle=on -count=1`; `-race` in CI | One runner, one idiom, no config file for an agent to get wrong |
+| Runner | stdlib `go test`; `-race` in CI. `-count=1` on the packages that shell out, always; `-shuffle=on` over everything, nightly — see "Flake policy" | One runner, one idiom, no config file for an agent to get wrong |
 | Assertions | stdlib `t.Fatalf` + `google/go-cmp` for structs; `testify/require` permitted, **`testify/assert` banned** | `assert` continues after failure and produces cascading noise (`AGENTS.md`). One style, enforced by lint |
 | Property | stdlib **`testing/quick`** with hand-written generators | No new dependency. `pgregory.net/rapid` was the design's choice and is **not** what shipped — see "On the property framework" below |
 | Fuzzing | stdlib `go test -fuzz` | Corpus in `testdata/fuzz/`; crashers auto-persist as golden files |
@@ -765,15 +765,29 @@ verify job asserting zero balance drift.
   Retries-0 won on being the conservative reading; it can only turn a flake into a red build, never
   into a green one. Whichever is chosen, `retries: 1` **alone** is strictly weaker than both, because
   Playwright does not fail on a `flaky` result without that flag.
-- **`-shuffle=on -count=1` always.** A shuffle failure is a real shared-state bug, not flake.
-  `-count=1` carries a second load since CI's `$GOCACHE` began rolling forward across runs (issue
-  #153): `go test`'s result cache tracks the files and environment a test reads **through Go**, and
-  most of `test/repo` reaches its subject through a subprocess — `bash scripts/repo-gates.sh`,
-  `make licence-gate`, `python3`, `eslint`. Editing the script a gate polices leaves that gate's Go
-  inputs byte-identical, so without `-count=1` the package reports `ok (cached)` having executed
-  nothing, and the gate goes green on exactly the change it exists to catch.
-  `test/repo/gate_cache_test.go` demonstrates that false hit on a fixture and asserts the flag on
-  every `go test` recipe in the Makefile.
+- **`-count=1` wherever a test can shell out; `-shuffle=on` over everything, every night.** This
+  said "`-shuffle=on -count=1` always" until issue #155, and the change is a decision with a cost
+  rather than a relaxation — [ADR-0020](../adr/0020-two-test-lanes-and-a-nightly-shuffle.md) records
+  it in full. In short:
+
+  A shuffle failure is a real shared-state bug, not flake, and `-count=1` carries a second load
+  since CI's `$GOCACHE` began rolling forward across runs (issue #153): `go test`'s result cache
+  tracks the files and environment a test reads **through Go**, and several packages reach their
+  subject through a subprocess — `bash scripts/repo-gates.sh`, `make licence-gate`, `golangci-lint`,
+  `python3`, `eslint`, `git`. Editing the script a gate polices leaves that gate's Go inputs
+  byte-identical, so without `-count=1` the package reports `ok (cached)` having executed nothing,
+  and the gate goes green on exactly the change it exists to catch.
+
+  Both flags also defeat the result cache for every package that is **not** in that position, which
+  is most of them, so the suite runs in two lanes. The gate lane — `test/repo`, `internal/api`,
+  `internal/core`, `internal/licence`, `internal/repogate`, `internal/specgate`, the packages whose
+  sources can spawn a subprocess — keeps `-shuffle=on -count=1` unconditionally. Everything else may
+  cache, and `nightly-verify.yml`'s `suite / shuffled` job re-runs the whole suite with
+  `DKP_TEST_SHUFFLE=on` so order-dependence is still found over time rather than never.
+
+  `test/repo/gate_cache_test.go` demonstrates the false hit on a fixture, asserts that the two lanes
+  partition the module, and asserts that every package which can spawn a subprocess is in the gate
+  lane or in a named, argued exemption.
 - **Any test that sleeps is a bug.** `time.Sleep` is grep-banned in `**/*_test.go` and `test/`.
   Sanctioned replacements: `testing/synctest`, `jobs.DrainForTest`, and bounded polling **only**
   against an out-of-process binary in E2E, with a named 10 s ceiling.

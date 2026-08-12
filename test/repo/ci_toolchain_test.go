@@ -32,8 +32,11 @@ var toolchainInputRe = regexp.MustCompile(`^([a-z][a-z0-9-]*):\s*(.*)$`)
 // is being asserted is what the job WILL run, which is a fact about the design and belongs in a list
 // a human maintains.
 //
-// Two more jobs have the same zero-input shape and are tracked in issue #164 rather than fixed here:
-// `test / importer` (`go`) and `budget / bundle` (`python`). Add them to this table with that fix.
+// The two jobs issue #164 added to the list are here now, and one of them is in another file: #159
+// moved `test / importer` to nightly-verify.yml, so its zero-input call was fixed in its new home
+// and the row below reads that workflow. A table entry names the workflow it applies to for exactly
+// that reason — a job can move, and the assertion should move with it rather than quietly stop
+// covering anything.
 func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 	t.Parallel()
 
@@ -42,12 +45,11 @@ func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 		"the setup-toolchain action must expose a `go` input — a job that runs a Go target needs a "+
 			"way to say so")
 
-	workflow := readCIWorkflow(t)
-
 	for _, tc := range []struct {
-		job  string
-		why  string
-		want map[string]string
+		workflow string
+		job      string
+		why      string
+		want     map[string]string
 	}{
 		{
 			job:  "test-golden:",
@@ -66,26 +68,45 @@ func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 			// installer needs a compiler before it can produce it.
 			want: map[string]string{"go": "true", "tools": "oasdiff"},
 		},
+		{
+			job: "bundle-budget:",
+			why: "runs `make budget-bundle`, and scripts/budget-bundle.sh reads the budget with python3 " +
+				"— the #83 defect class, where an undeclared interpreter makes the gate fail as though " +
+				"its SUBJECT were wrong (issue #164)",
+			want: map[string]string{"python": "true"},
+		},
+		{
+			workflow: ".github/workflows/nightly-verify.yml",
+			job:      "importer:",
+			why: "runs `make test-importer`, a Go test binary driving testcontainers once Phase 5 fills " +
+				"the stub. It was `test / importer` in ci.yml until issue #159 moved it here",
+			want: map[string]string{"go": "true"},
+		},
 	} {
 		t.Run(strings.TrimSuffix(tc.job, ":"), func(t *testing.T) {
 			t.Parallel()
 
+			path, workflow := ".github/workflows/ci.yml", readCIWorkflow(t)
+			if tc.workflow != "" {
+				path, workflow = tc.workflow, readRepoFile(t, tc.workflow)
+			}
+
 			got := jobToolchainInputs(t, workflow, tc.job)
 
 			require.NotEmptyf(t, got,
-				"ci.yml's %s job calls setup-toolchain with NO inputs, then %s. Every input defaults "+
-					"to \"false\", so the job installs nothing (issue #156).", tc.job, tc.why)
+				"%s's %s job calls setup-toolchain with NO inputs, then %s. Every input defaults "+
+					"to \"false\", so the job installs nothing (issue #156).", path, tc.job, tc.why)
 
 			for input, value := range tc.want {
 				require.Equalf(t, value, got[input],
-					"ci.yml's %s job %s, so it must pass %s: %q to setup-toolchain. Got %q.",
-					tc.job, tc.why, input, value, got[input])
+					"%s's %s job %s, so it must pass %s: %q to setup-toolchain. Got %q.",
+					path, tc.job, tc.why, input, value, got[input])
 			}
 		})
 	}
 }
 
-// jobToolchainInputs returns the inputs one ci.yml job passes to the setup-toolchain composite
+// jobToolchainInputs returns the inputs one workflow job passes to the setup-toolchain composite
 // action, with their surrounding quotes stripped.
 //
 // Parsed rather than substring-matched: these jobs carry comments that quote the inputs they discuss,
@@ -104,7 +125,7 @@ func jobToolchainInputs(t *testing.T, workflow, jobKey string) map[string]string
 	}
 
 	require.Lenf(t, found, 1,
-		"expected exactly one `%s` step in ci.yml's %s job, found %d", uses, jobKey, len(found))
+		"expected exactly one `%s` step in the %s job, found %d", uses, jobKey, len(found))
 
 	inputs := map[string]string{}
 	inWith := false
