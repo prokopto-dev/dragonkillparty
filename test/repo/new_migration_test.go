@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -162,4 +163,66 @@ func TestNewMigration_BacktickInStringLiteral_Refuses(t *testing.T) {
 		"a backtick inside a string literal must be refused, not rewritten — the rewrite would "+
 			"change what the literal MEANS\n%s", out)
 	require.Contains(t, out, "backtick inside a string literal", "%s", out)
+}
+
+// TestNewMigration_ValidName_WritesTheCommittedForm is the positive control for the three refusals
+// above, and it is the only test that proves the script still performs the rewrite at all.
+//
+// The refusal tests would stay green if the script stopped rewriting and merely kept refusing; the
+// unit tests in internal/migrate/migrationfmt would stay green if the script stopped invoking it.
+// This is the seam between them: real Atlas output, the real glue, and the bytes that reach
+// db/migrations-sqlite. Every assertion here is something sqlc, goose or gate MIG001/MIG002 would
+// otherwise discover several steps later, against a file that is already permanent.
+func TestNewMigration_ValidName_WritesTheCommittedForm(t *testing.T) {
+	t.Parallel()
+
+	// Skipped under -short for the reason the backtick fixture above gives: it invokes Atlas, and
+	// `make test-unit` is at ~4s against a <5s budget that CI pays cold.
+	if testing.Short() {
+		t.Skip("invokes atlas to generate a real migration; run `make test` or `make check`")
+	}
+
+	if _, err := exec.LookPath("atlas"); err != nil {
+		t.Skip("atlas is not installed; run make setup")
+	}
+
+	tree := migrationFixture(t, fixtureSchema)
+
+	out, err := runNewMigration(t, tree, "add_meta")
+	require.NoError(t, err, "the fixture schema is valid and must generate\n%s", out)
+
+	// Canonical §16: NNNNNN_snake_case.sql, zero-padded and sequential, starting at one in an empty
+	// directory. Atlas names its own output by timestamp, so this is the rename working.
+	written := filepath.Join(tree, "db", "migrations-sqlite", "000001_add_meta.sql")
+	body, readErr := os.ReadFile(written)
+	require.NoError(t, readErr, "expected %s\n%s", written, out)
+
+	sql := string(body)
+
+	require.NotContains(t, sql, "`",
+		"no backtick may survive: sqlc's SQLite parser does not accept them and does not say so\n%s", sql)
+	require.Contains(t, sql, `CREATE TABLE "dkp_meta"`,
+		"the identifiers must be standard double-quoted, not merely un-backticked\n%s", sql)
+
+	require.Contains(t, sql, "-- +goose Down\n-- Forward-only.",
+		"Atlas's Down block must be replaced by the forward-only one\n%s", sql)
+	require.True(t, strings.HasSuffix(sql,
+		"SELECT RAISE(ABORT, 'DKP migrations are forward-only; restore /data/backups/pre-<ver>-*.db.zst');\n"),
+		"the file must end with the abort that stops goose going backwards\n%s", sql)
+	require.NotContains(t, sql, "DROP TABLE",
+		"DDL in a Down block is gate MIG001, and Atlas emits one every time\n%s", sql)
+	require.Equal(t, 1, strings.Count(sql, "-- +goose Down"),
+		"exactly one Down marker — a second means the replacement appended instead of truncating\n%s", sql)
+
+	info, statErr := os.Stat(written)
+	require.NoError(t, statErr)
+	require.Equal(t, os.FileMode(0o644), info.Mode().Perm(),
+		"a migration is committed, world-readable source")
+
+	// The rename and the rewrite both invalidate atlas.sum, and an un-rehashed directory fails the
+	// next `atlas migrate diff` rather than this run — which is the failure that gets read as a
+	// broken toolchain.
+	sum, readErr := os.ReadFile(filepath.Join(tree, "db", "migrations-sqlite", "atlas.sum"))
+	require.NoError(t, readErr)
+	require.Contains(t, string(sum), "000001_add_meta.sql", "atlas.sum was not re-hashed\n%s", out)
 }
