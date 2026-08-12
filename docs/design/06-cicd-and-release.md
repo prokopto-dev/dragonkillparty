@@ -555,7 +555,13 @@ written down.
 successful publish** — GitHub → the repository → Packages → the package → Package settings → Change
 visibility → Public, and confirm the package is linked to this repository so its permissions are
 inherited rather than hand-maintained. There is no earlier moment to do it: a package does not exist
-until something pushes to it.
+until something pushes to it, and the three arrive at different times. `edge.yml` creates
+`dragonkillparty` on the first merge to `main`; `fixtures.yml` creates `dkp-fixtures` the first time
+somebody dispatches it (it is `workflow_dispatch` only); and `dkp-refdb` does not exist until
+`release.yml`'s `refdb / publish`
+job runs, which is **during** the first release, not before it. So the first two are checkable on the
+releasable checklist and the third is checkable only afterwards — which is how
+`.claude/skills/cut-release/SKILL.md` splits them, §1 and §8.
 
 **Logging in fixed the release train, not CI as a whole.** Issue #113 fixed a `release.yml` smoke job
 that pulled the published digest anonymously, and `TestReleaseWorkflows_EveryGHCRJob_LogsInFirst`
@@ -572,7 +578,8 @@ first tag:
   reads like a registry outage rather than a settings page nobody has opened.
 
 Neither is checkable from this tree, so the check belongs in the release checklist —
-`.claude/skills/cut-release/SKILL.md` §1 carries the row, and it is a `gh` command, not a click:
+`.claude/skills/cut-release/SKILL.md` §1 for the two packages that exist before a tag, §8 for
+`dkp-refdb` — and it is a `gh` command, not a click:
 
 ```bash
 gh api /users/prokopto-dev/packages/container/dragonkillparty --jq .visibility   # want: public

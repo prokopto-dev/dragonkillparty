@@ -28,23 +28,29 @@ upgrade to people with no ops skills.
       SQLite file locking and `t.TempDir()` cleanup differ on Windows. `image / arm64-cross` is the
       only arm64 image build outside the release train itself (issue #108), and release.yml's image
       matrix is `fail-fast` — a red one there stops the release after the tag already exists.
-- [ ] **The three GHCR packages are public.** A package is **private on first publish** and stays that
-      way until the owner changes it by hand, so this row is load-bearing on the first release and
-      after any package is republished under a new name. The release train authenticates (issue #113),
-      so a private **product image** passes every gate and fails the officer running the README's
-      `docker pull`; a private `dkp-refdb` or `dkp-fixtures` fails the other way, in the nightly
-      ladder and `test / importer`, which pull anonymously so a fork PR can.
+- [ ] **The GHCR packages that already exist are public.** A package is **private on first publish**
+      and stays that way until the owner changes it by hand, so this row is load-bearing on the first
+      release and after any package is republished under a new name. The release train authenticates
+      (issue #113), so a private **product image** passes every gate and fails the officer running the
+      README's `docker pull`; a private `dkp-fixtures` fails the other way, in `test / importer`,
+      which pulls anonymously so a fork PR can.
 
       ```bash
-      for p in dragonkillparty dkp-refdb dkp-fixtures; do
+      for p in dragonkillparty dkp-fixtures; do
         printf '%-16s %s\n' "$p" "$(gh api /users/prokopto-dev/packages/container/$p --jq .visibility)"
-      done   # want: public, public, public
+      done   # want: public, public
       ```
 
-      A `404` means that package has never been published; a `private` means fix it before the tag —
-      GitHub → the repository → Packages → the package → Package settings → Change visibility →
-      Public. `docs/design/06-cicd-and-release.md` §7 records why each one must be anonymously
-      pullable.
+      Both exist before any tag does — `edge.yml` pushes the image on every merge to `main`, and
+      `fixtures.yml` pushes the fixtures the importer matrix needs — so a `404` here is not a
+      first-release condition, it means that workflow has never run successfully. A `private` means
+      fix it before the tag: GitHub → the repository → Packages → the package → Package settings →
+      Change visibility → Public.
+
+      **`dkp-refdb` is deliberately not in that loop.** It does not exist until `release.yml`'s
+      `refdb / publish` job creates it, so on a first release it *must* 404 here; its visibility is
+      step 8's job, after the package exists. `docs/design/06-cicd-and-release.md` §7 records why each
+      one must be anonymously pullable.
 
 ### 2. Check the version bump against the SemVer policy
 
@@ -151,7 +157,19 @@ After `release.yml` runs, check all of these landed:
       certificate identity still matches the workflow file **at the tag ref**.
 - [ ] SDKs published in lockstep: `@dragonkillparty/sdk@<version>` and `dkp-client==<version>` are by
       construction generated from this server's spec.
-- [ ] **`ghcr.io/prokopto-dev/dkp-refdb:<version>` exists.**
+- [ ] **`ghcr.io/prokopto-dev/dkp-refdb:<version>` exists** — and, **on the release that created the
+      package**, that it is public. This is the one visibility check that cannot happen before the
+      tag, because `refdb / publish` is what creates the package:
+
+      ```bash
+      gh api /users/prokopto-dev/packages/container/dkp-refdb --jq .visibility   # want: public
+      ```
+
+      `private` here does not fail the release, and will not fail the next one either — every
+      `release.yml` job that touches the registry logs in, `smoke` included. It fails
+      `nightly-verify.yml`'s `upgrade-ladder`, which does not, and it fails anyone reproducing an
+      upgrade from a published refdb by hand. Fix it the same way: Packages → `dkp-refdb` → Package
+      settings → Change visibility → Public.
 
 ### 9. Confirm the smoke gate held
 
