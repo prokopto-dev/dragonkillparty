@@ -268,6 +268,28 @@ gen:
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
 
+# `-count=1` ON EVERY RECIPE BELOW IS A GATE, NOT A HABIT (docs/design/04-testing.md, "Flake
+# policy"; issue #153). It disables `go test`'s RESULT cache, and since Phase 0's rolling $GOCACHE
+# (.github/actions/setup-toolchain) that cache arrives WARM on CI runners rather than cold, which
+# turns a formerly moot flag into the thing standing between a gate and a false pass.
+#
+# The result cache is keyed on the files and environment a test reads THROUGH GO. It cannot see what
+# a SUBPROCESS reads. Most of test/repo is subprocesses — `bash scripts/repo-gates.sh`, `make
+# licence-gate`, `go run ./internal/migrate/shippedlock`, `python3`, `eslint` — so editing the very
+# script a gate polices can leave that gate's Go inputs byte-identical, and the package then reports
+# `ok (cached)` having executed nothing: green on the change it exists to catch.
+#
+# It is belt AND braces, deliberately. A test that happens to `os.Stat` the script it runs — which is
+# what test/repo's scriptPath helper does — invalidates its own cache entry on size or mtime, so
+# SOME gates are incidentally safe. That is an accident of a helper, not a property of the suite: it
+# does not cover a gate reached through `make`, and it is one refactor away from being untrue.
+# `-shuffle=on` also happens to defeat the result cache, and is likewise not this guard — it is
+# there for shared-state bugs. test/repo/gate_cache_test.go demonstrates the false hit on a fixture
+# and holds `-count=1` on every recipe here.
+#
+# Scoped to test recipes, deliberately: `-count=1` is not a build-cache flag and costs nothing in
+# compilation. Unchanged packages still skip the compiler; only the RUN is repeated.
+
 ## test-unit: fast unit tests only (budget < 5s)
 test-unit:
 	@$(GO) test -short -shuffle=on -count=1 $(PKG)

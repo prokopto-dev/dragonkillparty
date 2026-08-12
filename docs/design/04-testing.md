@@ -766,6 +766,14 @@ verify job asserting zero balance drift.
   into a green one. Whichever is chosen, `retries: 1` **alone** is strictly weaker than both, because
   Playwright does not fail on a `flaky` result without that flag.
 - **`-shuffle=on -count=1` always.** A shuffle failure is a real shared-state bug, not flake.
+  `-count=1` carries a second load since CI's `$GOCACHE` began rolling forward across runs (issue
+  #153): `go test`'s result cache tracks the files and environment a test reads **through Go**, and
+  most of `test/repo` reaches its subject through a subprocess — `bash scripts/repo-gates.sh`,
+  `make licence-gate`, `python3`, `eslint`. Editing the script a gate polices leaves that gate's Go
+  inputs byte-identical, so without `-count=1` the package reports `ok (cached)` having executed
+  nothing, and the gate goes green on exactly the change it exists to catch.
+  `test/repo/gate_cache_test.go` demonstrates that false hit on a fixture and asserts the flag on
+  every `go test` recipe in the Makefile.
 - **Any test that sleeps is a bug.** `time.Sleep` is grep-banned in `**/*_test.go` and `test/`.
   Sanctioned replacements: `testing/synctest`, `jobs.DrainForTest`, and bounded polling **only**
   against an out-of-process binary in E2E, with a named 10 s ceiling.
