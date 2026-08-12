@@ -213,7 +213,7 @@ func TestImageSize_ReleaseEnforcesBudget(t *testing.T) {
 // Three things have to hold together, and each is a line a refactor could drop without breaking
 // anything visible: the step runs in `prepare` (before any image, binary, attestation or moving tag
 // exists), the Makefile target passes --complete (without it the release runs the per-PR check and
-// the completeness assertion silently disappears), and the script's --complete branch actually
+// the completeness assertion silently disappears), and the command's --complete branch actually
 // fails. The middle one is the laundering risk: `verify` alone still prints a reassuring green line.
 func TestReleaseWorkflow_PrepareVerifiesShippedLock(t *testing.T) {
 	t.Parallel()
@@ -225,14 +225,17 @@ func TestReleaseWorkflow_PrepareVerifiesShippedLock(t *testing.T) {
 		"the prepare job must verify db/migrations-sqlite/SHIPPED.lock before anything is published")
 
 	mk := readRepoFile(t, "Makefile")
-	require.Regexp(t, regexp.MustCompile(`release-shipped-lock:\n\t@[^\n]*shipped-lock\.sh verify --complete`), mk,
+	require.Regexp(t, regexp.MustCompile(`release-shipped-lock:\n\t@[^\n]*shippedlock verify --complete`), mk,
 		"`make release-shipped-lock` must run the manifest check with --complete; plain `verify` is "+
 			"the per-PR gate and would pass a release whose manifest was never sealed")
 
-	script := readRepoFile(t, "scripts/shipped-lock.sh")
-	require.Contains(t, script, "--complete) complete=1",
-		"shipped-lock.sh must honour --complete; without it the flag is cosmetic and the release "+
-			"gate is a laundered no-op")
+	// The manifest check is Go since issue #129. The flag has to be REACHED as well as passed:
+	// TestShippedLock_ReleaseMode_RequiresEveryMigrationBeSealed proves the completeness assertion
+	// fires, and this proves the release target's argument is the one that reaches it.
+	cmd := readRepoFile(t, "internal/migrate/shippedlock/main.go")
+	require.Contains(t, cmd, `args[1] == "--complete"`,
+		"the shipped-lock command must honour --complete; without it the flag is cosmetic and the "+
+			"release gate is a laundered no-op")
 }
 
 // jobBlock extracts the text of a top-level workflow job, from its `name:` key to the next

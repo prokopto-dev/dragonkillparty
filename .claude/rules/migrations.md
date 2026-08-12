@@ -127,6 +127,10 @@ and no backup discipline.
   deleting the row, which un-freezes the file entirely. The manifest ships in the same diff as the
   migration it protects, so it is only trustworthy against its own history. (2) reads git, so it
   skips loudly without one; `lint / repo` carries `fetch-depth: 0` and a test asserts that it does.
+  The gate itself is `internal/migrate/shippedlock` (`verify` / `verify --complete` / `seal` /
+  `init`); `repo-gates.sh` and both Makefile targets run that one command, and a missing `go` is a
+  MIG003 **failure**, never a skip. A malformed row is likewise a failure: a manifest that parsed to
+  nothing would otherwise report "0 shipped migrations unchanged" and pass.
 - It is **not** a completeness check, deliberately: a migration added on a feature branch has not
   shipped and must not be listed. Completeness is asserted once, at tag time, by
   `make release-shipped-lock` in `release.yml`'s `prepare` job — at a tag everything present ships,

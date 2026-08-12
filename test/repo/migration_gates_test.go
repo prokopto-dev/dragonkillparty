@@ -46,7 +46,7 @@ func writeShippedLock(tb testing.TB, tree string, nameBodyPairs ...string) {
 
 	var b strings.Builder
 
-	b.WriteString("# SHIPPED.lock fixture — see scripts/shipped-lock.sh\n")
+	b.WriteString("# SHIPPED.lock fixture — see internal/migrate/shippedlock\n")
 
 	for i := 0; i < len(nameBodyPairs); i += 2 {
 		b.WriteString(nameBodyPairs[i] + " " + sha256Hex(nameBodyPairs[i+1]) + "\n")
@@ -99,7 +99,12 @@ func requireOnlyMIG003(t *testing.T, out string) {
 	}
 }
 
-// runShippedLock runs scripts/shipped-lock.sh against tree with the given arguments.
+// runShippedLock runs the shipped-lock command against tree with the given arguments.
+//
+// It is `go run ./internal/migrate/shippedlock` — the same invocation the Makefile targets and
+// MIG003 use — rather than the shell script it replaced in issue #129. The command is built and run
+// from THIS checkout while it inspects `tree`, which is why the working directory and DKP_REPO_ROOT
+// are different paths here: a fixture tree is a t.TempDir() with no Go module in it.
 //
 // runGateScript cannot be reused: it passes no arguments, and the release path is exactly the
 // argument (`verify --complete`) that distinguishes it from the per-PR gate. The DKP_REPO_ROOT
@@ -108,10 +113,11 @@ func requireOnlyMIG003(t *testing.T, out string) {
 func runShippedLock(t *testing.T, tree string, args ...string) (output string, exitCode int) {
 	t.Helper()
 
-	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the script falls back to the real repo")
+	require.NotEmpty(t, tree, "DKP_REPO_ROOT must not be empty — the command falls back to the real repo")
 	require.True(t, filepath.IsAbs(tree), "DKP_REPO_ROOT must be absolute, got %q", tree)
 
-	cmd := exec.Command("bash", append([]string{scriptPath(t, "shipped-lock.sh")}, args...)...)
+	cmd := exec.Command("go", append([]string{"run", "./internal/migrate/shippedlock"}, args...)...)
+	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree)
 
 	raw, err := cmd.CombinedOutput()
@@ -124,7 +130,7 @@ func runShippedLock(t *testing.T, tree string, args ...string) (output string, e
 		return string(raw), exitErr.ExitCode()
 	}
 
-	t.Fatalf("run shipped-lock.sh %v: %v\n%s", args, err, raw)
+	t.Fatalf("run shippedlock %v: %v\n%s", args, err, raw)
 
 	return "", 0
 }
@@ -396,6 +402,47 @@ func TestRepoGates_RewrittenManifest_FailsGate(t *testing.T) {
 	}
 }
 
+// TestRepoGates_NoGoToolchain_FailsMIG003RatherThanSkipping pins the posture the manifest check
+// takes when it cannot run at all.
+//
+// MIG003 delegates to `go run ./internal/migrate/shippedlock` (issue #129), so a tree with no Go on
+// PATH is a tree where the manifest went unchecked. That has to be RED. The tempting alternative —
+// note it and carry on, the way the append-only half skips without git history — reads the same in a
+// log and means something completely different: git history is genuinely absent in honest shallow
+// jobs, whereas a repository that cannot compile its own gate has a broken toolchain, and a gate
+// that prints "skipped" there is a gate that silently stops running the day someone trims a CI job.
+//
+// The restricted PATH keeps the rest of the script working (grep, sed, find and git all live in
+// /usr/bin) while removing the toolchain, which on every platform this repository builds on is
+// installed somewhere else.
+func TestRepoGates_NoGoToolchain_FailsMIG003RatherThanSkipping(t *testing.T) {
+	t.Parallel()
+
+	const restricted = "/usr/bin:/bin"
+
+	for _, dir := range strings.Split(restricted, ":") {
+		if _, err := os.Stat(filepath.Join(dir, "go")); err == nil {
+			t.Skipf("go is installed in %s, so this PATH cannot express 'no toolchain'", dir)
+		}
+	}
+
+	tree := t.TempDir()
+	writeShippedLock(t, tree, "000001_init.sql", cleanMigration)
+	writeMigration(t, tree, "000001_init.sql", cleanMigration)
+
+	cmd := exec.Command("bash", scriptPath(t, "repo-gates.sh"))
+	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree, "NAME=ci_verify", "PATH="+restricted)
+
+	raw, err := cmd.CombinedOutput()
+	out := string(raw)
+
+	require.Error(t, err, "a tree whose manifest could not be checked must not report green\n%s", out)
+	require.Contains(t, out, "MIG003", "%s", out)
+	require.Contains(t, out, "go is not on PATH",
+		"the failure must say WHY the manifest went unchecked; 'a migration was modified' would send "+
+			"the reader looking for a diff that does not exist\n%s", out)
+}
+
 // TestCI_LintRepoJob_FetchesFullHistory pins the CI configuration that keeps the append-only half of
 // MIG003 from becoming a permanent no-op.
 //
@@ -415,6 +462,30 @@ func TestCI_LintRepoJob_FetchesFullHistory(t *testing.T) {
 			"checkout silently downgrades that to a skip\n%s", job)
 	require.Contains(t, job, "make lint-repo",
 		"the lint-repo job must actually run the gates\n%s", job)
+}
+
+// TestCI_LintRepoJob_HasTheGoToolchain pins the other line MIG003 now depends on.
+//
+// The check moved from bash to internal/migrate/shippedlock (issue #129), so `lint / repo` needs Go
+// — and repo-gates.sh treats a missing `go` as a MIG003 FAILURE, never a skip, for the same reason
+// the command hard-fails when it can find no way to hash a file. That posture is what makes this
+// line load-bearing rather than an optimisation: drop it and the job goes red, which is the honest
+// outcome, but it goes red on every PR rather than on a tampered manifest. The runner image happens
+// to ship a Go, and depending on that would pin this job's toolchain to whatever the base image
+// carries instead of to the version go.mod names.
+func TestCI_LintRepoJob_HasTheGoToolchain(t *testing.T) {
+	t.Parallel()
+
+	ci := readRepoFile(t, ".github/workflows/ci.yml")
+
+	job := jobBlock(t, ci, "lint-repo:")
+	require.Contains(t, job, "uses: ./.github/actions/setup-toolchain",
+		"ci.yml's lint-repo job must install the toolchain: MIG003 runs "+
+			"`go run ./internal/migrate/shippedlock`, and repo-gates.sh fails the rule when go is "+
+			"not on PATH rather than skipping it\n%s", job)
+	require.Contains(t, job, `go: "true"`,
+		"the lint-repo job's setup-toolchain must ask for Go; every input defaults to false, so a "+
+			"bare `uses:` installs nothing\n%s", job)
 }
 
 // TestShippedLock_MalformedManifest_FailsVerify closes the vacuous-pass hole.
