@@ -578,6 +578,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # `make test-golden` is a Go test binary (a `notyet` stub until Phase 4, then the parser
+          # golden suite), and this job declared NOTHING — every input defaults to "false", so it
+          # installed no Go at all (issue #156). Two costs, and the second is the one that bites:
+          # a cold compile on every run, and, because ci.yml sets GOTOOLCHAIN=local deliberately, the
+          # first go.mod bump past the runner image's Go turns this job red with a toolchain error
+          # rather than a test failure — in a job whoever bumped go.mod never touched.
+          go: "true"
       - env:
           CI: "true" # the golden harness refuses `-update` when CI=true
         run: make test-golden
@@ -708,6 +716,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # Same defect as `test / golden` above (issue #156): this job asked for nothing and then ran
+          # a Go target. `make test-authz` enumerates the matrix from the Huma registry, so it is a Go
+          # test binary the moment it stops being a stub, and it needs the compiler go.mod pins rather
+          # than whichever Go the runner image happens to ship.
+          go: "true"
       - run: make test-authz
         # Every (operation x principal) cell, enumerated from the Huma registry rather than written
         # by hand, so a new endpoint cannot be added without a verdict for every principal kind.
@@ -734,6 +748,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-toolchain
+        with:
+          # oasdiff is a Go program installed with `go install`, so this job needs Go on PATH before
+          # it needs oasdiff — and it declared neither (issue #156). The tools list installs it
+          # through the same pinned path every other tool takes; the pin itself lands with the PR that
+          # promotes `make api-breaking` off its stub (Phase 2), which is why the action's oasdiff
+          # case is the one `go install ...@latest` entry.
+          go: "true"
+          tools: "oasdiff"
       - name: oasdiff breaking + changelog
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
@@ -794,14 +816,73 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # --- The Docker layer cache (issue #119) ---------------------------------------------------
+      #
+      # These two env vars existed before this block did, describing a careful policy that nothing
+      # implemented: `make docker` passed no cache flags and BUILDX_CACHE_FROM/TO are not variables
+      # buildx itself honours, so every non-draft push paid an uncached Vite + Go + image build while
+      # a five-line comment said the caching question was settled. The Makefile recipe reads them now
+      # — the shape scripts/release-image.sh already uses on the release path.
+      #
+      # WHY type=local AND NOT type=gha. The gha backend is the obvious choice and it cannot be used
+      # from a `run:` step: buildx authenticates to the Actions cache service with ACTIONS_RUNTIME_
+      # TOKEN, which GitHub injects into JS actions only, never into a script step. Exposing it needs
+      # a third-party action, and adding a dependency is a human's decision (AGENTS.md) — proposed in
+      # issue #163, which also covers release-image.sh's `--cache-from type=gha` for the same reason.
+      # type=local is backed by actions/cache, which is already pinned here and already carries the
+      # doctrine below.
+      #
+      # READ EVERYWHERE, WRITE ON MAIN — the same rule as the Go build cache in setup-toolchain, and
+      # the reason is the same: Actions caches are branch-scoped with read-through to the default
+      # branch, so a PR's write is invisible to every other PR and is evicted almost immediately.
+      #
+      # THE KEY IS CONTENT, NOT THE COMMIT. `mode=max` exports every stage, which is the only mode
+      # worth exporting here — the final stage is `FROM scratch` with three COPYs, so `mode=min`
+      # would archive the one part of this build with nothing expensive in it and leave the Node and
+      # Go builder stages, where all the time goes, uncached. That makes the entry large, so the key
+      # is the hash of the three files that decide what those stages can reuse: a rolling per-commit
+      # key would upload it again on every merge to main for layers that did not change.
+      - name: Restore the Docker layer cache
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-buildx-
+
+      # Key and restore-keys IDENTICAL to the step above — GitHub supports no YAML anchors in a
+      # workflow file, so this is a copy, and TestBuildImage_LayerCache_WritesOnMainReadsEverywhere is
+      # what stops the copies drifting.
+      - name: Restore and save the Docker layer cache (main only)
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-buildx-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-buildx-
+
       - name: Build amd64 and smoke it locally
         env:
-          # Layer cache: READ everywhere, WRITE only on main. Actions caches are branch-scoped with
-          # read-through to the default branch, so `cache-to` on a PR burns quota for a cache no
-          # other run can see, while evicting the ones that are shared.
-          BUILDX_CACHE_FROM: type=gha
-          BUILDX_CACHE_TO: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min' || '' }}
+          # Read on every branch: a missing or empty src is a buildx WARNING and the build proceeds
+          # cold, which is what the first run on a fresh key does.
+          BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
+          # Written on main only, and to a DIFFERENT directory than it reads: buildkit's local
+          # exporter writes a whole cache but never prunes the one already there, so exporting over
+          # the restored copy would grow the entry every run. The step below swaps the fresh export
+          # into place for actions/cache's post step to archive.
+          BUILDX_CACHE_TO: ${{ github.ref == 'refs/heads/main' && 'type=local,dest=/tmp/.buildx-cache-new,mode=max' || '' }}
         run: make docker
+      - name: Roll the layer cache forward (main only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          # No `|| true`: if buildx exported nothing, the cache policy above is not happening and this
+          # says so, rather than archiving the restored copy under a fresh key forever.
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
       - name: First-boot smoke
         run: make smoke-local
         # docker run, wait for /healthz, then /readyz, then `dkp version`. /healthz never touches
