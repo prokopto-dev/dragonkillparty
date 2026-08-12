@@ -20,7 +20,7 @@ standard library, so correcting this needs a dependency decision.
 | A — keep the Python regex parser | No new dependency; it works today on these five files | It reimplements a tokenizer, badly. Its logic was never unit-testable — only its stdout was grepped — and the failures it produces are silent: a binding renders empty, a table renders headers and no body |
 | B — `golang.org/x/net/html` | The canonical Go HTML5 implementation, BSD-3-Clause, Go-team maintained, already in the module graph via huma and goose. Typed, unit-testable, and the tree builder can *verify* the result | A direct dependency where there was none, on a module the shipped binary does not need |
 | C — hand-write an HTML5 tokenizer in Go | No dependency; full control | Same defect as A with more code. A spec-conformant tokenizer is roughly 2,000 lines and its bugs are exactly the ones being fixed |
-| D — shell out to a Node/Python HTML parser | Reuses a mature parser without a Go dependency | Adds a *runtime* toolchain requirement to a build that otherwise needs only Go, and moves the fragility from parsing to subprocess plumbing |
+| D — shell out to a Node/Python HTML parser | Reuses a mature parser with no Go dependency | Adds a toolchain requirement to a build that otherwise needs only Go, and moves the fragility to subprocess plumbing |
 
 ## Decision outcome
 
@@ -34,6 +34,11 @@ The dependency is deliberately narrow. `golang.org/x/net/html` is imported by `i
 nothing else; `go list -deps ./cmd/dkp` does not reach it, so `THIRD_PARTY_NOTICES.txt` is unchanged
 and the shipped binary does not link it. `scripts/licence-gate.sh` already allows BSD-3-Clause, and
 huma and goose both require this exact version, so it selects nothing new.
+
+**Approval.** AGENTS.md makes a dependency a human decision, and
+`.claude/hooks/guard-protected-paths.sh` is the mechanism: it hard-denies any agent edit to `go.mod`
+and `go.sum`. It fired here. The module, version, licence, scope and what it replaces went to the
+owner as a written proposal; the owner accepted it and ran the `go get` themselves.
 
 The two halves of the parser are used for opposite jobs, and that split is the substance of the
 decision. **`html.Tokenizer` does the rewrite**, because the tree builder foster-parents `<sc-for>`

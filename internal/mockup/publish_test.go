@@ -197,7 +197,33 @@ func TestPublish_FosterParentedElement_IsRefusedEvenWhenItIsNotADirective(t *tes
 	_, err = Publish("fixture.dc.html", wrap(body), "Fixture")
 	require.Error(t, err, "an emptied custom element must not publish")
 	require.Contains(t, err.Error(), "foster-parenting")
-	require.Contains(t, err.Error(), "<x-import>")
+
+	// The element that LOST its children is named first, and named as the loser. The <x-dc> that
+	// received them is reported too, but second: sending a reader to the receiving element is
+	// sending them to the wrong end of the document.
+	require.Contains(t, err.Error(), "<x-import> lost 1")
+	require.Contains(t, err.Error(), "<x-dc> gained 1")
+	require.Less(t, strings.Index(err.Error(), "<x-import>"), strings.Index(err.Error(), "<x-dc>"),
+		"the emptied element must be reported before the one that received its children")
+}
+
+// TestPublish_FosterParentingMessage_IsStable pins the ordering, which was a map range and therefore
+// different on every run — Go randomises map iteration, so the same broken page named <x-import> on
+// one run and <x-dc> on the next. A gate whose failure message moves is a gate people learn to
+// re-run instead of read.
+func TestPublish_FosterParentingMessage_IsStable(t *testing.T) {
+	t.Parallel()
+
+	body := `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr></x-import></tbody></table>`
+
+	_, first := Publish("fixture.dc.html", wrap(body), "Fixture")
+	require.Error(t, first)
+
+	for range 20 {
+		_, err := Publish("fixture.dc.html", wrap(body), "Fixture")
+		require.Error(t, err)
+		require.Equal(t, first.Error(), err.Error(), "the same page must always fail the same way")
+	}
 }
 
 // TestPublish_LiftedRowsSurviveARealParse renders the before and after through the same tree builder

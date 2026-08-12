@@ -397,12 +397,24 @@ func assertNoDirectiveInTable(toks []token, name string) error {
 	return nil
 }
 
-// customElements are the elements the mockups invent and mockup-runtime.js gives meaning to. Every
-// one is an unknown element to a tree builder, which is exactly why one inside a <table> is
+// customElementNames are the elements the mockups invent and mockup-runtime.js gives meaning to.
+// Every one is an unknown element to a tree builder, which is exactly why one inside a <table> is
 // foster-parented out of it — and, crucially, arrives at its new position EMPTY.
-var customElements = map[string]bool{
-	tagSCFor: true, tagSCIf: true, "x-import": true, "helmet": true, "x-dc": true,
-}
+//
+// A sorted slice, and the iteration order of the check below, so one broken page always produces the
+// same failure message. Ranging a map here meant the message named whichever element Go's randomised
+// map order reached first, which for a foster-parented <x-import> was as often the <x-dc> that
+// RECEIVED it as the <x-import> that lost it.
+var customElementNames = []string{"helmet", tagSCFor, tagSCIf, "x-dc", "x-import"}
+
+var customElements = func() map[string]bool {
+	m := make(map[string]bool, len(customElementNames))
+	for _, n := range customElementNames {
+		m[n] = true
+	}
+
+	return m
+}()
 
 // assertCustomElementsKeepTheirChildren parses the finished page with the real HTML5 tree
 // construction algorithm and fails if it moved anything out of one of the mockups' own elements.
@@ -436,20 +448,36 @@ func assertCustomElementsKeepTheirChildren(name string, out []byte) error {
 	parsed := map[string]int{}
 	parsedChildCounts(doc, parsed)
 
-	for el := range customElements {
-		if parsed[el] == written[el] {
-			continue
-		}
+	// Losses first, gains second. Foster parenting moves children rather than deleting them, so one
+	// emptied element is always paired with another that gained what it lost — and the element that
+	// LOST them is the one a person has to go and fix. Reporting the receiver first sends them to the
+	// wrong end of the document.
+	var lost, gained []string
 
-		return fmt.Errorf(
-			"%s: the page gives <%s> elements %d element children in total, but an HTML5 parse of it "+
-				"finds %d. The tree builder moved %d out — foster-parenting, which happens to any element "+
-				"that is not valid table content when it appears inside a <table>. mockup-runtime.js "+
-				"repeats and conditions a directive's CHILDREN, so an emptied one renders nothing",
-			name, el, written[el], parsed[el], written[el]-parsed[el])
+	for _, el := range customElementNames {
+		switch {
+		case parsed[el] < written[el]:
+			lost = append(lost, fmt.Sprintf(
+				"  <%s> lost %d: the markup gives them %d element children, the parse finds %d",
+				el, written[el]-parsed[el], written[el], parsed[el]))
+		case parsed[el] > written[el]:
+			gained = append(gained, fmt.Sprintf(
+				"  <%s> gained %d, which is where they went",
+				el, parsed[el]-written[el]))
+		}
 	}
 
-	return nil
+	if len(lost) == 0 && len(gained) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%s: an HTML5 parse of the published page does not give the mockups' own elements the children "+
+			"the markup gives them:\n%s\n"+
+			"That is foster-parenting: an element that is not valid table content is hoisted out of a "+
+			"<table> and arrives EMPTY, because its rows stay behind. mockup-runtime.js repeats and "+
+			"conditions an element's CHILDREN, so an emptied one renders nothing",
+		name, strings.Join(append(lost, gained...), "\n"))
 }
 
 // markupChildCounts totals, per custom element, the element children the markup gives it — read off
