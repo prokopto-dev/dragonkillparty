@@ -200,14 +200,15 @@ func TestMakefile_EveryGoTestRecipe_ForcesRerun(t *testing.T) {
 
 			checked++
 
-			// `-bench` with `-run '^$'` selects zero tests, and `go test` never caches a benchmark
-			// result, so `-count` there means "how many samples" and must stay free. Requiring the
-			// empty `-run` keeps the exemption honest: a `-bench` recipe that ALSO ran tests would
-			// otherwise slip through it.
+			// `-bench` with an empty `-run` selects zero tests, and `go test` never caches a
+			// benchmark result, so `-count` there means "how many samples" and must stay free.
+			// Requiring the empty `-run` keeps the exemption honest: a `-bench` recipe that ALSO ran
+			// tests would otherwise slip through it. Matched as a prefix because make doubles the
+			// dollar — `-run '^$$'` in the Makefile is `-run '^$'` in a script.
 			if strings.Contains(line, "-bench") {
-				require.Contains(t, line, `-run '^$$'`,
-					"%s runs benchmarks without `-run '^$$'`, so it also runs tests and cannot be exempt "+
-						"from -count=1:\n%s", rel, strings.TrimSpace(line))
+				require.Contains(t, line, `-run '^$`,
+					"%s runs benchmarks without an empty `-run`, so it also runs tests and cannot be "+
+						"exempt from -count=1:\n%s", rel, strings.TrimSpace(line))
 
 				continue
 			}
