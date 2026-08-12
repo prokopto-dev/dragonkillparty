@@ -146,6 +146,12 @@ jobs:
               # githooks_test runs .githooks/pre-commit and pre-push under `make test`, so a
               # hooks-only change must reach `test / integration` to exercise that gate.
               - '.githooks/**'
+              # CONTRIBUTING.md, for the same reason again: contributing_claims_test.go resolves
+              # every workflow, path and CI job its "Enforced by:" blocks cite (#139), and the file
+              # is markdown, so without this line it selects `docs` alone and the gate SKIPS on the
+              # one file it polices. A false enforcement promise is added by editing exactly this
+              # file and nothing else, which is the change that would run none of it.
+              - 'CONTRIBUTING.md'
               # The web and design-doc INPUTS of test/repo, pinned to `go` for the same reason as
               # the three blocks above — issue #94. test/repo runs under `make test-unit` and
               # `make test`, both gated on `go`, but five of its suites read their inputs from

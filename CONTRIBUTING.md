@@ -30,8 +30,11 @@ certify you wrote the change, or have the right to submit it under Apache-2.0.
 | A whole branch missing sign-off | `git rebase --signoff origin/main && git push --force-with-lease` |
 | Committing as someone else | You cannot. Sign off with your own name and real email. |
 
-**Enforced by:** the DCO GitHub App, a required status check named `DCO`. `lefthook.yml` installs a
-`prepare-commit-msg` hook so a local commit picks up the trailer automatically.
+**Enforced by:** the DCO GitHub App, a required status check named `DCO`. **Nothing adds the trailer
+for you** — `git commit -s`, every time. The tracked hooks `make setup` installs are
+`.githooks/pre-commit` and `.githooks/pre-push`; they format staged files and refuse an unformatted
+push, and neither touches the commit message. A branch that reached a PR without sign-off is the
+`git rebase --signoff` row above, and it is a required check going red, not a warning.
 
 The consequence is real and we accept it knowingly: the project **cannot be relicensed** without
 contacting every contributor.
@@ -65,9 +68,9 @@ make fmt                        # belt and braces; pre-push checks it too
 git push
 ```
 
-**Conventional commits are enforced on the PR title only**, because squash-merge makes the PR title
-the commit subject and that is what release-please parses. Your individual WIP commits can say
-whatever you like.
+**Conventional commits apply to the PR title only**, because squash-merge makes the PR title the
+commit subject and that is what release-please parses. Your individual WIP commits can say whatever
+you like.
 
 ```
 <type>(<scope>): <summary>          feat(ledger): post decay as an explicit batch
@@ -76,7 +79,10 @@ whatever you like.
 Types: `feat` `fix` `perf` `refactor` `docs` `test` `build` `ci` `chore` `revert`. Scope is a
 top-level package (`ledger`, `strategy`, `api`, `importer`, `parse`, `store`, `cms`, `web`, `docs`).
 Put `BREAKING CHANGE:` in the PR **body** — it becomes the squash commit body and drives the
-release notes. **Enforced by:** `pr-title-lint.yml`.
+release notes. **Nothing checks the title** — no workflow lints it, so a malformed one merges green
+and surfaces later as a degraded changelog rather than as a red check. The convention is real; a
+reviewer is what enforces it. The title lint is designed but not built
+(`docs/design/06-cicd-and-release.md`).
 
 ## The licence firewall — read this before you "match EQdkp's behaviour"
 
@@ -96,7 +102,7 @@ The identifiers `pdh_`, `gen_class`, `plus_exchange`, and `__multidkp2event` may
 two places**: `internal/importer/legacy_names.go` and `internal/api/compat/`.
 
 **Enforced by:** the `lint / repo` CI job greps for those identifiers everywhere else and fails the
-build; `security / licenses` fails on any GPL/AGPL runtime dependency; `.github/CODEOWNERS` puts
+build; `security / licences` fails on any GPL/AGPL runtime dependency; `.github/CODEOWNERS` puts
 `LICENSE`, `NOTICE`, and `TRADEMARK.md` behind a named reviewer.
 
 The temptation appears precisely when a task says "match EQdkp's behaviour" or "port their
@@ -152,8 +158,9 @@ and `DCO`. Everything else reports into `ci-required`.
 
 **The budget is an SLO, not an aspiration:** a non-draft PR reaches `ci-required` green in **≤ 6 min
 p50, ≤ 10 min p95**, push-to-green. No single job may exceed 5 minutes; one that does gets sharded
-or moved to the nightly run. `ci-budget.yml` measures the last 200 runs weekly and files an issue
-when the target is breached.
+or moved to the nightly run. The weekly measurement over the last 200 runs that files an issue when
+the target is breached is designed and not built (`docs/design/06-cicd-and-release.md`); today the
+budget is watched by hand.
 
 Two things follow from that budget, and both are your side of the deal:
 
@@ -195,12 +202,21 @@ If a test is genuinely wrong, **say so in the PR body, say why, and put the chan
 prefixed `test-relax:`** so `git log --grep '^test-relax'` stays a two-second audit of every
 assertion ever loosened. That is allowed. Quietly loosening it is not.
 
-**Enforced by:** a CI analyser diffs `**/*_test.go` and `test/**` against `main` and posts the
-before/after assertions side by side, requiring CODEOWNERS review on a hit; committed ratchets for
-coverage, budgets, fixture count and golden-file count that a test asserts only ever move one way;
-golden `-update` is refused when `CI=true`; and the guardrails that matter most — the append-only
-trigger, `-race`, `-shuffle`, codegen drift, the licence gate — cannot be weakened from a `_test.go`
-file at all.
+**Enforced by:** `.github/CODEOWNERS` puts `test/golden/` and `test/fixtures/` behind a named
+reviewer, so an expected output cannot be rewritten without one; golden `-update` refuses to run when
+`CI=true` (`internal/ledger/balance_test.go`, `internal/strategy/fixed_price_test.go`); the 95%
+coverage floor over the ledger, strategy and enum-catalogue packages is a required job
+(`make test-coverage-floor`), so deleting a test there goes red; raising the bundle budget means
+editing the CODEOWNERS-protected `web/bundle-budget.json`; and the guardrails that matter most — the
+append-only trigger, `-race`, `-shuffle`, codegen drift, the licence gate — cannot be weakened from a
+`_test.go` file at all.
+
+**Nothing in CI reads your assertions**, and you should know exactly where that leaves this rule. No
+job diffs `**/*_test.go` against `main`, so a loosened `Equal` in a package with no coverage floor
+goes green. What catches it is review: the `test-integrity-auditor` subagent in `.claude/agents/`,
+which a human or an agent has to invoke. That is why the `test-relax:` prefix above is the durable
+record rather than a formality — it is the only thing that makes a loosened assertion findable a year
+later.
 
 ## Proposing a dependency
 
@@ -209,7 +225,7 @@ Do not add one in the PR that needs it. Open an issue first; a human decides.
 | State | Why it is asked |
 |---|---|
 | What it does, and the stdlib or existing dependency you tried first | Most proposals die here, correctly |
-| Licence | Apache-2.0, MIT, BSD, ISC, MPL-2.0 are fine. **GPL/AGPL runtime dependencies fail `security / licenses`** and there is no exception. |
+| Licence | Apache-2.0, MIT, BSD, ISC, MPL-2.0 are fine. **GPL/AGPL runtime dependencies fail `security / licences`** and there is no exception. |
 | Transitive dependency count and module size | It ends up in a static binary a guild officer downloads |
 | Maintenance signals — last release, open issue age, bus factor | |
 | What happens when it is abandoned | If the answer is "we vendor 200 lines", vendor 200 lines now instead |
