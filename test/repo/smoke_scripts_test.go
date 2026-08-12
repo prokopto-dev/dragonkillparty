@@ -60,6 +60,126 @@ func TestSmokeLocal_ReadyzCheckCanActuallyFail(t *testing.T) {
 			"included.", rel)
 }
 
+// TestReleaseSmoke_ProbesReadyzOnThePublishedDigest pins the fix for issue #99.
+//
+// The sibling of #84, and the more expensive one: this script runs against the PUBLISHED digest on
+// real amd64 and arm64 hardware and is what gates the moving tags advancing. It carried a comment
+// promising a /readyz probe and never made one — the line under the comment ran `dkp version`, and
+// the only health-adjacent call in the file was the /healthz boot poll. The comment is what made it
+// invisible: a reader auditing release coverage greps for /readyz, finds the word, and moves on. So
+// the assertions below are about the probe, never about the word appearing somewhere in the file.
+func TestReleaseSmoke_ProbesReadyzOnThePublishedDigest(t *testing.T) {
+	t.Parallel()
+
+	const rel = "scripts/release-smoke.sh"
+
+	body := readRepoFile(t, rel)
+
+	// From the HOST, at the published port — the same shape smoke-local.sh had to be corrected into.
+	// Inside the container's namespace nothing listens on a host-mapped port, so an in-container
+	// probe of it cannot succeed (issue #84).
+	require.Regexpf(t, `curl[^\n]*\$\{base\}/readyz`, body,
+		"%s must probe ${base}/readyz with curl from the host. `dkp healthcheck` covers /healthz "+
+			"only, and canonical §13 splits the two precisely because they answer different "+
+			"questions — /readyz is the one that knows about migrations and about the ledger's "+
+			"append-only protection (issue #99).", rel)
+
+	// A status code alone is not evidence: when Config.Readiness is nil the route is never
+	// registered and internal/ui's SPA catch-all answers /readyz with index.html and a 200.
+	require.Containsf(t, body, `"state"`,
+		"%s must assert the body is a readiness report, not just that something answered: the SPA "+
+			"catch-all serves index.html with a 200 for every path no route claimed, /readyz "+
+			"included.", rel)
+
+	// 503 is a CORRECT answer on a first boot that is still applying migrations (state "pending",
+	// internal/api/ready.go). A probe that demanded 200 would fail the release for a healthy image.
+	require.Containsf(t, body, "200 | 503",
+		"%s must accept 200 or 503 from /readyz: a first boot may still be applying migrations, "+
+			"which handleReadyz reports as a 503 with state \"pending\"", rel)
+
+	// The published port has to be discovered BEFORE the probe that uses it. It used to be derived
+	// further down, immediately before smoke-spa.sh; a probe of an empty $base would fail the
+	// release on a healthy image, which is the way this fix could go wrong.
+	discovery := strings.Index(body, `port="$(docker port`)
+	require.NotEqualf(t, -1, discovery, "%s must discover the published host port", rel)
+
+	probe := regexp.MustCompile(`curl[^\n]*\$\{base\}/readyz`).FindStringIndex(body)
+	require.NotNil(t, probe, "the /readyz probe must be a curl call") // already asserted above
+	require.Lessf(t, discovery, probe[0],
+		"%s discovers the published port AFTER probing ${base}/readyz, so the probe runs against an "+
+			"empty base URL and fails on an image that is perfectly healthy", rel)
+}
+
+// TestReleaseSmoke_SupplyChainVerificationIsOptIn pins the fix for issue #107.
+//
+// The verification section used to be gated on `command -v`, which reads as a portable skip and is
+// really a coin toss on the runner image. cosign is on no runner, so it skipped — including on the
+// release path, where it is the gate. `gh` IS preinstalled on GitHub-hosted ubuntu runners, so the
+// EDGE channel ran `gh attestation verify` against a digest that has no attestation (only release.yml
+// writes one) with no token, and failed every push to main.
+//
+// Which channel signs its images is a property of the WORKFLOW, so the workflow is what says so.
+func TestReleaseSmoke_SupplyChainVerificationIsOptIn(t *testing.T) {
+	t.Parallel()
+
+	const rel = "scripts/release-smoke.sh"
+
+	script := readRepoFile(t, rel)
+
+	require.Containsf(t, script, `[ "${VERIFY_SUPPLY_CHAIN:-0}" = "1" ]`,
+		"%s must gate the supply-chain section on an explicit VERIFY_SUPPLY_CHAIN=1 that defaults "+
+			"to off, not on whether a tool happens to be installed (issue #107)", rel)
+
+	gate := strings.Index(script, "VERIFY_SUPPLY_CHAIN")
+	for _, cmd := range []string{`cosign verify "${ref}"`, "gh attestation verify"} {
+		at := strings.Index(script, cmd)
+		require.NotEqualf(t, -1, at, "%s must still run `%s` when verification is opted into", rel, cmd)
+		require.Lessf(t, gate, at,
+			"%s runs `%s` before the VERIFY_SUPPLY_CHAIN gate, so an unsigned channel would run it "+
+				"anyway — that is issue #107 verbatim", rel, cmd)
+	}
+
+	// Opted in, a missing tool is a FAILURE. A warn-and-continue branch here is the laundered gate:
+	// the release train's only supply-chain check becomes a log line on any runner without the tool.
+	require.NotContainsf(t, script, "skipping signature verification",
+		"%s must not skip cosign verification when the caller asked for it — VERIFY_SUPPLY_CHAIN=1 "+
+			"means verify or fail", rel)
+	for _, tool := range []string{"cosign", "gh"} {
+		require.Containsf(t, script, "if ! command -v "+tool,
+			"%s must treat a missing %s as a failure under VERIFY_SUPPLY_CHAIN=1, not as a skip", rel, tool)
+	}
+
+	// The release channel signs and attests, so it is the channel that verifies — with a token, the
+	// permission to read the attestation, and cosign actually installed.
+	release := jobBlock(t, readRepoFile(t, ".github/workflows/release.yml"), "smoke:")
+	for _, want := range []struct{ needle, why string }{
+		{`VERIFY_SUPPLY_CHAIN: "1"`, "the release channel must opt into supply-chain verification"},
+		{"GH_TOKEN:", "gh attestation verify reads the attestation through the GitHub API"},
+		{"attestations: read", "without it `gh attestation verify` fails on a real tag, just later"},
+		{"packages: read", "the smoke pulls the published digest from GHCR"},
+		{"cosign-installer", "cosign is on no runner image, and a missing cosign now fails the job"},
+	} {
+		require.Containsf(t, release, want.needle,
+			"release.yml's smoke job must carry %q — %s", want.needle, want.why)
+	}
+
+	// And the edge channel must NOT opt in: edge publishes no signature and no attestation, so
+	// there is nothing there to verify. Comments are stripped first, exactly as QEMU001 does — the
+	// job's prose explains the opt-in, and prose about a rule is not a breach of it.
+	edge := jobBlock(t, readRepoFile(t, ".github/workflows/edge.yml"), "smoke:")
+
+	var steps []string
+	for _, line := range strings.Split(edge, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+			steps = append(steps, line)
+		}
+	}
+
+	require.NotContains(t, strings.Join(steps, "\n"), "VERIFY_SUPPLY_CHAIN",
+		"edge.yml's smoke job must leave VERIFY_SUPPLY_CHAIN unset: edge images carry no cosign "+
+			"signature and no release attestation, so verification there can only fail (issue #107)")
+}
+
 // TestShellGates_NoEchoTautology scans every gate script for the defect class rather than the
 // instance.
 //

@@ -384,11 +384,13 @@ seed:
 	@$(call notyet,Phase 1 (perf) / Phase 2 (small) / Phase 3 (demo),dkp seed --profile $${PROFILE:-demo})
 
 ## docker: build the container image
-# buildx, not `docker build`: it is what CI's build/image and mq/image-arm64 jobs invoke, and it is
-# what the Dockerfile's cross-compilation ARGs (TARGETOS/TARGETARCH, supplied per platform) expect.
+# buildx, not `docker build`: it is what CI's build/image job invokes, and it is what the
+# Dockerfile's cross-compilation ARGs (TARGETOS/TARGETARCH, supplied per platform) expect.
 # `--load` puts the result in the local image store so `make smoke-local` and `make image-size` can
-# find it. PLATFORM is optional: unset for a native host build (build/image), set to linux/arm64 for
-# the merge-queue cross-compile check (mq/image-arm64). Go cross-compiles, so no QEMU is ever needed.
+# find it. PLATFORM is optional: unset for a native host build, which is the only way CI calls this
+# target now that the dead merge-queue arm64 job is gone (issue #101); set it to linux/arm64 to
+# cross-compile that platform by hand, as issue #108 proposes doing nightly. Go cross-compiles, so no
+# QEMU is ever needed.
 docker:
 	docker buildx build $${PLATFORM:+--platform $$PLATFORM} --load -f deploy/Dockerfile -t $(IMAGE):$(VERSION) $(DOCKER_BUILD_ARGS) .
 
@@ -697,6 +699,10 @@ test-migrations:
 #
 # What PR 3 DID land is `test-migrations` above, which proves the forward path and the restore path
 # against a real database. The N-1 ladder is a different guarantee and needs a published refdb.
+#
+# NO CI JOB CALLS THIS. Its only caller was mq/upgrade-from-latest-release, deleted with the rest of
+# the dead merge-queue configuration (issue #101) — it never ran, because merge_group never fires on
+# a repository with no queue. Issue #109 decides where it runs once there is a refdb to pull.
 test-upgrade:
 	@$(call notyet,Phase 8,needs release-refdb to publish a reference database first)
 

@@ -97,17 +97,40 @@ hook adding `Signed-off-by`, and a one-line remediation in `CONTRIBUTING.md`. Ac
 knowingly: **the licence can never be changed without contacting every contributor.** If a commercial
 edition is ever conceivable, that decision must be made before the first external PR, not after.
 
-### Merge queue
+### Merge queue — proposed, then not adopted (issue #101)
 
-Turn it on from day one. The justification is **not** throughput — this repo will see 2 to 10 merges
-a day. It is that the merge queue is the only place to run an expensive check **exactly once per
-merge** instead of on every push to every PR. Three jobs run only in `merge_group`: the arm64 image
-build, the upgrade test against the actual latest released reference database, and the full
-cross-browser e2e run. That two-tier split is what lets PR CI stay under six minutes without
-weakening the merge gate.
+This section used to read "turn it on from day one", on a justification that was **not** throughput —
+this repo will see 2 to 10 merges a day — but that a merge queue is the only place to run an
+expensive check **exactly once per merge** instead of on every push to every PR. Two jobs were
+written for that tier and named in `ci-required`: `mq / image-arm64` and
+`mq / upgrade-from-latest-release`. (This document also claimed a third, a full cross-browser e2e
+run; that one was never written at all.)
 
-Settings: minimum 1, maximum 5 entries per batch, 5-minute maximum wait, "only merge non-failing pull
-requests".
+**The queue was never turned on, and the two-tier split has been deleted rather than enabled.**
+`required_merge_queue` is `null` on `main`, so `merge_group` never fired and neither job ever ran —
+while `ci-required` counts `skipped` as success, so both reported satisfied on every PR. Coverage
+that is documented, listed in the checks UI and never executed is worse than coverage that is absent,
+because nothing distinguishes it from the real thing. The choice was between making the document
+true and making the workflow honest, and the workflow won: both jobs and both
+`|| github.event_name == 'merge_group'` escape hatches are gone, and
+`TestCIWorkflow_NoJob_IsGatedOnMergeGroup` in `test/repo/ci_required_test.go` fails on a third one.
+
+What that costs, stated rather than implied. arm64 is now built only by the release train —
+`release.yml`'s per-arch matrix — so an arm64-only breakage surfaces while cutting a release instead
+of before the merge (issue #108 proposes a nightly cross-compile). And
+`upgrade-from-latest-release` has no call site at all; it was a `notyet` stub waiting on
+`release-refdb` either way, so nothing runs less than it did, but the tier it was promised to occupy
+in section 7 is now empty (issue #109).
+
+`ci.yml` still declares `on: merge_group:`, and `changes.outputs.deep` still treats a queue run as a
+deep run. That pair is the half with no downside: neither is a job condition, so neither can
+manufacture a green skip, and if a queue is ever switched on — a repository-settings change, which no
+PR review would catch — the whole workflow runs inside it rather than `ci-required` never reporting
+and the queue wedging on a check that never arrives.
+
+Adopting the queue later means re-adding the expensive tier in the same change, with the settings it
+would want: minimum 1, maximum 5 entries per batch, 5-minute maximum wait, "only merge non-failing
+pull requests".
 
 ---
 
@@ -188,18 +211,19 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | go changed | 60 s | required |
 | `test / golden` — plus a non-decreasing fixture count | go changed | 45 s | required |
 | `test / integration` — real SQLite, real triggers, goleak | go/db changed | 130 s | required |
-| `test / migrations` — fresh install, N-1, row invariants, auto-restore | db changed \| merge_group | 110 s | required |
+| `test / migrations` — fresh install, N-1, row invariants, auto-restore | db changed | 110 s | required |
 | `test / authz-matrix` — every operation × every principal | api/go changed | 60 s | required |
 | `api / breaking-change` — oasdiff + sticky changelog comment | api changed | 45 s | required |
 | `build / binary` — uploads the artifact everything reuses | always | 165 s | required |
 | `build / image` — amd64, `--load`, first-boot smoke | non-draft | 60 s | required |
 | `test / e2e` — Playwright, sharded ×2, `--retries=0` | non-draft | 150 s | required |
-| `test / importer` — MariaDB fixtures via testcontainers | importer changed \| merge_group | 210 s | required |
+| `test / importer` — MariaDB fixtures via testcontainers | importer changed + non-draft | 210 s | required |
 | `budget / bundle` — SPA initial route ≤ 250 KB gz | web changed | 10 s | required |
 | `docs / build` — embed.FS link resolution, `dkp:exec` blocks | docs/go changed | 40 s | required |
-| `mq / image-arm64` | merge_group | 70 s | required in queue |
-| `mq / upgrade-from-latest-release` | merge_group | 90 s | required in queue |
 | `ci-required` | always | 5 s | **the only check in branch protection** |
+
+There is no "required in queue" tier. Two `mq / *` rows sat here until issue #101; section 2 records
+why they were deleted rather than enabled, and #108 and #109 track what they claimed to cover.
 
 **Required versus advisory, as a rule rather than a list:** a check is required if and only if its
 failure is (a) deterministic given the PR's diff and (b) actionable by the PR author. Image CVE
@@ -218,7 +242,7 @@ gets deleted.** `ci-budget.yml` reports advisory-check action rates alongside th
 ### The wall-clock budget
 
 > A non-draft PR reaches `ci-required` green in **≤ 6 min p50, ≤ 10 min p95**, measured
-> push-to-green. A draft PR reaches lint + unit green in **≤ 90 s**. The merge queue adds **≤ 6 min**.
+> push-to-green. A draft PR reaches lint + unit green in **≤ 90 s**.
 > **No single job may exceed 5 minutes** — one that does is sharded or moved to nightly.
 
 The critical path is `changes → build / binary (165 s) → test / e2e (150 s)` ≈ 5.5 minutes.
@@ -365,9 +389,11 @@ be additive only, enforced by the protected-table row invariants in `test / migr
 review.
 
 **Support window, as a promise CI verifies:** *any 1.x upgrades directly to any later 1.y.* Migrations
-are forward-only and cumulative, so goose replays. Per-PR covers N-1; the merge queue covers the real
-latest release; the nightly upgrade ladder covers **every previously released minor**. Downgrades are
-refused at boot with a message naming the correct image tag and the exact snapshot path.
+are forward-only and cumulative, so goose replays. Per-PR covers N-1 and the nightly upgrade ladder
+covers **every previously released minor**. The rung between them — the real latest release — was the
+merge queue's, and has been vacant since issue #101 removed it; issue #109 is where it lands once
+`release-refdb` publishes something to upgrade from. Downgrades are refused at boot with a message
+naming the correct image tag and the exact snapshot path.
 
 ### The `!breaking-api` protocol
 
@@ -518,7 +544,13 @@ cosign verify ghcr.io/prokopto-dev/dragonkillparty:1.5.0 \
 ```
 
 `release-smoke` runs those exact commands against the published digest, so a wrong README snippet is
-discovered in CI rather than by a user.
+discovered in CI rather than by a user. That half of the script is **opt-in**, on
+`VERIFY_SUPPLY_CHAIN=1`: only a tagged release has a signature and an attestation to check, and the
+`:edge` channel — which runs the same script — has neither. Opted in, a missing `cosign` or `gh` is a
+failure and never a skip, so `release.yml`'s `smoke` job installs cosign and holds
+`attestations: read`. Gating on tool presence instead was issue #107: `gh` is preinstalled on
+GitHub-hosted runners and `cosign` is not, so the check silently skipped on the channel that needed
+it and ran on the channel that could not pass it.
 
 ### Size budgets — `.github/size-budget.json`
 
@@ -610,10 +642,10 @@ renders a banner with the exact command.
 5. **The reference-database ladder.** Every release publishes
    `ghcr.io/prokopto-dev/dkp-refdb:<version>` — a deterministic seeded database, a few MB, produced
    by booting the just-released binary. Then:
-   `test / migrations` uses N-1 per PR, `mq / upgrade-from-latest-release` uses the real latest tag in
-   the queue, and nightly's `upgrade-ladder` iterates **every published minor to HEAD**. That converts
-   "any 1.x upgrades to any later 1.y" from a promise into a nightly-verified property for about ten
-   two-minute jobs.
+   `test / migrations` uses N-1 per PR and nightly's `upgrade-ladder` iterates **every published minor
+   to HEAD** (the real-latest-tag rung between them belonged to the deleted merge queue — issue #109).
+   That converts "any 1.x upgrades to any later 1.y" from a promise into a nightly-verified property
+   for about ten two-minute jobs.
 6. **Backups on by default**, and mechanised rather than repeated: nightly `VACUUM INTO` + zstd, 14
    dailies and 8 weeklies, `dkp doctor` reporting `backup_age_seconds`, the migration snapshot taken
    whether or not the operator remembered, and the admin upgrade banner showing the most recent
