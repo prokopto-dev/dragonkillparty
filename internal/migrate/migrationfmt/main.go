@@ -29,9 +29,17 @@
 // IT LIVES IN GO RATHER THAN IN THE SHELL SCRIPT (issue #128) because it is string surgery on a
 // file that is append-only and permanent from the moment it is committed — the one class of
 // artefact in this repository where a wrong rewrite is unrecoverable for a user, and, as a `sed`
-// pipeline, the one that could only ever be tested through a subprocess. Both of the inputs that
-// matter — the literal that must be refused, and the adjacent-literal shape a naive regex
-// misreports as one — are unit tests here.
+// pipeline, the one that could only ever be tested through a subprocess.
+//
+// IT IS A SCANNER, NOT A PATTERN. Every backtick is classified by walking the file once and knowing
+// what the byte before it was part of — a string literal, a quoted identifier, a comment, or SQL.
+// The shell version could not: `grep` and `sed` see one physical line, and a SQLite string literal
+// may span as many as it likes, so a backtick on the second line of a multiline DEFAULT read as
+// ordinary SQL and was rewritten — changing the stored value while removing the backtick that
+// MIG002 would have caught it by. The scanner also knows a doubled quote inside a literal is an
+// escaped quote rather than a close followed by an open, so a literal containing one ends where SQL
+// says it ends; and it knows a comment is not SQL, so the apostrophe in the Down block's own
+// "RAISE()'s message" does not open a literal that swallows the rest of the file.
 //
 // It lives beside internal/migrate, which applies migrations at boot, rather than in cmd/dkp, for
 // the reason internal/ledger/enumgen gives: cmd/dkp is the product binary and an officer never runs
@@ -44,7 +52,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -73,25 +80,6 @@ const downBlock = `-- +goose Down
 SELECT RAISE(ABORT, 'DKP migrations are forward-only; restore /data/backups/pre-<ver>-*.db.zst');
 `
 
-// The three patterns, and the order the last two are applied in, are the whole safety argument.
-//
-// backtickIdent requires the quoted text to be a BARE IDENTIFIER, so a backtick inside a longer
-// string — a CHECK expression, a DEFAULT — is not rewritten by accident.
-//
-// plainLiteral matches a single-quoted literal that contains no backtick; removing every one of
-// those from a line first is what makes literalWithBacktick mean what it says. A naive
-// `'[^']*` + "`" + `[^']*'` on its own cannot do this: its runs hop the `', '` boundary BETWEEN two
-// adjacent literals, so a backtick identifier sitting between an empty-string default and a
-// `DEFAULT 'UTC'` — which is what any table with two TEXT-default columns produces — reads as
-// "inside a literal" when it is plainly between them. Stripping the backtick-free literals first
-// leaves only literals that actually contain a backtick, which is exactly the corrupting input.
-// TestRewrite_AdjacentLiterals_AreNotAFalsePositive is that case.
-var (
-	backtickIdent       = regexp.MustCompile("`([A-Za-z_][A-Za-z0-9_]*)`")
-	plainLiteral        = regexp.MustCompile("'[^'`]*'")
-	literalWithBacktick = regexp.MustCompile("'[^']*`[^']*'")
-)
-
 // errBacktickInStringLiteral is returned instead of a rewrite whose result would be silently wrong.
 //
 // A backtick INSIDE a single-quoted string wrapping something identifier-shaped is the one input
@@ -103,12 +91,22 @@ var errBacktickInStringLiteral = errors.New("backtick inside a string literal")
 
 // literalBacktick locates one occurrence of errBacktickInStringLiteral, so the refusal can quote the
 // offending line rather than make the reader find it.
+//
+// openedAt is where the literal STARTED, which is not always where the backtick is: a SQLite string
+// literal may span physical lines, and in that case the line to look at is the one that opened the
+// quote. They are reported separately when they differ.
 type literalBacktick struct {
-	line int
-	text string
+	line     int
+	openedAt int
+	text     string
 }
 
 func (e literalBacktick) Error() string {
+	if e.openedAt != e.line {
+		return fmt.Sprintf("line %d (literal opened at line %d): %s: %s",
+			e.line, e.openedAt, errBacktickInStringLiteral, strings.TrimSpace(e.text))
+	}
+
 	return fmt.Sprintf("line %d: %s: %s", e.line, errBacktickInStringLiteral, strings.TrimSpace(e.text))
 }
 
@@ -125,7 +123,7 @@ func main() {
 	if err := run(path); err != nil {
 		var lit literalBacktick
 		if errors.As(err, &lit) {
-			fmt.Fprint(os.Stderr, refusalMessage(displayPath(path), lit.line, lit.text))
+			fmt.Fprint(os.Stderr, refusalMessage(displayPath(path), lit))
 			os.Exit(1)
 		}
 
@@ -155,27 +153,29 @@ func run(path string) error {
 
 // rewrite returns the committed form of one generated migration, or errBacktickInStringLiteral.
 //
-// The whole file is inspected for the corrupting literal before any of it is rewritten — including
-// the Atlas Down block that is about to be discarded. A literal that only appears down there still
-// came from db/schema.hcl and will be back in the next migration; reporting it now is the cheap
-// half of that conversation.
+// The WHOLE file is scanned, including the Atlas Down block that is about to be discarded: a literal
+// that only appears down there still came from db/schema.hcl and will be back in the next migration,
+// so reporting it now is the cheap half of that conversation. Scanning first also means a refused
+// file is never partially rewritten.
+//
+// The truncation is line-based while the scan is not, and that is deliberate. goose reads its
+// annotations line by line, so a line that reads exactly `-- +goose Down` ends the Up half as far as
+// goose is concerned wherever it appears — matching that is agreeing with the tool that will run the
+// file, not with the SQL grammar.
 func rewrite(src string) (string, error) {
-	lines := splitLines(src)
-
-	for i, line := range lines {
-		if hasBacktickInStringLiteral(line) {
-			return "", literalBacktick{line: i + 1, text: line}
-		}
+	scanned, err := rewriteBackticks(src)
+	if err != nil {
+		return "", err
 	}
 
 	var b strings.Builder
 
-	for _, line := range lines {
+	for _, line := range splitLines(scanned) {
 		if line == gooseDownMarker {
 			break
 		}
 
-		b.WriteString(backtickIdent.ReplaceAllString(line, `"${1}"`))
+		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 
@@ -184,14 +184,205 @@ func rewrite(src string) (string, error) {
 	return b.String(), nil
 }
 
-// hasBacktickInStringLiteral reports whether one LINE carries a backtick inside a single-quoted
-// literal.
+// sqlState is where the scanner is: which construct the byte it is looking at belongs to.
+type sqlState int
+
+const (
+	stateSQL          sqlState = iota // ordinary SQL, where a backtick quotes an identifier
+	stateString                       // '…' — a VALUE. A backtick here is data, and is refused
+	stateQuotedIdent                  // "…" or […] — already correctly quoted; left alone
+	stateLineComment                  // -- … to end of line
+	stateBlockComment                 // /* … */, which may span lines
+)
+
+// rewriteBackticks rewrites every backtick-quoted bare identifier to a double-quoted one, and
+// refuses if a backtick appears inside a string literal.
 //
-// Per line rather than per file, and that is not an optimisation: Go's `[^']` matches a newline
-// where the grep this replaced could not, so a whole-file match would pair an opening quote on one
-// line with a closing quote several lines below and refuse a file that is fine.
-func hasBacktickInStringLiteral(line string) bool {
-	return literalWithBacktick.MatchString(plainLiteral.ReplaceAllString(line, ""))
+// ONE PASS WITH STATE, rather than a pattern per line, because the thing being decided is what the
+// backtick belongs to and that is not a property of its line:
+//
+//   - A string literal may span physical lines. A backtick on the second line of a multiline DEFAULT
+//     looks exactly like an identifier quote to anything reading one line at a time, so the shell
+//     version rewrote it — changing the value the schema asked for AND removing the backtick that
+//     MIG002 would otherwise have caught it by. That input is now refused, and it is the case the
+//     `_MultilineLiteral_` tests pin.
+//   - A doubled quote inside a literal is an escaped quote, not two literals. Treating it as a close
+//     followed by an open puts everything after it in the wrong state.
+//   - Comments are not SQL. The Down block this generator itself appends contains the apostrophe in
+//     "RAISE()'s message"; a scanner that took it for an opening quote would refuse every migration
+//     in the repository, and the fixed-point test over db/migrations-sqlite is what would say so.
+//     Backticks inside a comment are still rewritten, because MIG002 fails on any backtick anywhere
+//     and a comment cannot change meaning.
+//   - A backtick inside a double-quoted identifier is left exactly as it is. The shell version would
+//     have rewritten a `"a` + "`b`" + `c"` pair into `"a"b"c"`, silently splitting one identifier
+//     into three tokens. Leaving it means MIG002 fails the file and a human looks at it, which is
+//     the correct outcome for an identifier nobody meant to write.
+func rewriteBackticks(src string) (string, error) {
+	var b strings.Builder
+
+	b.Grow(len(src))
+
+	state := stateSQL
+	line := 1
+	openedAt := 0
+	closer := byte(0)
+
+	for i := 0; i < len(src); {
+		c := src[i]
+		if c == '\n' {
+			line++
+		}
+
+		switch state {
+		case stateString:
+			switch {
+			case c == '`':
+				return "", literalBacktick{line: line, openedAt: openedAt, text: lineAt(src, i)}
+			case c == '\'' && i+1 < len(src) && src[i+1] == '\'':
+				// The doubled-quote escape: one quote of data, not a close followed by an open.
+				b.WriteString("''")
+				i += 2
+
+				continue
+			case c == '\'':
+				state = stateSQL
+			}
+
+			b.WriteByte(c)
+			i++
+
+		case stateQuotedIdent:
+			switch {
+			case c == closer && closer == '"' && i+1 < len(src) && src[i+1] == '"':
+				b.WriteString(`""`)
+				i += 2
+
+				continue
+			case c == closer:
+				state = stateSQL
+			}
+
+			b.WriteByte(c)
+			i++
+
+		case stateLineComment:
+			if c == '\n' {
+				state = stateSQL
+				b.WriteByte(c)
+				i++
+
+				continue
+			}
+
+			i += writeBacktickOrByte(&b, src, i)
+
+		case stateBlockComment:
+			if c == '*' && i+1 < len(src) && src[i+1] == '/' {
+				state = stateSQL
+				b.WriteString("*/")
+				i += 2
+
+				continue
+			}
+
+			i += writeBacktickOrByte(&b, src, i)
+
+		case stateSQL:
+			switch {
+			case c == '\'':
+				state, openedAt = stateString, line
+			case c == '"':
+				state, closer = stateQuotedIdent, '"'
+			case c == '[':
+				state, closer = stateQuotedIdent, ']'
+			case c == '-' && i+1 < len(src) && src[i+1] == '-':
+				state = stateLineComment
+				b.WriteString("--")
+				i += 2
+
+				continue
+			case c == '/' && i+1 < len(src) && src[i+1] == '*':
+				state = stateBlockComment
+				b.WriteString("/*")
+				i += 2
+
+				continue
+			default:
+				i += writeBacktickOrByte(&b, src, i)
+
+				continue
+			}
+
+			b.WriteByte(c)
+			i++
+		}
+	}
+
+	return b.String(), nil
+}
+
+// writeBacktickOrByte writes the construct starting at src[i] and returns how many bytes it
+// consumed: a backtick-quoted BARE IDENTIFIER becomes a double-quoted one, and anything else is
+// copied through unchanged.
+//
+// The closing backtick must be on the same line, and the content must be an identifier and nothing
+// else. Both restrictions keep the rewrite to the case Atlas actually emits: a pair spanning lines,
+// or wrapping an expression, is something this generator did not write and must not reinterpret.
+func writeBacktickOrByte(b *strings.Builder, src string, i int) int {
+	if src[i] != '`' {
+		b.WriteByte(src[i])
+
+		return 1
+	}
+
+	end := strings.IndexAny(src[i+1:], "`\n")
+	if end < 0 || src[i+1+end] != '`' {
+		b.WriteByte('`')
+
+		return 1
+	}
+
+	name := src[i+1 : i+1+end]
+	if !isBareIdentifier(name) {
+		b.WriteByte('`')
+
+		return 1
+	}
+
+	b.WriteByte('"')
+	b.WriteString(name)
+	b.WriteByte('"')
+
+	return end + 2
+}
+
+// isBareIdentifier reports whether s is what Atlas puts between backticks: a table, column or index
+// name, and nothing that could be an expression.
+func isBareIdentifier(s string) bool {
+	for i := range len(s) {
+		c := s[i]
+
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case i > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+
+	return s != ""
+}
+
+// lineAt returns the whole physical line containing src[i], so a refusal can quote it.
+func lineAt(src string, i int) string {
+	start := strings.LastIndexByte(src[:i], '\n') + 1
+
+	end := strings.IndexByte(src[i:], '\n')
+	if end < 0 {
+		return src[start:]
+	}
+
+	return src[start : i+end]
 }
 
 // splitLines splits src into lines, dropping the empty trailing element a final newline produces.
@@ -240,11 +431,18 @@ func displayPath(path string) string {
 // It is a function rather than an inline printf because scripts/new-migration.sh's negative fixture
 // (TestNewMigration_BacktickInStringLiteral_Refuses in test/repo) asserts on this wording end to
 // end, and TestRefusalMessage_CarriesThePhraseTheFixtureAssertsOn holds the two together.
-func refusalMessage(path string, line int, text string) string {
+func refusalMessage(path string, lit literalBacktick) string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "\033[31m  %s:%d contains a backtick inside a string literal.\033[0m\n", path, line)
-	fmt.Fprintf(&b, "      %s\n", strings.TrimSpace(text))
+	fmt.Fprintf(&b, "\033[31m  %s:%d contains a backtick inside a string literal.\033[0m\n", path, lit.line)
+	fmt.Fprintf(&b, "      %s\n", strings.TrimSpace(lit.text))
+
+	// Only when they differ, and then it is the whole explanation: the reader is looking at a line
+	// whose backtick is data because a quote several lines above is still open.
+	if lit.openedAt != lit.line {
+		fmt.Fprintf(&b, "  The literal opened at line %d and has not closed.\n", lit.openedAt)
+	}
+
 	b.WriteString("  The backtick-to-double-quote rewrite would change what that literal MEANS, so this\n")
 	b.WriteString("  generator is refusing rather than guessing. Fix the expression in db/schema.hcl to\n")
 	b.WriteString("  avoid the backtick, or rewrite the identifiers in this file by hand and re-run\n")

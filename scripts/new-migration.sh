@@ -122,13 +122,23 @@ mv "$created" "$final"
 # THE REWRITE MOVED OUT OF THIS SCRIPT IN ISSUE #128, and the reason is the refusal above. It is
 # string surgery on a file that is append-only and permanent from the moment it is committed — the
 # one artefact here where a wrong rewrite is unrecoverable for a user — and as a sed/awk pipeline the
-# only way to test it was to run this whole script. The two inputs that decide whether the refusal is
-# right are now unit tests: the literal that must be refused, and the adjacent-literal shape
-# (`DEFAULT ''`, a backticked column, `DEFAULT 'UTC'` — any table with two TEXT defaults) that a
-# naive regex misreports as the same thing because its runs hop the boundary BETWEEN two literals.
-# Both are in internal/migrate/migrationfmt/main_test.go, along with a test asserting every migration
-# already committed is a fixed point of the Go rewrite — which is what makes this a move rather than
-# a second implementation of the same intent.
+# only way to test it was to run this whole script.
+#
+# The Go version is a SCANNER rather than a pattern, and that is not tidiness: sed and grep see one
+# physical line, and a SQLite string literal may span as many as it likes, so a backtick on the
+# second line of a multiline DEFAULT read here as an identifier quote and was rewritten — changing
+# the stored value AND removing the backtick that gate MIG002 would have caught it by. That input is
+# refused now. The scanner also knows that `''` is an escaped quote rather than two literals, and
+# that a comment is not SQL, which is what stops the apostrophe in the Down block's own
+# "RAISE()'s message" from opening a literal that swallows the rest of the file.
+#
+# Every input that decides whether the refusal is right is a unit test in
+# internal/migrate/migrationfmt/main_test.go — the literal that must be refused, the multiline
+# literal, and the adjacent-literal shape (`DEFAULT ''`, a backticked column, `DEFAULT 'UTC'` — any
+# table with two TEXT defaults) that a naive regex misreports as the same thing because its runs hop
+# the boundary BETWEEN two literals. So is a test asserting every migration already committed is a
+# fixed point of the Go rewrite, which is what makes this a move rather than a second implementation
+# of the same intent.
 #
 # No "GENERATED — do not edit" banner is prepended, deliberately. Three mechanisms already carry
 # that status and all three are enforced rather than advisory: .claude/hooks/guard-protected-paths.sh

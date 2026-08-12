@@ -182,11 +182,194 @@ func TestRewrite_AdjacentLiterals_AreNotAFalsePositive(t *testing.T) {
 	}
 }
 
-// TestRewrite_LiteralsOnSeparateLines_AreNotAFalsePositive holds the per-line boundary.
+// TestRewrite_MultilineStringLiteral_Refuses is the case a per-line check cannot see, and the one
+// that would have done the most damage.
 //
-// Go's `[^']` matches a newline where the grep this replaced could not. Matching over the whole file
-// would pair an opening quote on one line with a closing quote several lines below, wrap a backtick
-// identifier between them, and refuse a migration that is fine.
+// A SQLite string literal may span physical lines. Read one line at a time — which is all `grep` and
+// `sed` can do, and what the shell version this replaced therefore did — the backtick on the
+// continuation line is indistinguishable from an identifier quote. It was rewritten: the stored
+// DEFAULT silently became something else, AND the backtick that MIG002 would have caught it by was
+// removed on the way, so nothing downstream could notice either.
+func TestRewrite_MultilineStringLiteral_Refuses(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		in           string
+		wantLine     int
+		wantOpenedAt int
+	}{
+		{
+			name: "a backtick on the continuation line of a DEFAULT",
+			in: "-- +goose Up\n" +
+				"CREATE TABLE t (\n" +
+				"  note text NOT NULL DEFAULT 'first line\n" +
+				"`value`\n" +
+				"last line'\n" +
+				");\n",
+			wantLine:     4,
+			wantOpenedAt: 3,
+		},
+		{
+			name: "a backtick several lines into the literal",
+			in: "-- +goose Up\n" +
+				"INSERT INTO t VALUES ('a\n" +
+				"b\n" +
+				"c `d` e\n" +
+				"f');\n",
+			wantLine:     4,
+			wantOpenedAt: 2,
+		},
+		{
+			name: "a backtick after a doubled-quote escape inside the literal",
+			in: "-- +goose Up\n" +
+				"INSERT INTO t VALUES ('it''s\n" +
+				"`value`');\n",
+			wantLine:     3,
+			wantOpenedAt: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := rewrite(tc.in)
+
+			require.ErrorIs(t, err, errBacktickInStringLiteral,
+				"a backtick inside a multiline literal is data, and rewriting it changes the value")
+			require.Empty(t, got)
+
+			var lit literalBacktick
+			require.ErrorAs(t, err, &lit)
+			require.Equal(t, tc.wantLine, lit.line, "the refusal must name the line the backtick is on")
+			require.Equal(t, tc.wantOpenedAt, lit.openedAt,
+				"and the line the literal opened on, which is where the reader has to look")
+		})
+	}
+}
+
+// TestRewrite_MultilineStringLiteral_ClosesWhereSQLSaysItDoes is the control for the test above.
+//
+// Refusing every file containing a multiline literal would satisfy the test above and be useless:
+// the identifier after the literal must still be rewritten, which is only possible if the scanner
+// knows the literal ended. The doubled-quote escape is here for the same reason — read as
+// close-then-open, everything after it is in the wrong state.
+func TestRewrite_MultilineStringLiteral_ClosesWhereSQLSaysItDoes(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "a backticked column after a multiline literal",
+			in:   "INSERT INTO t VALUES ('first\nsecond');\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "INSERT INTO t VALUES ('first\nsecond');\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+		{
+			name: "a backticked column after a doubled-quote escape",
+			in:   "INSERT INTO t VALUES ('it''s');\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "INSERT INTO t VALUES ('it''s');\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+		{
+			name: "a backticked column after a literal that is only a doubled quote",
+			in:   "INSERT INTO t VALUES ('''');\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "INSERT INTO t VALUES ('''');\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+		{
+			name: "a backticked column inside a multiline literal's own line, after it closes",
+			in:   "INSERT INTO t VALUES ('a\nb'), (`c`);\n",
+			want: "INSERT INTO t VALUES ('a\nb'), (\"c\");\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := rewrite(tc.in)
+			require.NoError(t, err, "this is correct input and must not be refused")
+			require.Equal(t, tc.want+downBlock, got)
+		})
+	}
+}
+
+// TestRewrite_CommentQuotes_DoNotOpenALiteral is what makes scanning the whole file safe.
+//
+// A scanner that took every apostrophe seriously would be broken by prose, and this generator writes
+// the prose itself: the Down block it appends contains "RAISE()'s message". That single quote would
+// open a literal that never closes, and every migration in the repository would be refused —
+// including on the next run over a file this generator produced.
+func TestRewrite_CommentQuotes_DoNotOpenALiteral(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "an apostrophe in a line comment",
+			in:   "-- RAISE()'s message is discarded outside a trigger body\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "-- RAISE()'s message is discarded outside a trigger body\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+		{
+			name: "an apostrophe in a block comment spanning lines",
+			in:   "/* it's fine\n   and still fine */\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "/* it's fine\n   and still fine */\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+		{
+			name: "a backtick in a comment is still rewritten, because MIG002 fails on any backtick",
+			in:   "-- the `ix_a` index\nSELECT 1;\n",
+			want: "-- the \"ix_a\" index\nSELECT 1;\n",
+		},
+		{
+			name: "a comment marker inside a literal is not a comment",
+			in:   "INSERT INTO t VALUES ('a -- not a comment');\nCREATE INDEX `ix_a` ON t (a);\n",
+			want: "INSERT INTO t VALUES ('a -- not a comment');\nCREATE INDEX \"ix_a\" ON t (a);\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := rewrite(tc.in)
+			require.NoError(t, err)
+			require.Equal(t, tc.want+downBlock, got)
+		})
+	}
+}
+
+// TestRewrite_BacktickInAQuotedIdentifier_IsLeftAlone covers the other quoting construct.
+//
+// `"a` + "`b`" + `c"` is one identifier containing backticks. The shell version rewrote the inner
+// pair and produced `"a"b"c"` — three tokens where there was one. Leaving it untouched means MIG002
+// fails the file and a human looks at an identifier nobody meant to write, which is the right
+// outcome; silently splitting it is not.
+func TestRewrite_BacktickInAQuotedIdentifier_IsLeftAlone(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{name: "double-quoted", in: "CREATE TABLE \"a`b`c\" (x text);\n"},
+		{name: "bracket-quoted", in: "CREATE TABLE [a`b`c] (x text);\n"},
+		{name: "double-quoted with an escaped quote", in: "CREATE TABLE \"a\"\"b`c`d\" (x text);\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := rewrite(tc.in)
+			require.NoError(t, err)
+			require.Equal(t, tc.in+downBlock, got, "a quoted identifier must survive byte for byte")
+		})
+	}
+}
+
+// TestRewrite_LiteralsOnSeparateLines_AreNotAFalsePositive holds the boundary between two literals.
+//
+// Each literal opens and closes on its own line, so the backtick between them is an identifier quote
+// and must be rewritten. This is the shape a whole-file regex gets wrong in the other direction from
+// the multiline case — Go's `[^']` matches a newline, so it would pair the quote on one line with a
+// quote several lines below and refuse a migration that is fine.
 func TestRewrite_LiteralsOnSeparateLines_AreNotAFalsePositive(t *testing.T) {
 	t.Parallel()
 
@@ -412,13 +595,24 @@ func TestRun_MissingFile_Errors(t *testing.T) {
 func TestRefusalMessage_CarriesThePhraseTheFixtureAssertsOn(t *testing.T) {
 	t.Parallel()
 
-	msg := refusalMessage("db/migrations-sqlite/000005_add_thing.sql", 7, "  DEFAULT 'the `value` column'")
+	path := "db/migrations-sqlite/000005_add_thing.sql"
+
+	msg := refusalMessage(path, literalBacktick{line: 7, openedAt: 7, text: "  DEFAULT 'the `value` column'"})
 
 	require.Contains(t, msg, "backtick inside a string literal")
-	require.Contains(t, msg, "db/migrations-sqlite/000005_add_thing.sql:7")
+	require.Contains(t, msg, path+":7")
 	require.Contains(t, msg, "DEFAULT 'the `value` column'", "the offending line must be quoted back")
 	require.Contains(t, msg, "db/schema.hcl", "the message must name where the fix goes")
 	require.Contains(t, msg, "atlas migrate hash --env sqlite", "and how to recover by hand")
+	require.NotContains(t, msg, "literal opened at line",
+		"a single-line literal must not be told where it opened — it opened right there")
+
+	// The multiline case is the one where the line the reader is sent to is not the line the backtick
+	// is on, so the message has to say both.
+	multiline := refusalMessage(path, literalBacktick{line: 9, openedAt: 7, text: "`value`"})
+
+	require.Contains(t, multiline, path+":9")
+	require.Contains(t, multiline, "opened at line 7")
 }
 
 // TestDisplayPath_UnderTheWorkingDirectory_IsRelative keeps the refusal naming the file the way the
@@ -447,7 +641,7 @@ func TestDisplayPath_UnderTheWorkingDirectory_IsRelative(t *testing.T) {
 func TestUnwrap_IsErrBacktickInStringLiteral(t *testing.T) {
 	t.Parallel()
 
-	err := literalBacktick{line: 3, text: "x"}
+	err := literalBacktick{line: 3, openedAt: 3, text: "x"}
 
 	require.True(t, errors.Is(err, errBacktickInStringLiteral))
 	require.Contains(t, err.Error(), "line 3")
