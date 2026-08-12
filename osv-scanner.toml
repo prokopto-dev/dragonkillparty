@@ -1,0 +1,48 @@
+# osv-scanner configuration — the reviewable waiver file for `security / osv` (issue #132).
+#
+# `make osv-scan` and CI's `security / osv` job pass `--config=osv-scanner.toml` explicitly rather
+# than relying on discovery. osv-scanner looks for a config beside each scanned lockfile, which for
+# web/pnpm-lock.yaml would mean a second copy of this file in web/ — and two waiver files is how one
+# of them stops being read by anybody.
+#
+# WHAT AN ENTRY HERE COSTS. `security / osv` is a REQUIRED, blocking job: it is in ci-required's
+# needs list and in its always-on assertion, and it is not `continue-on-error`. Every id below is
+# therefore a hole in a gate, deliberately cut, and the three rules that keep it from becoming the
+# gate's off switch are enforced by TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry in test/repo:
+#
+#   1. `reason` names a filed GitHub issue. A waiver nobody tracks is a decision nobody revisits.
+#      This is the same rule web/e2e/axe-allowlist.json lives under.
+#   2. `ignoreUntil` is set, and is in the future. The waiver EXPIRES: after that date the job goes
+#      red again on every PR whether or not anybody remembered. An open-ended ignore is a deletion
+#      with extra steps.
+#   3. `reason` says why it is not fixed in the PR that added the waiver — not merely what it is.
+#
+# HOW TO CLEAR ONE. Fix the dependency, run `make osv-scan`, delete the block, close the issue. Do
+# not extend `ignoreUntil` to buy time without saying so in the issue; the date is the forcing
+# function and moving it silently is the same as removing it.
+#
+# WHAT DOES NOT BELONG HERE. A vulnerability in a RUNTIME dependency of the shipped binary or the
+# shipped SPA bundle. All three entries below are transitive devDependencies — build- and lint-time
+# tools that never reach a guild's server. A runtime finding is an incident, not a waiver.
+
+# ---------------------------------------------------------------------------------------------
+# The three findings from the first scan of web/pnpm-lock.yaml this repository has ever run — the
+# npm blind spot #132 exists to close, reported on the day the gate landed. The Go graph
+# (go.mod, 28 packages) came back clean, which is the expected result given govulncheck has been
+# running over it as a required job since Phase 0 PR 12.
+# ---------------------------------------------------------------------------------------------
+
+[[IgnoredVulns]]
+id = "GHSA-xffm-g5w8-qvg7"
+ignoreUntil = 2026-11-09
+reason = "Issue #133. @eslint/plugin-kit 0.2.8 ReDoS via ConfigCommentParser, CVSS 2.3 LOW, fixed in 0.3.4. Transitive devDependency of eslint@9.17.0; never in the shipped SPA bundle. Not fixed here because the fix is a web/package.json + web/pnpm-lock.yaml bump, which has to re-clear security/licences, budget/bundle and lint/web on its own merits rather than riding along inside a CI-plumbing PR."
+
+[[IgnoredVulns]]
+id = "GHSA-g7r4-m6w7-qqqr"
+ignoreUntil = 2026-11-09
+reason = "Issue #134. esbuild 0.27.7 arbitrary file read from the DEVELOPMENT server on Windows, CVSS 2.5 LOW, fixed in 0.28.1. Transitive devDependency of vite@7.3.5; the exposed case is a Windows contributor running `make dev`, and the production build starts no dev server. Not fixed here because a Vite bump moves the build output and has to re-clear budget/bundle, test/e2e and verify-spa-dist on its own merits."
+
+[[IgnoredVulns]]
+id = "GHSA-5p4m-2wfm-xmqj"
+ignoreUntil = 2026-11-09
+reason = "Issue #135. js-yaml 4.3.0 quadratic CPU in !!omap resolution, CVSS 7.5 HIGH, fixed in 4.3.1. Transitive devDependency reached via openapi-typescript -> @redocly/openapi-core; it parses our own OpenAPI document at `make gen` time, not attacker input. The lockfile already resolves the fixed 4.3.1 for @eslint/eslintrc, so this is a duplicate-version problem and a pnpm overrides entry may clear it. Not fixed here because it may pull an openapi-typescript bump, which regenerates web/src/api/schema.d.ts and belongs in a codegen diff a reviewer can see on its own."

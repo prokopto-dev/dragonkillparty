@@ -136,23 +136,30 @@ nothing — it stops anyone from noticing the gap.
 | The AGPL firewall — EQdkp Plus identifiers outside the two allowlisted paths | Every PR | **live** — AGPL001 in `lint / repo` |
 | GitHub Actions pinned to a full commit SHA | Every PR | **live** — PIN001 in `lint / repo` |
 | gitleaks secret scanning | Every PR, full history on a schedule | **planned** — a local pre-commit hook runs today; there is no CI job yet |
-| `osv-scanner`, `pnpm audit` | Every PR | **planned** |
+| `osv-scanner` — OSV advisories across **both** dependency graphs: `go.mod` and `web/pnpm-lock.yaml` | Every PR | **live** — `security / osv`, required, not `continue-on-error`. Reachability-*blind*, so it does not replace `govulncheck`; it exists because the ~275 package npm graph had no vulnerability scanning at all. Exceptions live in `osv-scanner.toml`, each carrying a filed issue and an expiry date |
+| `pnpm audit` | Every PR | **not planned** — `osv-scanner` now reads `web/pnpm-lock.yaml` against the same advisory data. A second npm scanner would be a second set of waivers to keep in step |
 | CodeQL (Go + JS), `security-extended` | Every PR, plus weekly | **planned** |
 | Trivy image CVEs | Nightly against `:latest`, filing an issue on new High/Critical | **planned** — needs the release image (Phase 0 PR 7) |
 | Nightly `govulncheck` on `main` | Nightly | **planned** — needs `nightly-verify.yml` filled in |
 | The authorization matrix — every principal × every operation, asserted | Every PR | **planned** — needs `internal/authz` (Phase 2) |
 | SBOM, cosign signatures, SLSA build provenance on every release artifact | Every release | **planned** — Phase 0 PR 7 |
 
-To run the two live dependency controls locally:
+To run the three live dependency controls locally:
 
 ```bash
-make licence-gate && make govulncheck
+make licence-gate && make govulncheck && make osv-scan
 ```
 
-`make check` runs the licence gate as part of `make lint`. `govulncheck` is not in `make check` —
-not because it is slow (it takes about four seconds) but because it fetches the vulnerability
-database from `vuln.go.dev`, and `make check` is expected to work without connectivity. CI runs it
-as its own required job.
+`make check` runs the licence gate as part of `make lint`. `govulncheck` and `osv-scan` are not in
+`make check` — not because they are slow (`govulncheck` takes about four seconds) but because they
+fetch advisory data over the network, from `vuln.go.dev` and `api.osv.dev` respectively, and
+`make check` is expected to work without connectivity. CI runs each as its own required job.
+
+`make setup` does not install `osv-scanner`: its own `go.mod` requires a Go *patch* release newer
+than the `go 1.26` line this project pins, and CI runs `GOTOOLCHAIN=local`, so coupling the two would
+break the scan for a reason no contributor could act on. CI runs the pinned upstream container action
+instead; `make osv-scan` prints the `go install` line for the matching version when the binary is
+absent.
 
 The runtime image is `FROM scratch`: no shell, no package manager, no interpreter, and therefore no
 base-image CVE feed. A `:1-debug` tag exists for people who need to exec in, and its larger attack

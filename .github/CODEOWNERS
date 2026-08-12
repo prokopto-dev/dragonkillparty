@@ -69,6 +69,15 @@
 # bundle requires a review here, turning a size regression into a decision in the diff.
 /web/bundle-budget.json                     @prokopto-dev
 
+# The osv-scanner waiver file, for exactly the bundle-budget reason one line up. `security / osv` is
+# a required blocking job, so every `[[IgnoredVulns]]` entry is a deliberate hole in a supply-chain
+# gate. test/repo's TestOSVConfig_EveryIgnore_HasReasonIssueAndExpiry enforces that each carries a
+# filed issue and an expiry date, and TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile requires a
+# matching edit to the mirror under test/golden/; only a human can judge whether the reason is a good
+# one. Without this line the fastest way to turn that job green is to add an id here, which is the
+# shape AGENTS.md forbids ("do not disable a lint rule, a hook, or a CI gate to land a change").
+/osv-scanner.toml                           @prokopto-dev
+
 # The only third-party licensed content vendored into the tree, and it ships inside the binary. The
 # licence gate reads the Go module graph, so a font added, swapped or left unattributed here is
 # invisible to every other control (CONTRIBUTING.md:85, the licence firewall).
