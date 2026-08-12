@@ -71,13 +71,17 @@ func pythonScripts(t *testing.T) []string {
 
 	// A floor asserted over an empty set is a green test that checks nothing.
 	//
-	// TWO exist today — check-links.py and dc-publish.py — where this said three until issue #127
-	// moved verify-spec.py to internal/specgate. The number tracks the tree rather than guarding it, so
-	// lowering it is not a loosening: what it exists to catch is a broken glob returning nothing, and a
-	// count of two catches that exactly as well as a count of three did. When the last scripts/*.py
-	// goes — dc-publish.py is already slated to, in epic #125 — this whole file goes with it, rather
-	// than the floor being asserted over nothing.
-	require.GreaterOrEqualf(t, len(matches), 2,
+	// ONE exists today — check-links.py — where this said three a fortnight ago. Epic #125 took the
+	// other two in quick succession: issue #127 moved verify-spec.py to internal/specgate, and issue
+	// #126 replaced dc-publish.py with internal/mockup. The number tracks the tree rather than
+	// guarding it, so lowering it is not a loosening: what it exists to catch is a broken glob
+	// returning nothing, and a count of one catches that exactly as well as a count of three did —
+	// every assertion below still runs over every script the glob returns.
+	//
+	// When check-links.py goes too, this whole file goes with it rather than the floor being asserted
+	// over nothing. Deleting it is then the correct move and not a weakening, because there is no
+	// Python left to declare a floor.
+	require.GreaterOrEqualf(t, len(matches), 1,
 		"found only %d scripts/*.py — the glob is broken, not the tree", len(matches))
 
 	out := make([]string, 0, len(matches))
