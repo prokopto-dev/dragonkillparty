@@ -54,7 +54,7 @@ is a liability there.
 
 | Directory | Holds | Rule attached to it |
 |---|---|---|
-| `cmd/dkp/` | The only binary | Cobra wiring only. No logic. |
+| `cmd/dkp/` | The only shipped binary | Cobra wiring only. No logic. |
 | `internal/api/` | Handlers, middleware, the OpenAPI surface | The only tree where a route may be declared. Copy `EXAMPLE_ENDPOINT.md` end to end. |
 | `internal/store/` | Queries, transactions, the connection | The only package that may hold `*sql.DB`. Every mutation goes through `store.Tx`. Query shapes live in `db/RECIPES.md`. |
 | `internal/ledger/` | The append-only writer and the invariant engine | Highest blast radius in the repository. Two approvals. |
@@ -63,6 +63,7 @@ is a liability there.
 | `internal/importer/` | The EQdkp Plus ETL | Two phases: stage verbatim, then transform. Dry run is the default. |
 | `internal/parse/` | Project 1999 log adapters | One file plus one golden directory per format. Standard library only. |
 | `internal/cms/` | Articles, comments, media, portal blocks | Where untrusted rich text lives |
+| `internal/licence/` | The dependency licence gate, and the one `go list` runtime-graph platform union it shares with `scripts/third-party-notices.sh` | Repo tooling, not product. Standard library only, and a test asserts `dkp` never links it. |
 | `internal/richtext/` | The markdown and HTML sanitiser | The only place user HTML is rendered |
 | `internal/net/safehttp` | Outbound HTTP | The only place an `*http.Client` may be constructed |
 | `db/schema.hcl` | The single source of schema truth | Atlas generates the migrations from it |
