@@ -1,4 +1,4 @@
-# ADR-0024 — Pure rule evaluators live outside `internal/strategy` and carry their own purity proof
+# ADR-0025 — Pure rule evaluators live outside `internal/strategy` and carry their own purity proof
 
 **Status:** accepted · **Date:** 2026-08-13 · **Deciders:** owner
 

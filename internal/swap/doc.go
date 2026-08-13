@@ -59,5 +59,5 @@
 // red on it, because a gate nobody has seen fail is a gate nobody knows works.
 //
 // Why that proof lives here rather than in the repo-gate catalogue — and what would move it there —
-// is ADR-0024, docs/adr/0024-pure-evaluators-outside-strategy.md.
+// is ADR-0025, docs/adr/0025-pure-evaluators-outside-strategy.md.
 package swap
