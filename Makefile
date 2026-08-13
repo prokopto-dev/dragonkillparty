@@ -698,7 +698,7 @@ labels-sync:
 # it are not: scripts/gen-enums.sh rewrites the ledger_batch enum CHECKs from internal/ledger/kinds,
 # audit_log's actor_kind and outcome CHECKs from internal/audit/kinds, account's kind and
 # system_key CHECKs from internal/account/kinds, and decay_run's kind and state CHECKs from
-# internal/decay/kinds' pair, each between its own GENERATED markers. Listing the
+# internal/decay/kinds, each between its own GENERATED markers. Listing the
 # file is what makes a hand-edit of any region fail here with "run make gen" instead of surviving
 # until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
