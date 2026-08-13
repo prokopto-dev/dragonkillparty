@@ -17,6 +17,11 @@
 //  4. A required target outside that closure must be a row in checkExemptions below, carrying the
 //     reason it is out. The point is that it becomes a DECISION rather than an omission nobody can
 //     see; the wall clock is the real trade and it is argued in the row.
+//  5. And a blocking job that invokes NO `make` target — `security / osv` drives the pinned
+//     osv-scanner container action; `changes` drives dorny/paths-filter — contributes nothing to
+//     step 2, so it would leave the model entirely. Those are checkJobExemptions, the second table,
+//     and a job in neither table fails the sweep. Step 4 without step 5 is a derivation that reports
+//     a complete audit of the jobs it happened to be able to see.
 //
 // A target whose recipe is still a `$(call notyet,…)` stub needs no row: it does no work, so running
 // it would prove nothing, and the exemption clears itself the day the target starts doing work —
@@ -53,11 +58,14 @@ type checkExemption struct {
 // Three categories, and nothing else has been admitted:
 //
 //   - it needs something `make check` is not allowed to need — the network, a browser, a Docker
-//     daemon. (`osv-scan` and `govulncheck` already had this exemption in prose above the `check`
-//     target; only govulncheck has a row, because CI runs osv-scanner as a pinned container action
-//     rather than through the Makefile, so nothing derives it as a required target.)
+//     daemon (`osv-scan` and `govulncheck` already had this exemption in prose above the `check`
+//     target);
 //   - it would leave the working tree dirty on every run;
 //   - it is the name of a CI lane whose tests `make test` already executes.
+//
+// A blocking job that runs NO `make` target at all is a row in checkJobExemptions below instead —
+// `security / osv` is one, and a table that only ever saw `make` invocations would have dropped it
+// silently rather than making somebody argue for it.
 var checkExemptions = []checkExemption{
 	{
 		target: "govulncheck",
@@ -115,6 +123,44 @@ var checkExemptions = []checkExemption{
 		why: "it is a printed measurement, not a threshold: ci.yml says so where it runs it (`a " +
 			"regression is read in the log, not enforced here, because a wall-clock assertion on a " +
 			"shared runner is a flake generator`). There is no verdict for `make check` to carry.",
+	},
+}
+
+// checkJobExemption is the second table, and it exists because the first one could not see the whole
+// problem. A blocking job that invokes NO `make` target contributes nothing to the target sweep
+// above, so it would drop out of the derivation entirely — green, unargued, and indistinguishable
+// from a job that is fully covered. That is the #166 shape one level up: an omission nobody can see.
+type checkJobExemption struct {
+	job string
+	why string
+}
+
+// checkJobExemptions names every job in ci-required's `needs:` that runs no `make` target, with the
+// reason `make check` carries no equivalent. Two rows today, and both are decisions rather than
+// oversights: TestCheck_EveryBlockingJob_IsModelled fails on a third that nobody argued for, and
+// TestCheck_JobExemptionTable_HasNoStaleRows deletes a row the moment its job starts running `make`
+// or leaves the needs list.
+var checkJobExemptions = []checkJobExemption{
+	{
+		job: "changes",
+		why: "the path-filter job. It runs dorny/paths-filter and emits the `deep`, `postmerge` and " +
+			"per-tree outputs every other job's `if:` reads — it asserts nothing about the tree, so " +
+			"there is no gate for `make check` to run. It is also the one job ci-required requires to " +
+			"be exactly `success` rather than success-or-skipped, which is what keeps its absence " +
+			"from being silent.",
+	},
+	{
+		job: "security-osv",
+		why: "it runs the pinned upstream osv-scanner container action rather than `make osv-scan`, " +
+			"because the scanner's own go.mod requires a Go patch release newer than this " +
+			"repository's floor and CI runs GOTOOLCHAIN=local (see OSV_SCANNER_VERSION in the " +
+			"Makefile). The equivalent target EXISTS and is the same scan — the two invocations' " +
+			"lockfile arguments are held in step by TestOSV_ScanTargets_AreTheSameInCIAndTheMakefile " +
+			"and their pins by TestOSV_ActionPin_MatchesTheMakefilePin — but `make check` still does " +
+			"not run it, and the reason is the one govulncheck's row gives: it queries api.osv.dev, " +
+			"and `make check` must work on a laptop with no network. Run `make osv-scan` by hand " +
+			"before proposing a dependency. If the scan ever stops needing the network, this row " +
+			"comes out and `osv-scan` joins `check`.",
 	},
 }
 
@@ -223,6 +269,42 @@ func requiredMakeTargets(t *testing.T, workflow string) map[string][]string {
 	return byTarget
 }
 
+// unmodelledRequiredJobs returns every blocking job that runs no `make` target and has no row in
+// checkJobExemptions — the jobs the target sweep above cannot see at all.
+//
+// This is the direction a target-only derivation is blind in, and `security / osv` is the live
+// instance: it runs the pinned osv-scanner container action, so it contributes zero targets, and a
+// gate that only ever counted `make` invocations reported a complete sweep while a required
+// vulnerability scan sat outside its model. The exception is legitimate — the scan needs the network
+// — but "legitimate" is a thing a row says, not a thing a parser assumes.
+func unmodelledRequiredJobs(t *testing.T, workflow string) []string {
+	t.Helper()
+
+	exempt := map[string]string{}
+	for _, e := range checkJobExemptions {
+		exempt[e.job] = e.why
+	}
+
+	covered := map[string]bool{}
+	for _, jobs := range requiredMakeTargets(t, workflow) {
+		for _, job := range jobs {
+			covered[job] = true
+		}
+	}
+
+	var unmodelled []string
+
+	for _, job := range ciRequiredNeeds(t, workflow) {
+		if covered[job] || exempt[job] != "" {
+			continue
+		}
+
+		unmodelled = append(unmodelled, job)
+	}
+
+	return unmodelled
+}
+
 // contains reports whether a slice already holds a value.
 func contains(haystack []string, needle string) bool {
 	for _, v := range haystack {
@@ -325,6 +407,77 @@ func TestCheck_EveryRequiredCIGate_IsRunOrExempted(t *testing.T) {
 			"why not (issue #183).")
 }
 
+// TestCheck_EveryBlockingJob_IsModelled closes the hole the sweep above cannot see on its own.
+//
+// The target sweep starts from `make <target>` invocations, so a blocking job that runs none —
+// `security / osv` drives the pinned osv-scanner container action, and `changes` runs
+// dorny/paths-filter — contributes nothing to it and drops out of the derivation entirely. That is
+// not "covered": it is unmodelled, and unmodelled reads exactly like covered from the outside. It is
+// also the shape that makes the claim above ("every blocking gate is in `check` or argued for")
+// false in the one place nobody would look, which is where issue #166 lived for a phase.
+//
+// So the job list is swept too, and a job that runs no `make` target has to be a row with a reason.
+// A required job added tomorrow that does its work inline — another action, a `run: |` block — is
+// caught the day it lands rather than the day somebody audits by hand.
+func TestCheck_EveryBlockingJob_IsModelled(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+
+	// NO VACUOUS PASS: the needs list must have parsed and must contain the two jobs whose whole
+	// point here is that they invoke no target.
+	needs := ciRequiredNeeds(t, workflow)
+	for _, job := range []string{"changes", "security-osv", "lint-repo"} {
+		require.Containsf(t, needs, job,
+			"ci-required's needs list does not contain %q — the parsing is broken, or the job was "+
+				"removed and its row in checkJobExemptions is now stale. Needs: %v", job, needs)
+	}
+
+	require.Empty(t, unmodelledRequiredJobs(t, workflow),
+		"these jobs block a merge and run no `make` target, so nothing in this file's derivation "+
+			"accounts for them — they are invisible to the sweep rather than covered by it. Give each "+
+			"one a row in checkJobExemptions saying what `make check` does instead (or why it cannot), "+
+			"or have the job run the `make` target that carries its gate (issue #183).")
+}
+
+// TestCheck_JobExemptionTable_HasNoStaleRows is TestCheck_ExemptionTable_HasNoStaleRows for the
+// second table. A row for a job that has left the needs list, or that has since started running a
+// `make` target, waives nothing — and the next unmodelled job inherits the appearance of diligence.
+func TestCheck_JobExemptionTable_HasNoStaleRows(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+	needs := ciRequiredNeeds(t, workflow)
+
+	covered := map[string][]string{}
+
+	for target, jobs := range requiredMakeTargets(t, workflow) {
+		for _, job := range jobs {
+			covered[job] = append(covered[job], target)
+		}
+	}
+
+	require.NotEmpty(t, checkJobExemptions, "the job-exemption table is empty — has it been deleted?")
+
+	seen := map[string]bool{}
+
+	for _, e := range checkJobExemptions {
+		require.NotEmptyf(t, e.why, "the %s job exemption carries no reason", e.job)
+		require.Falsef(t, seen[e.job], "checkJobExemptions lists %s twice", e.job)
+		seen[e.job] = true
+
+		require.Containsf(t, needs, e.job,
+			"checkJobExemptions exempts the %q job, which is not in ci-required's `needs:` any more — "+
+				"drop the row", e.job)
+
+		require.Emptyf(t, covered[e.job],
+			"checkJobExemptions exempts the %q job as running no `make` target, and it now runs %v. "+
+				"Drop the row: those targets go through the target sweep and its own exemption table, "+
+				"where the argument is about what `make check` runs rather than about the job.",
+			e.job, covered[e.job])
+	}
+}
+
 // checkFixtureMakefile is a Makefile in miniature: one gate `check` runs directly, one it reaches
 // only through `$(MAKE)`, one stub, one exempted target, and one gate that is simply missing.
 const checkFixtureMakefile = `
@@ -354,10 +507,15 @@ check: lint-repo verify-generated
 `
 
 // checkFixtureWorkflow is a ci.yml in miniature, in the shape ciRequiredNeeds and workflowJobs parse:
-// five blocking jobs, one running a target the fixture Makefile's `check` never reaches.
+// blocking jobs running a target the fixture Makefile's `check` never reaches, an exempted job that
+// runs no target at all (`changes`), and one that runs none and is in no table (`secret-scan`).
 const checkFixtureWorkflow = `jobs:
   changes:
     name: changes
+  secret-scan:
+    name: security / secrets
+    steps:
+      - uses: some/scanner-action@0000000000000000000000000000000000000000
   lint-repo:
     name: lint / repo
     steps:
@@ -383,6 +541,7 @@ const checkFixtureWorkflow = `jobs:
     name: ci-required
     needs:
       - changes
+      - secret-scan
       - lint-repo
       - codegen-drift
       - lint-web
@@ -433,6 +592,35 @@ func TestCheck_ClosureGate_FailsOnAMissingRequiredTarget(t *testing.T) {
 			"make test-golden (run by test-golden)",
 			"the notyet exemption must clear itself the day the target does real work — otherwise a "+
 				"stub is a permanent hole that nobody has to argue for")
+	})
+
+	// The direction a target-only sweep is blind in, and the one the review of this PR caught: a
+	// blocking job that runs no `make` target contributes nothing to the sweep above, so it must be
+	// caught by the job sweep instead. `security / osv` is the real instance; the fixture's
+	// `secret-scan` is the same shape with nobody's argument attached to it yet.
+	t.Run("a blocking job that runs no make target is reported", func(t *testing.T) {
+		t.Parallel()
+
+		require.Equal(t,
+			[]string{"secret-scan"},
+			unmodelledRequiredJobs(t, checkFixtureWorkflow),
+			"the job sweep must report exactly the unmodelled job — no more (`changes` is a row in "+
+				"checkJobExemptions, and every other fixture job runs a target the sweep above "+
+				"handles) and no fewer (a job whose only step is a container action invokes no target "+
+				"at all, which is how `security / osv` escaped the first version of this gate)")
+	})
+
+	t.Run("giving that job a make target clears the finding", func(t *testing.T) {
+		t.Parallel()
+
+		wired := strings.Replace(checkFixtureWorkflow,
+			"      - uses: some/scanner-action@0000000000000000000000000000000000000000",
+			"      - run: make lint-repo", 1)
+		require.NotEqual(t, checkFixtureWorkflow, wired, "the fixture's scanner step did not rewrite")
+
+		require.Empty(t, unmodelledRequiredJobs(t, wired),
+			"a job that runs a `make` target is modelled by the target sweep, so the job sweep must "+
+				"leave it alone — otherwise every job would need a row in both tables")
 	})
 }
 

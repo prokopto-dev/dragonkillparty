@@ -802,7 +802,9 @@ generated-digest:
 # list is now DERIVED and asserted: test/repo/check_closure_test.go reads ci-required's `needs:`,
 # extracts the `make <target>` each blocking job runs, resolves this target's transitive
 # prerequisites, and fails on a required target that is in neither the closure nor its reviewed
-# exemption table. That table — not this comment — is where a deliberate omission is argued.
+# exemption table — and on a blocking job that invokes no `make` target at all without a row of its
+# own, which is how `security / osv` would otherwise have sat outside the model while the gate
+# reported a complete sweep. Those tables — not this comment — are where an omission is argued.
 #
 # The four that joined here when the gate first ran, with the wall clock measured before deciding
 # rather than after (warm cache, laptop): verify-generated 5 s, verify-spec 0.5 s, docs-build +

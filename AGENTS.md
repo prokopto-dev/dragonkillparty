@@ -45,8 +45,11 @@ what "done" means, and the pre-push hook does not accept the faster one instead.
 **What `make check` runs is derived, not remembered.** `test/repo/check_closure_test.go` reads
 `ci-required`'s `needs:` list, works out the `make` target each blocking job runs, and fails if one
 is neither in `check`'s prerequisite closure nor a row in its reviewed exemption table — with the
-reason. A required gate `make check` skips is a push, a CI round trip and a contributor who did
-exactly what this file told them to (issues #166, #183).
+reason. A blocking job that runs no `make` target at all (`security / osv` drives a container
+action; `changes` is the path filter) needs a row in the second table for the same reason, so a gate
+cannot leave the model just by being invoked some other way. A required gate `make check` skips is a
+push, a CI round trip and a contributor who did exactly what this file told them to (issues #166,
+#183).
 
 `make setup` installs three tools the linters need beyond the Go ones: **actionlint**, **shellcheck**
 and **shfmt**. `make lint-actions` and `make lint-shell` hard-fail when one is missing rather than
