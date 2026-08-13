@@ -52,7 +52,13 @@ func TestLintCache_IsScopedToThisCheckout(t *testing.T) {
 		[]byte(".PHONY: dkp-print-golangci-cache\ndkp-print-golangci-cache:\n\t@printf '%s\\n' '$(GOLANGCI_LINT_CACHE)'\n"),
 		0o644))
 
-	cmd := exec.Command("make", "-C", root, "-f", "Makefile", "-f", probe, "dkp-print-golangci-cache")
+	// --no-print-directory, and it is not decoration: GNU make wraps a `-C` build in "Entering
+	// directory"/"Leaving directory" banners on stdout, so without it this reads the banner as the
+	// variable's value and reports a perfectly correct absolute path as relative. BSD make on macOS
+	// prints no banner, which is exactly why the first version of this test passed on a laptop and
+	// failed on CI — the shape this whole file exists to complain about, arriving in its own test.
+	cmd := exec.Command("make", "-C", root, "--no-print-directory",
+		"-f", "Makefile", "-f", probe, "dkp-print-golangci-cache")
 
 	out, err := cmd.Output()
 	require.NoErrorf(t, err, "make dkp-print-golangci-cache\n%s", out)

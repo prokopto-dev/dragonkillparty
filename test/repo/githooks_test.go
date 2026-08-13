@@ -179,6 +179,17 @@ func TestGitHooks_SetupWiresHooksPath(t *testing.T) {
 func TestGitHooks_PreCommit_FormatsAndRestagesStagedGo(t *testing.T) {
 	t.Parallel()
 
+	// -short, like every other functional test in this package. These two build a git repository,
+	// run a hook over it and need gofumpt on PATH, which is the toolchain `test / integration`
+	// installs and `test / unit` deliberately does not. They had no guard and so RAN in the -short
+	// lane, where they silently skipped for want of the tool — the exact defect issue #177 is about,
+	// found by its own fix: making the tool-missing skip loud turned that silence into a failure in
+	// `test / unit`. Selecting the lane explicitly is what makes the loud skip mean what it says,
+	// because a skip here is now a statement about the LANE and never about the environment.
+	if testing.Short() {
+		t.Skip("runs a hook against a real git repository and needs gofumpt; run `make test`")
+	}
+
 	gofumpt := findGofumpt(t)
 
 	hook := hookPath(t, "pre-commit")
@@ -229,6 +240,17 @@ func TestGitHooks_PreCommit_FormatsAndRestagesStagedGo(t *testing.T) {
 // pre-commit cannot catch), and exits zero once the tree is clean.
 func TestGitHooks_PrePush_BlocksUnformattedTrackedGo(t *testing.T) {
 	t.Parallel()
+
+	// -short, like every other functional test in this package. These two build a git repository,
+	// run a hook over it and need gofumpt on PATH, which is the toolchain `test / integration`
+	// installs and `test / unit` deliberately does not. They had no guard and so RAN in the -short
+	// lane, where they silently skipped for want of the tool — the exact defect issue #177 is about,
+	// found by its own fix: making the tool-missing skip loud turned that silence into a failure in
+	// `test / unit`. Selecting the lane explicitly is what makes the loud skip mean what it says,
+	// because a skip here is now a statement about the LANE and never about the environment.
+	if testing.Short() {
+		t.Skip("runs a hook against a real git repository and needs gofumpt; run `make test`")
+	}
 
 	gofumpt := findGofumpt(t)
 
