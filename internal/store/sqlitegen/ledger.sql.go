@@ -361,6 +361,251 @@ func (q *Queries) InsertLedgerEntry(ctx context.Context, arg InsertLedgerEntryPa
 	return err
 }
 
+const listBatchesAfterSeq = `-- name: ListBatchesAfterSeq :many
+
+SELECT id, pool_id, seq, kind, strategy_id, strategy_version, config_snapshot_json, rng_seed,
+       source, source_ref, actor_user_id, actor_token_id, actor_is_beneficiary, reason,
+       reverses_batch_id, effective_at, recorded_at, effective_day, idempotency_key,
+       entry_count, net_amount_cp, prev_hash, hash
+FROM ledger_batch
+WHERE pool_id = ? AND seq > ?
+ORDER BY seq
+LIMIT ?
+`
+
+type ListBatchesAfterSeqParams struct {
+	PoolID string
+	Seq    int64
+	Limit  int64
+}
+
+// ListBatchesAfterSeq is one page of a pool's batches in seq order, for the replay. It returns every
+// column the batch hash covers plus the two chain columns, because the verifier recomputes
+// SHA-256(prev_hash || canonical_json(batch without hash) || canonical_json(entries)) and compares it
+// to what is stored - a projection missing a column would be a hash computed over a batch that is
+// not the one on disk.
+//
+// The cursor is `seq > ?` with ORDER BY seq, seeking ux_batch_seq(pool_id, seq): the unique index
+// makes seq its own tiebreak, so no second cursor column is needed here. Start at 0.
+func (q *Queries) ListBatchesAfterSeq(ctx context.Context, arg ListBatchesAfterSeqParams) ([]LedgerBatch, error) {
+	rows, err := q.db.QueryContext(ctx, listBatchesAfterSeq, arg.PoolID, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerBatch
+	for rows.Next() {
+		var i LedgerBatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.PoolID,
+			&i.Seq,
+			&i.Kind,
+			&i.StrategyID,
+			&i.StrategyVersion,
+			&i.ConfigSnapshotJson,
+			&i.RngSeed,
+			&i.Source,
+			&i.SourceRef,
+			&i.ActorUserID,
+			&i.ActorTokenID,
+			&i.ActorIsBeneficiary,
+			&i.Reason,
+			&i.ReversesBatchID,
+			&i.EffectiveAt,
+			&i.RecordedAt,
+			&i.EffectiveDay,
+			&i.IdempotencyKey,
+			&i.EntryCount,
+			&i.NetAmountCp,
+			&i.PrevHash,
+			&i.Hash,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEntriesByBatch = `-- name: ListEntriesByBatch :many
+
+SELECT id, batch_id, pool_id, seq, account_id, character_id, balance_kind, amount_cp,
+       item_id, item_award_id, raid_id, tick_id, metadata_json
+FROM ledger_entry
+WHERE batch_id = ?
+ORDER BY id
+`
+
+// ListEntriesByBatch reads one batch's entries, in ID ORDER, which is the order the batch hash is
+// computed over (docs/design/01-domain-model.md section 9.6). Sorting in SQL rather than in Go is
+// not an optimisation - the hash input is defined as `entries ORDER BY id`, so the order is part of
+// the attestation and belongs next to the read that produces it. internal/ledger sorts again anyway,
+// because BatchHash must not depend on its caller having read the rows in any particular order.
+//
+// By batch_id, not by a seq range: ix_entry_batch(batch_id) makes this an index seek, and a batch
+// holds at most ~70 entries, so the page is bounded by the domain rather than by a LIMIT.
+func (q *Queries) ListEntriesByBatch(ctx context.Context, batchID string) ([]LedgerEntry, error) {
+	rows, err := q.db.QueryContext(ctx, listEntriesByBatch, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerEntry
+	for rows.Next() {
+		var i LedgerEntry
+		if err := rows.Scan(
+			&i.ID,
+			&i.BatchID,
+			&i.PoolID,
+			&i.Seq,
+			&i.AccountID,
+			&i.CharacterID,
+			&i.BalanceKind,
+			&i.AmountCp,
+			&i.ItemID,
+			&i.ItemAwardID,
+			&i.RaidID,
+			&i.TickID,
+			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPoolIDs = `-- name: ListPoolIDs :many
+
+
+SELECT id FROM pool ORDER BY id
+`
+
+// The REPLAY reads - Phase 1, issue #198. `dkp verify-ledger` walks the whole ledger from genesis
+// and recomputes it: the per-pool hash chain, and balance_snapshot from a fold over every entry.
+//
+// ALL FOUR ARE KEYSET-PAGED, and at 520,000 entries that is not a style preference. A `:many` query
+// materialises its whole result set as a Go slice, so a single `SELECT * FROM ledger_entry` would
+// put the entire ledger in memory at once on the smallest machine this product targets - a
+// Raspberry Pi with the database on an SD card. Paged, the verifier's memory is one page plus one
+// accumulator per (account, balance kind), which is a few hundred rows at guild scale whether the
+// log holds ten batches or ten million. Offset would be the other way to page and is banned
+// (.claude/rules/store-and-sql.md): it drifts, and every one of these has a unique key to seek on.
+//
+// Every one of them is a SELECT. The verifier reads and never writes: the two tables are
+// append-only, and the cache rebuild the docs describe (`--rebuild`) is a separate job that does not
+// ship here.
+// ListPoolIDs enumerates the pools, in id order. The ledger hash chain is PER POOL, so a verifier
+// has to know the whole set - reading only the default pool would report a clean ledger while an
+// entire second pool's chain was broken.
+func (q *Queries) ListPoolIDs(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listPoolIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSnapshotsAfter = `-- name: ListSnapshotsAfter :many
+
+SELECT account_id, balance_kind, amount_cp, as_of_seq, entry_count
+FROM balance_snapshot
+WHERE pool_id = ?1
+  AND (account_id, balance_kind) > (?2, ?3)
+ORDER BY account_id, balance_kind
+LIMIT ?4
+`
+
+type ListSnapshotsAfterParams struct {
+	PoolID            string
+	CursorAccountID   string
+	CursorBalanceKind string
+	PageLimit         int64
+}
+
+type ListSnapshotsAfterRow struct {
+	AccountID   string
+	BalanceKind string
+	AmountCp    int64
+	AsOfSeq     int64
+	EntryCount  int64
+}
+
+// ListSnapshotsAfter is one page of a pool's cached balances, walked in primary-key order so the
+// verifier can compare them against its fold without holding the whole cache in memory.
+//
+// The cursor is a ROW VALUE - `(account_id, balance_kind) > (?, ?)` - which SQLite has supported
+// since 3.15 and which db/RECIPES.md prescribes over the `a > ? OR (a = ? AND b > ?)` expansion: it
+// is one seek into the WITHOUT ROWID primary key rather than a predicate the planner has to unpick.
+// balance_snapshot's PK is (pool_id, account_id, balance_kind), so this walks the table itself.
+// Start at (”, ”) - the empty string sorts before every ULID.
+//
+// The two cursor columns are NAMED (sqlc.arg) rather than positional, because sqlc names a
+// positional parameter after the column it is compared to: both halves of the row value would come
+// back as AccountID and AccountID_2, and a caller passing the balance kind to a field called
+// AccountID_2 is a caller one edit away from passing them in the wrong order.
+func (q *Queries) ListSnapshotsAfter(ctx context.Context, arg ListSnapshotsAfterParams) ([]ListSnapshotsAfterRow, error) {
+	rows, err := q.db.QueryContext(ctx, listSnapshotsAfter,
+		arg.PoolID,
+		arg.CursorAccountID,
+		arg.CursorBalanceKind,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSnapshotsAfterRow
+	for rows.Next() {
+		var i ListSnapshotsAfterRow
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.BalanceKind,
+			&i.AmountCp,
+			&i.AsOfSeq,
+			&i.EntryCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const maxPoolSeq = `-- name: MaxPoolSeq :one
 
 SELECT CAST(COALESCE(max(seq), 0) AS INTEGER) AS max_seq FROM ledger_batch WHERE pool_id = ?
@@ -488,9 +733,15 @@ type StandingsFromSnapshotRow struct {
 }
 
 // StandingsFromSnapshot is THE standings read: every account's balance in one pool, highest first,
-// from the droppable cache rather than from the log. It is the query V5 budgets
+// from the cache rather than from the log. It is the query V5 budgets
 // (docs/development/verify-before-phase-0.md): 4 SQL statements and p99 150 ms at 280 members over a
 // 520k-entry ledger, on SD-card-class storage.
+//
+// V5 answered, and the answer is ADR-0023: this read is 13 pages where StandingsFromLedger below is
+// 10,412, so the cache is LOAD-BEARING rather than droppable. The log is still the only source of
+// truth and a dispute is still settled by BalanceAsOfSeq - what the measurement removed is the
+// fallback. Do not give this read a recompute-from-the-log path "for safety": that path is 22
+// seconds.
 //
 // ix_snapshot_standings is (pool_id, balance_kind, amount_cp DESC), and balance_snapshot is
 // WITHOUT ROWID, so the index's trailing key columns are the primary key - which is what makes
@@ -553,8 +804,8 @@ type UpsertBalanceSnapshotParams struct {
 	UpdatedAt   int64
 }
 
-// UpsertBalanceSnapshot maintains the droppable balance cache, ADDITIVELY, in the same transaction
-// as the batch write (PR 10). The primary key is (pool_id, account_id, balance_kind) - the same key
+// UpsertBalanceSnapshot maintains the balance cache, ADDITIVELY, in the same transaction as the
+// batch write (PR 10). The primary key is (pool_id, account_id, balance_kind) - the same key
 // the WITHOUT ROWID table is built on - and on conflict the amount and the entry count are ADDED to
 // the existing row, not replaced: the caller passes this batch's delta (the SUM and COUNT of just its
 // entries), so the running total accumulates. as_of_seq and updated_at are advanced to the new head.

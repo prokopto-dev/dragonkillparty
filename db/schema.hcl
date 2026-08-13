@@ -831,13 +831,19 @@ table "ledger_entry" {
   strict = true
 }
 
-// balance_snapshot — a droppable CACHE of the current balance per (pool, account, balance_kind)
+// balance_snapshot — a CACHE of the current balance per (pool, account, balance_kind)
 // (docs/design/01-domain-model.md §9.5).
 //
 // Maintained synchronously in the same transaction as the batch write (PR 10) and verified
-// nightly by recomputing from the ledger. It is a cache and is treated as one — never the source
-// of truth, which is always the SUM over ledger_entry. WITHOUT ROWID: the composite PK IS the
-// row, read only ever by that key.
+// nightly by recomputing from the ledger (`dkp verify-ledger`). It is a cache and is treated as
+// one — never the source of truth, which is always the SUM over ledger_entry. WITHOUT ROWID: the
+// composite PK IS the row, read only ever by that key.
+//
+// It is LOAD-BEARING, not droppable — ADR-0023, measured over 527,164 entries: 13 pages to serve
+// the standings page from here, 10,412 from the definitional SUM. Nothing about the DDL changes
+// on that finding (option D, widening ix_snapshot_standings, was declined); what changes is that
+// dropping this table is a rebuild rather than a slower page, so the nightly replay that verifies
+// it is a correctness dependency.
 table "balance_snapshot" {
   schema = schema.main
 

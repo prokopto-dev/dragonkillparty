@@ -1042,7 +1042,7 @@ the browser to `/setup` with the token shown in the console.
 | `audit_log` | Append-only, same trigger |
 | `artifact` bytes | Content-addressed, immutable by construction. Purge sets `purged_at` and removes bytes, leaving the hash and provenance. |
 | `event_outbox` | Append-only; pruned by a job that writes an audit row |
-| `balance_snapshot` | The **only** mutable derived data, and it is a droppable cache verified nightly |
+| `balance_snapshot` | The **only** mutable derived data. Rebuildable from the log and verified nightly — but **load-bearing, not droppable** ([ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md)), so the nightly replay is a control rather than hygiene |
 
 *Mechanism:* an integration test executes `UPDATE ledger_entry SET amount_cp = 1` and asserts the
 statement raises; likewise `DELETE FROM audit_log`. Writing the trigger is not enough — the test is

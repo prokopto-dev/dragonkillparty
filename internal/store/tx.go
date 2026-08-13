@@ -57,6 +57,66 @@ func (s *Store) Tx(ctx context.Context, fn func(context.Context, Queries) error)
 	})
 }
 
+// ReadTx runs fn inside a single READ transaction on the read pool, so that every statement fn
+// issues observes ONE consistent snapshot of the database.
+//
+// It exists because Q() cannot promise that. Q() hands out a Queries bound to the read POOL, so
+// consecutive statements may land on different connections and each one sees whatever was committed
+// when it began. For a single query that is correct and cheap. For a job that reads many things and
+// then compares them against each other it is a correctness bug, and a subtle one: the reads are
+// each individually right and the comparison between them is wrong.
+//
+// The caller that made this necessary is `dkp verify-ledger` (issue #198), and its failure is worth
+// stating because every future multi-read job has it. The replay walks a pool's batches, then reads
+// the chain head, then reads the cached balances. A batch committing between the walk and the head
+// read advances the head while the walk's last hash does not, and the verifier reports a
+// `ledger_head_mismatch` on a perfectly healthy ledger — during raid night, which is exactly when
+// commits happen and exactly when nobody needs a false corruption alarm.
+//
+// WAL is what makes this cheap. A read transaction takes a snapshot at its first statement and holds
+// it until it ends; readers never block the writer and the writer never blocks them, so a replay and
+// a raid-night award proceed side by side and simply disagree about the future. The costs are real
+// but small and bounded: it pins one connection out of max(4, NumCPU) for the duration, and the WAL
+// cannot be checkpointed past the snapshot while it is held — which is a reason to keep read
+// transactions short (a full-profile replay is a few seconds) and not a reason to avoid them.
+//
+// DEFERRED, not immediate: the read pool's DSN deliberately omits _txlock=immediate (see
+// .claude/rules/store-and-sql.md — a reader taking the write lock serialises every read against the
+// writer), so BEGIN takes no lock and the snapshot is established by fn's first statement.
+//
+// It is a READ door and the type system does not enforce that: fn receives the same Queries a
+// mutation gets, so it *could* call an insert. It must not — the write would land on the read pool,
+// outside the single-writer discipline every seq allocator in the product depends on. Mutations go
+// through Tx. A caller that needs both is a caller that needs Tx.
+func (s *Store) ReadTx(ctx context.Context, fn func(context.Context, Queries) error) error {
+	tx, err := s.read.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin read transaction: %w", err)
+	}
+
+	// Rolled back on every path, including the success one: a read transaction has nothing to
+	// commit, and Rollback is how a snapshot is released. The panic path is handled the same way as
+	// txRaw's, and for the same reason — a leaked read transaction holds a connection and a WAL
+	// snapshot for the life of the process.
+	defer func() {
+		p := recover()
+
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			slog.ErrorContext(ctx, "roll back read transaction", "error", rbErr, "path", s.path)
+		}
+
+		if p != nil {
+			panic(p)
+		}
+	}()
+
+	if err := fn(ctx, sqlitegen.New(tx)); err != nil {
+		return fmt.Errorf("read transaction: %w", err)
+	}
+
+	return nil
+}
+
 // txRaw is the transaction primitive: it owns the locking, the rollback, the panic handling and the
 // commit, and it runs fn against the raw transaction handle.
 //

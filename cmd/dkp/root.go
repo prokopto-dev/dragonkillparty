@@ -29,6 +29,9 @@ func newRootCmd() *cobra.Command {
 		newMigrateCmd(),
 		// `dkp seed` — the synthetic-dataset generator `make seed` runs (issue #190).
 		newSeedCmd(),
+		// `dkp verify-ledger` — the replay that recomputes both hash chains and rebuilds every
+		// balance from the log to check the cache (issue #198). Read-only.
+		newVerifyLedgerCmd(),
 		newOpenAPICmd(),
 		// The container HEALTHCHECK. A loopback GET /healthz that touches no database — canonical
 		// §13 — so it stays green through a migration while /readyz reports not-ready.

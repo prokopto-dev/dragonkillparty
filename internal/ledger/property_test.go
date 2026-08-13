@@ -631,9 +631,10 @@ func TestCommit_ZeroSumSequence_LedgerSumsToZero(t *testing.T) {
 		"every entry ever written must sum to zero: a zero-sum ledger that does not is a ledger "+
 			"that has minted or destroyed points")
 
-	// And the cache agrees with the log. balance_snapshot is droppable, but a cache that has drifted
-	// is what /standings shows a member, so the two must be checked against each other rather than
-	// the cache being trusted.
+	// And the cache agrees with the log. balance_snapshot is derived, but a cache that has drifted is
+	// what /standings shows a member — and since ADR-0023 there is no fallback that would show them
+	// the log instead — so the two must be checked against each other rather than the cache being
+	// trusted.
 	for _, id := range append(accounts, ledger.AccountIDGuildBank) {
 		require.Equal(t, balanceOf(t, s, id),
 			countRow(t, s, `SELECT CAST(COALESCE(sum(amount_cp), 0) AS INTEGER) FROM balance_snapshot
