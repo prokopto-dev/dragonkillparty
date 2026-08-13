@@ -9,6 +9,7 @@
 package repo_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,6 +170,78 @@ func TestRepoGates_WithoutTheGoToolchain_FailsClosed(t *testing.T) {
 		"the message must name the frozen-migration rule, whose fail-closed posture this "+
 			"generalises\n%s", out)
 	require.NotContains(t, string(out), "repo gates passed", "%s", out)
+}
+
+// TestRepoGates_CompiledEngine_KeepsItsExitCodes is ADR-0022's argument, demonstrated rather than
+// asserted.
+//
+// The engine exits 2 when it CANNOT RUN and 1 when a rule FIRED, and those are different questions:
+// the first says the gate never looked, the second says it looked and found something. `go run`
+// collapses both to 1 — it exits 1 whatever the child exited with — so for as long as the gates were
+// invoked that way, no caller could tell a broken invocation from a red tree. Running the compiled
+// binary is what makes the distinction reach a caller, and this is the fixture that says so.
+//
+// Building it here rather than reusing the script's build is deliberate: the script passes no
+// arguments, so the usage path is unreachable through it, and a test that could only observe exit 1
+// would prove nothing about the code that produces 2.
+func TestRepoGates_CompiledEngine_KeepsItsExitCodes(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("builds the gate engine; runs under `make test`")
+	}
+
+	bin := filepath.Join(t.TempDir(), "repogate")
+
+	build := exec.Command("go", "build", "-o", bin, "./internal/repogate/cmd/repogate")
+	build.Dir = repoRoot(t)
+
+	out, err := build.CombinedOutput()
+	require.NoError(t, err, "build the gate engine: %s", out)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+		why  string
+	}{
+		{
+			name: "a clean tree passes",
+			args: nil,
+			want: 0,
+			why:  "an empty tree has nothing to violate; every rule skips, loudly",
+		},
+		{
+			name: "an argument it does not take is a usage error",
+			args: []string{"--rules"},
+			want: 2,
+			why: "2 means the gates did not run. Under `go run` this arrived as 1, indistinguishable " +
+				"from a tree that failed a rule — the defect ADR-0022 records (issue #142)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := exec.Command(bin, tc.args...)
+			cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+t.TempDir())
+
+			raw, err := cmd.CombinedOutput()
+
+			code := 0
+
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				code = exitErr.ExitCode()
+			} else {
+				require.NoError(t, err, "%s", raw)
+			}
+
+			require.Equal(t, tc.want, code, "%s\n%s", tc.why, raw)
+			require.NotContains(t, string(raw), "exit status",
+				"`exit status N` in the output is the `go run` wrapper talking; it lands inside the "+
+					"failure block a human reads and looks like a crash\n%s", raw)
+		})
+	}
 }
 
 // TestRepoGates_ScriptDelegatesToTheEngine is the anti-drift assertion for the shim.
