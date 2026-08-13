@@ -599,14 +599,16 @@ endif
 # more: `dkp seed --profile small` exits non-zero naming the phase that implements it, which is a
 # better answer than a Makefile that prints a note and exits 0.
 #
-# It builds the binary first and runs THAT, rather than `go run`: the seed writes to a real database
-# through the real commit path, and running the shipped artefact is the only version of this whose
-# result an operator could reproduce. RAIDS is the depth knob — `make seed RAIDS=200` is a few
+# It compiles the binary and runs THAT, rather than `go run`: the seed writes to a real database
+# through the real commit path, and running the artefact is the only version of this whose result an
+# operator could reproduce. It uses go_build_bin rather than depending on `build` — see that macro
+# for why a seed must not stage the SPA. RAIDS is the depth knob: `make seed RAIDS=200` is a few
 # seconds where the full profile is a couple of minutes.
 #
 # DKP_DB_PATH defaults to the same ./data/dev.db `make dev` uses, and the migration runs first
 # because seeding an unmigrated database fails on a table that does not exist yet.
-seed: build
+seed:
+	@$(go_build_bin)
 	@DKP_DB_PATH=$${DKP_DB_PATH:-./data/dev.db}; export DKP_DB_PATH; \
 	mkdir -p "$$(dirname "$$DKP_DB_PATH")"; \
 	$(BUILD_DIR)/$(BIN) migrate >/dev/null; \
@@ -647,10 +649,23 @@ verify-image-arm64:
 	@PLATFORM=linux/arm64 $(MAKE) docker
 	@bash scripts/verify-image-arch.sh linux/arm64
 
+# go_build_bin — the Go half of `build`, as a macro because `seed` needs it and must NOT have the
+# other half.
+#
+# scripts/build-web.sh stages web/dist over internal/ui/dist for go:embed, which DELETES the
+# committed placeholder assets and leaves the working tree dirty. That is correct for `make build`,
+# whose output is the shipped binary with the real SPA in it, and wrong for `make seed`, which
+# writes ledger rows and serves no HTTP: a developer seeding a dev database should not come back to
+# a modified internal/ui/dist. So `seed` compiles the binary and skips the SPA entirely — the
+# committed placeholder is already embeddable, so `go build` succeeds without it.
+define go_build_bin
+CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/dkp
+endef
+
 ## build: compile the binary to ./bin
 build:
 	@bash scripts/build-web.sh
-	@CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BIN) ./cmd/dkp
+	@$(go_build_bin)
 
 ## verify-commands: assert AGENTS.md's command table matches this Makefile
 verify-commands:

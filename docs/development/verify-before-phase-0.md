@@ -230,10 +230,16 @@ database is **242 MiB**. Local, Apple Silicon, NVMe, `-race` off.
 
 | Standings at 280 members, over 527,164 entries | Statements | Warm p50 | Warm tail | Pages read | Derived p99 on SD-card-class storage |
 |---|---|---|---|---|---|
-| **from `balance_snapshot`** (`StandingsFromSnapshot`) | **1** | 299 µs | **1.07 ms** (p99, n=200) | **13** | **27.1 ms** |
-| from the definitional SUM (`StandingsFromLedger`) | 1 | 1.13 s | 1.83 s (worst of 25) | 10,412 | 22.7 s |
+| **from `balance_snapshot`** (`StandingsFromSnapshot`) | **1** | 289–481 µs | **0.51–1.07 ms** (p99, n=200) | **13** | **26.5–27.1 ms** |
+| from the definitional SUM (`StandingsFromLedger`) | 1 | 125 ms – 1.13 s | 0.67–2.93 s (worst of 25) | 10,412 | 20.9–23.7 s |
 
-**Budget: ≤ 4 statements, ≤ 150 ms p99. Measured: 1 statement, 27.1 ms. Both hold.**
+**Budget: ≤ 4 statements, ≤ 150 ms p99. Measured: 1 statement, ≤ 27.1 ms. Both hold.**
+
+The wall-clock columns are RANGES over three runs of the identical query against the identical
+data, and the spread is itself part of the finding rather than noise to be averaged away: the cache
+arm varied by under 2×, the definitional SUM by **9×**. The page counts did not vary at all. That is
+the shape of an I/O-bound query whose cost tracks whatever else is competing for the page cache —
+which on a raid night is the writer — against one that reads thirteen pages and does not care.
 
 **On the SD-card number, because it is derived rather than measured and that distinction matters.**
 There is no portable way to drop the OS page cache from a Go test, so the wall clock above is warm.
@@ -251,13 +257,13 @@ case, which is exactly where the page cache does not have the page.
    (`test/golden/explain/standings_snapshot.txt`, `standings_ledger.txt`) that now pin both plans.
 
 2. **The cache is LOAD-BEARING, and `docs/concepts/ledger.md` now says so.** The gap is not 20% or
-   2×; it is **801× in page reads** (10,412 against 13) and **~840× in modelled storage time**. The
-   definitional SUM misses the 150 ms budget by 7× warm on an NVMe SSD before any SD card is
-   involved, and its median moved between 297 ms and 1.13 s across two runs of the same query on the
-   same data — it is not merely slow, it is *unpredictable*, because it aggregates the whole covering
-   index and then sorts the result in a temp b-tree, so its cost tracks whatever else is competing
-   for the page cache. A standings page served from the log is not a slower page; it is a page an
-   officer's Raspberry Pi cannot render.
+   2×; it is **801× in page reads** (10,412 against 13) and **~800× in modelled storage time**. The
+   definitional SUM's warm tail exceeded the 150 ms budget in every run — 667 ms at best, 2.93 s at
+   worst — on an NVMe SSD, before any SD card is involved, and its *median* swung by 9× across runs.
+   It is not merely slow, it is *unpredictable*, because it aggregates the whole covering index and
+   then sorts the result in a temp b-tree, so its cost tracks page-cache state rather than the
+   query. A standings page served from the log is not a slower page; it is a page an officer's
+   Raspberry Pi cannot render on a raid night, which is the one night it matters.
 
    That does **not** weaken "balances are derived", and the distinction is worth being precise
    about. The log remains the only source of truth: `BalanceAsOfSeq` settles a dispute, the cache is
@@ -627,7 +633,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V2 | Two pilot guilds recruitable | **before Phase 4** | Phase 4 entry | open |
 | V3 | Guild scale ~280 / 3,400 / 520k | week 1 | `seed.Perf`, all budgets | open |
 | V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **resolved (2026-08-13): re-measured against the full nine-table schema at 1.102 ms p50 (n=200), template 152 KiB. A 30× bigger schema cost 43% more, so the copy is still not the dominant term and 900 integration tests are ~1 s of setup. The pyramid stands** |
-| V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | **resolved (2026-08-13) — budget met and the cache is load-bearing. Over 527,164 seeded entries: 1 statement, 1.07 ms warm p99, 13 pages → 27.1 ms modelled on SD-card-class storage, against a budget of 4 and 150 ms. The definitional SUM needs 10,412 pages → 22.7 s. `balance_snapshot` survives with NO schema change; dropping it is a rebuild, not a degradation, so the nightly replay is a correctness dependency. `attendance_rollup` still owes its own measurement in Phase 4** |
+| V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | **resolved (2026-08-13) — budget met and the cache is load-bearing. Over 527,164 seeded entries: 1 statement, ≤1.07 ms warm p99, 13 pages → ≤27.1 ms modelled on SD-card-class storage, against a budget of 4 and 150 ms. The definitional SUM needs 10,412 pages → ~22 s. `balance_snapshot` survives with NO schema change; dropping it is a rebuild, not a degradation, so the nightly replay is a correctness dependency. `attendance_rollup` still owes its own measurement in Phase 4** |
 | V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | **resolved (2026-08-06), and the answer is NO for triggers: the community edition cannot express them and a 12-step rebuild drops them silently. Partial indexes, CHECKs, STRICT and WITHOUT ROWID all survive. Mitigation shipped in PR 3 — the fresh-install fingerprint covers `type='trigger'`; PR 9 must re-create triggers in any migration that rebuilds a ledger table** |
 | V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | **partially resolved (2026-08-07): Huma emits a top-level `webhooks` block from a first-class field, the `ping` placeholder round-trips and the document still parses. The three-generator confirmation is PR 6's and was not attempted. Also found: the document carries 3.1-only `["array","null"]` type unions outside the webhooks block, so 3.0-era consumer risk is not confined to it** |
 | V8 | EQdkp installers run; APA on disk only | week 1 | the fixture lane, the classifier | open |
