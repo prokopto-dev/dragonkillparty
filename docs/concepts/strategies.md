@@ -1,6 +1,8 @@
 # Point strategies
 
-**Status:** the strategy engine lands in Phase 1. This page explains the design; the per-strategy
+**Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
+`tick`, `start_points` and `cap` ship today — see [the worked examples](#the-shipped-strategies)
+below; the rest of the catalogue follows. This page explains the design; the per-strategy
 configuration reference is generated from each `ConfigSchema` into `reference/strategies/<id>.md`.
 
 A guild's point rules are configurable. The ledger's rules are not. This page is about where that line
@@ -96,6 +98,103 @@ The first four cannot be waived by anything. If a strategy proposes a batch that
 batch is rejected and the officer sees an error — not a silently mangled ledger.
 
 See [Invariants](invariants.md) for the mechanism behind each.
+
+## The shipped strategies
+
+Every number below is centipoints rendered as points (× 100 in the ledger), and every batch sums to
+exactly zero — the counterparty is the guild bank, so points are moved rather than minted. These are
+the worked examples officers argue from; the arithmetic is asserted by a committed golden proposal per
+planner under `test/golden/strategy/<id>/`.
+
+### `tick` — earn per attendance snapshot
+
+A four-hour raid on twenty-minute ticks at **10.00 a tick**, with `standby` configured at **5000 bp**
+(half a share). The weight is the number of ticks that raider was present for.
+
+| Raider | Ticks | Role | Earned |
+|---|---|---|---|
+| Tankguy — there from form-up | 12 | present | 12 × 10.00 = **120.00** |
+| Healbot — on standby all night | 9 | standby | 9 × 10.00 × 0.5 = **45.00** |
+| Druidgal — left at tick 8 | 8 | *(none)* | 8 × 10.00 = **80.00** |
+
+```
+debit   guild_bank   −245.00
+credit  Tankguy      +120.00
+credit  Healbot       +45.00
+credit  Druidgal      +80.00
+        Σ entries   =   0.00
+```
+
+A role the config does not name earns `default_multiplier_bp`, a full share unless the pool says
+otherwise. Multiplication happens before division and the result is **floored**: a half share of a
+0.75 tick is 0.37, not 0.38 — rounding a ratio up credits a centipoint the rate did not ask for, on
+every entry, every raid.
+
+A kill tick and a first-tick bonus are not knobs here. They are per-event values
+(`event_type.default_tick_value_cp` → `raid_tick_credit.value_cp`) and arrive as the event's own
+amount, because two places for one number is a disagreement waiting for a raid night. Seconds-per-tick
+and the mid-tick grace period decide *when a tick exists* and belong to raid ingest, not to the
+arithmetic.
+
+### `cap` — a ceiling on hoarding
+
+Hard cap **100.00**, soft cap **80.00**, over-cap earn ratio **2500 bp** (a quarter). Earning a 10.00
+tick:
+
+| Balance before | Earned | Why | After |
+|---|---|---|---|
+| 50.00 | **10.00** | wholly below the soft cap | 60.00 |
+| 78.00 | **4.00** | 2.00 in full, then 8.00 at a quarter | 82.00 |
+| 95.00 | **2.50** | wholly above the soft cap; still inside the hard cap's 5.00 of headroom | 97.50 |
+| 100.00 | **—** | at the ceiling, so no entry at all | 100.00 |
+
+The soft cap reduces and the hard cap then clamps. Only the part **above** the soft cap is reduced —
+reducing the whole credit would penalise the part that was still under it.
+
+A balance can be above the hard cap anyway: an import, a correction, or a ceiling an officer lowered
+yesterday. The **cap run** trims it, on the same cadence and the same `decay_run` table as decay:
+
+```
+2026-W31   Tankguy at 123.45, ceiling 100.00
+           debit   Tankguy      −23.45
+           credit  guild_bank   +23.45      → Tankguy 100.00
+2026-W31   re-run  → nothing above the ceiling → the run is recorded `skipped`, no second batch
+```
+
+Idempotence is structural rather than a flag: the second run reads the balances the first one left.
+
+### `start_points` — an opening balance for recruits
+
+A grant of **200.00**, run against a roster of three:
+
+| Account | Balance | Ledger history | Granted |
+|---|---|---|---|
+| Newguy — joined this week | 0.00 | none | **+200.00** |
+| Tankguy — raiding since Kunark | 812.00 | yes | — |
+| Oldhand — earned it all, spent it all | 0.00 | yes | — |
+
+```
+debit   guild_bank   −200.00
+credit  Newguy       +200.00
+```
+
+**Oldhand is the whole design.** A zero balance and an empty history are different facts, and only the
+second is a new member; a planner that tested the balance would pay a spent-out veteran a second
+opening grant. Eligibility is "has no ledger entry in this pool", so the grant is itself history and a
+re-run — in the same cadence period or any later one — credits nobody.
+
+### `fixed_price` — spend at a published price
+
+Covered with its price table and its zero-sum split in
+[Choosing a DKP system](../guides/choosing-a-dkp-system.md#fixed_price--published-price-list).
+
+### What each one refuses
+
+`tick`, `start_points` and `cap` answer one question each, and say so rather than guessing at the
+others: `tick.PlanAward` and `cap.PlanAward` return `ErrUnsupported` (a 501 naming the strategy),
+because an earn rule has no price list and inventing one would be a second copy of `fixed_price`'s
+price resolution that could then disagree with it. How an earn rule, a spend rule and an over-time
+rule compose inside one pool is the open question in the box below.
 
 ## Pools compose strategies
 

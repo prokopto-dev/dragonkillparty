@@ -1,9 +1,11 @@
 # Choosing a DKP system
 
-**Status:** none of these are implemented. The strategy engine lands in Phase 1; auctions in Phase 6.
-The numbers below are worked from the specified arithmetic, not from a running instance. When a
-strategy ships, its normative configuration list is generated from its `ConfigSchema` into
-`reference/strategies/<id>.md` and this page links there instead of listing knobs.
+**Status:** four are implemented — `fixed_price`, `tick`, `start_points` and `cap`, whose worked
+numbers are in [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land
+through Phase 1; auctions in Phase 6. Numbers for an unshipped rule below are worked from the
+specified arithmetic rather than from a running instance. When a strategy ships, its normative
+configuration list is generated from its `ConfigSchema` into `reference/strategies/<id>.md` and this
+page links there instead of listing knobs.
 
 Spend twenty minutes here before your first raid. Changing a point system afterwards is supported and
 never rewrites history, but it costs you an argument with every member who was winning under the old
