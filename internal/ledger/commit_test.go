@@ -138,7 +138,10 @@ func TestCommit_OneBatch_WritesAllFiveRowsAndBothHeads(t *testing.T) {
 	require.Equal(t, "ledger.batch.committed",
 		textValue(t, s, `SELECT event_type FROM event_outbox WHERE event_seq = 1`))
 
-	// effective_day is UTC at this phase (see commit.go's materialise): 2024-06-01T12:00:00Z.
+	// effective_day is the GUILD's calendar day (#203). There is no guild row on a fresh database, so
+	// this one falls back to UTC — 2024-06-01T12:00:00Z, mid-day, which is the same date in most
+	// zones anyway. TestCommit_EffectiveDay_IsBucketedInTheGuildTimezone is where the bucketing is
+	// actually asserted, against an instant that differs between the two.
 	require.Equal(t, "2024-06-01",
 		textValue(t, s, `SELECT effective_day FROM ledger_batch WHERE seq = 1`))
 	require.Equal(t, int64(0),

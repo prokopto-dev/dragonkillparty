@@ -40,9 +40,13 @@ import (
 // is the other side of a MIGRATED balance and a recruit's opening grant is not a migration — routing
 // it there would make the importer's reconciliation report disagree with itself.
 //
-// IT IS AN EARN RULE AND IT EARNS EXACTLY ONCE. PlanAttendance and PlanAward return ErrUnsupported
-// naming this strategy: a grant is not a tick and it is not a price. See tick.go's header on why the
-// composition question is not settled here.
+// IT EARNS EXACTLY ONCE, AND IT OCCUPIES THE OVER-TIME SLOT. PlanAttendance and PlanAward return
+// ErrUnsupported naming this strategy: a grant is not a tick and it is not a price. Its only planner
+// is PlanDecay, which is what a composed pool asks its OVER-TIME rule (ADR-0026) — so RuleKind is
+// RuleOverTime even though the guide's catalogue describes the EFFECT as earning. The two are not in
+// conflict and the distinction is worth holding on to: what a rule does for a member's balance is not
+// the same question as which planner a pool routes to it, and this family is defined by the second —
+// `start_points` is a decay_run.kind beside `decay` and `cap`, not a raid-night event.
 
 // The compile-time proof that the implementation matches the interface.
 var _ PointStrategy = StartPoints{}
@@ -93,6 +97,11 @@ func (StartPoints) ID() string { return startPointsID }
 
 // Version is the semver of the planning rules, snapshotted onto every batch.
 func (StartPoints) Version() string { return startPointsVersion }
+
+// RuleKind is over_time: the grant is POSTED on a cadence, keyed (pool_id, kind, cadence_period) in
+// the decay_run table beside decay and cap (ADR-0024), and PlanDecay is the only planner it answers.
+// See the file header on why that is not a contradiction with the guide calling the effect earning.
+func (StartPoints) RuleKind() RuleKind { return RuleOverTime }
 
 // BalanceKinds is the one balance kind this strategy moves.
 func (StartPoints) BalanceKinds() []string { return []string{BalanceKindDKP} }

@@ -42,9 +42,14 @@ import (
 //
 // IT IS AN OVER-TIME RULE AND IT DOES NOT SPEND. PlanAward returns ErrUnsupported naming this
 // strategy: a ceiling has no price list, and answering with one would be a second copy of
-// fixed_price's price resolution. How an earn rule, a spend rule and an over-time rule compose inside
-// one pool is a documented open contradiction in the design (pool.strategy_id is singular), tracked
-// for resolution rather than settled here.
+// fixed_price's price resolution. A pool composes it with an earn rule and a spend rule — three
+// (strategy, config) pairs on the pool row, one per question, settled by ADR-0026 (#213).
+//
+// THE COST OF THAT COMPOSITION LANDS HERE, and it is worth naming where it is paid: the over-time
+// slot is asked PlanDecay, so a composed pool reaches the CAP RUN and does not reach PlanAttendance's
+// soft-cap reduction below. Both halves still ship and both are still tested; the earn-time half
+// needs an earn slot this pool has given to its earn rule. #215 is where a pool that wants both is
+// tracked.
 
 // The compile-time proof that the implementation matches the interface.
 var _ PointStrategy = Cap{}
@@ -118,6 +123,11 @@ func (Cap) ID() string { return capID }
 
 // Version is the semver of the planning rules, snapshotted onto every batch.
 func (Cap) Version() string { return capVersion }
+
+// RuleKind is over_time: this strategy's ledger-writing run is the CAP RUN, a cadence family that
+// shares the decay_run table and the (pool_id, kind, cadence_period) key with decay and start_points
+// (ADR-0024). The guide's catalogue lists it under "over time" for the same reason.
+func (Cap) RuleKind() RuleKind { return RuleOverTime }
 
 // BalanceKinds is the one balance kind this strategy moves.
 func (Cap) BalanceKinds() []string { return []string{BalanceKindDKP} }

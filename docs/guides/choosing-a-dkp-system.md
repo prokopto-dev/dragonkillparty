@@ -3,9 +3,9 @@
 **Status:** four are implemented — `fixed_price`, `tick`, `start_points` and `cap`, whose worked
 numbers are in [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land
 through Phase 1; auctions in Phase 6. Numbers for an unshipped rule below are worked from the
-specified arithmetic rather than from a running instance. When a strategy ships, its normative
-configuration list is generated from its `ConfigSchema` into `reference/strategies/<id>.md` and this
-page links there instead of listing knobs.
+specified arithmetic rather than from a running instance. A rule's normative knob list is its
+`ConfigSchema`, which also renders the pool-settings form; a generated per-strategy reference page is
+Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
 Spend twenty minutes here before your first raid. Changing a point system afterwards is supported and
 never rewrites history, but it costs you an argument with every member who was winning under the old
@@ -20,21 +20,21 @@ one raid can feed several. Each pool answers:
 2. **How are points spent?** A fixed price, an auction, a council vote, a roll, or a position list.
 3. **What happens to points over time?** Nothing, decay, a cap, or redistribution.
 
-Every shipped rule below answers exactly one of those three questions. Mixing one from each is
-normal — most P99 guilds run *tick* to earn, *sealed auction* to spend, and *window decay* to keep
-old points from dominating.
+Every shipped rule below answers exactly one of those three questions, and **a pool holds one rule per
+question**, each with its own configuration ([ADR-0026](../adr/0026-three-rules-per-pool.md)). Mixing
+one from each is normal — most P99 guilds run *tick* to earn, *sealed auction* to spend, and *window
+decay* to keep old points from dominating.
 
-> The exact mechanism by which several rules compose inside one pool is not settled in the design
-> documents: `pool.strategy_id` is singular, while the shipped catalogue lists earn rules and decay
-> rules as separate strategies. This is a real contradiction in the source material and is being
-> resolved before Phase 1. It does not change any of the arithmetic on this page.
+A rule may only go in the slot it answers, so putting `tick` in the spend box is refused when you save
+the settings rather than when you try to award an item. A slot you leave empty is a question the pool
+declines to answer: a pool with no over-time rule will not run a decay, and says so.
 
 ## The catalogue
 
 | Rule | Answers | What it does | Ships in 1.0 |
 |---|---|---|---|
 | `tick` | earn | Every attendance snapshot credits a fixed value to everyone present | Yes |
-| `start_points` | earn | Grants a new member an opening balance, once | Yes |
+| `start_points` | over time | Grants a new member an opening balance, once. It *earns*, but it goes in the over-time slot: the grant is posted on a cadence like decay and a cap, not in response to a raid | Yes |
 | `fixed_price` | spend | The item has a published price; the winner pays it | Yes |
 | `auction_open` | spend | Ascending English auction; highest bid wins and pays it | Yes |
 | `auction_sealed` (first price) | spend | Hidden bids; highest wins and pays its own bid | Yes |
@@ -235,8 +235,14 @@ Prevents the member who has raided for two years from outbidding everyone foreve
 | Hard cap | A balance may not exceed the ceiling. Excess is posted as a `cap` batch and is visible on the statement. |
 | Soft cap plus an over-cap earn ratio | Earnings above the soft cap are credited at a reduced ratio instead of being trimmed. |
 
-The exact knob names are defined by the strategy's `ConfigSchema` and generated into
-`reference/strategies/cap.md`; treat the two rows above as the shapes, not as field names.
+The exact knob names are defined by the strategy's `ConfigSchema`; treat the two rows above as the
+shapes, not as field names.
+
+`cap` goes in the **over-time** slot, where a pool asks it for the cap run. The soft cap's earn-time
+reduction is a second answer to the earn question, which a pool has already given to its earn rule —
+so a pool wanting both wants two earn rules, which is
+[#215](https://github.com/prokopto-dev/dragonkillparty/issues/215) rather than something to configure
+today.
 
 Caps are the single most common EQdkp Plus configuration after decay, and they are the one thing a
 migrating guild most often finds missing. If your old site had `cap_current` or `hardcap_current` set,

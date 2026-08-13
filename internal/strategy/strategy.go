@@ -56,6 +56,53 @@ var (
 	ErrInvalidConfig = errors.New("strategy config is invalid")
 )
 
+// RuleKind is which of a pool's three questions a strategy answers (ADR-0026).
+//
+// The three come from docs/guides/choosing-a-dkp-system.md, which has told guilds since before any
+// of this shipped that "a pool answers three questions" and that "every shipped rule answers exactly
+// one of those three". This type is that sentence made executable: a pool holds one strategy per
+// question, and PoolConfig.Resolve refuses a strategy put in a slot it does not answer.
+//
+// IT IS DECLARED BY THE STRATEGY, as PointStrategy.RuleKind, rather than as a table in catalogue.go.
+// A table would be a second list beside the file it describes, and the two would eventually disagree
+// about a strategy somebody re-purposed — where a method is a compile error the day the interface
+// grows and a one-line diff in the file whose behaviour actually changed.
+//
+// A STRING TYPE rather than an int, because it is written into a settings form, an error message and
+// (in Phase 2) a JSON field, and an int would be a number nobody can read in any of the three. It is
+// deliberately NOT a database CHECK: which slot a strategy may occupy is code-defined exactly as the
+// set of strategies is, and db/schema.hcl says so at all four columns.
+type RuleKind string
+
+// The three kinds. Lowercase snake_case, identical in Go, in the column and (in Phase 2) on the wire
+// — the same rule every other enum in this project follows.
+const (
+	// RuleEarn answers "how are points earned?" — tick, attendance_weighted.
+	RuleEarn RuleKind = "earn"
+
+	// RuleSpend answers "how are points spent?" — fixed_price, the auctions, loot_council, roll.
+	RuleSpend RuleKind = "spend"
+
+	// RuleOverTime answers "what happens to points over time?" — decay_percent, decay_window, cap,
+	// start_points, zero_sum. Every member of this family posts on the decay_run cadence
+	// (ADR-0024) rather than in response to a raid-night event.
+	RuleOverTime RuleKind = "over_time"
+)
+
+// IsRuleKind reports whether a string is one of the three.
+//
+// It exists for the boundary rather than for the planners: a slot read out of a pool row, an
+// importer's mapping or a settings form is a string until something says otherwise, and a silent
+// "not any of them" is how a pool ends up with a rule nothing routes to.
+func IsRuleKind(kind string) bool {
+	switch RuleKind(kind) {
+	case RuleEarn, RuleSpend, RuleOverTime:
+		return true
+	default:
+		return false
+	}
+}
+
 // BalanceKindDKP is the single balance kind every 1.0 strategy but epgp and suicide_kings moves.
 //
 // The vocabulary as a whole is a database value, an OpenAPI enum and a docs page in one. Unlike
@@ -510,6 +557,14 @@ type PointStrategy interface {
 	// Version is the semver of the PLANNING RULES, snapshotted onto every batch. It changes when
 	// the same event would now produce a different proposal — not when a comment is fixed.
 	Version() string
+
+	// RuleKind is which of a pool's three questions this strategy answers, and therefore which of
+	// the pool's three slots it may occupy (ADR-0026).
+	//
+	// It is on the interface rather than in the catalogue so that adding a strategy without deciding
+	// is a COMPILE ERROR. The decision is not incidental: it is what makes a `tick` pool's inability
+	// to award an item a refusal on the settings form instead of a 501 during loot.
+	RuleKind() RuleKind
 
 	// BalanceKinds are the ledger balance kinds this strategy moves ('dkp'; 'ep' and 'gp' for
 	// epgp; 'sk_position' for suicide_kings).

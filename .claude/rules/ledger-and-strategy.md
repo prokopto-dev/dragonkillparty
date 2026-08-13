@@ -13,6 +13,18 @@ is a pure function that returns a `BatchProposal`; it never touches the database
 whether the proposal is legal. That split is what lets a guild configure its own rules without being
 able to corrupt the ledger.
 
+**A pool composes THREE strategies, not one** ([ADR-0026](../../docs/adr/0026-three-rules-per-pool.md)):
+`earn_strategy_id`, `spend_strategy_id` and `over_time_strategy_id`, each with its own
+`*_config_json`. `strategy.PoolConfig.Resolve` turns those pairs into `strategy.Rules`, which routes
+`PlanAttendance`/`PlanAdjustment` to earn, `PlanAward` and the five loot questions to spend, and
+`PlanDecay` to over time. Each strategy declares the slot it may occupy as `RuleKind()`, so a
+mismatch is `ErrWrongRuleKind` at configuration time; an empty slot is `ErrNoRule` at plan time, and
+there are **no fallbacks** — a pool never asks one rule a question it gave to another.
+
+`ledger_batch.strategy_id` therefore records **which of the three planned each batch**, and
+`Rules.PlanReversal` routes on it: the repair is always planned by the rule that planned the
+original. The singular `pool.strategy_id` is superseded and read by nothing.
+
 ## The two tables
 
 ```

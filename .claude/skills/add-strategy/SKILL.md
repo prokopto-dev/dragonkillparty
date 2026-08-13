@@ -22,11 +22,26 @@ existing strategy of the nearest shape (`internal/strategy/zero_sum.go` for allo
 
 ## Steps
 
-### 1. Confirm it is a strategy, not a config knob
+### 1. Confirm it is a strategy, not a config knob — then pick its slot
 
 Read the config-knob table for the nearest existing strategy first. `cap` and `start_points` ship in
 1.0; `epgp` and `suicide_kings` are held until a **named guild asks in an issue**, not a maintainer's
 guess. Most "new system" requests are an existing strategy with different knobs.
+
+**Then decide which of a pool's three questions it answers** — earn, spend or over time
+([ADR-0026](../../../docs/adr/0026-three-rules-per-pool.md)). It is `RuleKind()` on the interface, so
+you cannot skip it, and it decides which planners a pool will ever route to your strategy:
+
+| `RuleKind()` | A pool asks it |
+|---|---|
+| `RuleEarn` | `PlanAttendance`, `PlanAdjustment` |
+| `RuleSpend` | `PlanAward`, `Spendable`, `Priority`, `PriceHint`, `ValidateBid`, `SettleAuction` |
+| `RuleOverTime` | `PlanDecay` — the cadence run, keyed `(pool_id, kind, cadence_period)` |
+
+The slot follows the **planner**, not the effect on a member's balance: `start_points` credits points
+and is `RuleOverTime`, because a grant is posted on a cadence rather than in response to a raid. A
+planner outside your slot still has to be implemented — every method is total — but no pool will reach
+it, so `ErrUnsupported` there is the honest answer rather than a gap.
 
 If it *is* new: one file plus one test file, `internal/strategy/<id>.go`. This shape exists so
 strategies can be written in parallel with near-zero conflict surface.
@@ -42,6 +57,7 @@ lives here — there is no second place. Knob names are lowercase `snake_case` a
 type PointStrategy interface {
     ID() string                  // "zero_sum" — lowercase snake_case, permanent
     Version() string             // semver; snapshotted into every batch it produces
+    RuleKind() RuleKind          // earn | spend | over_time — which of a pool's three slots (ADR-0026)
     BalanceKinds() []string      // ["points"] | ["ep","gp"] | ["sk_position"]
     ConfigSchema() jsonschema.Schema
 
@@ -145,15 +161,19 @@ CODEOWNERS-protected; `-update` is refused when `CI=true`.
 ### 8. Register it
 
 Add the strategy to `internal/strategy/catalogue.go`. That list is the whole registration: nothing
-else turns a pool's `strategy_id` into a planner, so an unregistered strategy is one no pool can run —
+else turns a pool's rule id into a planner, so an unregistered strategy is one no pool can run —
 `TestCatalogue_ContainsEveryStrategyInThePackage` fails the build for you, by parsing the package for
-`var _ PointStrategy = X{}`.
+`var _ PointStrategy = X{}`. `TestCatalogue_EveryStrategy_IsWellFormed` additionally rejects a
+`RuleKind()` outside the closed set, because a strategy in no slot is one `PoolConfig.Resolve` can
+never place.
 
-**There is no `strategy_id` CHECK constraint and there must not be one.** `db/schema.hcl` says so at
-the column: the set of strategies is code-defined and grows per PR, so a CHECK would make every new
-strategy a schema change. `strategy.ByID` is the validation that comment promises — this is the
-opposite of `ledger_batch.kind`, whose vocabulary IS a generated CHECK, because a batch kind is a
-value the database reasons about and a strategy id is a pointer to code.
+**There are no CHECK constraints on the rule columns and there must not be any.** `db/schema.hcl` says
+so at all four: the set of strategies is code-defined and grows per PR, so a CHECK would make every
+new strategy a schema change — and which slot an id may occupy is equally code-defined, declared by
+`RuleKind()` and enforced by `PoolConfig.Resolve` with `ErrWrongRuleKind`. `strategy.ByID` is the
+validation those comments promise. This is the opposite of `ledger_batch.kind`, whose vocabulary IS a
+generated CHECK, because a batch kind is a value the database reasons about and a strategy id is a
+pointer to code.
 
 The pool-settings form, the OpenAPI enum and `reference/strategies/<id>.md` are all meant to be
 generated from this catalogue and from each `ConfigSchema`, and none of those generators exists yet

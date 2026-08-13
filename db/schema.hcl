@@ -268,22 +268,106 @@ table "pool" {
     type = text
   }
 
+  // SUPERSEDED BY THE THREE RULE COLUMNS BELOW (ADR-0026, #213). A pool composes an earn rule, a
+  // spend rule and an over-time rule; one column could only ever name one of the three, which is why
+  // a `tick` pool could not award an item. These three are KEPT rather than dropped because dropping
+  // a column is destructive AND a 12-step rebuild of a table with three children (ledger_batch,
+  // pool_config_change, decay_run) — that needs the !destructive-migration label and a human
+  // (.claude/rules/migrations.md), and it is not what this change is. Migration 000006 backfills
+  // earn_strategy_id from strategy_id; nothing reads these three.
+  //
   // The in-tree point strategy id ('zero_sum' | 'tick' | 'fixed_price' | ...). Not a CHECK enum:
   // the set of strategies is code-defined and grows per PR, and the strategy package validates it
-  // — a CHECK here would make every new strategy a schema change.
+  // — a CHECK here would make every new strategy a schema change. The same is true of the three
+  // rule columns below, for the same reason.
   column "strategy_id" {
     null = false
     type = text
   }
 
-  // Semver of the in-tree strategy in force. Persisted on the pool and snapshotted onto every
-  // batch so a config change never rewrites what a past batch meant.
+  // Semver of the in-tree strategy in force. Superseded with strategy_id above, and NOT replicated
+  // three times: the version a batch carries comes from the planner's own Version() constant, so a
+  // per-rule copy on the pool would be a second value that can disagree with the binary that wrote
+  // it. pool_config_change records the version at each change, which is the history this column was
+  // standing in for.
   column "strategy_version" {
     null = false
     type = text
   }
 
-  // The strategy's own configuration, validated on write against strategy.ConfigSchema() and read
+  // THE THREE RULES A POOL COMPOSES (ADR-0026). Each pair is one answer to one of the three
+  // questions in docs/guides/choosing-a-dkp-system.md: how are points earned, how are they spent,
+  // and what happens to them over time. strategy.Rules routes each planner to exactly one of them,
+  // and ledger_batch.strategy_id then records WHICH of the three planned a given batch — which is
+  // what lets a reversal be planned by the rule that planned the original.
+  //
+  // AN EMPTY SLOT IS THE EMPTY STRING, not NULL, and it is a legal state rather than a defect: a pool
+  // part-way through setup, or a guild that genuinely has no over-time rule, must be expressible. The
+  // planner whose slot is empty refuses BY NAME (strategy.ErrNoRule) and no slot is ever filled in
+  // from another.
+  //
+  // NOT NULL WITH A '' DEFAULT rather than nullable, for two reasons that agree. The design one:
+  // strategy.PoolConfig already treats an empty id as "no rule for this question", so NOT NULL keeps
+  // ONE sentinel for absence at every layer instead of translating nil to "" somewhere in between —
+  // and a *string in the store contract would make every caller nil-check a value whose zero already
+  // means the same thing. The mechanical one: sqlc's SQLite engine (v1.31.1) does not apply
+  // `emit_pointers_for_null_types` OR an `overrides:` entry to a column added by ALTER TABLE ADD
+  // COLUMN — verified against this exact column, where the same declaration inside a CREATE TABLE
+  // yields *string and here yields `interface{}` — so a nullable slot here would put `any` in the
+  // middle of the typed boundaries (TestSqlcGen_NoEmptyInterfaceFields, .claude/rules/go-idioms.md).
+  // Declaring them inside a CREATE TABLE instead would mean rebuilding `pool`, which has three child
+  // tables, and that is the migration this project's rules exist to prevent.
+  //
+  // NO CHECK on any of the three ids, for the same reason strategy_id above carries none. Which SLOT
+  // an id may occupy is likewise code-defined — strategy.PointStrategy.RuleKind() declares it and
+  // strategy.PoolConfig.Resolve refuses a mismatch with ErrWrongRuleKind — so a CHECK here would be
+  // a second, weaker copy of a rule the database cannot state.
+  column "earn_strategy_id" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // The earn rule's own configuration, validated on write against that strategy's ConfigSchema() and
+  // read whole (canonical §8: a *_json column is never queried into). DEFAULT '{}' on all three, so
+  // adding them is a plain ADD COLUMN on a populated database and so an unconfigured rule runs its
+  // shipped defaults rather than a null document its parser refuses.
+  column "earn_config_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  column "spend_strategy_id" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "spend_config_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  column "over_time_strategy_id" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "over_time_config_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  // The singular strategy's own configuration. SUPERSEDED by the three per-rule config columns
+  // above (ADR-0026); migration 000006 backfills earn_config_json from it. What follows is why it
+  // exists at all, kept because pool_config_change still snapshots a config document and the
+  // argument for the '{}' default is the argument for the three that replaced it.
+  //
+  // Validated on write against strategy.ConfigSchema() and read
   // whole (canonical §8: a *_json column is never queried into). THE CONFIGURATION IN FORCE — the
   // pool holds what is current, pool_config_change holds how it got there.
   //
@@ -302,8 +386,9 @@ table "pool" {
     default = "{}"
   }
 
-  // Space-separated balance kinds the strategy declares ('dkp', or 'ep gp' for EPGP). Default
-  // 'dkp'. Read whole, never queried into — it is a declaration, not a fact table.
+  // Space-separated balance kinds the pool's rules declare ('dkp', or 'ep gp' for EPGP) — the UNION
+  // across the three, which strategy.Rules.BalanceKinds computes. Default 'dkp'. Read whole, never
+  // queried into — it is a declaration, not a fact table.
   column "balance_kinds" {
     null    = false
     type    = text

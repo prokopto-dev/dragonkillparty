@@ -82,6 +82,15 @@ func (FixedPrice) ID() string { return fixedPriceID }
 // Version is the semver of the planning rules, snapshotted onto every batch.
 func (FixedPrice) Version() string { return fixedPriceVersion }
 
+// RuleKind is spend: this strategy answers "how are points spent?", and its price resolution is the
+// one copy of that rule in the tree (ADR-0026).
+//
+// IT ALSO IMPLEMENTS PlanAttendance AND PlanDecay, and the slot does not reach them. That is the
+// price of one strategy per question: this file shipped first and is total by accident of being
+// first, not because a fixed-price guild's earn rule and decay rule are its spend rule's business.
+// A pool that wants a tick and a haircut composes `tick` and a decay rule beside this one.
+func (FixedPrice) RuleKind() RuleKind { return RuleSpend }
+
 // BalanceKinds is the one balance kind this strategy moves. A single plain quantity, which is what
 // makes entry-wise negation the correct reversal (see PlanReversal).
 func (FixedPrice) BalanceKinds() []string { return []string{BalanceKindDKP} }
