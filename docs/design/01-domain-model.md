@@ -1776,9 +1776,11 @@ CREATE INDEX ix_award_item     ON item_award(item_id, awarded_at DESC)    WHERE 
 CREATE INDEX ix_award_raid     ON item_award(raid_id)                     WHERE voided_at IS NULL;
 CREATE INDEX ix_award_instance ON item_award(item_instance_id);
 
-CREATE TABLE decay_run (
+CREATE TABLE decay_run (          -- decay, cap AND start-points runs: one table, ADR-0024
   id      TEXT NOT NULL PRIMARY KEY,
   pool_id TEXT NOT NULL REFERENCES pool(id),
+  kind    TEXT NOT NULL                           -- which cadence family this run belongs to
+          CHECK (kind IN ('decay','cap','start_points')),
   cadence_period TEXT NOT NULL,                   -- '2026-W31' | '2026-08' | 'raid:<ulid>'
   scheduled_for_at INTEGER NOT NULL,
   executed_at INTEGER NULL,
@@ -1791,8 +1793,16 @@ CREATE TABLE decay_run (
   error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
-CREATE UNIQUE INDEX ux_decay_period ON decay_run(pool_id, cadence_period);
+CREATE UNIQUE INDEX ux_decay_period ON decay_run(pool_id, kind, cadence_period);
 ```
+
+**`kind` is inside the unique index, and that is [ADR-0024](../adr/0024-one-run-table-scoped-by-kind.md).**
+All three cadence families share one cadence vocabulary and this is the only run table, so without
+it a `cap` run for `2026-W31` violates an index that exists to stop a *repeat* — and an
+idempotent job reads its own key colliding as "already done, nothing to do" and exits 0. The cap then
+silently never applies, every week, with a green job dashboard. The name `decay_run` is therefore a
+slight lie and stays one: renaming a table is SQLite's 12-step rebuild for a word, and the API path
+`/decay-runs` would move with it.
 
 **Multi-buyer awards** are N `item_award` rows sharing an `item_instance_id`, with `share_bp`
 summing to exactly 10000 — invariant-checked in the same transaction, not by a `VARCHAR(32)` group
@@ -2900,7 +2910,7 @@ referencing rows survive with `parse_line_id IS NULL` and the artifact still dow
 | 12 | `profiledata` JSON holding class/race as ints meaningful only against a PHP module | `class_id`/`race_id`/`level` FK columns + `game_class`/`game_race`/`class_title` | "How many Clerics?" becomes an index scan, and drops a CC BY-NC-SA dependency. |
 | 13 | Serialised PHP in 20+ columns; `__config` unserialised by a `strpos(':{')` heuristic | JSON only for snapshots/stats/config, validated on write, never queried into | Every queryable fact is a real column. |
 | 14 | Custom profile fields as serialised blobs | `character_field_def` + `character_field_value` with typed, indexed value columns | Guilds filter on these; a blob makes that a full scan. |
-| 15 | APA decay/cap/start-points rules in `data/<md5>/…/apatab.php`, outside the database | `pool.strategy_config_json` + `decay_run` with `UNIQUE(pool_id, cadence_period)` | A DB backup that silently loses every decay rule is data loss wearing a config hat. |
+| 15 | APA decay/cap/start-points rules in `data/<md5>/…/apatab.php`, outside the database | `pool.strategy_config_json` + `decay_run` with `UNIQUE(pool_id, kind, cadence_period)` | A DB backup that silently loses every decay rule is data loss wearing a config hat. |
 | 16 | Decay computed at read time by APA transforms over cached totals | decay **posted** as explicit batches | A balance is always literally a `SUM`, so "why did my points change?" is answerable. |
 | 17 | ACL: tri-state Y/N/inherit, group union, per-user overrides, `po_*` per page, hardcoded superadmin group 2 | allow-only union, scoped `role_assignment`, `admin.owner` as an ordinary row, code-defined catalogue reconciled into a table | Expressive where it matters (scope), simple where it does not (three-valued logic). |
 | 18 | `config.api_key`: one global token impersonating the first superadmin, accepted in a query string | service accounts + scoped, expiring, revocable, rate-limited PATs; `Bearer` only; permission ∩ scope | There is no all-powerful token, ever. |

@@ -26,8 +26,8 @@ const defaultPoolID = "00000000000000000000DKPP00"
 // database rather than inferred from the DDL.
 //
 // Canonical §10 and ADR-0002 both state the rule as "decay is posted, not computed — explicit
-// batches with idempotency key (pool_id, cadence_period)". ux_decay_period is the database half of
-// that key, and it is what holds when the Go half cannot: two workers can both read "no run for
+// batches with idempotency key (pool_id, kind, cadence_period)". ux_decay_period is the database
+// half of that key, and it is what holds when the Go half cannot: two workers can both read "no run for
 // 2026-W31" before either writes one, and a scheduler catching up after downtime re-enqueues
 // periods it has already applied. Without the index, the second run decays every balance in the pool
 // a second time — and because the ledger is append-only, the repair is a reversal batch that every
@@ -74,8 +74,8 @@ func TestDecayRun_SecondRunForTheSamePeriod_IsRejected(t *testing.T) {
 // TestDecayRun_CapAndDecayShareAPeriod_BothRun is ADR-0024 and issue #206, and it is the assertion
 // that would have been impossible to write before `kind` was in the index.
 //
-// All three cadence families key on (pool_id, cadence_period) and the domain model defines ONE run
-// table. Un-scoped, a cap run for '2026-W31' violates the index that exists to stop a REPEAT — and
+// All three cadence families share one cadence vocabulary and the domain model defines ONE run
+// table. Un-scoped by kind, a cap run for '2026-W31' violates the index that exists to stop a REPEAT — and
 // an idempotent job that hits a uniqueness violation on its own key is supposed to conclude "already
 // done" and exit 0. The cap then silently never applies, every week, with a green job dashboard:
 // the exact class of defect this project cites EQdkp Plus for.

@@ -130,7 +130,7 @@ Corrections tab. Full replay exists only as an explicit officer job with a manda
 emitting a single net-delta `correction` batch.
 
 **Decay is posted, not computed.** Decay runs emit explicit batches with idempotency key
-`(pool_id, cadence_period)`, so a balance is always literally a `SUM` and "why did my points change?"
+`(pool_id, kind, cadence_period)`, so a balance is always literally a `SUM` and "why did my points change?"
 is answerable. Computed weighting is permitted in `Priority()` and **never** in `Spendable()`. The
 cadence vocabulary, the `decay_run` table, catch-up after downtime and the properties the decay
 family owes are `.claude/rules/decay-and-jobs.md`; `cap` and `start_points` follow the same rule and

@@ -80,7 +80,7 @@ must not change what a past balance *was*.
 | Integer only, end to end | `NoFloat`, always on, plus the lint ban |
 | Zero-sum splits use **largest-remainder allocation** with a deterministic tiebreak on `account_id` | `LargestRemainderSumsToDebit` |
 | Credits sum to **exactly** the debit | `SumZero(kind, scope=batch)` |
-| Decay is **posted** as explicit batches, never computed inside `Spendable()` | Idempotency key `(pool_id, cadence_period)` + `UNIQUE(pool_id, cadence_period)` on `decay_run` |
+| Decay is **posted** as explicit batches, never computed inside `Spendable()` | Idempotency key `(pool_id, kind, cadence_period)` + `UNIQUE(pool_id, kind, cadence_period)` on `decay_run` (ADR-0024) |
 | Percentages resolve against a **frozen** balance snapshot at `seq_at_open` | The session records `seq_at_open`; resolving against live balances lets a concurrent decay run rewrite everyone's bid mid-auction |
 
 Rounding each credit independently mints or destroys points. This is the classic bug and it is why

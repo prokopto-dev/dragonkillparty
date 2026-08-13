@@ -156,7 +156,7 @@ product is a client of this package.
 8. `PlanReversal` per strategy. Reversal is not always negation — this is where the interface earns
    its shape.
 9. `dkp verify-ledger` + the nightly replay job.
-10. Pools, `pool_config_change`, `decay_run` with `UNIQUE(pool_id, cadence_period)`.
+10. Pools, `pool_config_change`, `decay_run` with `UNIQUE(pool_id, kind, cadence_period)`.
 11. **`seed.Perf` v1 (ledger-only): accounts + 520k ledger entries**, plus the hand-written standings
     query spike run against it *before any API exists*. This is the experiment that decides whether
     `balance_snapshot` survives (see `docs/development/verify-before-phase-0.md`, item 5).

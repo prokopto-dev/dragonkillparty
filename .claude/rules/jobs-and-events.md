@@ -49,7 +49,7 @@ SQLite file the officer already backs up.
 - `goleak.VerifyTestMain(m)` in `TestMain` for all three packages.
 
 Decay runs, cap application and start-points grants **post explicit ledger batches** with
-idempotency key `(pool_id, cadence_period)`. The cadence semantics, the `decay_run` table, catch-up
+idempotency key `(pool_id, kind, cadence_period)`. The cadence semantics, the `decay_run` table, catch-up
 after downtime and the nightly replay job are `.claude/rules/decay-and-jobs.md` — one source, because
 the strategy side and the job side of a decay run are written by different people and must agree.
 

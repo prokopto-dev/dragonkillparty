@@ -99,7 +99,7 @@ permanent, and about someone's points.
 - **Ledger arithmetic** — largest-remainder allocation, `Centipoints` round-half-even at the float
   boundary, running-balance folding, hash-chain canonicalisation, reversal negation.
 - **Decay math** — percent compounding, catch-up after a three-week outage, negative-balance policy,
-  floor clamping, window taper, and derivation of the `(pool_id, cadence_period)` idempotency key
+  floor clamping, window taper, and derivation of the `(pool_id, kind, cadence_period)` idempotency key
   across DST and month boundaries.
 - **Attendance-window calculation** — the denominator is where the bugs are: `no_attendance` event
   exclusion, connected-raid dedup, the tenure-capped variant, day-based versus raid-based counting,
@@ -135,7 +135,7 @@ Property tests are those invariants driven by generated input rather than hand-p
 | P6 | **`cap` clamps and is idempotent.** Applying the cap twice produces one batch and never moves a balance past the cap | random balances and caps | Double application after a restart |
 | P7 | **`start_points` applies exactly once per account**, and never to an account that already has ledger history | random rosters with partial history | The "everyone got 1000 points again" ticket |
 | P8 | **Determinism.** The same `(event, config, clock, seed)` produces a byte-identical proposal hash | random events | Map-iteration order; `time.Now` leaking into a planner |
-| P9 | **Decay idempotency.** Two runs for the same `(pool_id, cadence_period)` produce one batch | random cadences and downtime gaps | "Decay ran twice after the box rebooted" |
+| P9 | **Decay idempotency.** Two runs for the same `(pool_id, kind, cadence_period)` produce one batch, and a `cap` run in a period `decay` already ran is NOT deduplicated away | random cadences and downtime gaps | "Decay ran twice after the box rebooted"; "the cap never applied and nothing errored" |
 | P10 | **Attendance monotonicity.** Adding a raid the member attended never decreases their window percentage; adding one they missed never increases it | random raid histories | Denominator and dedup logic |
 | P11 | **Cursor round-trip and order preservation.** `decode(encode(x)) == x`, and `encode` is monotone with respect to the sort key | random `(sort_key, tiebreak_id, filter_hash, principal_class)` | Duplicate-and-skip in every polling bot |
 | P12 | **Parser totality.** No input panics; every accepted line re-serialises to something the parser re-accepts | `go test -fuzz` + generated strings | Panics on hostile log lines |

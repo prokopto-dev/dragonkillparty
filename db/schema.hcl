@@ -1517,8 +1517,8 @@ table "decay_run" {
   // for it: the periodic job firing twice after a restart, a retry after a partial failure, and an
   // officer clicking "run decay now" mid-flight.
   //
-  // KIND IS INSIDE THE INDEX, not beside it, and that is the whole of #206. The design keys all
-  // three cadence families on (pool_id, cadence_period) and defines one run table; without kind in
+  // KIND IS INSIDE THE INDEX, not beside it, and that is the whole of #206. All three cadence
+  // families share one cadence vocabulary and one run table; without kind in
   // here, a cap run for '2026-W31' violates an index built to stop a REPEAT, the job concludes
   // "already done" and exits 0, and the cap silently never applies.
   //

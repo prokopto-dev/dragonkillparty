@@ -345,7 +345,7 @@ expansion, not a second source.
 | GET | `/ledger/entries` | Flat entry stream for incremental sync: `?since_seq=&account=&pool=&balance_kind=` | `dkp.read` | `dkp:read` |
 | GET | `/ledger/verify` | Last verify-job result: snapshot drift, hash-chain integrity, conservation | `ops.read` | — |
 | GET · POST | `/decay-runs` | Preview a decay, cap or start-points run; the preview returns the per-account delta table | `dkp.decay.run` | `dkp:adjust` |
-| POST | `/decay-runs/{run_id}/commit` | Post the batch. Idempotent on `(pool_id, cadence_period)` | `dkp.decay.run` | `dkp:adjust` |
+| POST | `/decay-runs/{run_id}/commit` | Post the batch. Idempotent on `(pool_id, kind, cadence_period)` | `dkp.decay.run` | `dkp:adjust` |
 
 ### 4.8 Bid sessions
 

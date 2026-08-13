@@ -1,6 +1,6 @@
 ---
 paths: ["internal/strategy/decay_*.go", "internal/strategy/cap.go", "internal/strategy/start_points.go", "internal/jobs/**", "internal/ledger/verify*.go", "cmd/dkp/verify_ledger.go"]
-description: Decay, cap and start-points are POSTED on a cadence — the cadence_period label, the UNIQUE(pool_id, cadence_period) idempotency key, catch-up after downtime, and the nightly replay that is a correctness dependency rather than a nicety.
+description: Decay, cap and start-points are POSTED on a cadence — the cadence_period label, the UNIQUE(pool_id, kind, cadence_period) idempotency key, catch-up after downtime, and the nightly replay that is a correctness dependency rather than a nicety.
 ---
 
 # Decay, cadence and the replay job
@@ -18,7 +18,8 @@ against the `strategy.DecayRun` shape. Read it before writing a second one.
 
 Canonical §10, and the one line that generates most of this file:
 
-> **Decay is posted, not computed** — explicit batches with idempotency key `(pool_id, cadence_period)`.
+> **Decay is posted, not computed** — explicit batches with idempotency key
+> `(pool_id, kind, cadence_period)`.
 
 A run emits a `ledger_batch` with `kind = kinds.KindDecay` (or `KindCap`, `KindStartPoints`) and
 `source = kinds.SourceSystem` — named through `internal/ledger/kinds`, never as a literal. What
@@ -113,7 +114,8 @@ constraint arbitrate.
 > **Settled by [ADR-0024](../../docs/adr/0024-one-run-table-scoped-by-kind.md), and the box that used
 > to be here is why the column exists.** That kind-scoping argument applies just as hard one line up,
 > and `ux_decay_period` did not have it: the design keys all three families on
-> `(pool_id, cadence_period)` (canonical §10, `docs/api/idempotency-and-concurrency.md`) and defines
+> `(pool_id, cadence_period)` as it then read (canonical §10, `docs/api/idempotency-and-concurrency.md`
+> — both now say `(pool_id, kind, cadence_period)`) and defines
 > exactly **one** run table, so a cap run for a period the decay run already took failed an index
 > designed to stop a *repeat* — and an idempotent job is supposed to read that as "already done" and
 > exit 0. The cap then silently never applies, with a green dashboard.
@@ -233,7 +235,7 @@ From `docs/design/04-testing.md`, at 200 checks per PR and 20,000 nightly:
 |---|---|---|
 | P6 | `cap` clamps and is idempotent — applying it twice produces one batch and never moves a balance past the cap | double application after a restart |
 | P7 | `start_points` applies **exactly once per account**, and never to an account that already has ledger history | the "everyone got 1000 points again" ticket |
-| P9 | Two runs for the same `(pool_id, cadence_period)` produce one batch | "decay ran twice after the box rebooted" |
+| P9 | Two runs for the same `(pool_id, kind, cadence_period)` produce one batch, and a `cap` run in a period `decay` already ran is not deduplicated away | "decay ran twice after the box rebooted"; "the cap never applied and nothing errored" |
 
 Plus the universal ones every strategy owes: P5 (reversal is an exact inverse) and P8 (determinism —
 the same `(event, config, clock, seed)` produces a byte-identical proposal hash). The framework is

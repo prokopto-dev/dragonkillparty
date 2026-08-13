@@ -534,7 +534,7 @@ func (p Profile) emitDecay(emit func(batchPlan) error, rng *ledger.Rng, period i
 	}
 
 	return emit(batchPlan{
-		// Real decay's idempotency key is (pool_id, cadence_period); the source_ref carries the
+		// Real decay's idempotency key is (pool_id, kind, cadence_period); the source_ref carries the
 		// period here for the same reason — a second run of the same period must be a collision.
 		SourceRef: fmt.Sprintf("seed:%s:decay:%d", p.Name, period),
 		Proposal: strategy.BatchProposal{

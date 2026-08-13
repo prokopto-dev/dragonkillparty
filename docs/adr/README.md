@@ -36,7 +36,7 @@ and one link is cheaper than one argument.
 | [0021](0021-hcl-rule-catalogue-and-schema-parse.md) | HCL rule catalogue, HCL schema parse | accepted | Amends ADR-0018: the config-shaped rules become data and `ENUM001` reads the schema with `hclsyntax`; a file that will not parse fails the gate |
 | [0022](0022-gates-are-compiled-binaries-not-go-run.md) | Gates are compiled, not `go run` | accepted | `go run` collapses the exit code and prints `exit status 1` into the failure block; the engine is built and run, and `MIG003` is imported |
 | [0023](0023-balance-snapshot-is-load-bearing.md) | `balance_snapshot` is load-bearing | accepted | Measured at 520k entries: the cache is 13 pages, the definitional SUM is 10,412. The log stays the truth; losing the cache is a rebuild, so the nightly replay is a dependency |
-| [0024](0024-one-run-table-scoped-by-kind.md) | One cadence-run table, scoped by `kind` | accepted | Decay, cap and start-points share `(pool_id, cadence_period)` and one run table, so the second family's run failed an index built to stop a repeat — and looked exactly like successful deduplication. `kind` goes inside the index |
+| [0024](0024-one-run-table-scoped-by-kind.md) | One cadence-run table, scoped by `kind` | accepted | Decay, cap and start-points shared a two-part key and one run table, so the second family's run failed an index built to stop a repeat — and looked exactly like successful deduplication. `kind` goes inside the index |
 
 ## When an ADR is required
 

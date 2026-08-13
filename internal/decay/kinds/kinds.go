@@ -55,9 +55,9 @@ var ErrSchemaMarkersMissing = schemaenum.ErrMarkersMissing
 // The decay_run.kind vocabulary: WHICH CADENCE FAMILY a run belongs to. It is the column ADR-0024
 // added, and it is inside ux_decay_period rather than beside it.
 //
-// All three families post explicit batches on a cadence and key on (pool_id, cadence_period)
-// (canonical §10, docs/api/idempotency-and-concurrency.md), and the domain model defines exactly ONE
-// run table. Both cannot be true without this column: a cap run for '2026-W31' would collide with
+// All three families post explicit batches on the same cadence vocabulary (canonical §10,
+// docs/api/idempotency-and-concurrency.md), and the domain model defines exactly ONE run table. The
+// key cannot be the (pool, period) pair it was written as: a cap run for '2026-W31' would collide with
 // that period's decay run on an index built to stop a REPEAT, and an idempotent job that hits a
 // uniqueness violation on its own key is supposed to conclude "already done" and exit 0. The cap
 // then silently never applies, every week, with a green dashboard (#206).
@@ -108,8 +108,8 @@ func IsKind(v string) bool { return contains(Kinds(), v) }
 //
 // A row is never deleted to re-run a period — ux_decay_period is the idempotency
 // (docs/design/00-canonical-conventions.md §10: "decay is posted, not computed ... idempotency key
-// (pool_id, cadence_period)"), and deleting the row to try again is exactly the double-decay that
-// key exists to prevent.
+// (pool_id, kind, cadence_period)"), and deleting the row to try again is exactly the double-decay
+// that key exists to prevent.
 const (
 	StatePlanned   = "planned"
 	StatePreview   = "preview"
