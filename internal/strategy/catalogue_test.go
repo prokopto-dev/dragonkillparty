@@ -38,6 +38,10 @@ func TestCatalogue_EveryStrategy_IsWellFormed(t *testing.T) {
 			require.NotContains(t, s.ID(), " ")
 			require.NotContains(t, s.ID(), "-", "snake_case, not kebab-case")
 			require.NotEmpty(t, s.Version(), "the version is snapshotted onto every batch")
+			require.True(t, strategy.IsRuleKind(string(s.RuleKind())),
+				"%q declares rule kind %q, which is not one of the three questions a pool answers; a "+
+					"strategy outside the closed set is one PoolConfig.Resolve can put in no slot, so "+
+					"no pool could ever run it (ADR-0026)", s.ID(), s.RuleKind())
 			require.NotEmpty(t, s.BalanceKinds())
 			require.NotEmpty(t, s.Invariants(),
 				"a strategy that declares no invariants is a red flag: the declared set is what the "+
@@ -67,6 +71,28 @@ func TestCatalogue_EveryStrategy_IsWellFormed(t *testing.T) {
 			"strategy id %q is registered twice; the id is what a pool row names, so a duplicate "+
 				"makes ByID's answer depend on the order of a slice", s.ID())
 		seen[s.ID()] = true
+	}
+}
+
+// TestCatalogue_EveryQuestion_HasAnAnswer is the composition's habitability check.
+//
+// A pool composes one rule per question (ADR-0026), so a release in which no shipped strategy
+// declares one of the three kinds is a release in which no guild can configure a working pool — and
+// every per-strategy test would still be green, because each strategy is individually correct. It is
+// the same class of gap TestCatalogue_ContainsEveryStrategyInThePackage closes for registration.
+func TestCatalogue_EveryQuestion_HasAnAnswer(t *testing.T) {
+	t.Parallel()
+
+	answered := map[strategy.RuleKind][]string{}
+
+	for _, s := range strategy.Catalogue() {
+		answered[s.RuleKind()] = append(answered[s.RuleKind()], s.ID())
+	}
+
+	for _, kind := range []strategy.RuleKind{strategy.RuleEarn, strategy.RuleSpend, strategy.RuleOverTime} {
+		require.NotEmpty(t, answered[kind],
+			"no shipped strategy answers %q, so no pool can be configured to answer that question at "+
+				"all — a guild composing a pool would have an empty dropdown", kind)
 	}
 }
 

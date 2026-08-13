@@ -2,8 +2,9 @@
 
 **Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
 `tick`, `start_points` and `cap` ship today — see [the worked examples](#the-shipped-strategies)
-below; the rest of the catalogue follows. This page explains the design; the per-strategy
-configuration reference is generated from each `ConfigSchema` into `reference/strategies/<id>.md`.
+below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
+`ConfigSchema` in `internal/strategy/<id>.go`, and a generated per-strategy reference page is Phase 2
+([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
 A guild's point rules are configurable. The ledger's rules are not. This page is about where that line
 is drawn and why it is drawn there.
@@ -193,26 +194,36 @@ Covered with its price table and its zero-sum split in
 `tick`, `start_points` and `cap` answer one question each, and say so rather than guessing at the
 others: `tick.PlanAward` and `cap.PlanAward` return `ErrUnsupported` (a 501 naming the strategy),
 because an earn rule has no price list and inventing one would be a second copy of `fixed_price`'s
-price resolution that could then disagree with it. How an earn rule, a spend rule and an over-time
-rule compose inside one pool is the open question in the box below.
+price resolution that could then disagree with it. That is not a gap — it is what makes a pool need
+three rules rather than one, which is the section below.
 
-## Pools compose strategies
+## A pool composes three rules
 
-A pool is one currency with one strategy configuration. A guild composes systems by running several
-pools:
+A pool answers three questions, and holds one strategy — with its own configuration — for each
+([ADR-0026](../adr/0026-three-rules-per-pool.md)):
+
+| Slot | Question | Answers |
+|---|---|---|
+| earn | How are points earned? | `PlanAttendance`, `PlanAdjustment` |
+| spend | How are points spent? | `PlanAward`, `Spendable`, `Priority`, `PriceHint`, `ValidateBid`, `SettleAuction` |
+| over time | What happens to points over time? | `PlanDecay` — the cadence run |
 
 ```
-Velious Main       tick to earn · sealed second-price to spend · window decay
+Velious Main       tick to earn · fixed price to spend · cap over time
 Cross-class Rares  suicide kings
 ```
 
-One raid feeds both. Event types map to pools, and each mapping carries the `no_attendance` flag that
-decides whether that event counts toward attendance percentages in that pool.
+Each strategy declares which slot it may occupy (`PointStrategy.RuleKind`), so `tick` configured as a
+spend rule is refused **on the settings form** rather than during loot. There are no fallbacks: a pool
+with no over-time rule refuses a decay run by name instead of asking its earn rule to improvise one.
 
-> One open question: `pool.strategy_id` is singular in the schema while the shipped catalogue names
-> earn rules and decay rules as separate strategies. How several rules compose inside one pool is a
-> genuine contradiction in the design documents, tracked for resolution before Phase 1. It does not
-> affect the arithmetic of any individual rule.
+**Which of the three planned a batch is recorded on the batch.** `ledger_batch.strategy_id` is that
+column, and it is load-bearing rather than descriptive — a reversal routes on it, so the repair is
+always planned by the rule that planned the original. That is the whole reason the choice needed an
+ADR: the column is written on every row of an append-only table.
+
+One raid feeds several pools. Event types map to pools, and each mapping carries the `no_attendance`
+flag that decides whether that event counts toward attendance percentages in that pool.
 
 ## Extending without forking
 
@@ -233,8 +244,8 @@ will tell us what it got wrong.
 ## Adding one
 
 If your guild's rules cannot be expressed by configuring a shipped strategy, adding one is a
-contained piece of work: choose the balance kinds, write the JSON schema, implement the planners,
-declare the invariants, register it, write the property tests, add the reference page and a fixture.
+contained piece of work: choose the question it answers and the balance kinds, write the JSON schema,
+implement the planners, declare the invariants, register it, and write the property tests.
 
 See the `add-strategy` skill in `.claude/skills/` and
 [Architecture overview](../development/architecture-overview.md).

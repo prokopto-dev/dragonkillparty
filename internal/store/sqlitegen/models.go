@@ -138,6 +138,12 @@ type Pool struct {
 	CreatedAt          int64
 	UpdatedAt          int64
 	StrategyConfigJson string
+	EarnStrategyID     string
+	EarnConfigJson     string
+	SpendStrategyID    string
+	SpendConfigJson    string
+	OverTimeStrategyID string
+	OverTimeConfigJson string
 }
 
 type PoolConfigChange struct {

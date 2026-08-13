@@ -39,13 +39,11 @@ import (
 //     places for one number is a disagreement waiting for a raid night.
 //
 // IT IS AN EARN RULE AND IT DOES NOT SPEND. PlanAward and PlanDecay return ErrUnsupported naming
-// this strategy. A tick pool spends through a spend rule (fixed_price, an auction) and expires
-// points through a decay rule; how several rules compose inside one pool is a genuine contradiction
-// in the design documents — pool.strategy_id is singular while the shipped catalogue lists earn,
-// spend and over-time rules separately — and it is tracked for resolution rather than settled here
-// (docs/concepts/strategies.md, docs/guides/choosing-a-dkp-system.md). Answering PlanAward by
-// inventing a price would be a second copy of fixed_price's price resolution under another name, and
-// the two copies would disagree.
+// this strategy. A tick pool spends through a spend rule (fixed_price, an auction) and expires points
+// through an over-time rule, and the pool holds all three: `earn_strategy_id`, `spend_strategy_id`
+// and `over_time_strategy_id`, each with its own config, routed by strategy.Rules (ADR-0026, #213).
+// Answering PlanAward by inventing a price would be a second copy of fixed_price's price resolution
+// under another name, and the two copies would disagree.
 //
 // EVERY BATCH IT WRITES SUMS TO ZERO. The credits are debited from the guild bank rather than minted,
 // so a guild's bank balance reads as "everything ever awarded, minus everything ever spent back into
@@ -152,6 +150,11 @@ func (Tick) ID() string { return tickID }
 
 // Version is the semver of the planning rules, snapshotted onto every batch.
 func (Tick) Version() string { return tickVersion }
+
+// RuleKind is earn: this strategy answers "how are points earned?" and nothing else. It is the
+// slot's canonical occupant — the P99 default, and the rule the file header says pairs with a spend
+// rule and a decay rule rather than answering for them (ADR-0026).
+func (Tick) RuleKind() RuleKind { return RuleEarn }
 
 // BalanceKinds is the one balance kind this strategy moves. A single plain quantity, which is what
 // makes entry-wise negation the correct reversal.

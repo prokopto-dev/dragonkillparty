@@ -380,7 +380,9 @@ func (s *Service) write(ctx context.Context, q store.Queries, req CommitRequest)
 		return Receipt{}, err
 	}
 
-	batch, entries, err := s.materialise(req, seq)
+	zone := guildZone(ctx, q)
+
+	batch, entries, err := s.materialise(req, seq, zone)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -456,19 +458,27 @@ func (s *Service) write(ctx context.Context, q store.Queries, req CommitRequest)
 // materialise turns a proposal plus an allocated seq into the rows that will be written: it mints
 // the ids, stamps recorded_at, derives effective_day and computes entry_count and net_amount_cp.
 //
-// EFFECTIVE_DAY IS UTC AT THIS PHASE, and that is a deferral rather than a decision. Domain model
-// §9.1 specifies 'YYYY-MM-DD' guild-local, and the guild's timezone lives in guild.timezone — but
-// resolving it means a read of the guild row inside every commit and a policy for what a batch
-// backdated across a DST boundary means, both of which belong with the attendance work in Phase 1
-// that first needs day buckets to line up with raid nights. UTC is correct for a guild in UTC and
-// off by at most one day-boundary for everybody else, in a column nothing reads yet.
+// EFFECTIVE_DAY IS THE GUILD'S CALENDAR DAY, not UTC's (#203). db/schema.hcl says the column is
+// "'YYYY-MM-DD' guild-local, computed in Go", guild.timezone is a real column rather than a
+// settings_json key precisely because it "buckets every *_day column", and core.Micros.Time's own
+// doc comment tells a caller wanting a guild-local bucket to derive it from the UTC instant with the
+// guild's zone. This is that caller. It used to format the UTC instant, which split every raid night
+// west of UTC across two buckets and folded some mornings backwards for everybody east of it — in a
+// column that exists to be grouped by.
 //
-// ACTOR_IS_BENEFICIARY IS 0 AT THIS PHASE, likewise. Computing it means asking whether the acting
+// THE ZONE IS READ INSIDE THE TRANSACTION rather than resolved once at boot, and the cost is one
+// indexed single-row read per batch. A zone captured at construction is wrong from the moment an
+// officer changes it until somebody restarts the process, and "the day bucket is stale until a
+// reboot" is precisely the class of silent wrongness the column is being fixed out of.
+//
+// ACTOR_IS_BENEFICIARY IS 0 AT THIS PHASE. Computing it means asking whether the acting
 // principal owns any account this batch credits, and there is no principal-to-account mapping until
 // person and app_user land in Phase 1/2. Writing 0 is honest — no batch committed by Phase 0 code
 // has an authenticated beneficiary — where writing a guess would populate the self-dealing report
 // with noise and teach officers to ignore it.
-func (s *Service) materialise(req CommitRequest, seq int64) (BatchRow, []EntryRow, error) {
+func (s *Service) materialise(
+	req CommitRequest, seq int64, zone *time.Location,
+) (BatchRow, []EntryRow, error) {
 	p := req.Proposal
 
 	batchID, err := s.ids.New()
@@ -503,7 +513,7 @@ func (s *Service) materialise(req CommitRequest, seq int64) (BatchRow, []EntryRo
 		ReversesBatchID:    p.ReversesBatchID,
 		EffectiveAt:        p.EffectiveAt,
 		RecordedAt:         now,
-		EffectiveDay:       p.EffectiveAt.Time().Format(time.DateOnly),
+		EffectiveDay:       p.EffectiveAt.Time().In(zone).Format(time.DateOnly),
 		IdempotencyKey:     req.IdempotencyKey,
 		EntryCount:         int64(len(p.Entries)),
 		NetAmountCp:        net,
@@ -535,6 +545,50 @@ func (s *Service) materialise(req CommitRequest, seq int64) (BatchRow, []EntryRo
 	}
 
 	return batch, entries, nil
+}
+
+// guildZone resolves the guild's IANA timezone — the zone effective_day is bucketed in (#203).
+//
+// IT NEVER FAILS A COMMIT, and every branch that could falls back to UTC, which is the column's own
+// documented default ("the one zone that is always valid"). Three reasons a zone can be absent or
+// unusable, and refusing a raid-night write for any of them would be worse than a day bucket that is
+// off by one for that guild:
+//
+//   - NO GUILD ROW. The setup flow that writes it is Phase 2, and every batch committed before then —
+//     every test in this package, every seeded dataset — has no row to read. sql.ErrNoRows is the
+//     ordinary case today, so it is not even logged.
+//   - AN UNPARSEABLE ZONE. Nothing validates guild.timezone on write today (#216), so a hand-edited
+//     database or a typo in a settings PATCH can put anything in the column. It is logged at WARN
+//     with the value, because the officer's day buckets are silently UTC until it is corrected, and
+//     the only way anybody finds out is a log line naming the column.
+//   - NO ZONEINFO. deploy/Dockerfile copies the tzdata database into the scratch image and
+//     TestRelease_Dockerfile_* asserts it does, so this is the fork-built-its-own-image case. It
+//     surfaces as the same LoadLocation failure and the same warning.
+//
+// A READ, NOT A CACHE. One indexed single-row read per commit against a table with exactly one row,
+// on the transaction's own Queries so it observes the same snapshot the write lands in. A cache here
+// would need an invalidation path from the settings PATCH, and a stale zone is not a performance
+// problem — it is a wrong bucket nobody can see.
+func guildZone(ctx context.Context, q store.Queries) *time.Location {
+	row, err := q.GetGuild(ctx)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "reading the guild timezone failed; bucketing effective_day in UTC",
+				"error", err)
+		}
+
+		return time.UTC
+	}
+
+	zone, err := time.LoadLocation(row.Timezone)
+	if err != nil {
+		slog.WarnContext(ctx, "guild.timezone is not a loadable IANA zone; bucketing effective_day in UTC",
+			"timezone", row.Timezone, "error", err)
+
+		return time.UTC
+	}
+
+	return zone
 }
 
 // writeAudit appends the audit row that says who committed this batch, chained to the previous one.

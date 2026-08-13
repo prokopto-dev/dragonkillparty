@@ -796,10 +796,24 @@ CREATE TABLE pool (
   description    TEXT NOT NULL DEFAULT '',
   currency_label TEXT NOT NULL DEFAULT 'DKP',
   server_id      TEXT NOT NULL REFERENCES server(id),  -- NOT NULL in 1.0; see §2
+  -- SUPERSEDED by the three rule slots below (ADR-0026, issue #213). These three were the
+  -- contradiction that issue was filed about: one strategy_id, while the catalogue lists earn, spend
+  -- and over-time rules separately, so a `tick` pool could not award an item. They remain in the
+  -- shipped schema, read by nothing, because dropping a column from a table with three children is a
+  -- destructive migration rather than this decision's business.
   strategy_id      TEXT NOT NULL,                  -- 'zero_sum' | 'tick' | 'fixed_price' | 'cap' | …
   strategy_version TEXT NOT NULL,                  -- semver of the in-tree strategy
   strategy_config_json TEXT NOT NULL DEFAULT '{}', -- validated against strategy.ConfigSchema()
-  balance_kinds  TEXT NOT NULL DEFAULT 'dkp',      -- space-separated; declared by the strategy
+  -- The three rules a pool composes, one per question. '' means the pool has no rule for that
+  -- question, which is legal; the planner whose slot is empty refuses by name. Which slot an id may
+  -- occupy is strategy.PointStrategy.RuleKind(), so there is no CHECK here either.
+  earn_strategy_id      TEXT NOT NULL DEFAULT '',  -- 'tick' | 'attendance_weighted' | …
+  earn_config_json      TEXT NOT NULL DEFAULT '{}',
+  spend_strategy_id     TEXT NOT NULL DEFAULT '',  -- 'fixed_price' | 'auction_sealed' | …
+  spend_config_json     TEXT NOT NULL DEFAULT '{}',
+  over_time_strategy_id TEXT NOT NULL DEFAULT '',  -- 'decay_percent' | 'cap' | 'start_points' | …
+  over_time_config_json TEXT NOT NULL DEFAULT '{}',
+  balance_kinds  TEXT NOT NULL DEFAULT 'dkp',      -- space-separated; the UNION across the three
   alt_policy     TEXT NOT NULL DEFAULT 'shared'
                  CHECK (alt_policy IN ('shared','separate','none')),
   allow_negative INTEGER NOT NULL DEFAULT 0 CHECK (allow_negative IN (0,1)),
