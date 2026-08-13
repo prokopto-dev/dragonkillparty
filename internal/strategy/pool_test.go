@@ -398,33 +398,86 @@ func TestRules_PlanReversal_RoutesByTheBatchStrategyID(t *testing.T) {
 	}
 }
 
-// TestRules_PlanReversal_ForARuleThePoolNoLongerRuns_IsRefused is the negative half, and it is the
-// one that keeps the routing honest.
+// TestRules_PlanReversal_ForARuleThePoolNoLongerRuns_StillPlans is the finding this file exists to
+// have caught, and it asserts the OPPOSITE of what an earlier cut of Rules.PlanReversal did.
 //
-// This is the pool whose spend rule was changed after the award. The honest answer is that the rules
-// that could reverse it are no longer configured — an officer's decision, not a planner's — and the
-// alternative is a strategy negating entries it never planned.
-func TestRules_PlanReversal_ForARuleThePoolNoLongerRuns_IsRefused(t *testing.T) {
+// That cut searched the pool's current three rules and refused anything else, on the reasoning that
+// "the rules that could reverse it are no longer configured" is an officer's decision. It is not: the
+// ledger is APPEND-ONLY, so a reversal is the only repair primitive there is, and refusing one does
+// not prevent a bad batch — it prevents the CORRECTION. A guild that switched from `fixed_price` to
+// an auction would have found every historical award permanently unreversible, with no way back,
+// because the repair had been made contingent on the present.
+//
+// `.claude/rules/ledger-and-strategy.md` makes exactly this argument about NOT declaring NonNegative
+// on a reversal, and reversePlan's own doc comment makes it about not reading the pool's current
+// config. This is the third place the same mistake was available, and the assertion below is what
+// keeps it made only once.
+func TestRules_PlanReversal_ForARuleThePoolNoLongerRuns_StillPlans(t *testing.T) {
+	t.Parallel()
+
+	// A pool that now earns and spends, and runs NO over-time rule — the guild dropped `cap` after
+	// the run below was committed.
+	rules, err := strategy.PoolConfig{
+		EarnStrategyID:  "tick",
+		EarnConfigJSON:  tickRuleConfig,
+		SpendStrategyID: "fixed_price",
+		SpendConfigJSON: fixedPriceRuleConfig,
+	}.Resolve()
+	require.NoError(t, err)
+
+	ctx := newCtx(t, 2, 10_000, "")
+
+	original := strategy.LedgerBatch{
+		ID:                 core.ULID("0000000000000000000BATCH02"),
+		Kind:               "cap",
+		StrategyID:         "cap",
+		StrategyVersion:    "0.1.0",
+		ConfigSnapshotJSON: capRuleConfig,
+		Entries: []strategy.EntryProposal{
+			{AccountID: acct(0), BalanceKind: strategy.BalanceKindDKP, AmountCp: -100},
+			{AccountID: acct(1), BalanceKind: strategy.BalanceKindDKP, AmountCp: 100},
+		},
+	}
+
+	p, err := rules.PlanReversal(ctx, original)
+	require.NoError(t, err,
+		"a batch planned by a rule the pool has since dropped must still be reversible; the ledger is "+
+			"append-only and this is the only repair there is")
+	require.Equal(t, "cap", p.StrategyID,
+		"and it is reversed by the rule that planned it, not by whatever occupies that slot today")
+	require.Equal(t, strategy.KindReversal, p.Kind)
+	require.Equal(t, original.ID, *p.ReversesBatchID)
+
+	// The ORIGINAL's config snapshot travels onto the reversal, and it is the batch's rather than any
+	// current slot's — reading a live document would reintroduce the contingency the fix removed.
+	require.Equal(t, capRuleConfig, p.ConfigSnapshotJSON)
+}
+
+// TestRules_PlanReversal_ForAStrategyThisBinaryLacks_IsRefused is the one refusal that survives.
+//
+// An id no shipped strategy answers to is an operator running a binary OLDER than the batch — a
+// downgrade across a release that added a strategy. There is no planner to reverse it with, and
+// guessing would negate committed entries under rules this binary has never seen. That is a
+// startup-shaped refusal naming the id, which is what catalogue.go says ErrUnknownStrategy is for.
+func TestRules_PlanReversal_ForAStrategyThisBinaryLacks_IsRefused(t *testing.T) {
 	t.Parallel()
 
 	rules := composedPool(t)
 	ctx := newCtx(t, 2, 10_000, "")
 
 	_, err := rules.PlanReversal(ctx, strategy.LedgerBatch{
-		ID:         core.ULID("0000000000000000000BATCH02"),
-		Kind:       "start_points",
-		StrategyID: "start_points",
+		ID:         core.ULID("0000000000000000000BATCH03"),
+		Kind:       "award",
+		StrategyID: "auction_sealed",
 		Entries: []strategy.EntryProposal{
 			{AccountID: acct(0), BalanceKind: strategy.BalanceKindDKP, AmountCp: 100},
 			{AccountID: acct(1), BalanceKind: strategy.BalanceKindDKP, AmountCp: -100},
 		},
 	})
 
-	require.ErrorIs(t, err, strategy.ErrNoRule)
-	require.ErrorContains(t, err, "start_points", "the refusal names the rule that planned it")
-	require.ErrorContains(t, err, "earn=tick", "and the three this pool does run")
-	require.ErrorContains(t, err, "spend=fixed_price")
-	require.ErrorContains(t, err, "over_time=cap")
+	require.ErrorIs(t, err, strategy.ErrUnknownStrategy)
+	require.ErrorContains(t, err, "auction_sealed", "the refusal names the rule that planned it")
+	require.ErrorContains(t, err, "earn=tick", "and the three this pool does run, for diagnosis")
 }
 
 // TestRules_Bind_DoesNotLeakTheConfigBetweenRules is the failure the whole ruleCtx mechanism exists

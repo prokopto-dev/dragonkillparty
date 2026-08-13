@@ -25,6 +25,13 @@ there are **no fallbacks** — a pool never asks one rule a question it gave to 
 `Rules.PlanReversal` routes on it: the repair is always planned by the rule that planned the
 original. The singular `pool.strategy_id` is superseded and read by nothing.
 
+**It resolves that rule through the CATALOGUE, never through the pool's current three slots**, and
+the same is true of the config it binds — the batch's own `config_snapshot_json`, not a live one.
+Routing a reversal through today's composition makes every batch a pool ever wrote unreversible the
+moment a guild changes a rule, which is the "refusing a correction is worse than the thing it
+corrects" argument two sections down, in a third place. The composition decides what a pool does
+next; it has no authority over what its history means.
+
 ## The two tables
 
 ```

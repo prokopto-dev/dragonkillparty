@@ -257,30 +257,43 @@ func (r Rules) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 	return rule.Strategy.PlanDecay(rule.bind(ctx), run)
 }
 
-// PlanReversal routes to the rule that planned the ORIGINAL, found by its ledger_batch.strategy_id.
+// PlanReversal routes to the strategy that planned the ORIGINAL, resolved from its
+// ledger_batch.strategy_id through the CATALOGUE — deliberately not through this pool's three slots.
 //
-// THIS IS WHAT ADR-0026 DECIDED THE COLUMN MEANS, made executable. A reversal is the only repair
-// primitive an append-only ledger has, and it must be planned by the rules that were in force: a
-// reversal of a `fixed_price` award planned by `tick` would negate committed entries under a rule
-// nobody applied to them, and `tick` has no way to know that it should not.
+// THIS IS WHAT ADR-0026 DECIDED THE COLUMN MEANS, made executable. A reversal must be planned by the
+// rules that were in force: a reversal of a `fixed_price` award planned by `tick` would negate
+// committed entries under a rule nobody applied to them, and `tick` has no way to know it should not.
 //
-// A batch whose strategy is not one of this pool's three is REFUSED, naming both, rather than
-// guessed at. That is the pool whose spend rule was changed after the award: the honest answer is
-// that the rules that could reverse it are no longer configured, which is an officer's decision to
-// make and not a planner's. reversePlan makes the same refusal one layer down — it will not let a
-// strategy reverse another strategy's batch — so this is the pool-level half of a check that exists
-// at both levels deliberately.
+// IT DOES NOT CONSULT r, AND THAT IS THE WHOLE POINT. An earlier cut of this method searched the
+// pool's current three rules and refused a batch planned by a rule the pool no longer runs — which
+// made every historical `fixed_price` award permanently unreversible the moment a guild switched to
+// an auction. That is the same defect reversePlan's doc comment already argues against one layer
+// down: "History is immutable and the repair primitive must not be contingent on the present." The
+// ledger is append-only, so a reversal is the ONLY repair there is; refusing one does not prevent a
+// bad batch, it prevents the CORRECTION, and leaves a mistake that is provably wrong and permanently
+// unfixable. `.claude/rules/ledger-and-strategy.md` makes the identical argument about declaring
+// NonNegative on a reversal, and it is the same mistake in a different place.
+//
+// THE CONFIG BOUND IS THE BATCH'S OWN SNAPSHOT, not any current slot's. It is what the original was
+// planned under, it travels on the row, and reading a live slot's document instead would reintroduce
+// the contingency by the back door — a knob added since, or a config for a different strategy
+// entirely, and the reversal stops parsing. No strategy shipping today reads it during a reversal
+// (reversePlan needs no config), so this is about the one that will.
+//
+// The strategy still has to EXIST. An id no shipped strategy answers to is an operator running a
+// binary older than the batch — a downgrade across a release that added a strategy — and that is
+// ErrUnknownStrategy with the pool's rules named for diagnosis, not a reversal planned by a guess.
 func (r Rules) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) {
-	for _, rule := range []Rule{r.Earn, r.Spend, r.OverTime} {
-		if rule.IsSet() && rule.Strategy.ID() == b.StrategyID {
-			return rule.Strategy.PlanReversal(rule.bind(ctx), b)
-		}
+	s, err := ByID(b.StrategyID)
+	if err != nil {
+		return BatchProposal{}, fmt.Errorf(
+			"batch %s was planned by %q, which this binary does not have; the pool runs %s: %w",
+			b.ID, b.StrategyID, r.describe(), err)
 	}
 
-	return BatchProposal{}, fmt.Errorf(
-		"batch %s was planned by %q, which is none of this pool's rules (%s); a reversal must be "+
-			"planned by the rule that planned the original: %w",
-		b.ID, b.StrategyID, r.describe(), ErrNoRule)
+	original := Rule{Strategy: s, ConfigJSON: b.ConfigSnapshotJSON}
+
+	return s.PlanReversal(original.bind(ctx), b)
 }
 
 // Spendable routes to the SPEND rule: what an account may commit to a purchase is a question about
