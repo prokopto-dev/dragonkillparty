@@ -113,7 +113,7 @@ func newSeedCmd() *cobra.Command {
 	cmd.Flags().StringVar(&profileName, "profile", profilePerf,
 		"which dataset to generate (perf; small and demo arrive in Phase 2 and Phase 3)")
 	cmd.Flags().IntVar(&raids, "raids", 0,
-		"override the profile's raid count, for a smaller dataset (0 keeps the profile's own)")
+		"override the profile's raid count, for a smaller dataset (0 keeps the profile's own; negative is refused)")
 	cmd.Flags().BoolVar(&verbose, "verbose", false,
 		"log every committed batch, not just progress")
 
@@ -123,10 +123,27 @@ func newSeedCmd() *cobra.Command {
 // resolveProfile turns the flags into a profile, or says which phase implements the one that was
 // asked for.
 //
-// An unimplemented profile is an ERROR rather than a fallback to perf. A developer who typed
-// `--profile demo` and silently got a 520,000-entry performance dataset would have to work out for
-// themselves why their dev guild had 3,400 raids in it.
+// EVERY INVALID INPUT HERE IS AN ERROR, never a fallback, and the reason is the same in both cases:
+// this command writes hundreds of thousands of rows into an append-only table, and there is no way
+// to take them back out. A malformed flag that lands on a default is a typo that produced the
+// largest possible irreversible write.
+//
+//   - An unimplemented profile fails rather than falling back to perf. A developer who typed
+//     `--profile demo` and silently got a 520,000-entry performance dataset would have to work out
+//     for themselves why their dev guild had 3,400 raids in it.
+//   - A NEGATIVE --raids fails rather than being ignored. It used to fall through the `> 0` test
+//     below and return the full 3,400-raid profile, so `--raids=-20` — a hand slipping on a hyphen
+//     while asking for a SMALL dataset — produced the biggest one instead. That is the worst
+//     available outcome for a mistyped argument, and it is the one this branch used to pick.
 func resolveProfile(name string, raids int) (seed.Profile, error) {
+	// Checked before the profile switch, so it holds for every profile and can never be reached by
+	// a route that skipped it.
+	if raids < 0 {
+		return seed.Profile{}, fmt.Errorf(
+			"--raids must not be negative, got %d; omit it (or pass 0) to seed the profile's own raid count",
+			raids)
+	}
+
 	switch name {
 	case profilePerf:
 		p := seed.Perf()

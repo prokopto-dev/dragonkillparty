@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,34 @@ func TestSeed_ResolveProfile_KnownAndUnknown(t *testing.T) {
 		p, err := resolveProfile(profilePerf, 0)
 		require.NoError(t, err)
 		require.Equal(t, seed.Perf().Raids, p.Raids)
+	})
+
+	// A negative override must FAIL, and the failure mode it replaces is why this test is here
+	// rather than in the table below: `raids > 0` alone let -20 fall through to the default, so a
+	// hand slipping on a hyphen while asking for a small dataset produced the full 3,400-raid,
+	// ~520,000-entry one instead — into an append-only table, with no way back.
+	t.Run("a negative raid count is refused, not ignored", func(t *testing.T) {
+		t.Parallel()
+
+		for _, raids := range []int{-1, -20, -3400} {
+			_, err := resolveProfile(profilePerf, raids)
+			require.Error(t, err, "--raids=%d must be refused", raids)
+			require.Contains(t, err.Error(), "must not be negative")
+		}
+	})
+
+	// And it is refused for every profile, because the check runs before the profile switch — a
+	// route that reported the profile problem first would leave the flag unvalidated on the branch
+	// that eventually implements that profile.
+	t.Run("a negative raid count is refused for every profile", func(t *testing.T) {
+		t.Parallel()
+
+		for _, name := range []string{profilePerf, profileSmall, profileDemo, "nonsense"} {
+			_, err := resolveProfile(name, -1)
+			require.Error(t, err, "profile %q with --raids=-1", name)
+			require.Contains(t, err.Error(), "must not be negative",
+				"the flag is malformed whatever the profile is")
+		}
 	})
 
 	for _, tc := range []struct {
@@ -95,6 +124,39 @@ func TestSeed_UnknownProfile_FailsBeforeTouchingTheDatabase(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown profile")
+}
+
+// TestSeed_NegativeRaids_FailsBeforeTouchingTheDatabase is the command-level half of the negative
+// override: not just that resolveProfile refuses it, but that the refusal happens before a database
+// is opened, let alone written to.
+//
+// DKP_DB_PATH points at a directory that does not exist, so a command that got as far as opening the
+// database would fail with a different, recognisable error. Both spellings are covered because
+// pflag accepts them both and a guard that only caught one would be a guard somebody walks around
+// by typing a space.
+func TestSeed_NegativeRaids_FailsBeforeTouchingTheDatabase(t *testing.T) {
+	for _, args := range [][]string{
+		{"seed", "--raids=-1"},
+		{"seed", "--raids", "-20"},
+		{"seed", "--profile", "perf", "--raids=-3400"},
+	} {
+		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
+			t.Setenv(dbPathEnv, filepath.Join(t.TempDir(), "nonexistent", "dkp.db"))
+
+			var out bytes.Buffer
+
+			cmd := newRootCmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SetArgs(args)
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "must not be negative")
+			require.NotContains(t, err.Error(), "nonexistent",
+				"the flag must be rejected before the database is opened")
+		})
+	}
 }
 
 // TestSeed_SmallRun_WritesAndReports drives the whole command against a real database file: migrate,
