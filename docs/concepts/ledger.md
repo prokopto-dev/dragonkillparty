@@ -213,3 +213,5 @@ example in [Choosing a DKP system](../guides/choosing-a-dkp-system.md#zero_sum--
 - [Point strategies](strategies.md) — what a strategy may propose and what the ledger refuses
 - [Attendance and windows](../guides/attendance-and-windows.md) — the other number members check
 - [ADR-0002](../adr/0002-append-only-ledger.md) — the decision, with its downsides
+- [ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md) — why the cached balance is not optional,
+  with the measurement behind it
