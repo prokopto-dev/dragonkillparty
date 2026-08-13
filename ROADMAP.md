@@ -183,7 +183,7 @@ this table is the separate reality layer, and it is the thing to keep honest.
 rather than at the head of this phase, because `EXAMPLE_ENDPOINT.md` and `RECIPES.md` needed a real
 table to be worked examples *of*, and the append-only triggers had to exist before the first
 migration that could drop them. What that leaves for Phase 1 proper is the breadth — twelve more
-strategies — plus the four subsystems in items 9, 10, 12 and 13. Three of those four are still open;
+strategies — plus the four subsystems in items 9, 10, 12 and 13. Two of those four are still open;
 the table below is the current state.
 
 | # | Deliverable | State | Where it is |
@@ -196,7 +196,7 @@ the table below is the current state.
 | 6 | `PointStrategy`, injected `Clock`/`Rng`, purity test | **done** | `internal/strategy/{strategy,proposal}.go`, `arch_test.go` |
 | 7 | Thirteen strategies | **1 of 13** | `fixed_price` only. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) (`tick`, `start_points`, `cap`) · [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) (`decay_percent`, `decay_window`) · [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) (the four bid strategies) · [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196) (`zero_sum`, `attendance_weighted`) · [#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) (`loot_council`) |
 | 8 | `PlanReversal` per strategy | **ships with each** | `FixedPrice.PlanReversal` and `BatchProposal.Negated` set the shape, including dropping `NonNegative` |
-| 9 | `dkp verify-ledger` + nightly replay | **not started** | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198). ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page |
+| 9 | `dkp verify-ledger` + nightly replay | **done** | `cmd/dkp/verify_ledger.go`, `internal/ledger/verify.go`; nightly `replay / seed.Perf`. ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page. `--rebuild` is documented and not implemented — [#209](https://github.com/prokopto-dev/dragonkillparty/issues/209) |
 | 10 | Pools, `pool_config_change`, `decay_run` | **pool only** | `pool` exists in the minimal form the ledger needs (id, name, strategy id/version, balance kinds). `pool_config_change` [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191) and `decay_run` [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) are not in the schema; the semantics both must satisfy are `.claude/rules/decay-and-jobs.md` |
 | 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
 | 12 | Tier-aware auction resolution | **not started** | Lands with the bid strategies, [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
@@ -251,18 +251,17 @@ invariants under randomised input; a 10⁵-entry replay reproduces every snapsho
 property holds for every shipped strategy; `internal/strategy` provably cannot import
 `internal/store`. No HTTP surface yet, and that is correct.
 
-**What is left to get there**, given the state table above — four workstreams, no others:
+**What is left to get there**, given the state table above — three workstreams, no others:
 
 | Remaining | Items | Issues |
 |---|---|---|
 | The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
-| `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
 | `pool_config_change` and `decay_run` with `UNIQUE(pool_id, cadence_period)` — settle [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206) first, or `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
 | Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
 
-The replay is the one with an ordering constraint on it: it is what makes the 10⁵-entry clause of the
-exit criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page. It should not be the
-last thing in the phase.
+The replay had the one ordering constraint on it — it is what makes the 10⁵-entry clause of the exit
+criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page — and it landed early
+rather than last, which is what that constraint asked for.
 
 **Demo.** At the end of this phase you can seed a synthetic pool from the CLI, post 5,000 batches,
 reverse one, print a member statement, and run `verify-ledger` clean — in under a second.
