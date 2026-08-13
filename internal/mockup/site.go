@@ -127,7 +127,7 @@ func Build(srcDir, outDir string, w io.Writer) error {
 			return err
 		}
 
-		p.printf("  built %-24s %-15s (%d directives lifted)\n", name, "("+page.Title+")", page.Lifted)
+		p.printf("  built %-24s %-15s (%d blocks lifted)\n", name, "("+page.Title+")", page.Lifted)
 	}
 
 	if err := gateStaleRefs(outDir, p); err != nil {

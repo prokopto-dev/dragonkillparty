@@ -109,6 +109,10 @@ const listFormat = `{{if .Module}}{{.Module.Main}}|{{.Module.Path}}|{{.Module.Ve
 // The platform queries are independent, so they run concurrently. Serially this was the slowest
 // part of `make check`, and the gate's negative fixtures pay it once per fixture.
 //
+// The environment of the query is fixed here rather than by the caller — GOWORK and GOFLAGS both
+// change which modules resolve, and both callers must see the same graph. See the comment on
+// cmd.Env below.
+//
 // It is an error, never an empty result, when: `go list` fails for any platform; `go list` matches
 // no packages (it EXITS ZERO in that case, warning only on stderr, which is a vacuous-pass path);
 // or the union is empty, since the main module always appears in its own dependency list.
@@ -143,7 +147,16 @@ func RuntimeModules(root string, platforms []Platform, pattern string) ([]Module
 			// third-party module brought in with `use ./thing` would be skipped as if it were
 			// first-party, and the gate would print its success banner having examined nothing.
 			// Module.Main is the correct main-module test and is what callers filter on.
-			cmd.Env = append(os.Environ(), "GOWORK=off", "GOOS="+p.GOOS, "GOARCH="+p.GOARCH)
+			//
+			// GOFLAGS is cleared for the reason `make licence-gate` strips it from its recipe: it can
+			// carry -mod=vendor or -tags, either of which changes which modules `go list` resolves,
+			// and a developer's environment must not decide which dependency graph is inspected. It
+			// is cleared HERE, in the one enumeration both callers share, rather than on one recipe —
+			// the gate stripped it and `make third-party-notices` did not, so the same function could
+			// classify one graph while the attribution file shipped with a release described another
+			// (issue #141). An empty value is how the go command spells "no flags"; a later entry
+			// wins over anything os.Environ() carried.
+			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOOS="+p.GOOS, "GOARCH="+p.GOARCH)
 			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
 

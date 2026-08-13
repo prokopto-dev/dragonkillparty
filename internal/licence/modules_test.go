@@ -122,3 +122,62 @@ func TestRuntimeModules_ReportsTheMainModule(t *testing.T) {
 		"a module whose only entry is itself has no dependencies — and that is a legitimate state, "+
 			"not the vacuous pass the empty-graph guard exists for")
 }
+
+// TestRuntimeModules_HostileGOFLAGS_ResolvesTheSameGraph fences the environment variable that can
+// hand this function's two callers two different dependency graphs (issue #141).
+//
+// `make licence-gate` has stripped GOFLAGS from its recipe since it was written: it can carry
+// -mod=vendor or -tags, either of which changes which modules `go list` resolves, and a developer's
+// environment must not decide which graph the licence firewall inspects. `make third-party-notices`
+// never had that guard. While the two were separate shell implementations the asymmetry was easy to
+// miss; since they call THIS function the same enumeration could be handed two environments, so the
+// gate would classify one graph and the THIRD_PARTY_NOTICES.txt attached to every release archive
+// and Linux package would describe another.
+//
+// The fixture makes both hostile values observable, which is the whole point of doing it here rather
+// than on a recipe: -tags=extra SILENTLY adds a module to the graph (the failure mode that ships),
+// and -mod=vendor fails the query outright against a tree with no vendor directory. The dependency
+// is a filesystem `replace`, so the test needs no network and no module cache.
+func TestRuntimeModules_HostileGOFLAGS_ResolvesTheSameGraph(t *testing.T) {
+	// No t.Parallel: t.Setenv panics in a parallel test, and the environment is the subject here.
+	if testing.Short() {
+		t.Skip("shells out to `go list`; run `make test` or `make check`")
+	}
+
+	tree := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(tree, name)), 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(tree, name), []byte(body), 0o644))
+	}
+
+	write("dep/go.mod", "module example.test/dep\n\ngo 1.26\n")
+	write("dep/dep.go", "package dep\n\nfunc Hello() string { return \"hi\" }\n")
+	write("go.mod", "module fixture\n\ngo 1.26\n\nrequire example.test/dep v0.0.0\n\n"+
+		"replace example.test/dep => ./dep\n")
+	write("main.go", "package main\n\nfunc main() {}\n")
+	// Reachable only under `-tags extra`, which is exactly how a GOFLAGS value changes the answer.
+	write("tagged.go", "//go:build extra\n\npackage main\n\nimport _ \"example.test/dep\"\n")
+
+	platforms := []licence.Platform{{GOOS: "linux", GOARCH: "amd64"}}
+
+	clean, err := licence.RuntimeModules(tree, platforms, "./...")
+	require.NoError(t, err)
+	require.Len(t, clean, 1,
+		"precondition: without the tag the fixture depends on nothing: %+v", clean)
+
+	for _, goflags := range []string{"-tags=extra", "-mod=vendor", "-mod=vendor -tags=extra"} {
+		t.Run(goflags, func(t *testing.T) {
+			t.Setenv("GOFLAGS", goflags)
+
+			got, err := licence.RuntimeModules(tree, platforms, "./...")
+			require.NoErrorf(t, err,
+				"GOFLAGS=%q reached `go list`, so a developer's shell decides which graph is "+
+					"inspected — is GOFLAGS still cleared in RuntimeModules?", goflags)
+			require.Equalf(t, clean, got,
+				"GOFLAGS=%q changed the resolved module set. The licence gate and the notices "+
+					"generator read the graph through this one function; a value that reaches it "+
+					"classifies one graph and ships attribution for another.", goflags)
+		})
+	}
+}
