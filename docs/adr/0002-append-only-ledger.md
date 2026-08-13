@@ -1,6 +1,9 @@
 # ADR-0002 — Append-only ledger
 
 **Status:** accepted · **Date:** 2026-08-03 · **Deciders:** owner
+**Amended in part by [ADR-0024](0024-one-run-table-scoped-by-kind.md):** the decay idempotency key
+below is `(pool_id, kind, cadence_period)`. Everything else in this record stands — the key's
+existence, and that decay is posted rather than computed, are the point and are unchanged.
 
 ## Context and problem statement
 

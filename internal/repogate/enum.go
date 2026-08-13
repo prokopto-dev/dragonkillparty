@@ -14,15 +14,17 @@ import (
 //
 // Canonical §5: "both the SQL CHECK constraint and the OpenAPI enum are generated from one Go
 // catalogue". Every string-enum CHECK in db/schema.hcl now is — ledger_batch.kind/source,
-// audit_log.actor_kind/outcome, account.kind/system_key — and each has a test asserting its own
-// region matches its own catalogue. NONE of them says anything about a SEVENTH enum, which is the
+// audit_log.actor_kind/outcome, account.kind/system_key, decay_run.kind/state — and each has a test
+// asserting its own
+// region matches its own catalogue. NONE of them says anything about an EIGHTH enum, which is the
 // hole this closes: a brand-new table added with
 //
 //	check "bid_session_state_enum" { expr = "state IN ('draft', 'open', 'extended')" }
 //
-// and no catalogue passes all three of those tests, `make verify-generated` and `make check`. The
+// and no catalogue passes all four of those tests, `make verify-generated` and `make check`. The
 // rule that it should not was prose in .claude/rules/migrations.md and AGENTS.md, and prose is what
-// produced this finding three times already.
+// produced this finding three times already. decay_run's two (#192) are the rule working as intended:
+// the table arrived with a literal CHECK, the gate refused it, and the catalogue is what landed.
 //
 // canonical §5 makes bid.tier's DECLARATION ORDER semantic — the resolution ladder — so a literal
 // that agrees with the Go list on values and disagrees on order is a resolver bug that no schema

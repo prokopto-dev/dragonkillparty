@@ -134,7 +134,9 @@ result is exact integer arithmetic in `Centipoints` (int64) or `Micros` (int64).
 
 ## F. Decay is posted, not computed
 
-- Decay appears as explicit batches (`kind='decay'`) with idempotency key `(pool_id, cadence_period)`.
+- Decay appears as explicit batches (`kind='decay'`) with idempotency key
+  `(pool_id, kind, cadence_period)` — `cap` and `start_points` share the cadence vocabulary and the
+  `decay_run` table, so the `kind` is what stops one family deduplicating another away (ADR-0024).
 - **`spendable()` is a plain SUM over entries as of a `seq`.** Any time-dependent factor, decay
   multiplier, window taper, or `now`-derived weight inside `spendable()` is a blocker: it makes a
   balance un-explainable to the member who is looking at their own history, and it double-applies
