@@ -165,8 +165,11 @@ result is exact integer arithmetic in `Centipoints` (int64) or `Micros` (int64).
 ## H. Balances and sequence
 
 - A balance is defined **as of a `seq`**, never as of a timestamp.
-- `balance_snapshot` remains a droppable cache: every read of it has a recompute fallback, and
-  nothing treats it as truth.
+- `balance_snapshot` is a cache and nothing treats it as truth — but it is **load-bearing, not
+  droppable** (ADR-0023, measured: 13 pages against the cache, 10,412 against the SUM). Do not
+  require a recompute fallback on a snapshot read; that fallback is 22 seconds at guild scale and
+  was explicitly declined. What the ADR requires instead is that the nightly replay verifies it and
+  fails loudly.
 - Bid resolution and percentage-of-balance bids resolve against the frozen snapshot at
   `seq_at_open`. Resolving against live balances lets a concurrent decay run or settlement rewrite
   everyone's bid mid-auction.

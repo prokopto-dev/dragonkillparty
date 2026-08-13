@@ -173,30 +173,96 @@ product is a client of this package.
     is reproducible; the ledger posting is Phase 7. Discounts **stack** by owner decision
     ([`docs/design/10-ui-decisions.md`](docs/design/10-ui-decisions.md) §12).
 
+### Where this stands in the tree, 2026-08-13
+
+The list above is the plan and its numbering is cited elsewhere — [ADR-0023](docs/adr/0023-balance-snapshot-is-load-bearing.md)
+says "ROADMAP Phase 1 item 9" and means it. So the plan is not renumbered or reworded as work lands;
+this table is the separate reality layer, and it is the thing to keep honest.
+
+**Phase 0 pulled the ledger core forward.** Deliverables 1–6 shipped inside the walking skeleton
+rather than at the head of this phase, because `EXAMPLE_ENDPOINT.md` and `RECIPES.md` needed a real
+table to be worked examples *of*, and the append-only triggers had to exist before the first
+migration that could drop them. What that leaves for Phase 1 proper is the breadth — twelve more
+strategies — plus the four subsystems in items 9, 10, 12 and 13.
+
+| # | Deliverable | State | Where it is |
+|---|---|---|---|
+| 1 | Ledger schema, triggers, indexes | **done** | `db/schema.hcl`; `internal/ledger/{trigger,strict,applied_schema}_test.go` |
+| 2 | `seq`, `BalanceAsOfSeq`, snapshot upsert | **done** | `internal/ledger/{seq,balance,snapshot}.go` |
+| 3 | Ledger service, hash chain, idempotency | **done** | `internal/ledger/{commit,hashchain}.go` |
+| 4 | Invariant engine | **partial, by design** | `internal/ledger/invariant.go`. The universal set plus `SumZero`, `NonNegative` and `LargestRemainderSumsToDebit` are checked. `Conserved`, `MonotoneNonDecreasing`, `Permutation` and `RatioPreserved` are vocabulary-legal and **refuse the commit**, because a declared rule nothing checks is one every reviewer will believe. Each lands with the strategy that needs it |
+| 5 | Largest-remainder allocator, system accounts | **done** | `internal/ledger/allocate.go`; `internal/account/kinds` |
+| 6 | `PointStrategy`, injected `Clock`/`Rng`, purity test | **done** | `internal/strategy/{strategy,proposal}.go`, `arch_test.go` |
+| 7 | Thirteen strategies | **1 of 13** | `fixed_price` only. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) (`tick`, `start_points`, `cap`) · [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) (`decay_percent`, `decay_window`) · [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) (the four bid strategies) · [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196) (`zero_sum`, `attendance_weighted`) · [#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) (`loot_council`) |
+| 8 | `PlanReversal` per strategy | **ships with each** | `FixedPrice.PlanReversal` and `BatchProposal.Negated` set the shape, including dropping `NonNegative` |
+| 9 | `dkp verify-ledger` + nightly replay | **not started** | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198). ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page |
+| 10 | Pools, `pool_config_change`, `decay_run` | **pool only** | `pool` exists in the minimal form the ledger needs (id, name, strategy id/version, balance kinds). `pool_config_change` [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191) and `decay_run` [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) are not in the schema; the semantics both must satisfy are `.claude/rules/decay-and-jobs.md` |
+| 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
+| 12 | Tier-aware auction resolution | **not started** | Lands with the bid strategies, [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
+| 13 | `internal/swap` | **not started** | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
+
+**The V5 verdict, because item 11 existed to produce it.** Over 527,164 seeded entries all written
+through `ledger.Service.Commit`, the standings page is **1 statement and ≤ 1.07 ms warm p99, 13 pages
+→ ≤ 27 ms modelled on SD-card-class storage**, against a budget of 4 statements and 150 ms. The
+definitional SUM needs 10,412 pages, ~22 s. So `balance_snapshot` survives **with no schema change**
+and option D — widening the index — was declined rather than deferred.
+
+The consequence is not neutral, and it is the one thing to carry out of this phase:
+[ADR-0023](docs/adr/0023-balance-snapshot-is-load-bearing.md) retires the phrase "droppable cache".
+The log is still the only source of truth, but there is no honest fallback that serves the page from
+the log, so **losing the cache is a rebuild** — which makes item 9's replay job a dependency of a
+shipped page rather than a nicety, and raises the bar for it: it must fail loudly, because a job that
+silently stops running makes a drifted cache undetectable, and that is the exact EQdkp Plus failure
+mode this product exists to fix.
+
 **Conditional, not scheduled.** `epgp` and `suicide_kings` (×3) are held until a pilot guild asks for
 them. They serve WoW-lineage systems the EQdkp inventory itself rates low-value for P99, and their
 `PlanReversal` implementations are the hardest single piece of ledger code in the spec (~8 pt). The
 trigger is a named guild in an issue, not a maintainer's guess.
 
-**Tests that must exist by the end.**
+**Tests that must exist by the end.** Ticks mark what the tree already has.
 
-- Properties P1–P12 at 200 checks per PR, 20k nightly.
-- The **trigger-fires** test: `UPDATE ledger_entry SET amount_cp = 1` raises; `DELETE FROM
+- ✓ The **trigger-fires** test: `UPDATE ledger_entry SET amount_cp = 1` raises; `DELETE FROM
   ledger_batch` raises. The guardrail cannot be silently regressed.
-- Determinism hash test; ledger replay over a 10⁵-entry synthetic ledger.
-- Decay idempotency across DST and month boundaries.
-- Per-strategy golden `BatchProposal` files.
-- `seed_profile_test`: row-count floors per profile, non-decreasing.
-- Coverage floors: `internal/ledger` 95%, `internal/strategy` 95%.
+- ✓ Coverage floors: `internal/ledger` 95%, `internal/strategy` 95% — wired into `make check` as
+  `test-coverage-floor`, so the floor is a gate rather than an aspiration.
+- ✓ `seed_profile_test`: row-count floors per profile, non-decreasing.
+- ✓ Determinism hash test (P8), and the cache-versus-fold equality (P3) at guild scale under
+  `make test-perf` rather than at 200 checks — a fold of 527,164 entries is not a property-test-sized
+  operation.
+- Properties P1–P12 at 200 checks per PR, 20k nightly. **P1, P2, P5 and P8 exist**; the rest arrive
+  with the strategies and subsystems they constrain — P4 with the bid FSM, P6/P7/P9 with `cap`,
+  `start_points` and the decay family, P10 with attendance in Phase 4.
+- Ledger replay over a 10⁵-entry synthetic ledger — the dataset exists (item 11), the replay does
+  not (item 9).
+- Decay idempotency across DST and month boundaries. The trap is treating a cadence period as a
+  duration rather than a guild-local label; `.claude/rules/decay-and-jobs.md` §2.
+- Per-strategy golden `BatchProposal` files — one exists, twelve follow their strategies.
 
 **Docs written during.** `docs/concepts/ledger.md` · `docs/concepts/strategies.md` (one page per
 shipped strategy with a worked numeric example) · `docs/concepts/invariants.md` · ADR "why integer
-centipoints" · ADR "why append-only".
+centipoints" · ADR "why append-only" · **[ADR-0023](docs/adr/0023-balance-snapshot-is-load-bearing.md)**
+(written here, from item 11's measurement) · `.claude/rules/seed-profiles.md` ·
+`.claude/rules/decay-and-jobs.md`.
 
-**Exit criterion.** Every shipped strategy passes its declared invariants under randomised input; a
-10⁵-entry replay reproduces every snapshot exactly; the reversal property holds for every shipped
-strategy; `internal/strategy` provably cannot import `internal/store`. No HTTP surface yet, and that
-is correct.
+**Exit criterion.** Unchanged as a definition of done: every shipped strategy passes its declared
+invariants under randomised input; a 10⁵-entry replay reproduces every snapshot exactly; the reversal
+property holds for every shipped strategy; `internal/strategy` provably cannot import
+`internal/store`. No HTTP surface yet, and that is correct.
+
+**What is left to get there**, given the state table above — five workstreams, no others:
+
+| Remaining | Items | Issues |
+|---|---|---|
+| The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
+| `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
+| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, cadence_period)` | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
+| Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
+| `internal/swap` | 13 | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
+
+The replay is the one with an ordering constraint on it: it is what makes the 10⁵-entry clause of the
+exit criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page. It should not be the
+last thing in the phase.
 
 **Demo.** At the end of this phase you can seed a synthetic pool from the CLI, post 5,000 batches,
 reverse one, print a member statement, and run `verify-ledger` clean — in under a second.
@@ -964,7 +1030,7 @@ the feature phases.
 | # | Risk | Signal it is happening | Mitigation (mechanical where possible) | Phase |
 |---|---|---|---|---|
 | R1 | **Importer fidelity** — balances don't match and the guild loses faith on day one | Δ set ≠ predicted set on any fixture; any `unexplained` classification | The classifier oracle as a **build-failing** assertion; five synthetic fixtures plus one anonymised real dump; `--dry-run` default; `--commit` refuses on unexplained or large residuals; three reconciliation modes so the honest answer is always available; the per-member statement link as the trust artifact | P0 fixtures / P5 |
-| R2 | **Point-math disputes** — "the site says 412, I had 430" | Any nightly `verify-ledger` drift; any dispute unanswerable from the statement | Balances are `SUM` over an append-only log; the snapshot is a droppable cache verified nightly with a drift alarm; bitemporal `effective_at`/`recorded_at` answers "what did it say last Tuesday"; decay is posted, not computed; every batch carries its `config_snapshot` and `rng_seed`; 12 properties + 95% coverage floors | P1 |
+| R2 | **Point-math disputes** — "the site says 412, I had 430" | Any nightly `verify-ledger` drift; any dispute unanswerable from the statement | Balances are `SUM` over an append-only log; the snapshot is a cache verified nightly with a drift alarm, and load-bearing rather than droppable (ADR-0023), so the replay that verifies it is itself a control; bitemporal `effective_at`/`recorded_at` answers "what did it say last Tuesday"; decay is posted, not computed; every batch carries its `config_snapshot` and `rng_seed`; 12 properties + 95% coverage floors | P1 |
 | R3 | **Scope creep** — now larger, because the CMS is in scope | Issues that grow a phase after its exit criterion is written; "while we're in there" PRs | The deferred table above is published here and linked from the issue template; "parity gap" is a *label*, not a promise; the hard rule that no work item enters a phase after its exit criterion is written; Phases 7 and 8 are sequenced last among the feature phases precisely so they can slip without blocking adoption; the mockup reconciliation added ≈114 pt and every item of it is named in this file rather than absorbed quietly | All |
 | R4 | **Adoption / trust** — guilds don't switch | Demo traffic without imports; imports without cutovers | The compat shim makes every existing P99 bot work on cutover day (and now ships *with* the cutover checklist); parallel run and `mirror` mode make trying it zero-risk; undo-this-import; the export story round-tripped in CI as a first-run feature; publicly linkable verification reports; **two pilot guilds recruited before Phase 4, not at RC** | P4–P8 |
 | R5 | **Maintainer burnout** | CI p50 creeping past 6 min; Renovate backlog; unread parser-bug issues | A ≤4 h/week budget with named line items; `ci-budget.yml` files an issue when the SLO breaks; the deletion rule (any check nobody has acted on in 90 days is removed); zero-retry flake policy with a 7-day time-boxed quarantine; automerge on low-risk deps; releases are "merge the Release PR" | All |
