@@ -15,7 +15,7 @@ import (
 )
 
 // The drift tests for canonical §5's third clause — "a test asserts the copies agree" — applied to
-// decay_run.state.
+// decay_run.kind and decay_run.state.
 //
 // THE COPIES ARE FOUR, and the fourth is the one this table has that no other catalogue does:
 //
@@ -100,9 +100,10 @@ func TestDecayKinds_CheckMatchesCatalogue(t *testing.T) {
 	require.NoError(t, err, "render db/schema.hcl from the catalogue")
 
 	require.Equal(t, committed, rendered,
-		"db/schema.hcl's decay_run state CHECK has drifted from internal/decay/kinds — run "+
+		"db/schema.hcl's decay_run enum CHECKs have drifted from internal/decay/kinds — run "+
 			"`make gen` (and `make migration NAME=<snake_case>` if a value actually changed)")
 
+	require.Contains(t, committed, kinds.KindCheckExpr())
 	require.Contains(t, committed, kinds.StateCheckExpr())
 }
 
@@ -129,13 +130,23 @@ func TestDecayKinds_SchemaDivergence_IsRestored(t *testing.T) {
 		}
 	}
 
-	states := kinds.StateCheckExpr()
+	states, runKinds := kinds.StateCheckExpr(), kinds.KindCheckExpr()
 
 	tests := []struct {
 		name    string
 		mutate  func(string) string
 		explain string
 	}{
+		{
+			name:    "cadence family dropped from the CHECK",
+			mutate:  editExpr(runKinds, ", 'start_points'", ""),
+			explain: "a family removed from the CHECK while its strategy still writes runs",
+		},
+		{
+			name:    "cadence family invented in the CHECK",
+			mutate:  editExpr(runKinds, "'cap'", "'cap', 'bonus'"),
+			explain: "a fourth family hand-added to the CHECK, with no constant and no strategy",
+		},
 		{
 			name:    "state dropped from the CHECK",
 			mutate:  editExpr(states, "'skipped', ", ""),
@@ -182,8 +193,8 @@ func TestDecayKinds_MissingMarkers_IsAnError(t *testing.T) {
 	t.Parallel()
 
 	committed := readSchemaHCL(t)
-	begin := "  // BEGIN GENERATED — decay_run enum CHECK, from internal/decay/kinds. Run `make gen`."
-	end := "  // END GENERATED — decay_run enum CHECK."
+	begin := "  // BEGIN GENERATED — decay_run enum CHECKs, from internal/decay/kinds. Run `make gen`."
+	end := "  // END GENERATED — decay_run enum CHECKs."
 
 	require.Contains(t, committed, begin, "marker text changed — update this test with it")
 	require.Contains(t, committed, end, "marker text changed — update this test with it")
@@ -224,14 +235,29 @@ func TestDecayKinds_MissingMarkers_IsAnError(t *testing.T) {
 func TestDecayKinds_MigrationCheckMatchesCatalogue(t *testing.T) {
 	t.Parallel()
 
-	last, file := lastMigrationCheck(t, "decay_run_state_enum", "state")
-	require.NotEmpty(t, file,
-		"no migration declares CONSTRAINT \"decay_run_state_enum\" — the enum reaches no database")
+	tests := []struct {
+		constraint string
+		column     string
+		want       string
+	}{
+		{constraint: "decay_run_kind_enum", column: "kind", want: kinds.KindCheckExpr()},
+		{constraint: "decay_run_state_enum", column: "state", want: kinds.StateCheckExpr()},
+	}
 
-	require.Equal(t, kinds.StateCheckExpr(), last,
-		"%s carries a state CHECK that the Go catalogue no longer matches — the values in "+
-			"internal/decay/kinds need a migration, written with `make migration NAME=<snake_case>` "+
-			"after `make gen`", file)
+	for _, tt := range tests {
+		t.Run(tt.column, func(t *testing.T) {
+			t.Parallel()
+
+			last, file := lastMigrationCheck(t, tt.constraint, tt.column)
+			require.NotEmpty(t, file,
+				"no migration declares CONSTRAINT %q — the enum reaches no database", tt.constraint)
+
+			require.Equal(t, tt.want, last,
+				"%s carries a %s CHECK that the Go catalogue no longer matches — the values in "+
+					"internal/decay/kinds need a migration, written with `make migration NAME=<snake_case>` "+
+					"after `make gen`", file, tt.column)
+		})
+	}
 }
 
 // lastMigrationCheck returns the CHECK expression the final migration to declare constraint carries,
@@ -306,16 +332,22 @@ func TestDecayKinds_Values_AreCanonicalEnumValues(t *testing.T) {
 
 	snakeCase := regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 
-	states := kinds.States()
-	require.NotEmpty(t, states, "state has no values")
+	vocabularies := map[string][]string{
+		"kind":  kinds.Kinds(),
+		"state": kinds.States(),
+	}
 
-	seen := make(map[string]bool, len(states))
+	for column, values := range vocabularies {
+		require.NotEmpty(t, values, "%s has no values", column)
 
-	for _, v := range states {
-		require.Regexp(t, snakeCase, v, "state: %q is not lowercase snake_case (canonical §5)", v)
-		require.False(t, seen[v], "state: %q appears twice in the catalogue", v)
+		seen := make(map[string]bool, len(values))
 
-		seen[v] = true
+		for _, v := range values {
+			require.Regexp(t, snakeCase, v, "%s: %q is not lowercase snake_case (canonical §5)", column, v)
+			require.False(t, seen[v], "%s: %q appears twice in the catalogue", column, v)
+
+			seen[v] = true
+		}
 	}
 }
 
@@ -335,6 +367,13 @@ func TestDecayKinds_ReturnFreshSlices(t *testing.T) {
 	require.Equal(t, kinds.StatePlanned, kinds.States()[0], "States handed out a slice backed by shared state")
 	require.True(t, kinds.IsState(kinds.StatePlanned))
 	require.False(t, kinds.IsState("clobbered"))
+
+	families := kinds.Kinds()
+	families[0] = "clobbered"
+
+	require.Equal(t, kinds.KindDecay, kinds.Kinds()[0], "Kinds handed out a slice backed by shared state")
+	require.True(t, kinds.IsKind(kinds.KindDecay))
+	require.False(t, kinds.IsKind("clobbered"))
 }
 
 // TestDecayKinds_RuntimeValidation_AcceptsExactlyTheCatalogue is the drift test for the RUNTIME half:
@@ -348,6 +387,17 @@ func TestDecayKinds_RuntimeValidation_AcceptsExactlyTheCatalogue(t *testing.T) {
 
 	for _, v := range kinds.States() {
 		require.True(t, kinds.IsState(v), "%q is in the catalogue and the generated CHECK", v)
+	}
+
+	for _, v := range kinds.Kinds() {
+		require.True(t, kinds.IsKind(v), "%q is in the catalogue and the generated CHECK", v)
+	}
+
+	// The near-misses that matter for kind are the OTHER catalogue's values and the plurals a caller
+	// reaches for: a run whose kind is 'decayed' or 'caps' is refused by the CHECK from inside the
+	// same transaction that computed the run.
+	for _, v := range []string{"", "Decay", "decayed", "caps", "startpoints", "planned", "kind"} {
+		require.False(t, kinds.IsKind(v), "%q is not a decay_run kind", v)
 	}
 
 	// Near-misses, not nonsense: a casing slip, a tense, a plural, the vocabulary of the neighbouring
@@ -367,6 +417,12 @@ func TestDecayKinds_CheckExpr_RendersTheCommittedExpression(t *testing.T) {
 	t.Parallel()
 
 	require.Equal(t,
+		"kind IN ('decay', 'cap', 'start_points')",
+		kinds.KindCheckExpr(),
+		"the rendered expression changed — every existing database carries the old text, so this is a "+
+			"migration, not a formatting choice")
+
+	require.Equal(t,
 		"state IN ('planned', 'preview', 'committed', 'skipped', 'failed')",
 		kinds.StateCheckExpr(),
 		"the rendered expression changed — every existing database carries the old text, so this is a "+
@@ -383,8 +439,8 @@ func TestDecayKinds_SchemaEnumBlock_CarriesItsOwnMarkers(t *testing.T) {
 	require.GreaterOrEqual(t, len(lines), 2, "a generated block is at least its two markers")
 
 	require.Equal(t,
-		"  // BEGIN GENERATED — decay_run enum CHECK, from internal/decay/kinds. Run `make gen`.",
+		"  // BEGIN GENERATED — decay_run enum CHECKs, from internal/decay/kinds. Run `make gen`.",
 		lines[0])
-	require.Equal(t, "  // END GENERATED — decay_run enum CHECK.", lines[len(lines)-1])
+	require.Equal(t, "  // END GENERATED — decay_run enum CHECKs.", lines[len(lines)-1])
 	require.NotContains(t, kinds.SchemaEnumBlock(), "\n\n\n", "a blank run would grow the region per render")
 }

@@ -74,6 +74,8 @@ instantly, assert one batch per missed period and no double-post. `time.Sleep` i
 CREATE TABLE decay_run (
   id      TEXT NOT NULL PRIMARY KEY,
   pool_id TEXT NOT NULL REFERENCES pool(id),
+  kind    TEXT NOT NULL                           -- 'decay' | 'cap' | 'start_points'
+          CHECK (kind IN ('decay','cap','start_points')),
   cadence_period TEXT NOT NULL,                   -- '2026-W31' | '2026-08' | 'raid:<ulid>'
   scheduled_for_at INTEGER NOT NULL,
   executed_at INTEGER NULL,
@@ -86,7 +88,7 @@ CREATE TABLE decay_run (
   error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
-CREATE UNIQUE INDEX ux_decay_period ON decay_run(pool_id, cadence_period);
+CREATE UNIQUE INDEX ux_decay_period ON decay_run(pool_id, kind, cadence_period);
 ```
 
 **`ux_decay_period` is the guarantee; the job is not trusted.** Three callers race for it and all
@@ -108,18 +110,20 @@ constraint arbitrate.
   same cadence vocabulary, so `2026-W31` alone would make a cap run collide with that period's decay
   run.
 
-> **Unresolved, and do not resolve it by writing code.** That kind-scoping argument applies just as
-> hard one line up, and `ux_decay_period` does not have it. The design says all three families key
-> on `(pool_id, cadence_period)` (canonical §10, `docs/api/idempotency-and-concurrency.md`) and
-> defines exactly **one** run table, `decay_run`. Both cannot be true as written: if a cap run and a
-> start-points run also write `decay_run` rows, the second one in any period fails on a unique index
-> that was designed to stop a *repeat*, and the failure looks exactly like correct deduplication.
+> **Settled by [ADR-0024](../../docs/adr/0024-one-run-table-scoped-by-kind.md), and the box that used
+> to be here is why the column exists.** That kind-scoping argument applies just as hard one line up,
+> and `ux_decay_period` did not have it: the design keys all three families on
+> `(pool_id, cadence_period)` (canonical §10, `docs/api/idempotency-and-concurrency.md`) and defines
+> exactly **one** run table, so a cap run for a period the decay run already took failed an index
+> designed to stop a *repeat* — and an idempotent job is supposed to read that as "already done" and
+> exit 0. The cap then silently never applies, with a green dashboard.
 >
-> Three answers are open — a `kind` column inside the unique index, one run table per family, or
-> `decay_run` genuinely being decay-only with cap and start-points keyed by their batch alone — and
-> which one is right is a schema decision, not an implementation detail. **[#206](https://github.com/prokopto-dev/dragonkillparty/issues/206)**
-> tracks it against [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192), the issue
-> that builds the table. Whoever builds it settles this with a human first.
+> `kind` is therefore **inside** the unique index, not beside it. One table, one lifecycle, one
+> dashboard, three families; a `decay_run` row is not necessarily decay, and the name is the price.
+> The two alternatives the ADR rejected — a table per family, and `decay_run` being decay-only — are
+> recorded there with what each costs. [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206)
+> is closed by [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192)'s PR, which builds
+> the table.
 
 ## 4. A run that moves nothing must not commit
 
@@ -242,10 +246,9 @@ human.
   balances, which is worse than an error, and the ledger is append-only so the guess is permanent.
 - A cadence needs a period label the three-form vocabulary cannot express. Adding a fourth form is a
   design decision, not a regex.
-- **You are about to build `decay_run` for `cap` or `start_points`.** `ux_decay_period` has no kind
-  in it and the design has not said whether those families share the table — §3's box and
-  [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206). Guessing here produces a run
-  that silently no-ops, which is the one failure mode idempotency is supposed to make impossible.
+- A fourth cadence family appears. `decay_run.kind` is a closed catalogue
+  (`internal/decay/kinds`) inside the unique index, so adding one is `make gen` plus a migration plus
+  a decision that it belongs in this table at all — ADR-0024, not a new string.
 - A run would need to `UPDATE` or `DELETE` a prior run's batch. It cannot: the correction is a
   reversal, and the reversed period's label stays taken.
 - A decay would need to read a balance inside `Spendable()`, or a window would be cheaper as a

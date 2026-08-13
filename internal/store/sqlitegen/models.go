@@ -42,6 +42,7 @@ type BalanceSnapshot struct {
 type DecayRun struct {
 	ID                 string
 	PoolID             string
+	Kind               string
 	CadencePeriod      string
 	ScheduledForAt     int64
 	ExecutedAt         *int64
@@ -128,14 +129,15 @@ type LedgerEntry struct {
 }
 
 type Pool struct {
-	ID              string
-	Name            string
-	NameNorm        string
-	StrategyID      string
-	StrategyVersion string
-	BalanceKinds    string
-	CreatedAt       int64
-	UpdatedAt       int64
+	ID                 string
+	Name               string
+	NameNorm           string
+	StrategyID         string
+	StrategyVersion    string
+	BalanceKinds       string
+	CreatedAt          int64
+	UpdatedAt          int64
+	StrategyConfigJson string
 }
 
 type PoolConfigChange struct {

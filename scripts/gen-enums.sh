@@ -2,7 +2,7 @@
 # The enum half of `make gen`: db/schema.hcl's generated CHECK constraints, emitted from the Go
 # catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source), internal/audit/kinds
 # (audit_log.actor_kind, audit_log.outcome), internal/account/kinds (account.kind,
-# account.system_key) and internal/decay/kinds (decay_run.state).
+# account.system_key) and internal/decay/kinds (decay_run.kind, decay_run.state).
 #
 # RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Every catalogue and internal/schemaenum, which holds
 # the rendering they share, import nothing but the standard library, deliberately: this step

@@ -228,19 +228,22 @@ table "guild" {
 // as a tracked deferral below.
 // ============================================================================
 
-// pool — a currency (docs/design/01-domain-model.md §7). MINIMAL for PR 9.
+// pool — a currency (docs/design/01-domain-model.md §7). MINIMAL for PR 9, plus the one column
+// Phase 1 un-deferred.
 //
-// The domain model's pool carries ~20 columns; PR 9 ships the eight the ledger structurally
-// needs and defers the rest, for the same freeze-rule reason the guild table shipped twelve of
-// seventeen: ADD COLUMN is cheap, remove/retype is SQLite's 12-step rebuild. What is NOT here:
+// The domain model's pool carries ~20 columns; PR 9 shipped the eight the ledger structurally
+// needs and deferred the rest, for the same freeze-rule reason the guild table shipped twelve of
+// seventeen: ADD COLUMN is cheap, remove/retype is SQLite's 12-step rebuild. The deferral is
+// released one column at a time, as its reader lands — `strategy_config_json` is the first, because
+// pool_config_change versions it (#191). What is still NOT here:
 //
 //   - server_id: the domain model types it `NOT NULL REFERENCES server(id)`, and `server` is a
 //     Phase 1 table. Shipping it now would mean either a NOT NULL FK to a table that does not
 //     exist (impossible) or a nullable one that later has to be tightened (a retype). It is added
 //     cleanly when `server` lands.
-//   - description, currency_label, strategy_config_json, alt_policy, allow_negative,
+//   - description, currency_label, alt_policy, allow_negative,
 //     min_balance_cp, hold_policy, attendance_windows, dispute_window_hours,
-//     retro_edit_max_age_days, active, archived_at, sort_order: no reader in PR 9 or PR 10; each
+//     retro_edit_max_age_days, active, archived_at, sort_order: no reader yet; each
 //     is a forward ADD COLUMN when its feature lands.
 //
 // name_norm is a PLAIN column normalised in Go (canonical C2: core SQLite has no NFKC and a
@@ -278,6 +281,25 @@ table "pool" {
   column "strategy_version" {
     null = false
     type = text
+  }
+
+  // The strategy's own configuration, validated on write against strategy.ConfigSchema() and read
+  // whole (canonical §8: a *_json column is never queried into). THE CONFIGURATION IN FORCE — the
+  // pool holds what is current, pool_config_change holds how it got there.
+  //
+  // Deferred by PR 9 with the rest of the domain model's pool columns, and un-deferred here rather
+  // than later because its reader now exists: pool_config_change's from_config_json/to_config_json
+  // snapshot THIS column, and a history table versioning a column that does not exist is a writer
+  // that can record the change and not apply it. Every strategy also needs somewhere to persist a
+  // decay rate or a cap ceiling, which is what #193/#194 land on.
+  //
+  // DEFAULT '{}' where pool_config_change's two snapshots have none: an empty document is the honest
+  // value for a pool whose strategy takes no configuration, while an empty SNAPSHOT would be a lie
+  // about history. Also what makes this a plain ADD COLUMN on a populated database.
+  column "strategy_config_json" {
+    null    = false
+    type    = text
+    default = "{}"
   }
 
   // Space-separated balance kinds the strategy declares ('dkp', or 'ep gp' for EPGP). Default
@@ -1222,10 +1244,10 @@ table "pool_config_change" {
     type = text
   }
 
-  // The configuration in force BEFORE this change. strategy_id and strategy_version mirror the
-  // columns of the same name on pool; from_config_json is what pool.strategy_config_json held (that
-  // column is itself deferred on pool — see the pool table above — so the first writer of this table
-  // lands with or after it).
+  // The configuration in force BEFORE this change. All three mirror columns of the same name on
+  // pool — `strategy_config_json` is un-deferred in this change precisely so that this trio has
+  // something to snapshot: a history table versioning a column that does not exist is a writer that
+  // can record a change and not apply it.
   column "from_strategy_id" {
     null = false
     type = text
@@ -1339,6 +1361,20 @@ table "decay_run" {
     type = text
   }
 
+  // WHICH CADENCE FAMILY this run belongs to. The values are internal/decay/kinds' and the CHECK
+  // below is generated from it. ADR-0024 and issue #206: all three families key on (pool_id,
+  // cadence_period) and the domain model defines one run table, so without this column inside
+  // ux_decay_period a cap run collides with that period's decay run — on an index built to stop a
+  // repeat, in a way that looks exactly like successful deduplication.
+  //
+  // No DEFAULT, deliberately, where state has one. A run is born 'planned' whoever creates it, but
+  // there is no default family: defaulting to 'decay' would make a cap job that forgot to set the
+  // column write a row that silently takes decay's slot for the period.
+  column "kind" {
+    null = false
+    type = text
+  }
+
   // The period this run covers: '2026-W31' | '2026-08' | 'raid:<ulid>'. TEXT rather than a pair of
   // timestamps because it is an IDENTITY, not a range — it is the half of the idempotency key that
   // says "this period, once" — and a weekly, a monthly and a per-raid cadence have to be expressible
@@ -1448,15 +1484,19 @@ table "decay_run" {
     on_delete   = NO_ACTION
   }
 
-  // BEGIN GENERATED — decay_run enum CHECK, from internal/decay/kinds. Run `make gen`.
+  // BEGIN GENERATED — decay_run enum CHECKs, from internal/decay/kinds. Run `make gen`.
   //
   // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
   // enum are generated from one Go catalogue. Adding a value here by hand is drift that
   // TestDecayKinds_CheckMatchesCatalogue fails on.
+  check "decay_run_kind_enum" {
+    expr = "kind IN ('decay', 'cap', 'start_points')"
+  }
+
   check "decay_run_state_enum" {
     expr = "state IN ('planned', 'preview', 'committed', 'skipped', 'failed')"
   }
-  // END GENERATED — decay_run enum CHECK.
+  // END GENERATED — decay_run enum CHECKs.
 
   // Times are Micros and never negative; the same shape as ledger_batch_times_nonneg. executed_at is
   // omitted because it is nullable — `x >= 0` is NULL rather than true for a run that has not
@@ -1466,19 +1506,29 @@ table "decay_run" {
     expr = "scheduled_for_at >= 0 AND created_at >= 0 AND updated_at >= 0"
   }
 
-  // THE IDEMPOTENCY KEY (issue #192). One run per (pool, period), enforced by the database rather
-  // than by a read-then-write in Go. NOT partial and NOT nullable on either column: a period with no
-  // row has not run, and a row that exists — in ANY state, including 'skipped' and 'failed' — means
-  // that period has been decided. Re-running is not "delete the row and try again": that is the
-  // double-decay the key exists to prevent, and a failed run is corrected by a new period or by a
-  // reversal batch, never by rewriting history.
+  // THE IDEMPOTENCY KEY (issue #192, scoped by ADR-0024). One run per (pool, family, period),
+  // enforced by the database rather than by a read-then-write in Go — three ordinary callers race
+  // for it: the periodic job firing twice after a restart, a retry after a partial failure, and an
+  // officer clicking "run decay now" mid-flight.
+  //
+  // KIND IS INSIDE THE INDEX, not beside it, and that is the whole of #206. The design keys all
+  // three cadence families on (pool_id, cadence_period) and defines one run table; without kind in
+  // here, a cap run for '2026-W31' violates an index built to stop a REPEAT, the job concludes
+  // "already done" and exits 0, and the cap silently never applies.
+  //
+  // NOT partial and NOT nullable on any column: a period with no row has not run, and a row that
+  // exists — in ANY state, including 'skipped' and 'failed' — means that period has been decided.
+  // Re-running is not "delete the row and try again": that is the double-decay the key exists to
+  // prevent, and a failed run is corrected by a new period or by a reversal batch, never by
+  // rewriting history.
   index "ux_decay_period" {
     unique  = true
-    columns = [column.pool_id, column.cadence_period]
+    columns = [column.pool_id, column.kind, column.cadence_period]
   }
 
   // The operator's read: this pool's runs, due-date order. Serves both "what is coming up" and the
-  // catch-up scan a periodic job does after downtime.
+  // catch-up scan a periodic job does after downtime. Not kind-scoped — the dashboard shows the
+  // pool's schedule, and a family filter over one pool's runs is a cheap residual.
   index "ix_decay_pool" {
     columns = [column.pool_id, column.scheduled_for_at]
   }

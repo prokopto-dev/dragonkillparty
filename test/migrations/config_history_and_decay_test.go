@@ -2,6 +2,7 @@ package migrations_test
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -32,10 +33,9 @@ const defaultPoolID = "00000000000000000000DKPP00"
 // a second time — and because the ledger is append-only, the repair is a reversal batch that every
 // member sees.
 //
-// The third and fourth cases are what stop the index being too strong: a different period on the
-// same pool, and the same period on a different pool, must both be admitted. An index on
-// cadence_period alone would satisfy the first two assertions and silently make a second pool's
-// weekly decay impossible.
+// The last two cases are what stop the index being too strong: a different period on the same pool,
+// and the same period on a different pool, must both be admitted. An index on cadence_period alone
+// would satisfy the refusal and silently make a second pool's weekly decay impossible.
 func TestDecayRun_SecondRunForTheSamePeriod_IsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -48,23 +48,88 @@ func TestDecayRun_SecondRunForTheSamePeriod_IsRejected(t *testing.T) {
 	withRawFK(t, path, func(handle *sql.DB) {
 		insertPool(t, handle, "00000000000000000000DKPP01", "second", "second")
 
-		require.NoError(t, insertDecayRun(t, handle, "DECAYRUN000000000000000001", defaultPoolID, "2026-W31"),
+		require.NoError(t,
+			insertDecayRun(t, handle, "DECAYRUN000000000000000001", defaultPoolID, "decay", "2026-W31"),
 			"the first run for a period must be admitted")
 
-		err := insertDecayRun(t, handle, "DECAYRUN000000000000000002", defaultPoolID, "2026-W31")
+		err := insertDecayRun(t, handle, "DECAYRUN000000000000000002", defaultPoolID, "decay", "2026-W31")
 		require.Error(t, err,
-			"a SECOND decay_run for (pool, '2026-W31') was accepted. ux_decay_period is the idempotency "+
-				"key the decay strategies depend on (canonical §10): without it a scheduler that fires "+
-				"twice decays every balance in the pool twice, and the only repair is a reversal batch.")
+			"a SECOND decay_run for (pool, 'decay', '2026-W31') was accepted. ux_decay_period is the "+
+				"idempotency key the decay strategies depend on (canonical §10): without it a scheduler "+
+				"that fires twice decays every balance in the pool twice, and the only repair is a "+
+				"reversal batch.")
 		require.Contains(t, err.Error(), "UNIQUE",
 			"the rejection must come from the unique index, not from something incidental: %v", err)
 
-		require.NoError(t, insertDecayRun(t, handle, "DECAYRUN000000000000000003", defaultPoolID, "2026-W32"),
-			"the NEXT period on the same pool must still run — the key is (pool, period), not period")
+		require.NoError(t,
+			insertDecayRun(t, handle, "DECAYRUN000000000000000003", defaultPoolID, "decay", "2026-W32"),
+			"the NEXT period on the same pool must still run — the key is (pool, kind, period)")
 
 		require.NoError(t,
-			insertDecayRun(t, handle, "DECAYRUN000000000000000004", "00000000000000000000DKPP01", "2026-W31"),
+			insertDecayRun(t, handle, "DECAYRUN000000000000000004", "00000000000000000000DKPP01", "decay", "2026-W31"),
 			"the SAME period on a different pool must still run — pools decay independently")
+	})
+}
+
+// TestDecayRun_CapAndDecayShareAPeriod_BothRun is ADR-0024 and issue #206, and it is the assertion
+// that would have been impossible to write before `kind` was in the index.
+//
+// All three cadence families key on (pool_id, cadence_period) and the domain model defines ONE run
+// table. Un-scoped, a cap run for '2026-W31' violates the index that exists to stop a REPEAT — and
+// an idempotent job that hits a uniqueness violation on its own key is supposed to conclude "already
+// done" and exit 0. The cap then silently never applies, every week, with a green job dashboard:
+// the exact class of defect this project cites EQdkp Plus for.
+//
+// Both halves are asserted. Admitting all three families is the fix; refusing the repeat WITHIN a
+// family is the property the fix must not have cost.
+func TestDecayRun_CapAndDecayShareAPeriod_BothRun(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("applies real migrations to a real database; run `make test` or `make check`")
+	}
+
+	path := migratedDB(t)
+
+	withRawFK(t, path, func(handle *sql.DB) {
+		for i, kind := range []string{"decay", "cap", "start_points"} {
+			require.NoError(t,
+				insertDecayRun(t, handle, fmt.Sprintf("DECAYRUNFAMILY00000000000%d", i),
+					defaultPoolID, kind, "2026-W31"),
+				"a %s run for a period another family already occupies must be admitted — one run table, "+
+					"three families, and the index is scoped by kind (ADR-0024)", kind)
+
+			err := insertDecayRun(t, handle, fmt.Sprintf("DECAYRUNFAMILYX0000000000%d", i),
+				defaultPoolID, kind, "2026-W31")
+			require.Error(t, err,
+				"a SECOND %s run for the same period was accepted — kind-scoping the index must not have "+
+					"cost the repeat refusal it exists for", kind)
+		}
+	})
+}
+
+// TestDecayRun_KindOutsideTheCatalogue_IsRejected pins the other half of the kind column: it is a
+// closed vocabulary, not free text.
+//
+// A misspelled family is worse here than a misspelled state, because it does not collide with
+// anything: 'decy' takes its own slot in the unique index, so the real decay run for that period is
+// still admitted afterwards and the pool quietly decays twice. The CHECK is what stops the typo
+// reaching the index at all.
+func TestDecayRun_KindOutsideTheCatalogue_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("applies real migrations to a real database; run `make test` or `make check`")
+	}
+
+	path := migratedDB(t)
+
+	withRawFK(t, path, func(handle *sql.DB) {
+		err := insertDecayRun(t, handle, "DECAYRUNBADKIND0000000001", defaultPoolID, "decy", "2026-W31")
+		require.Error(t, err,
+			"decay_run.kind accepted a value outside internal/decay/kinds. A misspelled family does not "+
+				"collide with anything — it takes its own slot in ux_decay_period and the period decays twice.")
+		require.Contains(t, err.Error(), "CHECK", "the rejection must be the CHECK constraint: %v", err)
 	})
 }
 
@@ -92,13 +157,13 @@ func TestDecayRun_SkippedPeriod_StillOccupiesTheKey(t *testing.T) {
 			id := "DECAYRUNSKIP0000000000000" + state[:1]
 			period := "2026-" + state[:2]
 
-			require.NoError(t, insertDecayRun(t, handle, id, defaultPoolID, period))
+			require.NoError(t, insertDecayRun(t, handle, id, defaultPoolID, "decay", period))
 
 			_, err := handle.ExecContext(t.Context(),
 				`UPDATE decay_run SET state = ?, executed_at = 1 WHERE id = ?`, state, id)
 			require.NoError(t, err, "a decay_run is mutable — it is a schedule, not a ledger row")
 
-			err = insertDecayRun(t, handle, id+"X", defaultPoolID, period)
+			err = insertDecayRun(t, handle, id+"X", defaultPoolID, "decay", period)
 			require.Error(t, err,
 				"a period whose run is %q was re-run. A terminal run still owns its period; re-running "+
 					"is not 'delete the row and try again'.", state)
@@ -124,7 +189,8 @@ func TestDecayRun_StateOutsideTheCatalogue_IsRejected(t *testing.T) {
 	path := migratedDB(t)
 
 	withRawFK(t, path, func(handle *sql.DB) {
-		require.NoError(t, insertDecayRun(t, handle, "DECAYRUNSTATE00000000000A", defaultPoolID, "2026-01"))
+		require.NoError(t,
+			insertDecayRun(t, handle, "DECAYRUNSTATE00000000000A", defaultPoolID, "decay", "2026-01"))
 
 		var state string
 		require.NoError(t, handle.QueryRowContext(t.Context(),
@@ -233,12 +299,15 @@ func insertPool(t *testing.T, handle *sql.DB, id, name, nameNorm string) {
 
 // insertDecayRun writes one run and RETURNS the error rather than requiring success: every
 // interesting assertion in this file is about which insert the database refuses.
-func insertDecayRun(t *testing.T, handle *sql.DB, id, poolID, period string) error {
+//
+// state is left to its default on purpose — TestDecayRun_StateOutsideTheCatalogue_IsRejected reads
+// it back, and a helper that named it would make that assertion about the helper.
+func insertDecayRun(t *testing.T, handle *sql.DB, id, poolID, kind, period string) error {
 	t.Helper()
 
 	_, err := handle.ExecContext(t.Context(),
-		`INSERT INTO decay_run (id, pool_id, cadence_period, scheduled_for_at, created_at, updated_at)
-		 VALUES (?, ?, ?, 1, 1, 1)`, id, poolID, period)
+		`INSERT INTO decay_run (id, pool_id, kind, cadence_period, scheduled_for_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 1, 1, 1)`, id, poolID, kind, period)
 
 	return err
 }

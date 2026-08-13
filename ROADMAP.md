@@ -256,7 +256,7 @@ property holds for every shipped strategy; `internal/strategy` provably cannot i
 |---|---|---|
 | The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
 | `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
-| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, cadence_period)` — settle [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206) first, or `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
+| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, kind, cadence_period)` — kind-scoped by [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md), which settled [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206): un-scoped, `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
 | Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
 | `internal/swap` | 13 | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
 

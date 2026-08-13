@@ -8,7 +8,7 @@ import (
 )
 
 // Package kinds is the decay_run enum catalogue — canonical §5's "one Go catalogue" for
-// decay_run.state.
+// decay_run.kind and decay_run.state.
 //
 // WHY THIS FILE EXISTS BEFORE ITS WRITER DOES. decay_run (docs/design/01-domain-model.md §12.3) is
 // the table that makes "decay is posted, not computed" true: a decay run is a ROW with a lifecycle —
@@ -51,6 +51,44 @@ import (
 // It IS schemaenum.ErrMarkersMissing rather than a second sentinel wrapping it: one condition, one
 // value, so `errors.Is` gives the same answer whichever name the caller reaches for.
 var ErrSchemaMarkersMissing = schemaenum.ErrMarkersMissing
+
+// The decay_run.kind vocabulary: WHICH CADENCE FAMILY a run belongs to. It is the column ADR-0024
+// added, and it is inside ux_decay_period rather than beside it.
+//
+// All three families post explicit batches on a cadence and key on (pool_id, cadence_period)
+// (canonical §10, docs/api/idempotency-and-concurrency.md), and the domain model defines exactly ONE
+// run table. Both cannot be true without this column: a cap run for '2026-W31' would collide with
+// that period's decay run on an index built to stop a REPEAT, and an idempotent job that hits a
+// uniqueness violation on its own key is supposed to conclude "already done" and exit 0. The cap
+// then silently never applies, every week, with a green dashboard (#206).
+//
+// The values ARE ledger_batch kinds — internal/ledger/kinds' KindDecay, KindCap and KindStartPoints
+// spell the same three strings — and this catalogue deliberately does NOT import that one. A run row
+// is a schedule and a batch is money; they agree on a word today because the same three families
+// name both, and coupling the two would make adding a fourth batch kind (a reversal, an import) look
+// like adding a fourth cadence family. The agreement is asserted instead:
+// TestDecayKinds_Kinds_AreLedgerBatchKinds in internal/ledger, which is the package that can see
+// both without either becoming the other's dependency.
+const (
+	KindDecay       = "decay"
+	KindCap         = "cap"
+	KindStartPoints = "start_points"
+)
+
+// Kinds returns every legal decay_run.kind, in the order the CHECK constraint carries them.
+//
+// A FUNCTION returning a FRESH SLICE, for the reason States is one. The order is fixed because
+// CheckExpr renders in it.
+func Kinds() []string {
+	return []string{
+		KindDecay,
+		KindCap,
+		KindStartPoints,
+	}
+}
+
+// IsKind reports whether v is a legal decay_run.kind. The runtime half, for the reason IsState is.
+func IsKind(v string) bool { return contains(Kinds(), v) }
 
 // The decay_run.state vocabulary, as the Go const block canonical §5 requires: HOW FAR a scheduled
 // decay period has got. The order is the lifecycle, then its two terminal states.
@@ -114,8 +152,10 @@ func DefaultState() string { return StatePlanned }
 // that has already done work. There is no decay_run writer yet — this exists so the first one has
 // something to call instead of a literal, which is how every defect the package comment lists came to
 // exist.
-func IsState(v string) bool {
-	for _, candidate := range States() {
+func IsState(v string) bool { return contains(States(), v) }
+
+func contains(values []string, v string) bool {
+	for _, candidate := range values {
 		if candidate == v {
 			return true
 		}
@@ -124,17 +164,30 @@ func IsState(v string) bool {
 	return false
 }
 
-// The column this catalogue governs. Unexported: StateCheckExpr is the only thing that needs to name
-// it, and a caller wanting the string wants the whole expression.
-const stateColumn = "state"
+// The columns this catalogue governs. Unexported: the CheckExpr functions below are the only things
+// that need to name them, and a caller wanting the string wants the whole expression.
+const (
+	kindColumn  = "kind"
+	stateColumn = "state"
+)
+
+// KindCheckExpr renders the body of decay_run's kind CHECK constraint:
+//
+//	kind IN ('decay', 'cap', 'start_points')
+//
+// Named for its column, as internal/account/kinds' two renderers are: this catalogue governs two
+// columns, so an unqualified CheckExpr would be an invitation to render one column's values against
+// the other's — a CHECK that compiles, applies, and rejects every row.
+func KindCheckExpr() string {
+	return schemaenum.CheckExpr(kindColumn, Kinds())
+}
 
 // StateCheckExpr renders the body of decay_run's state CHECK constraint:
 //
 //	state IN ('planned', 'preview', 'committed', 'skipped', 'failed')
 //
 // The PLAIN form, not the nullable one: the column is NOT NULL with a default, so there is no NULL
-// arm to admit. Named for its column, as internal/account/kinds' two renderers are, so a second
-// vocabulary on this table cannot be rendered against the wrong one.
+// arm to admit.
 func StateCheckExpr() string {
 	return schemaenum.CheckExpr(stateColumn, States())
 }
@@ -148,8 +201,8 @@ func StateCheckExpr() string {
 // and each is found by an exact whole-line match on ITS OWN markers: two regions sharing a marker line
 // would each rewrite the other's.
 const (
-	schemaEnumBegin = "  // BEGIN GENERATED — decay_run enum CHECK, from internal/decay/kinds. Run `make gen`."
-	schemaEnumEnd   = "  // END GENERATED — decay_run enum CHECK."
+	schemaEnumBegin = "  // BEGIN GENERATED — decay_run enum CHECKs, from internal/decay/kinds. Run `make gen`."
+	schemaEnumEnd   = "  // END GENERATED — decay_run enum CHECKs."
 )
 
 // schemaRegion is the marked region this catalogue owns. A function rather than a package-level var,
@@ -158,7 +211,7 @@ func schemaRegion() schemaenum.Region {
 	return schemaenum.Region{
 		Begin:   schemaEnumBegin,
 		End:     schemaEnumEnd,
-		Subject: "the decay_run state CHECK",
+		Subject: "the two decay_run enum CHECKs",
 	}
 }
 
@@ -173,6 +226,10 @@ func SchemaEnumBlock() string {
 		"  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI",
 		"  // enum are generated from one Go catalogue. Adding a value here by hand is drift that",
 		"  // TestDecayKinds_CheckMatchesCatalogue fails on.",
+		`  check "decay_run_kind_enum" {`,
+		fmt.Sprintf(`    expr = %q`, KindCheckExpr()),
+		"  }",
+		"",
 		`  check "decay_run_state_enum" {`,
 		fmt.Sprintf(`    expr = %q`, StateCheckExpr()),
 		"  }",

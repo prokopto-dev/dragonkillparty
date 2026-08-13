@@ -45,7 +45,7 @@ the committed migration does not match a regeneration from the schema.
 The generated enum CHECKs are the parts of `db/schema.hcl` you do not edit: `ledger_batch.kind` and
 `ledger_batch.source` from `internal/ledger/kinds`, `audit_log.actor_kind` and `audit_log.outcome`
 from `internal/audit/kinds`, `account.kind` and `account.system_key` from
-`internal/account/kinds`, and `decay_run.state` from `internal/decay/kinds`. `make gen` writes each
+`internal/account/kinds`, and `decay_run.kind` and `decay_run.state` from `internal/decay/kinds`. `make gen` writes each
 CHECK expression between its own `BEGIN/END
 GENERATED` markers (canonical §5) — the marker text names the catalogue, because a whole-line match
 is how each render finds its region and only its region. Add the value in Go, run `make gen`, then
@@ -61,7 +61,7 @@ A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf ov
 the next one added has no excuse to be a literal — and **`ENUM001` in `internal/repogate` (run by
 `scripts/repo-gates.sh`) is the machine half of that sentence**, because the four `CheckMatchesCatalogue` tests each compare their
 own region with their own catalogue and none of them can see an eighth vocabulary that has no
-catalogue at all. `decay_run.state` (#192) is the worked example of a catalogue added after the
+catalogue at all. `decay_run`'s pair (#192) is the worked example of a catalogue added after the
 fact: a new leaf package, one row in `catalogues()`, and the two tests that name their catalogues
 deliberately — `TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues` in `test/repo/` and the
 generator's own fixture — both fail until it is listed. A `check` block in `db/schema.hcl` whose `expr` lists quoted values — in either SQL
