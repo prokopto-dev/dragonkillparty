@@ -48,19 +48,63 @@ func seedClock() clock.Clock {
 	return clock.NewFake(time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC))
 }
 
-// TestSeedGenerate_WritesExactlyWhatTheProfilePlanned asserts the database ends up holding the rows
-// Counts() predicted — and that they went in through the real commit path, which is what makes them
-// worth measuring against.
-func TestSeedGenerate_WritesExactlyWhatTheProfilePlanned(t *testing.T) {
+// TestSeedGenerate_OverASeededDatabase asserts everything that is true of a database the generator
+// has finished writing — seven properties over ONE seeded fixture.
+//
+// One fixture rather than seven, and the reason is measured rather than tidy-minded: `make test`
+// runs `-race`, which instruments modernc.org/sqlite — the SQLite engine compiled to Go — so a seed
+// costs roughly thirty times what it costs uninstrumented. Seven independent seeds of the same
+// profile were the largest single contributor to this PR's suite cost: cold `make test` measured
+// 44.4 s on main and 53.9 s with them, and 45.1 s with this one fixture. Same seven assertions,
+// same rows, nine seconds back.
+//
+// Every subtest here is READ-ONLY, which is what makes sharing safe. The three tests below that are
+// not — determinism needs three separate databases, the refusal needs a populated one, and the
+// validation test needs an empty one — keep their own, because sharing a fixture with a test that
+// writes is how a suite starts depending on its own order.
+func TestSeedGenerate_OverASeededDatabase(t *testing.T) {
 	t.Parallel()
 
 	s := store.NewDB(t)
 	p := tinyProfile()
 
-	planned, err := p.Counts()
+	report, err := seed.Generate(t.Context(), s, seedClock(), p, nil)
 	require.NoError(t, err)
 
-	report, err := seed.Generate(t.Context(), s, seedClock(), p, nil)
+	t.Run("wrote exactly what the profile planned", func(t *testing.T) {
+		testWritesExactlyWhatTheProfilePlanned(t, s, p, report)
+	})
+
+	t.Run("emits every batch kind the profile plans", func(t *testing.T) {
+		testEmitsEveryBatchKindTheProfilePlans(t, s)
+	})
+
+	t.Run("zero-sum batches conserve exactly", func(t *testing.T) {
+		testZeroSumBatchesConserveExactly(t, s)
+	})
+
+	t.Run("the snapshot matches the ledger", func(t *testing.T) {
+		testSnapshotMatchesTheLedger(t, s, p, report)
+	})
+
+	t.Run("entries carry their provenance", func(t *testing.T) {
+		testEntriesCarryTheirProvenance(t, s)
+	})
+
+	t.Run("source refs are unique per pool", func(t *testing.T) {
+		testSourceRefsAreUniquePerPool(t, s, report)
+	})
+
+	t.Run("effective and recorded times tell the truth", func(t *testing.T) {
+		testEffectiveAndRecordedTimesTellTheTruth(t, s)
+	})
+}
+
+// testWritesExactlyWhatTheProfilePlanned asserts the database ends up holding the rows Counts()
+// predicted — and that they went in through the real commit path, which is what makes them worth
+// measuring against.
+func testWritesExactlyWhatTheProfilePlanned(t *testing.T, s *store.Store, p seed.Profile, report seed.Report) {
+	planned, err := p.Counts()
 	require.NoError(t, err)
 
 	require.Equal(t, planned.Batches, report.Batches)
@@ -89,20 +133,13 @@ func TestSeedGenerate_WritesExactlyWhatTheProfilePlanned(t *testing.T) {
 	require.Equal(t, int64(planned.Batches), count(t, s, `SELECT count(*) FROM event_outbox`))
 }
 
-// TestSeedGenerate_EmitsEveryBatchKindTheProfilePlans asserts the seeded ledger has the mix a real
+// testEmitsEveryBatchKindTheProfilePlans asserts the seeded ledger has the mix a real
 // guild's does, rather than 500,000 rows of one kind.
 //
 // It matters for what the dataset is FOR: ix_batch_kind is a real index, and a profile whose every
 // batch shared a kind would give it a selectivity production never sees — so a measurement taken
 // against it would flatter every query that filters on kind.
-func TestSeedGenerate_EmitsEveryBatchKindTheProfilePlans(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-
-	_, err := seed.Generate(t.Context(), s, seedClock(), tinyProfile(), nil)
-	require.NoError(t, err)
-
+func testEmitsEveryBatchKindTheProfilePlans(t *testing.T, s *store.Store) {
 	for _, kind := range []string{kinds.KindSeed, kinds.KindAttendance, kinds.KindAward, kinds.KindDecay} {
 		require.Positive(t,
 			count(t, s, `SELECT count(*) FROM ledger_batch WHERE kind = '`+kind+`'`),
@@ -118,20 +155,13 @@ func TestSeedGenerate_EmitsEveryBatchKindTheProfilePlans(t *testing.T) {
 	}
 }
 
-// TestSeedGenerate_ZeroSumBatches_ConserveExactly asserts every zero-sum award nets to exactly zero.
+// testZeroSumBatchesConserveExactly asserts every zero-sum award nets to exactly zero.
 //
 // Checked at the COLUMN rather than in the planner: net_amount_cp is written by Commit as the sum of
 // the entries it actually wrote, so a split that minted or destroyed a centipoint shows up here even
 // though the batch committed. The SumZero invariant the profile declares would have rejected it at
 // commit time — this is the independent confirmation that it did.
-func TestSeedGenerate_ZeroSumBatches_ConserveExactly(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-
-	_, err := seed.Generate(t.Context(), s, seedClock(), tinyProfile(), nil)
-	require.NoError(t, err)
-
+func testZeroSumBatchesConserveExactly(t *testing.T, s *store.Store) {
 	require.Positive(t, count(t, s, `SELECT count(*) FROM ledger_batch WHERE strategy_id = 'zero_sum'`),
 		"there is something to check")
 	require.Zero(t,
@@ -144,21 +174,13 @@ func TestSeedGenerate_ZeroSumBatches_ConserveExactly(t *testing.T) {
 		"a fixed-price award is a debit; a non-negative net means the buyer was not charged")
 }
 
-// TestSeedGenerate_SnapshotMatchesTheLedger asserts the cache the commit path maintained equals the
+// testSnapshotMatchesTheLedger asserts the cache the commit path maintained equals the
 // sum over the log, for every account.
 //
 // The perf suite runs this property at 520k entries; running it here too is what makes a failure
 // legible — a break shows up in a second, against 24 accounts whose numbers a human can read, rather
 // than after three minutes of seeding.
-func TestSeedGenerate_SnapshotMatchesTheLedger(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-	p := tinyProfile()
-
-	report, err := seed.Generate(t.Context(), s, seedClock(), p, nil)
-	require.NoError(t, err)
-
+func testSnapshotMatchesTheLedger(t *testing.T, s *store.Store, p seed.Profile, report seed.Report) {
 	limit := int64(p.Accounts + len(ledger.SystemAccountIDs()))
 
 	cached, err := ledger.StandingsFromSnapshot(
@@ -256,7 +278,7 @@ func TestSeedGenerate_InvalidProfile_WritesNothing(t *testing.T) {
 		"not even the roster: validation runs before the accounts are inserted")
 }
 
-// TestSeedGenerate_EntriesCarryTheirProvenance asserts the seeded entries look like real ones —
+// testEntriesCarryTheirProvenance asserts the seeded entries look like real ones —
 // raid, tick, character and item attribution where a real batch would carry it, and none where it
 // would not.
 //
@@ -264,14 +286,7 @@ func TestSeedGenerate_InvalidProfile_WritesNothing(t *testing.T) {
 // they are most of a ledger_entry row's size. A profile that left them null would produce a table
 // and a set of indexes materially smaller than production's, and the page counts the V5 verdict
 // rests on are counted off exactly that.
-func TestSeedGenerate_EntriesCarryTheirProvenance(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-
-	_, err := seed.Generate(t.Context(), s, seedClock(), tinyProfile(), nil)
-	require.NoError(t, err)
-
+func testEntriesCarryTheirProvenance(t *testing.T, s *store.Store) {
 	require.Positive(t, count(t, s,
 		`SELECT count(*) FROM ledger_entry WHERE raid_id IS NOT NULL AND tick_id IS NOT NULL
 		   AND character_id IS NOT NULL`),
@@ -288,20 +303,13 @@ func TestSeedGenerate_EntriesCarryTheirProvenance(t *testing.T) {
 		"decay is posted against an account, not against a character")
 }
 
-// TestSeedGenerate_SourceRefs_AreUniquePerPool asserts every batch carries a distinct, greppable
+// testSourceRefsAreUniquePerPool asserts every batch carries a distinct, greppable
 // source_ref.
 //
 // ux_batch_srcref makes a duplicate a constraint violation, so this passing at all means the walk
 // never planned the same receipt twice — and the "seed:" prefix is how an operator looking at a
 // database tells generated history from real history.
-func TestSeedGenerate_SourceRefs_AreUniquePerPool(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-
-	report, err := seed.Generate(t.Context(), s, seedClock(), tinyProfile(), nil)
-	require.NoError(t, err)
-
+func testSourceRefsAreUniquePerPool(t *testing.T, s *store.Store, report seed.Report) {
 	require.Equal(t, int64(report.Batches),
 		count(t, s, `SELECT count(DISTINCT source_ref) FROM ledger_batch`),
 		"every batch has its own source_ref")
@@ -310,20 +318,11 @@ func TestSeedGenerate_SourceRefs_AreUniquePerPool(t *testing.T) {
 		"every seeded batch is identifiable as one")
 }
 
-// TestSeedGenerate_EffectiveAndRecordedTimes_TellTheTruth asserts the two clocks say different,
-// correct things: the raids happened in the past (game truth, backdated) and the rows were written
-// now (system truth, never backdated).
-func TestSeedGenerate_EffectiveAndRecordedTimes_TellTheTruth(t *testing.T) {
-	t.Parallel()
-
-	s := store.NewDB(t)
-	clk := seedClock()
-	p := tinyProfile()
-
-	_, err := seed.Generate(t.Context(), s, clk, p, nil)
-	require.NoError(t, err)
-
-	recordedAt := strconv.FormatInt(int64(core.FromTime(clk.Now())), 10)
+// testEffectiveAndRecordedTimesTellTheTruth asserts the two clocks say different, correct things:
+// the raids happened in the past (game truth, backdated) and the rows were written now (system
+// truth, never backdated).
+func testEffectiveAndRecordedTimesTellTheTruth(t *testing.T, s *store.Store) {
+	recordedAt := strconv.FormatInt(int64(core.FromTime(seedClock().Now())), 10)
 
 	require.Zero(t, count(t, s,
 		`SELECT count(*) FROM ledger_batch WHERE recorded_at <> `+recordedAt),
