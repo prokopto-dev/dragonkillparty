@@ -44,9 +44,13 @@ write and verified nightly by the replay job. Never read a balance from anywhere
 measured over 527,164 entries: 13 pages against the cache, 10,412 against the definitional SUM. The
 log is still the only source of truth and a dispute is still settled by `BalanceAsOfSeq`, but there
 is no honest fallback that serves the standings page from the log, so **losing the cache is a
-rebuild** and the nightly replay is a correctness dependency rather than hygiene. Do not write
-"droppable" into new code or docs, and do not give a snapshot read a recompute fallback "for safety":
-the fallback is 22 seconds.
+rebuild** and the nightly replay is a correctness dependency rather than hygiene. Concretely: do not
+give a snapshot read a recompute fallback "for safety" — that fallback is 22 seconds — and do not
+defer the replay job as an optimisation.
+
+Canonical §10 carries the same wording and is the line that decides. Older phrasing survives in
+Go comments, two design docs and the `sqlitegen` output (issue #204); where you meet it, it is stale
+rather than a second opinion.
 
 ## Append-only, and what follows from it
 

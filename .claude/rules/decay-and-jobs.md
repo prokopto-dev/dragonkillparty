@@ -104,9 +104,22 @@ constraint arbitrate.
 - **Two layers of idempotency, deliberately.** `ux_decay_period` stops a second *run row*;
   `ux_batch_idem` — unique per pool — stops a second *batch*. Set the batch's `idempotency_key` from
   the same identity, through **one helper**, so the job path and the officer path cannot disagree
-  about the spelling. The batch kind must be part of it: `cap` and `start_points` share the cadence
-  vocabulary, so a key of `2026-W31` alone would make a cap run in that period collide with the
-  decay run.
+  about the spelling. The batch key must include the **kind**: `cap` and `start_points` post on the
+  same cadence vocabulary, so `2026-W31` alone would make a cap run collide with that period's decay
+  run.
+
+> **Unresolved, and do not resolve it by writing code.** That kind-scoping argument applies just as
+> hard one line up, and `ux_decay_period` does not have it. The design says all three families key
+> on `(pool_id, cadence_period)` (canonical §10, `docs/api/idempotency-and-concurrency.md`) and
+> defines exactly **one** run table, `decay_run`. Both cannot be true as written: if a cap run and a
+> start-points run also write `decay_run` rows, the second one in any period fails on a unique index
+> that was designed to stop a *repeat*, and the failure looks exactly like correct deduplication.
+>
+> Three answers are open — a `kind` column inside the unique index, one run table per family, or
+> `decay_run` genuinely being decay-only with cap and start-points keyed by their batch alone — and
+> which one is right is a schema decision, not an implementation detail. **[#206](https://github.com/prokopto-dev/dragonkillparty/issues/206)**
+> tracks it against [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192), the issue
+> that builds the table. Whoever builds it settles this with a human first.
 
 ## 4. A run that moves nothing must not commit
 
@@ -229,6 +242,10 @@ human.
   balances, which is worse than an error, and the ledger is append-only so the guess is permanent.
 - A cadence needs a period label the three-form vocabulary cannot express. Adding a fourth form is a
   design decision, not a regex.
+- **You are about to build `decay_run` for `cap` or `start_points`.** `ux_decay_period` has no kind
+  in it and the design has not said whether those families share the table — §3's box and
+  [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206). Guessing here produces a run
+  that silently no-ops, which is the one failure mode idempotency is supposed to make impossible.
 - A run would need to `UPDATE` or `DELETE` a prior run's batch. It cannot: the correction is a
   reversal, and the reversed period's label stays taken.
 - A decay would need to read a balance inside `Spendable()`, or a window would be cheaper as a
