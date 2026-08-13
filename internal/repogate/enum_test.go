@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -247,6 +248,35 @@ func TestEnumScan_Waiver_NeedsAReason(t *testing.T) {
 	require.Contains(t, reach, "second_enum",
 		"a waiver that outlived its own check block would exempt everything after it\n%s", reach)
 	require.NotContains(t, reach, "bid_tier_enum", "%s", reach)
+}
+
+// TestEnumScan_UnparseableSchema_IsAFinding is the fail-closed half of the parse (issue #116), and
+// the second case is the one a fixture cannot reach.
+//
+// ADR-0018 rejected an HCL parse partly because "a gate that reports could not parse is a gate that
+// gets bypassed". The answer is that it does not report a PASS either — so the branch has to produce
+// a finding, and it has to survive a diagnostic with no Subject.
+//
+// `hcl.Diagnostic.Subject` is a POINTER, and hcl leaves it nil for a diagnostic about the file as a
+// whole rather than about a position in it. Reading through it unguarded is a panic on exactly the
+// input this branch exists to handle, and a gate that panics tells a CI log the same thing as a gate
+// that passes: no rule id, no line, nothing to fix. A parser diagnostic normally carries a subject,
+// which is why the malformed-schema fixture cannot exercise this and the constructed one can.
+func TestEnumScan_UnparseableSchema_IsAFinding(t *testing.T) {
+	t.Parallel()
+
+	hits := scanSchema(t, "table \"t\" {\n  check \"c\" {\n    expr = \n  }\n}\n")
+
+	require.Len(t, hits, 1, "%v", hits)
+	require.Contains(t, hits[0], "did not run",
+		"the finding must say the SCAN did not run: \"hand-written enum CHECK\" would send the reader "+
+			"looking for a literal that may not be there\n%s", hits[0])
+
+	require.Equal(t, 1, diagLine(&hcl.Diagnostic{Summary: "a whole-file complaint", Detail: "no subject"}),
+		"a diagnostic with no Subject must report line 1, not panic")
+	require.Equal(t, 7, diagLine(&hcl.Diagnostic{Subject: &hcl.Range{Start: hcl.Pos{Line: 7}}}),
+		"a diagnostic WITH a subject must still name its line — a fallback that swallowed every "+
+			"position would make the finding unactionable")
 }
 
 // TestEnumScan_IndexPredicate_IsNotACheck is #97: a partial index over a SUBSET of a vocabulary is

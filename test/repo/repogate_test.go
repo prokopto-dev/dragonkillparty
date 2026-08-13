@@ -200,16 +200,33 @@ func TestRepoGates_CompiledEngine_KeepsItsExitCodes(t *testing.T) {
 	require.NoError(t, err, "build the gate engine: %s", out)
 
 	for _, tc := range []struct {
-		name string
-		args []string
-		want int
-		why  string
+		name  string
+		args  []string
+		taint func(t *testing.T, tree string)
+		want  int
+		why   string
 	}{
 		{
 			name: "a clean tree passes",
 			args: nil,
 			want: 0,
 			why:  "an empty tree has nothing to violate; every rule skips, loudly",
+		},
+		{
+			name: "a tainted tree is a rule firing",
+			args: nil,
+			taint: func(t *testing.T, tree string) {
+				t.Helper()
+
+				// An unpinned action: PIN001, a rule with a fixture of its own, so a failure here is
+				// about the exit code rather than about whether the rule works.
+				writeWorkflow(t, tree, "actions/checkout@v4")
+			},
+			want: 1,
+			why: "1 means a rule fired and the engine looked. This is the case the other two bracket: " +
+				"without it, a regression that routed repogate.ErrViolations through fail() would " +
+				"report 2 — the gates could not run — and every end-to-end fixture in this package " +
+				"would stay green, because they require a non-zero status and not a particular one",
 		},
 		{
 			name: "an argument it does not take is a usage error",
@@ -222,8 +239,13 @@ func TestRepoGates_CompiledEngine_KeepsItsExitCodes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			tree := t.TempDir()
+			if tc.taint != nil {
+				tc.taint(t, tree)
+			}
+
 			cmd := exec.Command(bin, tc.args...)
-			cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+t.TempDir())
+			cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+tree)
 
 			raw, err := cmd.CombinedOutput()
 
