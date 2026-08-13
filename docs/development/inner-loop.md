@@ -74,9 +74,14 @@ all still run.
 | **everything CI runs** | **`make check`** | **~60 s** |
 
 Run `make check` before claiming a task is done. Between edits, `make check-fast` is the same thing
-without the test suite, the coverage floor, the licence gate or eslint — the four laws, gofumpt,
-golangci-lint, `go vet`, staticcheck and `tsc`. It answers "is this tree coherent", never "does the
-change work", so it is a shorter loop and not a shorter gate.
+without the test suite, the coverage floor, the licence gate, eslint or the drift gates
+(`verify-generated`, `verify-spec`, the docs links) — the four laws, gofumpt, golangci-lint,
+`go vet`, staticcheck and `tsc`. It answers "is this tree coherent", never "does the change work",
+so it is a shorter loop and not a shorter gate.
+
+Which gates `make check` runs is not a list anybody maintains: `test/repo/check_closure_test.go`
+derives it from `ci-required`'s `needs:` and fails on a required target that `check` neither runs nor
+exempts by name, with the reason (issue #183).
 
 `make test` and `make test-unit` **cache**: a package that has not changed reports `(cached)`
 instead of running again, so the second run after a one-package edit costs a fraction of the first.

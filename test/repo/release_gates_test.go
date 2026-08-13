@@ -56,6 +56,96 @@ func TestDockerfile_IsScratchAndHardened(t *testing.T) {
 	require.GreaterOrEqual(t, strings.Count(df, "FROM "), 2, "the Dockerfile must be multi-stage")
 }
 
+// TestImage_DebugVariant_IsNeitherBuiltNorPromised closes issue #184 and holds the answer it chose.
+//
+// Three documents and a Dockerfile comment promised an alpine `-debug` image "built by release.yml".
+// Nothing built one: scripts/release-image.sh builds exactly one image per architecture, from the
+// single `FROM scratch` target in deploy/Dockerfile, and pushes it as `$IMAGE:$VERSION-$ARCH`. An
+// officer following install-docker.md would have run `docker pull …:1-debug`, got `manifest
+// unknown`, and got it while something was already wrong — the worst moment to hand somebody a 404.
+//
+// The decision was to delete the promise rather than ship the variant: a shell-bearing image of a
+// deliberately distroless one is a security-posture change (docs/design/03-security.md argues for
+// the scratch base), and no release has been cut, so nothing depends on it. This test is what keeps
+// the docs and the release path from drifting apart again, which is what produced the issue: it
+// fails EITHER if a document promises the variant again while nothing builds it, OR — deliberately
+// symmetric — if somebody builds it and leaves the docs silent.
+func TestImage_DebugVariant_IsNeitherBuiltNorPromised(t *testing.T) {
+	t.Parallel()
+
+	// What would have to exist for a promise to be true: a second build in the release script, and a
+	// tag joined into the manifest list. Neither, today.
+	built := false
+
+	for _, path := range []string{"scripts/release-image.sh", "scripts/release-manifest.sh"} {
+		if strings.Contains(readRepoFile(t, path), "-debug") {
+			t.Logf("%s mentions a -debug tag", path)
+
+			built = true
+		}
+	}
+
+	// The four claims, VERBATIM as issue #184 tabulated them — the strongest form available, since a
+	// gate demonstrated against the exact sentences it exists to have caught cannot be satisfied by
+	// a plausible imitation. Matching the words rather than the token `-debug` is also what lets the
+	// three documents go on NAMING the tag while explaining that it does not exist.
+	promises := []struct{ file, claim string }{
+		{"docs/design/06-cicd-and-release.md", "alpine variant with a shell"},
+		{"docs/design/06-cicd-and-release.md", "-debug` alpine image"},
+		{"docs/getting-started/install-docker.md", "on Alpine, for when you need to"},
+		{"deploy/Dockerfile", "variant (built by release.yml)"},
+	}
+
+	for _, p := range promises {
+		if !strings.Contains(readRepoFile(t, p.file), p.claim) {
+			continue
+		}
+
+		require.Truef(t, built,
+			"%s promises a -debug image (%q) and nothing builds one — scripts/release-image.sh builds "+
+				"a single image per architecture from deploy/Dockerfile's one target (issue #184). An "+
+				"officer reaching for it gets `manifest unknown` at the moment something is already "+
+				"wrong. Build and publish the variant, with its own size budget, or take the claim "+
+				"out and say how to inspect a distroless image instead.", p.file, p.claim)
+	}
+
+	// The other direction, which is the half that made #184 possible: the documents must not be
+	// silent about a variant that DOES exist. Each carries the denial while none is built, and each
+	// has to be rewritten the day one is.
+	denial := "no `-debug` variant"
+
+	for _, file := range []string{
+		"docs/design/06-cicd-and-release.md",
+		"docs/getting-started/install-docker.md",
+		"deploy/Dockerfile",
+	} {
+		body := strings.ToLower(readRepoFile(t, file))
+
+		if built {
+			require.NotContainsf(t, body, denial,
+				"a -debug image is built now and %s still says there is none. Both halves move "+
+					"together or the next reader believes whichever one they opened (issue #184).", file)
+
+			continue
+		}
+
+		require.Containsf(t, body, denial,
+			"%s promised a -debug image that nothing built (issue #184). Deleting the claim is not "+
+				"enough: say plainly that there is %q, or the next person to notice the gap files it "+
+				"again — or, worse, adds the promise back.", file, denial)
+	}
+
+	// The replacement has to be there, not merely the deletion: the distroless image is the ONLY
+	// documented way in, so a page that removes the debug variant and says nothing leaves an officer
+	// with no answer at all.
+	install := readRepoFile(t, "docs/getting-started/install-docker.md")
+	for _, mechanism := range []string{"docker cp", "docker export", "--pid container:dkp"} {
+		require.Containsf(t, install, mechanism,
+			"install-docker.md must document how to look inside a shell-less image; %q is missing "+
+				"(issue #184)", mechanism)
+	}
+}
+
 // healthcheckInstruction returns the full HEALTHCHECK instruction, joining any `\`-continued lines,
 // so a test can assert on the command it runs rather than on the whole file.
 func healthcheckInstruction(t *testing.T, dockerfile string) string {
@@ -224,8 +314,14 @@ func TestReleaseWorkflow_PrepareVerifiesShippedLock(t *testing.T) {
 	require.Contains(t, prepare, "make release-shipped-lock",
 		"the prepare job must verify db/migrations-sqlite/SHIPPED.lock before anything is published")
 
-	mk := readRepoFile(t, "Makefile")
-	require.Regexp(t, regexp.MustCompile(`release-shipped-lock:\n\t@[^\n]*shippedlock verify --complete`), mk,
+	// The recipe, not a line of the file: since issue #180 the invocation goes through the go_gate
+	// macro (build the command, run it, propagate its status) rather than `go run`, per ADR-0022, so
+	// the assertion is on what the recipe passes rather than on the punctuation of one line.
+	// TestCheck_NoRequiredGate_RunsThroughGoRun holds the other half — that it is not `go run` again.
+	recipe := makefileRecipes(t)["release-shipped-lock"]
+	require.Contains(t, recipe, "./internal/migrate/shippedlock",
+		"`make release-shipped-lock` must run the shipped-lock command")
+	require.Contains(t, recipe, "verify --complete",
 		"`make release-shipped-lock` must run the manifest check with --complete; plain `verify` is "+
 			"the per-PR gate and would pass a release whose manifest was never sealed")
 
@@ -449,6 +545,12 @@ func firstGHCRStep(steps string, ghcrTargets map[string]string) int {
 func makefileRecipes(t *testing.T) map[string]string {
 	t.Helper()
 
+	return makefileRecipesIn(readRepoFile(t, "Makefile"))
+}
+
+// makefileRecipesIn is the same over Makefile text, so check_closure_test.go can drive it with a
+// fixture and see its gate go red without editing the real file.
+func makefileRecipesIn(makefile string) map[string]string {
 	recipes := map[string]string{}
 
 	var (
@@ -466,7 +568,7 @@ func makefileRecipes(t *testing.T) map[string]string {
 		current, body = "", strings.Builder{}
 	}
 
-	for _, line := range strings.Split(readRepoFile(t, "Makefile"), "\n") {
+	for _, line := range strings.Split(makefile, "\n") {
 		switch {
 		case strings.HasPrefix(line, "\t"):
 			body.WriteString(line + "\n")

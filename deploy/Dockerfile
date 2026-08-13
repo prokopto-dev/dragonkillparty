@@ -103,9 +103,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/dkp ./cmd/dkp
 
 # --- final stage: FROM scratch ---------------------------------------------------------------
-# Nothing but the binary and the two data files it needs. No shell means no `docker exec` debugging
-# and no shell-injection surface; the `-debug` alpine variant (built by release.yml) exists for the
-# officer who needs to look inside.
+# Nothing but the binary and the two data files it needs. No shell means no shell-injection surface
+# and no `docker exec … sh` — `docker exec dkp /usr/local/bin/dkp doctor` still works, because exec
+# runs a binary and not a login shell, and docs/getting-started/install-docker.md documents the rest
+# of the ways to look inside a distroless image.
+#
+# There is NO `-debug` variant. This comment promised one until issue #184, as did two tables in
+# docs/design/06-cicd-and-release.md and one in install-docker.md, and nothing has ever built it:
+# scripts/release-image.sh builds exactly one image per architecture, from this one target. Shipping
+# a shell-bearing variant of a deliberately distroless image is a security-posture decision
+# (docs/design/03-security.md argues for the distroless base), so the promise came out rather than
+# the image going in. TestImage_DebugVariant_IsNeitherBuiltNorPromised holds the answer.
 FROM scratch
 
 # CA certificates for outbound TLS and the zoneinfo database for timezone handling. Copied from the

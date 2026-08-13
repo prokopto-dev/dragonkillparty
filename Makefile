@@ -141,6 +141,45 @@ define notyet
 printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)"
 endef
 
+# go_gate <package> <args> [<extra env -u flags>] — build a Go GATE and run it. Never `go run`
+# (ADR-0022, issues #142 and #180).
+#
+# `go run` is right for a generator and wrong for a gate, for two reasons that both land on the
+# person reading a red check:
+#
+#   1. It collapses the exit code. Whatever the child exits with, `go run` exits 1 — so a gate that
+#      FAILED and a gate that was INVOKED WRONGLY arrive identically. lockmanifest.Run deliberately
+#      separates the two (2 is usage, 1 is a finding) and TestRun_UnknownArguments_AreAUsageError
+#      asserts it; only the invocation was discarding the distinction.
+#   2. It appends `exit status 1` to stderr, INSIDE the failure block, after the gate's own
+#      explanation. It reads like a crash in the tool rather than a finding about the tree.
+#
+# Same shape as scripts/repo-gates.sh, which is the other half of the same decision: build into a
+# temp directory, run the binary, propagate its status. Nothing has to keep a checked-in binary
+# fresh, and Go's build cache makes the rebuild about as cheap as the link `go run` already did.
+#
+# A BUILD FAILURE EXITS 2, not 1: a gate that could not compile checked nothing, and reporting that
+# as "a rule fired" is the same conflation the macro exists to remove. `set -e` and the trap are not
+# decoration either — a recipe is one shell invocation, so without them a failed build would run the
+# binary that was never written and the scratch directory would outlive the run.
+#
+# `env -u DKP_REPO_ROOT` wraps BOTH halves, as the `go run` invocations it replaces did: every gate
+# below honours that variable so its negative fixtures can run against a tree in t.TempDir(), and a
+# value leaking in from a developer's shell would inspect somebody else's directory while printing
+# that it passed. $(3) carries the per-gate additions — GOFLAGS for the licence gate (it decides
+# which module graph `go list` resolves), DKP_SPEC_BASE_REF for the spec gate (empty disables the
+# operationId-rename check).
+define go_gate
+set -e; \
+dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; \
+if ! env -u DKP_REPO_ROOT $(3) $(GO) build -o "$$dir/gate" $(1); then \
+	printf '\033[31m  %s did not compile\033[0m — the gate could not run, so nothing was checked\n' '$(1)'; \
+	exit 2; \
+fi; \
+status=0; env -u DKP_REPO_ROOT $(3) "$$dir/gate" $(2) || status=$$?; \
+exit $$status
+endef
+
 .PHONY: help setup dev gen test-unit test test-property test-perf test-coverage-floor test-importer \
         test-lanes lint vet migration seed docker check check-fast \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
@@ -756,7 +795,30 @@ generated-digest:
 # invisible until somebody else's PR carries the cleanup. It is offline against a warm module cache,
 # which is the bar `check` is held to. See the target for why a tidy that FAILS is reported as a
 # failed tidy rather than as an untidy tree.
-check: verify-commands mod-tidy-check lint vet test test-coverage-floor budget-bundle
+#
+# NONE OF THE ABOVE IS REMEMBERED ANY MORE (issue #183). Every sentence in this comment is one
+# person noticing, by hand, that a required job was missing from this list — #166 was `budget-bundle`,
+# found months after the hole opened because somebody happened to need a bundle measurement. So the
+# list is now DERIVED and asserted: test/repo/check_closure_test.go reads ci-required's `needs:`,
+# extracts the `make <target>` each blocking job runs, resolves this target's transitive
+# prerequisites, and fails on a required target that is in neither the closure nor its reviewed
+# exemption table — and on a blocking job that invokes no `make` target at all without a row of its
+# own, which is how `security / osv` would otherwise have sat outside the model while the gate
+# reported a complete sweep. Those tables — not this comment — are where an omission is argued.
+#
+# The four that joined here when the gate first ran, with the wall clock measured before deciding
+# rather than after (warm cache, laptop): verify-generated 5 s, verify-spec 0.5 s, docs-build +
+# docs-links 0.3 s. `make gen` producing a diff is the single most common "green locally, red in CI"
+# outcome in this repository, and `check` said nothing about it for the whole of Phase 0.
+#
+# verify-generated and verify-spec sit after `vet` because both need a compiler and are cheap; the
+# docs pair sits before budget-bundle because budget-bundle must stay LAST for the reason given
+# above. What stayed out — `build`, which would delete the tracked internal/ui/dist placeholders on
+# every run, and the CI lanes `make test` already covers — is a row in that table with its reason.
+#
+# ONE LINE, however long it gets: test/repo reads this rule's prerequisites as text, and a
+# backslash-continued list parses as a prerequisite called `\` plus a second line nothing reads.
+check: verify-commands mod-tidy-check lint vet verify-generated verify-spec test test-coverage-floor docs-build docs-links budget-bundle
 	@printf '\033[32m  make check complete\033[0m\n'
 
 ## check-fast: the inner loop — the laws, the linters and the type checkers, NO test suite (~25s)
@@ -767,9 +829,9 @@ check: verify-commands mod-tidy-check lint vet test test-coverage-floor budget-b
 # What it deliberately does NOT include, since a fast target nobody trusts is worse than no fast
 # target: the whole test suite, the coverage floor, the licence gate (a `go list` over the module
 # graph) and eslint (a pnpm install away). What it DOES include is everything that answers "is this
-# tree even coherent" — lint-repo is the architectural laws, and it is 15 seconds and the cheapest
-# gate in the repository; lint-go is gofumpt plus golangci-lint; vet is build + go vet +
-# staticcheck + tsc.
+# tree even coherent" — lint-repo is the architectural laws, one compiled Go binary over the tree and
+# still the cheapest gate in the repository; lint-go is gofumpt plus golangci-lint; vet is build +
+# go vet + staticcheck + tsc.
 #
 # Ordered cheapest-first on purpose: a law violation should be the first thing you read, not the
 # thing you find after waiting for tsc.
@@ -895,11 +957,12 @@ mod-tidy-check:
 # dependency graph the licence gate inspects.
 #
 # Go rather than shell since #130: the classifier is pure text matching, and in internal/licence its
-# patterns are unit-tested directly instead of only through a subprocess. `go run` compiles into the
-# build cache, so the second invocation costs nothing over the `go list` calls the gate must make
-# anyway.
+# patterns are unit-tested directly instead of only through a subprocess. It is BUILT and run rather
+# than `go run`, per ADR-0022 — see the go_gate macro at the top of this file. The compile lands in
+# the build cache either way, so the invocation costs nothing over the `go list` calls the gate must
+# make anyway, and a LIC001 finding is no longer followed by `exit status 1`.
 licence-gate:
-	@env -u DKP_REPO_ROOT -u GOFLAGS $(GO) run ./internal/licence/cmd/licence gate
+	@$(call go_gate,./internal/licence/cmd/licence,gate,-u GOFLAGS)
 
 # Hard-fails when golangci-lint is missing. Exiting 0 would report a green `make check` that linted
 # nothing, which is the defect this target exists to prevent.
@@ -1090,16 +1153,16 @@ mockup-site:
 # that cost: an interpreter below the floor made the script raise at import — before it read a byte of
 # the spec — so `make check` reported the SPEC GATE failing on a tree whose spec was fine, pointing at
 # openapi/openapi.json, the one file nobody may hand-edit. `go` is pinned by go.mod and GOTOOLCHAIN is
-# local, so the gate cannot now fail for a reason that has nothing to do with its subject. `go run`
-# rather than a built binary, as scripts/gen-enums.sh runs internal/ledger/enumgen: the package imports
-# only the standard library, so this compiles in well under a second and needs nothing in `make setup`.
+# local, so the gate cannot now fail for a reason that has nothing to do with its subject. It is built
+# and run rather than `go run` (ADR-0022): the package imports only the standard library, so the
+# compile is well under a second and needs nothing in `make setup` either way.
 #
 # `env -u DKP_REPO_ROOT` for the reason given above lint-repo. DKP_SPEC_BASE_REF is stripped for the
 # same class of reason: an empty value disables the operationId-rename check, and that switch exists
 # only so the negative fixtures in test/repo can run against a tree with no git history. A value
 # leaking in from a developer's shell would turn a merge-blocking gate green.
 verify-spec:
-	@env -u DKP_REPO_ROOT -u DKP_SPEC_BASE_REF $(GO) run ./internal/specgate/verifyspec
+	@$(call go_gate,./internal/specgate/verifyspec,,-u DKP_SPEC_BASE_REF)
 
 ## eval-example-endpoint: LOCAL agent-eval of the two worked-example documents
 # Hands a fresh agent session nothing but the repo plus internal/api/EXAMPLE_ENDPOINT.md and
@@ -1305,11 +1368,17 @@ release-promote:
 # its negative fixtures can run against a fabricated tree in t.TempDir(), and a value leaking in
 # from a developer's shell would otherwise verify some other directory's manifest while printing
 # that it passed.
+#
+# Both go through go_gate rather than `go run` (ADR-0022, issue #180). `release-shipped-lock` is the
+# caller that decision's first argument is about: it runs in release.yml's `prepare` job, before any
+# image, binary, attestation or moving tag exists, and it is the last point at which a missing row in
+# db/migrations-sqlite/SHIPPED.lock is free to fix. "The manifest is incomplete" and "the job
+# mistyped the command" arriving identically in a release log is the cost the macro removes.
 shipped-lock-seal:
-	@env -u DKP_REPO_ROOT $(GO) run ./internal/migrate/shippedlock seal
+	@$(call go_gate,./internal/migrate/shippedlock,seal)
 
 release-shipped-lock:
-	@env -u DKP_REPO_ROOT $(GO) run ./internal/migrate/shippedlock verify --complete
+	@$(call go_gate,./internal/migrate/shippedlock,verify --complete)
 
 # Regenerate THIRD_PARTY_NOTICES.txt from the runtime dependency graph. NOTICE promises this file and
 # .goreleaser.yaml attaches it to every release archive; TestThirdPartyNotices_* asserts it covers the

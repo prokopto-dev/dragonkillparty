@@ -129,7 +129,7 @@ from your own network, or `local` if you dropped the proxy and publish the port 
 | Platforms | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
 | Registry | GHCR. Not Docker Hub, whose pull limits will bite you on a raid night. |
 | Signing | Cosign keyless signatures, SBOM and provenance attached to every tag |
-| Debug variant | `:1-debug` on Alpine, for when you need to `exec` into it |
+| Shell | None, and there is no `-debug` variant. See [Looking inside the container](#looking-inside-the-container). |
 
 Verify a tag before you run it:
 
@@ -138,6 +138,39 @@ cosign verify ghcr.io/prokopto-dev/dragonkillparty:1 \
   --certificate-identity-regexp '^https://github\.com/prokopto-dev/dragonkillparty/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+## Looking inside the container
+
+The image is `FROM scratch`: one binary, the CA bundle and the timezone database. There is no `sh`,
+no `ls` and no package manager, so `docker exec -it dkp sh` fails with `exec: "sh": executable file
+not found`. That is the point — an image with no shell has nothing for a command injection to reach
+— and it is why this page used to promise a `:1-debug` Alpine variant. **It never existed.** Nothing
+in the release pipeline built one, so `docker pull …:1-debug` would have answered `manifest unknown`,
+at the moment you needed it most (issue #184).
+
+Everything you would have opened a shell for has another way in:
+
+```bash
+# Run the binary itself — exec needs a command, not a shell.
+docker exec dkp /usr/local/bin/dkp doctor        # the full self-check, with remedies
+docker exec dkp /usr/local/bin/dkp version
+docker logs dkp                                  # structured logs; add --since 10m
+
+# Copy something out. `docker cp` is the daemon reading the filesystem, so it needs no shell.
+docker cp dkp:/data/dkp.db ./dkp-copy.db         # stop the container first, or use a backup
+docker cp dkp:/data/backups ./backups
+
+# List the whole filesystem without running anything in it.
+docker export dkp | tar -tvf -
+
+# A shell in the container's namespaces, from an image that has one. The target's filesystem is
+# under /proc/1/root; its network and processes are the ones you are inspecting.
+docker run --rm -it --pid container:dkp --network container:dkp alpine sh
+```
+
+`dkp doctor` is the one to reach for first: it is written for exactly this moment and names the
+remedy rather than the symptom. If it cannot tell you what is wrong, the sidecar above is a shell in
+the same namespaces without putting one in the image every guild runs.
 
 ## Upgrading
 

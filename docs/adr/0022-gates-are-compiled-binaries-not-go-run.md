@@ -40,8 +40,16 @@ again for `MIG003` — one Go build nested inside another, thirty times over in 
   `ErrDisagrees` is what option D buys: the rule can now say "the manifest disagrees" and "the
   manifest could not be checked" as two different failures, which is the distinction `go run` erased.
 
-`TestRepoGates_ScriptDelegatesToTheEngine` fails on a `go run` anywhere in the gate script, so the
-decision is pinned rather than remembered.
+- The **Makefile** call sites go through one `go_gate` macro that does the same thing — build into a
+  temp directory, run the binary, propagate the status — with a build failure exiting 2 rather than
+  1, because a gate that could not compile checked nothing. Four recipes use it: `licence-gate`,
+  `verify-spec`, `shipped-lock-seal` and `release-shipped-lock` (issue #180).
+
+`TestRepoGates_ScriptDelegatesToTheEngine` fails on a `go run` anywhere in the gate script, and
+`TestCheck_NoRequiredGate_RunsThroughGoRun` fails on one in the recipe of any target a blocking CI
+job runs (plus the two release-path recipes, which no PR job runs), so the decision is pinned rather
+than remembered. Neither test touches a generator: `go run` is right for `scripts/gen-*.sh` and
+`make mockup-site`, which is this ADR's first line.
 
 ### Consequences
 
@@ -51,9 +59,10 @@ decision is pinned rather than remembered.
 - Good, because one build replaces two on every gate run, and `test/repo` spawns about thirty.
 - **Bad, because the entry point costs a `go build` on a cold cache** — around a second, paid on the
   first run after a toolchain or dependency change.
-- **Bad, because the decision is not yet applied everywhere.** `make shipped-lock-seal` and
-  `make release-shipped-lock` still use `go run`, and those two lines live in the Makefile, which a
-  sibling change owns; the follow-up is filed.
+- **Bad, because `make` itself exits 2 on any failed recipe**, so the child's 1-versus-2 distinction
+  survives to a caller of the *binary* and not to a caller of the *target*. What a release log gains
+  either way is the gate's own words as the last thing on stderr, which was the louder half of the
+  complaint in issue #142.
 
 ### Reversal cost
 
