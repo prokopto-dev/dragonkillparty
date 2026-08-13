@@ -144,9 +144,20 @@ CODEOWNERS-protected; `-update` is refused when `CI=true`.
 
 ### 8. Register it
 
-Add the strategy to the catalogue so `make gen` writes it into the pool-settings form, the
-`strategy_id` `CHECK` constraint and the OpenAPI enum. Never hand-edit those three copies — a test
-asserts they agree.
+Add the strategy to `internal/strategy/catalogue.go`. That list is the whole registration: nothing
+else turns a pool's `strategy_id` into a planner, so an unregistered strategy is one no pool can run —
+`TestCatalogue_ContainsEveryStrategyInThePackage` fails the build for you, by parsing the package for
+`var _ PointStrategy = X{}`.
+
+**There is no `strategy_id` CHECK constraint and there must not be one.** `db/schema.hcl` says so at
+the column: the set of strategies is code-defined and grows per PR, so a CHECK would make every new
+strategy a schema change. `strategy.ByID` is the validation that comment promises — this is the
+opposite of `ledger_batch.kind`, whose vocabulary IS a generated CHECK, because a batch kind is a
+value the database reasons about and a strategy id is a pointer to code.
+
+The pool-settings form, the OpenAPI enum and `reference/strategies/<id>.md` are all meant to be
+generated from this catalogue and from each `ConfigSchema`, and none of those generators exists yet
+(issue #212). Until they do, adding an entry here is the only registration step there is.
 
 ### 9. Docs
 

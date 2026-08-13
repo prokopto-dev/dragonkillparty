@@ -1,0 +1,88 @@
+package strategy
+
+import (
+	"fmt"
+	"sort"
+)
+
+// The in-tree registry: every shipped strategy, in one list. Phase 1, #193.
+//
+// WHY THIS IS A GO LIST AND NOT A DATABASE CHECK. `db/schema.hcl` says it outright at
+// `pool.strategy_id`: the column is "not a CHECK enum: the set of strategies is code-defined and
+// grows per PR, and the strategy package validates it — a CHECK here would make every new strategy a
+// schema change". That is the opposite of `ledger_batch.kind`, where the vocabulary IS a CHECK
+// generated from `internal/ledger/kinds` (canonical §5), and the difference is deliberate: a batch
+// kind is a value the database has to reason about, and a strategy id is a pointer to code. So the
+// registration a new strategy needs is an entry here, and ByID is the validation the schema comment
+// promises exists.
+//
+// The add-strategy skill's step 8 still describes `make gen` writing a `strategy_id` CHECK, an
+// OpenAPI enum and a pool-settings form from this list. None of those three generators exists yet and
+// the first of them contradicts the schema; the other two are real and unbuilt — there is no pool
+// endpoint to carry them. Both are recorded in the PR that added this file rather than guessed at
+// here.
+//
+// A FUNCTION RETURNING A FRESH SLICE, never a package-level var. `.claude/rules/go-idioms.md` bans
+// package-level mutable state, and a shared slice is one append in a test away from an intermittent
+// failure under -shuffle=on. internal/authz.Catalogue() and kinds.BatchKinds() are the same shape for
+// the same reason.
+//
+// THE ORDER IS THE CATALOGUE'S ORDER in docs/guides/choosing-a-dkp-system.md — earn, then spend, then
+// over-time — rather than alphabetical, because that is the order a guild reads them in when choosing
+// a system, and a settings form generated from this list should present them the way the guide
+// explains them.
+
+// Catalogue is every strategy this binary ships, in the order a guild meets them.
+//
+// A strategy that is not here is unreachable: nothing else in the product turns a `pool.strategy_id`
+// into a planner. Adding one is one line plus the file it names, and TestCatalogue_* is what refuses
+// a duplicate id, an id that is not lowercase snake_case, a strategy whose schema does not parse, and
+// one that declares no invariants.
+func Catalogue() []PointStrategy {
+	return []PointStrategy{
+		Tick{},
+		StartPoints{},
+		FixedPrice{},
+		Cap{},
+	}
+}
+
+// ErrUnknownStrategy reports a strategy id no shipped strategy answers to.
+//
+// A SENTINEL because the caller's response differs by context and both responses are wrong for the
+// other: a pool row naming a strategy this binary does not have is an operator downgrading across a
+// release that added one, which is a startup-time refusal with a name in it; the same error from a
+// settings form is a 422 on a field. Neither is served by a nil planner and a nil error.
+var ErrUnknownStrategy = fmt.Errorf("no such point strategy")
+
+// ByID resolves a pool's `strategy_id` to the planner that owns it.
+//
+// This is the validation `db/schema.hcl` points at when it explains why the column carries no CHECK.
+// A linear scan over four entries needs no map, and a map would be a package-level one — see the
+// header.
+func ByID(id string) (PointStrategy, error) {
+	for _, s := range Catalogue() {
+		if s.ID() == id {
+			return s, nil
+		}
+	}
+
+	return nil, fmt.Errorf("%q: %w; shipped strategies are %v", id, ErrUnknownStrategy, IDs())
+}
+
+// IDs is every shipped strategy id, sorted.
+//
+// SORTED rather than in Catalogue's order, because this is the list that answers "which values may
+// this field take?" — an OpenAPI enum, an error message, a settings dropdown's option set. A stable
+// alphabetical order is what keeps a generated artefact from churning when the catalogue is
+// reordered for the reader's sake.
+func IDs() []string {
+	out := make([]string, 0, len(Catalogue()))
+	for _, s := range Catalogue() {
+		out = append(out, s.ID())
+	}
+
+	sort.Strings(out)
+
+	return out
+}

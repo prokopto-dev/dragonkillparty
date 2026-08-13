@@ -95,6 +95,21 @@ const (
 type Share struct {
 	AccountID core.ULID
 	Weight    int64
+
+	// Role is what this account was doing on the night — the raid_attendance.status vocabulary
+	// ('present', 'standby', 'bench', 'pilot', 'excused', 'late', 'left_early'), or a guild's own
+	// label. Empty means "unlabelled", which every planner treats as the ordinary case.
+	//
+	// IT IS AN INPUT AND NEVER AN OUTPUT. No proposal carries it: a strategy that credits standby at
+	// half a share writes an entry for the halved AMOUNT, and the reason it was halved belongs to the
+	// attendance record, not to the money. That is why it can be added to this type without moving a
+	// single committed golden.
+	//
+	// ONLY `tick` READS IT, through its role_multipliers config. It sits on Share rather than in a
+	// parallel map on AttendanceEvent because a role belongs to the attendee: a map is a second list
+	// that can disagree with the first about who was there, and a planner cannot tell which one is
+	// wrong. Allocators ignore it — ledger.Allocate splits on Weight alone.
+	Role string
 }
 
 // Allocation is one account's resulting share of a split. Allocations with a zero amount are never
@@ -436,6 +451,23 @@ type Ctx interface {
 	// Balance is POSITIONAL, never temporal: the balance of an account for a balance kind as of a
 	// seq. A backdated effective_at must not change what a past balance WAS.
 	Balance(account core.ULID, balanceKind string, asOfSeq int64) (core.Centipoints, error)
+
+	// HasHistory reports whether the account has any committed ledger entry for a balance kind as of
+	// a seq. POSITIONAL, exactly like Balance, and for the same reason.
+	//
+	// A ZERO BALANCE AND NO HISTORY ARE DIFFERENT FACTS, and the difference is the whole reason this
+	// method exists rather than a `Balance(...) == 0` test at the call site. A veteran who has earned
+	// eight hundred points and spent every one of them has a balance of zero and four years of
+	// statement; a recruit created this morning has a balance of zero and nothing. `start_points`
+	// grants an opening balance to the second and must never grant it to the first — that is
+	// property P7, "the everyone-got-1000-points-again ticket" (docs/design/04-testing.md), and it is
+	// unanswerable from a sum.
+	//
+	// It is a BOOL rather than an entry count deliberately: the question a planner may ask is "has
+	// this account any history?", and a number invites arithmetic on it — an eligibility rule of
+	// "fewer than three entries" is a rule about the shape of the log rather than about the guild,
+	// and it would silently change meaning the day the ledger writes an extra entry per event.
+	HasHistory(account core.ULID, balanceKind string, asOfSeq int64) (bool, error)
 
 	// Roster is every account in the pool, system accounts included and flagged as such. A decay
 	// run with no explicit account list resolves it here.

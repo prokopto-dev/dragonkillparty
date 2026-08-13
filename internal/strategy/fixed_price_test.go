@@ -69,11 +69,19 @@ type fakeCtx struct {
 	balances   map[core.ULID]core.Centipoints
 	roster     []strategy.AccountRef
 
-	// balanceErr, rosterErr and systemErr make each façade read fail on demand, so the planners'
-	// error paths are exercised against a façade that fails the way a database does.
+	// history is the accounts Ctx.HasHistory reports a ledger for. It is SEPARATE from balances, and
+	// deliberately not derived from them, because the whole point of the façade method is that a zero
+	// balance and an empty history are different facts — a fake that derived one from the other could
+	// not express the veteran who earned and spent everything, which is the account start_points must
+	// never grant to (P7).
+	history map[core.ULID]bool
+
+	// balanceErr, rosterErr, systemErr and historyErr make each façade read fail on demand, so the
+	// planners' error paths are exercised against a façade that fails the way a database does.
 	balanceErr error
 	rosterErr  error
 	systemErr  error
+	historyErr error
 
 	// readAtSeq records the seq of every Balance call. Balances are POSITIONAL, and a planner that
 	// read "current" instead of "as of the run's seq" would pass every value assertion while being
@@ -94,6 +102,7 @@ func newCtx(tb testing.TB, n int, opening core.Centipoints, configJSON string) *
 		headSeq:    7,
 		configJSON: configJSON,
 		balances:   map[core.ULID]core.Centipoints{},
+		history:    map[core.ULID]bool{},
 		rng:        &countingRng{inner: ledger.NewRng(42)},
 	}
 
@@ -137,6 +146,20 @@ func (c *fakeCtx) Balance(account core.ULID, balanceKind string, asOfSeq int64) 
 	}
 
 	return c.balances[account], nil
+}
+
+func (c *fakeCtx) HasHistory(account core.ULID, balanceKind string, asOfSeq int64) (bool, error) {
+	c.readAtSeq = append(c.readAtSeq, asOfSeq)
+
+	if c.historyErr != nil {
+		return false, c.historyErr
+	}
+
+	if balanceKind != strategy.BalanceKindDKP {
+		return false, fmt.Errorf("fake ctx: unknown balance kind %q", balanceKind)
+	}
+
+	return c.history[account], nil
 }
 
 func (c *fakeCtx) SystemAccount(systemKey string) (core.ULID, error) {
