@@ -37,8 +37,20 @@ ledger_entry(id ULID PK, batch_id, pool_id, seq, account_id, character_id, balan
 | `net_amount_cp` | Σ entries; `0` for zero-sum. A cheap invariant check that costs one column |
 
 Balances are derived: `COALESCE(sum(e.amount_cp), 0)` over `ledger_entry` joined to `ledger_batch`
-with `b.seq <= ?`. `balance_snapshot` is a **droppable cache**, maintained in the same transaction
-as the write and verified nightly by the replay job. Never read a balance from anywhere else.
+with `b.seq <= ?`. `balance_snapshot` caches that sum, maintained in the same transaction as the
+write and verified nightly by the replay job. Never read a balance from anywhere else.
+
+**The cache is load-bearing, not droppable** — [ADR-0023](../../docs/adr/0023-balance-snapshot-is-load-bearing.md),
+measured over 527,164 entries: 13 pages against the cache, 10,412 against the definitional SUM. The
+log is still the only source of truth and a dispute is still settled by `BalanceAsOfSeq`, but there
+is no honest fallback that serves the standings page from the log, so **losing the cache is a
+rebuild** and the nightly replay is a correctness dependency rather than hygiene. Concretely: do not
+give a snapshot read a recompute fallback "for safety" — that fallback is 22 seconds — and do not
+defer the replay job as an optimisation.
+
+Canonical §10 carries the same wording and is the line that decides. Older phrasing survives in
+Go comments, two design docs and the `sqlitegen` output (issue #204); where you meet it, it is stale
+rather than a second opinion.
 
 ## Append-only, and what follows from it
 
@@ -119,7 +131,10 @@ emitting a single net-delta `correction` batch.
 
 **Decay is posted, not computed.** Decay runs emit explicit batches with idempotency key
 `(pool_id, cadence_period)`, so a balance is always literally a `SUM` and "why did my points change?"
-is answerable. Computed weighting is permitted in `Priority()` and **never** in `Spendable()`.
+is answerable. Computed weighting is permitted in `Priority()` and **never** in `Spendable()`. The
+cadence vocabulary, the `decay_run` table, catch-up after downtime and the properties the decay
+family owes are `.claude/rules/decay-and-jobs.md`; `cap` and `start_points` follow the same rule and
+are covered there too.
 
 ## Largest-remainder allocation
 
