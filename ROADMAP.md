@@ -183,7 +183,8 @@ this table is the separate reality layer, and it is the thing to keep honest.
 rather than at the head of this phase, because `EXAMPLE_ENDPOINT.md` and `RECIPES.md` needed a real
 table to be worked examples *of*, and the append-only triggers had to exist before the first
 migration that could drop them. What that leaves for Phase 1 proper is the breadth — twelve more
-strategies — plus the four subsystems in items 9, 10, 12 and 13.
+strategies — plus the four subsystems in items 9, 10, 12 and 13. One of those four is still open;
+the table below is the current state.
 
 | # | Deliverable | State | Where it is |
 |---|---|---|---|
@@ -195,11 +196,11 @@ strategies — plus the four subsystems in items 9, 10, 12 and 13.
 | 6 | `PointStrategy`, injected `Clock`/`Rng`, purity test | **done** | `internal/strategy/{strategy,proposal}.go`, `arch_test.go` |
 | 7 | Thirteen strategies | **1 of 13** | `fixed_price` only. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) (`tick`, `start_points`, `cap`) · [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) (`decay_percent`, `decay_window`) · [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) (the four bid strategies) · [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196) (`zero_sum`, `attendance_weighted`) · [#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) (`loot_council`) |
 | 8 | `PlanReversal` per strategy | **ships with each** | `FixedPrice.PlanReversal` and `BatchProposal.Negated` set the shape, including dropping `NonNegative` |
-| 9 | `dkp verify-ledger` + nightly replay | **done** | `cmd/dkp/verify_ledger.go`, `internal/ledger/verify.go`, `.github/workflows/nightly-verify.yml`. ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page, which is what [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) then shipped against |
+| 9 | `dkp verify-ledger` + nightly replay | **done** | `cmd/dkp/verify_ledger.go`, `internal/ledger/verify.go`, `.github/workflows/nightly-verify.yml`. ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page, which is what [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) then shipped against. `--rebuild` is documented and not implemented — [#209](https://github.com/prokopto-dev/dragonkillparty/issues/209) |
 | 10 | Pools, `pool_config_change`, `decay_run` | **done** | `db/schema.hcl`; `db/migrations-sqlite/000005_pool_config_versioning_and_decay_run.sql`; `internal/decay/kinds`; `test/migrations/config_history_and_decay_test.go`. `pool` also gained `strategy_config_json` — the configuration `pool_config_change` versions. `decay_run`'s key is `(pool_id, kind, cadence_period)` per [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md); the semantics both tables must satisfy are `.claude/rules/decay-and-jobs.md`. No writer yet: the strategies are items 7 and 12 |
 | 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
 | 12 | Tier-aware auction resolution | **not started** | Lands with the bid strategies, [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
-| 13 | `internal/swap` | **not started** | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
+| 13 | `internal/swap` | **done** | `internal/swap/{policy,request,quote,evaluate}.go`. Pure, with the purity proof in its own `arch_test.go` rather than in the repo gates, because all four of law 3's mechanisms are scoped to `internal/strategy` — [ADR-0025](docs/adr/0025-pure-evaluators-outside-strategy.md). The ledger posting and the request state machine stay Phase 7 |
 
 **The V5 verdict, because item 11 existed to produce it.** Over 527,164 seeded entries all written
 through `ledger.Service.Commit`, the standings page is **1 statement and ≤ 1.07 ms warm p99, 13 pages
@@ -230,11 +231,15 @@ trigger is a named guild in an issue, not a maintainer's guess.
 - ✓ Determinism hash test (P8), and the cache-versus-fold equality (P3) at guild scale under
   `make test-perf` rather than at 200 checks — a fold of 527,164 entries is not a property-test-sized
   operation.
+- ✓ Ledger replay over a 10⁵-entry synthetic ledger — `make verify-ledger` builds `dkp`, seeds the
+  full `seed.Perf` profile and replays all 527,164 entries against both hash chains and
+  `balance_snapshot`, nightly as `replay / seed.Perf`. Nightly rather than per push for the same
+  reason as the line above it: the scale is ninety seconds of seeding, while `internal/ledger`'s
+  perf suite runs the same `ledger.Verify` over an eight-raid ledger on every push, so the path
+  cannot rot between nightlies.
 - Properties P1–P12 at 200 checks per PR, 20k nightly. **P1, P2, P5 and P8 exist**; the rest arrive
   with the strategies and subsystems they constrain — P4 with the bid FSM, P6/P7/P9 with `cap`,
   `start_points` and the decay family, P10 with attendance in Phase 4.
-- Ledger replay over a 10⁵-entry synthetic ledger — the dataset exists (item 11), the replay does
-  not (item 9).
 - Decay idempotency across DST and month boundaries. The trap is treating a cadence period as a
   duration rather than a guild-local label; `.claude/rules/decay-and-jobs.md` §2.
 - Per-strategy golden `BatchProposal` files — one exists, twelve follow their strategies.
@@ -250,19 +255,16 @@ invariants under randomised input; a 10⁵-entry replay reproduces every snapsho
 property holds for every shipped strategy; `internal/strategy` provably cannot import
 `internal/store`. No HTTP surface yet, and that is correct.
 
-**What is left to get there**, given the state table above — five workstreams, no others:
+**What is left to get there**, given the state table above — two workstreams, no others:
 
 | Remaining | Items | Issues |
 |---|---|---|
-| The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
-| `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
-| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, kind, cadence_period)` — kind-scoped by [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md), which settled [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206): un-scoped, `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
+| The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal. The decay family is also item 10's only missing half — the tables exist and nothing writes to them yet, keyed `(pool_id, kind, cadence_period)` per [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md) | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
 | Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
-| `internal/swap` | 13 | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
 
-The replay is the one with an ordering constraint on it: it is what makes the 10⁵-entry clause of the
-exit criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page. It should not be the
-last thing in the phase.
+The replay had the one ordering constraint on it — it is what makes the 10⁵-entry clause of the exit
+criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page — and it landed early
+rather than last, which is what that constraint asked for.
 
 **Demo.** At the end of this phase you can seed a synthetic pool from the CLI, post 5,000 batches,
 reverse one, print a member statement, and run `verify-ledger` clean — in under a second.
