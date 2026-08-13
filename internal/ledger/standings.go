@@ -14,7 +14,7 @@ import (
 // A standings page is every account's balance in one pool, highest first. There are exactly two
 // ways to produce it and this file holds both, on purpose:
 //
-//	StandingsFromSnapshot   one indexed row per account, from the droppable cache
+//	StandingsFromSnapshot   one indexed row per account, from the cache
 //	StandingsFromLedger     one grouped SUM over every entry in the pool, from the log
 //
 // They must agree. The log is the source of truth (docs/concepts/ledger.md: "a balance is not

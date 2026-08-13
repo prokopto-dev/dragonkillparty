@@ -47,8 +47,9 @@ func BalanceAsOfSeq(
 //
 // Two reads rather than one, deliberately: the head is a per-pool value that a caller reading many
 // accounts should fetch once (via MaxPoolSeq) and pass to BalanceAsOfSeq, so this convenience wrapper
-// is for the single-account case. It never reads balance_snapshot: the snapshot is a droppable cache
-// and the source of truth is always the sum over the log.
+// is for the single-account case. It never reads balance_snapshot: the snapshot is a cache, and the
+// source of truth is always the sum over the log. That stays true under ADR-0023 — the cache being
+// load-bearing for the standings PAGE does not make it the answer to a dispute.
 func CurrentBalance(
 	ctx context.Context,
 	q store.Queries,

@@ -941,9 +941,9 @@ func blobValue(tb testing.TB, s *store.Store, query string, args ...any) []byte 
 
 // balanceOf reads an account's dkp balance THROUGH THE LEDGER, not through the snapshot cache.
 //
-// Deliberate: the sum over ledger_entry is the definition, and the snapshot is a droppable cache. A
-// test that checked the cache would be checking the thing that is allowed to be wrong, and would go
-// green on a commit that updated the cache and wrote no entries.
+// Deliberate: the sum over ledger_entry is the definition and the snapshot is derived from it. A test
+// that checked the cache would be checking the thing that is allowed to be wrong, and would go green
+// on a commit that updated the cache and wrote no entries.
 func balanceOf(tb testing.TB, s *store.Store, account core.ULID) int64 {
 	tb.Helper()
 

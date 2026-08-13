@@ -194,12 +194,18 @@ Stop the instance before restoring. Restoring under a running server is refused.
 dkp verify-ledger
 ```
 
-Rebuilds every balance from the log, from zero, and compares it against the cached snapshot. This runs
-nightly on its own and its last result appears in `dkp doctor` and at `/ops`.
+Rebuilds every balance from the log, from zero, and compares it against the cached snapshot — and
+recomputes both hash chains while it is there. It is read-only and safe to run against a running
+instance. It exits 0 when the ledger is clean and non-zero when it is not, or when it could not read
+the database; it runs nightly on its own and its last result appears in `dkp doctor` and at `/ops`.
 
 If it ever disagrees, that is a **bug in this software**, not a data-loss event: the log is intact and
-the cache is derived. `dkp verify-ledger --rebuild` discards and recomputes the cache. Please report
-the drift.
+the cache is derived from it. Please report the drift.
+
+> **`--rebuild` is not implemented yet** ([#209](https://github.com/prokopto-dev/dragonkillparty/issues/209)).
+> It is the documented repair — discard and recompute the cache — and until it lands, drift is
+> something this command *detects* and cannot yet fix. Report it rather than editing the database:
+> the log is intact, so nothing is lost by waiting.
 
 `dkp verify-ledger` checks the balances, which is a different question from whether the database can
 still refuse an edit. If `/readyz` reports `{"check":"ledger_append_only","state":"degraded"}`, it is

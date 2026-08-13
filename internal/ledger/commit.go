@@ -25,7 +25,7 @@ import (
 //
 //	ledger_batch      the economic event
 //	ledger_entry      one row per (account, balance kind) delta
-//	balance_snapshot  the droppable cache, upserted additively
+//	balance_snapshot  the balance cache, upserted additively
 //	audit_log         who did it, chained
 //	event_outbox      the event, so a subscriber sees it iff it committed
 //	dkp_meta          'ledger_head:<pool_id>' and 'audit_head'
@@ -76,6 +76,19 @@ const (
 	metaLedgerHeadPrefix = "ledger_head:"
 	metaAuditHead        = "audit_head"
 )
+
+// MetaLedgerHeadKey and MetaAuditHeadKey are the dkp_meta keys the two chain heads live under.
+//
+// Exported because the writer is no longer the only interested party: `dkp verify-ledger` reads them
+// back (verify.go), and the anchor publisher of docs/design/01-domain-model.md §9.6 will too. A
+// second place that spelled "ledger_head:" for itself would be a place that could spell it wrongly
+// — and the failure would be a verifier reporting a missing head on a perfectly good ledger.
+func MetaLedgerHeadKey(poolID core.ULID) string { return metaLedgerHeadPrefix + poolID.String() }
+
+// MetaAuditHeadKey is the audit chain's key. It is a function rather than a constant so the two read
+// the same way at a call site, and so the audit chain's instance-wide scope (no argument) is visible
+// next to the ledger chain's per-pool one.
+func MetaAuditHeadKey() string { return metaAuditHead }
 
 // NO ENUM VOCABULARY IS RESTATED IN THIS FILE. ledger_batch.kind and ledger_batch.source live in
 // internal/ledger/kinds, audit_log.actor_kind lives in internal/audit/kinds, and both are the
@@ -610,8 +623,12 @@ func (s *Service) writeOutboxEvent(
 	return eventSeq, nil
 }
 
-// upsertSnapshots folds the batch's entries into the droppable balance cache, one additive upsert
-// per (account, balance kind).
+// upsertSnapshots folds the batch's entries into the balance cache, one additive upsert per
+// (account, balance kind).
+//
+// In the same transaction as the entries, and that is not an optimisation: ADR-0023 measured the
+// cache as LOAD-BEARING rather than droppable, so a batch that committed its entries and deferred
+// its cache write would leave the standings page wrong with no fallback to be wrong more slowly.
 //
 // It goes through UpsertBalanceSnapshot (PR 9's helper) rather than a bespoke insert, so the cache's
 // semantics live in one place: on conflict the amount and the count are ADDED and the as-of-seq
