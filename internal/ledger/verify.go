@@ -122,6 +122,16 @@ const (
 	// FindingSnapshotOrphan is a cached row with no entries behind it: a balance the log does not
 	// support at all.
 	FindingSnapshotOrphan FindingKind = "snapshot_orphan"
+
+	// FindingBalanceOverflow is an account whose entries sum past what int64 can hold, so the log
+	// does not state a balance for it at all.
+	//
+	// It is a finding rather than an error because the ledger is what is wrong, not the reader — and
+	// it REPLACES the amount comparison for that account rather than joining it. Comparing a wrapped
+	// fold against a wrapped cache is the one way this verifier could report a corrupt ledger clean:
+	// both sides wrap identically, agree, and are both nonsense. NoAmountOverflow refuses to commit
+	// arithmetic that gets here; this is the replay noticing that something did anyway.
+	FindingBalanceOverflow FindingKind = "balance_overflow"
 )
 
 // The audit-chain findings. The audit chain is instance-wide and independent of the ledger's, so its
@@ -360,6 +370,12 @@ type foldAcc struct {
 	amountCp   core.Centipoints
 	entryCount int64
 	maxSeq     int64
+
+	// overflowed records that the running sum went past int64, at which point amountCp is a wrapped
+	// value and stops meaning anything. It is sticky: once the fold has wrapped, no later entry can
+	// make the total trustworthy again, and a subsequent entry that happened to wrap it back would
+	// be the worst case of all — a number that looks ordinary and is not.
+	overflowed bool
 }
 
 // pool walks one pool: its batch chain, its entries, and its cached balances.
@@ -545,7 +561,19 @@ func (v *verifier) foldEntries(fold map[snapKey]foldAcc, entries []EntryRow) {
 		k := snapKey{accountID: e.AccountID, balanceKind: e.BalanceKind}
 
 		acc := fold[k]
-		acc.amountCp += e.AmountCp
+
+		// Checked, not `+=`. sumEntries catches a single BATCH that overflows, and this is the other
+		// half: two individually legal batches can move MaxInt64 and then 1 to the same account, and
+		// a plain addition would wrap to exactly the value a tampered cache holds — so the cache and
+		// the fold would agree, and the verifier would call a ledger clean that cannot be read at
+		// all.
+		sum, ok := addCentipoints(acc.amountCp, e.AmountCp)
+		if ok {
+			acc.amountCp = sum
+		} else {
+			acc.overflowed = true
+		}
+
 		acc.entryCount++
 		acc.maxSeq = max(acc.maxSeq, e.Seq)
 		fold[k] = acc
@@ -611,7 +639,11 @@ func (v *verifier) checkSnapshots(
 
 	for _, k := range missing {
 		acc := fold[k]
-		v.find(Finding{
+
+		// An overflowed fold reports the overflow rather than the missing row, and never quotes the
+		// wrapped total: "the log holds 4 entries summing to -9223372036854775807" would be a
+		// verifier stating a balance it has just established it cannot compute.
+		f := Finding{
 			Kind:        FindingSnapshotMissing,
 			PoolID:      poolID,
 			Seq:         acc.maxSeq,
@@ -619,7 +651,16 @@ func (v *verifier) checkSnapshots(
 			BalanceKind: k.balanceKind,
 			Detail: fmt.Sprintf("no cached balance; the log holds %d entries summing to %d",
 				acc.entryCount, acc.amountCp),
-		})
+		}
+
+		if acc.overflowed {
+			f.Kind = FindingBalanceOverflow
+			f.Detail = fmt.Sprintf(
+				"the %d entries in the log sum past int64, so no balance can be stated; there is no cached row either",
+				acc.entryCount)
+		}
+
+		v.find(f)
 	}
 
 	return count, nil
@@ -642,7 +683,20 @@ func (v *verifier) checkSnapshotRow(
 		return
 	}
 
-	if core.Centipoints(row.AmountCp) != acc.amountCp {
+	switch {
+	case acc.overflowed:
+		// The amount is NOT compared. A wrapped fold and a wrapped cache agree, and reporting that
+		// agreement as a match is the failure this branch exists to prevent. The count and the seq
+		// below are still sound and are still checked.
+		f := at
+		f.Kind = FindingBalanceOverflow
+		f.Seq = acc.maxSeq
+		f.Detail = fmt.Sprintf(
+			"the %d entries in the log sum past int64, so no balance can be stated; the cache holds %d",
+			acc.entryCount, row.AmountCp)
+		v.find(f)
+
+	case core.Centipoints(row.AmountCp) != acc.amountCp:
 		f := at
 		f.Kind = FindingSnapshotAmountMismatch
 		f.Seq = acc.maxSeq

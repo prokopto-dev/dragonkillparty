@@ -1,6 +1,7 @@
 package ledger_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
@@ -428,8 +429,18 @@ func requireVerifyLedgerIsClean(
 ) {
 	tb.Helper()
 
-	report, err := ledger.Verify(tb.Context(), s.Q(), ledger.VerifyOptions{})
-	require.NoError(tb, err, "the replay must be able to read the seeded database")
+	// Through store.ReadTx, which is how the command runs it: one consistent snapshot for the whole
+	// replay. Nothing writes to this database while the subtest runs, so isolation buys nothing here
+	// — what it buys is that the path under test is the path that ships.
+	var report ledger.Report
+
+	require.NoError(tb, s.ReadTx(tb.Context(), func(ctx context.Context, q store.Queries) error {
+		var err error
+
+		report, err = ledger.Verify(ctx, q, ledger.VerifyOptions{})
+
+		return err
+	}), "the replay must be able to read the seeded database")
 
 	require.True(tb, report.Clean(),
 		"a ledger written entirely by ledger.Service.Commit must verify clean; %d finding(s):\n%v",

@@ -418,12 +418,48 @@ func TestVerify_CorruptedLedger_NamesTheExactFailure(t *testing.T) {
 			// wrong numbers agree often enough to be worth the branch. The commit path's
 			// NoAmountOverflow invariant is what stops this being written in the first place; this
 			// is the replay noticing that something wrote it anyway.
+			//
+			// Truncated to ONE batch so that no account's cross-batch fold overflows as well: this
+			// case is about the per-BATCH sum, and the fold is the case below. Two fixtures that
+			// each produced both findings would prove neither check independently.
 			beforeSeal: func(c *verifyChain) {
+				c.batches, c.entries = c.batches[:1], c.entries[:1]
 				c.entries[0][0].AmountCp = math.MaxInt64
 				c.entries[0][1].AmountCp = 1
 			},
 			want:   []ledger.FindingKind{ledger.FindingNetAmountMismatch},
 			detail: "more than int64 can hold",
+		},
+		{
+			name: "a fold that overflows int64 across batches is a finding, not a wrapped match",
+			// THE ONE WAY THIS VERIFIER COULD REPORT A CORRUPT LEDGER CLEAN, so it gets its own
+			// fixture rather than being folded into the per-batch overflow case above.
+			//
+			// Two batches, each individually legal and each summing to exactly zero, move MaxInt64
+			// and then 1 to the same account. Neither trips sumEntries, because neither BATCH
+			// overflows. The cross-batch fold does — and a plain `+=` would wrap it to MinInt64,
+			// which is precisely what this fixture's cache holds, because seal() folds the entries
+			// with the same wrapping arithmetic a naive verifier would use. So the cache and the
+			// fold agree, on a number that means nothing, and the only correct answer is to refuse
+			// to compare them.
+			//
+			// The chain is truncated to two batches so the third does not touch the same accounts
+			// and drag them into the overflow as well; the guild bank takes the other side of both
+			// entries so only ONE account overflows and the finding is unambiguous.
+			beforeSeal: func(c *verifyChain) {
+				c.batches, c.entries = c.batches[:2], c.entries[:2]
+
+				c.entries[0] = []ledger.EntryRow{
+					c.entry(1, 1, c.accounts[0], math.MaxInt64),
+					c.entry(1, 2, ledger.AccountIDGuildBank, -math.MaxInt64),
+				}
+				c.entries[1] = []ledger.EntryRow{
+					c.entry(2, 1, c.accounts[0], 1),
+					c.entry(2, 2, ledger.AccountIDGuildBank, -1),
+				}
+			},
+			want:   []ledger.FindingKind{ledger.FindingBalanceOverflow},
+			detail: "sum past int64, so no balance can be stated",
 		},
 		{
 			name: "an entry whose denormalised seq is not its batch's is a finding",
@@ -868,4 +904,95 @@ func TestVerify_Progress_ReportsMonotonicCounts(t *testing.T) {
 	require.Equal(t, ledger.DefaultPoolID, seen[0].PoolID)
 	require.Equal(t, int64(3), seen[len(seen)-1].Batches)
 	require.Equal(t, int64(6), seen[len(seen)-1].Entries)
+}
+
+// TestVerify_CommitDuringTheReplay_DoesNotBecomeAFinding isolates the replay from raid night.
+//
+// The verifier reads a pool's batches, then its chain head, then its cached balances, and compares
+// them against each other. Every one of those reads is individually correct; what has to hold is that
+// they all describe the SAME database. Through store.Q() they do not — each statement takes its own
+// connection off the read pool and sees whatever had committed by then — so a batch committing
+// mid-replay makes the head advance past the walk's last hash and the verifier reports
+// `ledger_head_mismatch` on a healthy ledger. On raid night, which is when commits happen and when a
+// false corruption alarm costs the most: this job files an issue, and a job that cries wolf is a job
+// an operator learns to close unread (PR #211 review).
+//
+// The commit is fired from the progress callback, so it lands part-way through the walk rather than
+// at a hopeful moment; PageSize 1 guarantees the callback runs while there are still pages to come.
+func TestVerify_CommitDuringTheReplay_DoesNotBecomeAFinding(t *testing.T) {
+	t.Parallel()
+
+	svc, s := newService(t)
+	accounts := seedPersonAccounts(t, s, 2)
+
+	commit := func() {
+		_, err := svc.Commit(t.Context(), request(award(ledger.AccountIDGuildBank,
+			[]ledger.Allocation{{AccountID: accounts[0], AmountCp: 100}})))
+		require.NoError(t, err)
+	}
+
+	const before = 3
+	for range before {
+		commit()
+	}
+
+	// A commit fired once, from the first progress callback, so it lands in the middle of the walk.
+	commitOnce := func() func(ledger.Progress) {
+		done := false
+
+		return func(ledger.Progress) {
+			if done {
+				return
+			}
+
+			done = true
+
+			commit()
+		}
+	}
+
+	t.Run("through ReadTx the replay sees one consistent database", func(t *testing.T) {
+		var report ledger.Report
+
+		require.NoError(t, s.ReadTx(t.Context(), func(ctx context.Context, q store.Queries) error {
+			var err error
+
+			report, err = ledger.Verify(ctx, q, ledger.VerifyOptions{
+				PageSize: 1,
+				Progress: commitOnce(),
+			})
+
+			return err
+		}))
+
+		require.True(t, report.Clean(),
+			"a commit concurrent with the replay is not corruption: %s", renderFindings(report))
+		require.Equal(t, int64(before), report.Batches(),
+			"the snapshot holds the batches that existed when the replay began, and not the one that "+
+				"committed while it ran")
+
+		// The concurrent commit was real, which is what stops this being a test of nothing.
+		head, err := ledger.MaxPoolSeq(t.Context(), s.Q(), ledger.DefaultPoolID)
+		require.NoError(t, err)
+		require.Equal(t, int64(before+1), head, "the batch committed during the replay is in the log")
+	})
+
+	t.Run("through Q the replay is not reading one database", func(t *testing.T) {
+		// The control, and the reason ReadTx exists. Q() is correct for a single read and cannot
+		// promise anything across several: this replay picks up a batch that committed after it
+		// started, which is the same window in which the head can advance under a finished walk.
+		//
+		// Asserted on the COUNT rather than on a finding: which of the several possible false
+		// findings a race produces depends on where the commit lands, and a test that demanded one
+		// particular symptom of a race would be a flaky test. The count is the property itself —
+		// this read observed a database that did not exist when it began.
+		report, err := ledger.Verify(t.Context(), s.Q(), ledger.VerifyOptions{
+			PageSize: 1,
+			Progress: commitOnce(),
+		})
+		require.NoError(t, err)
+
+		require.Greater(t, report.Batches(), int64(before+1),
+			"the pool-scoped reads outside a transaction see writes that land mid-replay")
+	})
 }

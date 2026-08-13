@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -29,10 +30,11 @@ import (
 // repair for drift, discards and recomputes balance_snapshot and is a separate job. A verifier that
 // could repair what it found would be a verifier that could hide it.
 //
-// It reads through store.Q() — the read pool — rather than inside a transaction. A full replay at
-// guild scale takes minutes, and holding the single write connection for that long would queue every
-// raid-night write behind a report (.claude/rules/store-and-sql.md: long jobs must not sit on the
-// writer).
+// It reads through store.ReadTx — a READ transaction on the read pool — so the whole replay observes
+// one consistent snapshot. Not store.Tx: that is the write pool, capped at one connection, and
+// holding it for a multi-minute replay would queue every raid-night write behind a report
+// (.claude/rules/store-and-sql.md: long jobs must not sit on the writer). Not store.Q() either —
+// see the comment at the call site, which is the bug that distinction exists to prevent.
 
 // newVerifyLedgerCmd builds `dkp verify-ledger`.
 func newVerifyLedgerCmd() *cobra.Command {
@@ -76,9 +78,29 @@ func newVerifyLedgerCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 
-			report, err := ledger.Verify(cmd.Context(), s.Q(), ledger.VerifyOptions{
-				MaxFindings: maxFindings,
-				Progress:    verifyProgress(out, quiet),
+			var report ledger.Report
+
+			// ONE SNAPSHOT FOR THE WHOLE REPLAY, through store.ReadTx rather than store.Q().
+			//
+			// The replay reads a pool's batches, then its chain head, then its cached balances, and
+			// then compares them against each other. Through Q() each of those statements gets its
+			// own connection off the read pool and its own view of whatever had committed by then,
+			// so a batch committing mid-replay would advance the head past the walk's last hash and
+			// this command would report ledger_head_mismatch on a healthy ledger. On raid night —
+			// when commits happen, and when a false corruption alarm is worth the least.
+			//
+			// A WAL read transaction pins one snapshot and blocks no writer, so a concurrent award
+			// still commits; the replay simply verifies the database as it was when it started,
+			// which is the only thing "verify" can honestly mean while writes continue.
+			err = s.ReadTx(cmd.Context(), func(ctx context.Context, q store.Queries) error {
+				var verifyErr error
+
+				report, verifyErr = ledger.Verify(ctx, q, ledger.VerifyOptions{
+					MaxFindings: maxFindings,
+					Progress:    verifyProgress(out, quiet),
+				})
+
+				return verifyErr
 			})
 			if err != nil {
 				return fmt.Errorf("verify %s: %w", dbPath, err)
