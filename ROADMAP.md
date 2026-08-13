@@ -183,7 +183,8 @@ this table is the separate reality layer, and it is the thing to keep honest.
 rather than at the head of this phase, because `EXAMPLE_ENDPOINT.md` and `RECIPES.md` needed a real
 table to be worked examples *of*, and the append-only triggers had to exist before the first
 migration that could drop them. What that leaves for Phase 1 proper is the breadth — twelve more
-strategies — plus the four subsystems in items 9, 10, 12 and 13.
+strategies — plus the four subsystems in items 9, 10, 12 and 13. Three of those four are still open;
+the table below is the current state.
 
 | # | Deliverable | State | Where it is |
 |---|---|---|---|
@@ -199,7 +200,7 @@ strategies — plus the four subsystems in items 9, 10, 12 and 13.
 | 10 | Pools, `pool_config_change`, `decay_run` | **pool only** | `pool` exists in the minimal form the ledger needs (id, name, strategy id/version, balance kinds). `pool_config_change` [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191) and `decay_run` [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) are not in the schema; the semantics both must satisfy are `.claude/rules/decay-and-jobs.md` |
 | 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
 | 12 | Tier-aware auction resolution | **not started** | Lands with the bid strategies, [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
-| 13 | `internal/swap` | **not started** | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
+| 13 | `internal/swap` | **done** | `internal/swap/{policy,request,quote,evaluate}.go`. Pure, with the purity proof in its own `arch_test.go` rather than in the repo gates, because all four of law 3's mechanisms are scoped to `internal/strategy` — [ADR-0025](docs/adr/0025-pure-evaluators-outside-strategy.md). The ledger posting and the request state machine stay Phase 7 |
 
 **The V5 verdict, because item 11 existed to produce it.** Over 527,164 seeded entries all written
 through `ledger.Service.Commit`, the standings page is **1 statement and ≤ 1.07 ms warm p99, 13 pages
@@ -250,7 +251,7 @@ invariants under randomised input; a 10⁵-entry replay reproduces every snapsho
 property holds for every shipped strategy; `internal/strategy` provably cannot import
 `internal/store`. No HTTP surface yet, and that is correct.
 
-**What is left to get there**, given the state table above — five workstreams, no others:
+**What is left to get there**, given the state table above — four workstreams, no others:
 
 | Remaining | Items | Issues |
 |---|---|---|
@@ -258,7 +259,6 @@ property holds for every shipped strategy; `internal/strategy` provably cannot i
 | `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
 | `pool_config_change` and `decay_run` with `UNIQUE(pool_id, cadence_period)` — settle [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206) first, or `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
 | Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
-| `internal/swap` | 13 | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
 
 The replay is the one with an ordering constraint on it: it is what makes the 10⁵-entry clause of the
 exit criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page. It should not be the
