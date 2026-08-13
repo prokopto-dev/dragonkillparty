@@ -148,7 +148,7 @@ and `DCO`. Everything else reports into `ci-required`.
 
 | Group | Jobs |
 |---|---|
-| `gen` | `verify-generated` — `make gen` then `git diff --exit-code`. Runs always. |
+| `gen` | `verify-generated` — hash the generated trees, `make gen`, hash again. Not `git diff --exit-code`, which reports a laptop's work in progress as drift and cannot run at all in the change that first creates a generated tree. Runs always, and `make check` runs it too. |
 | `lint` | `go` (gofumpt, vet, golangci-lint, staticcheck) · `web` (eslint, prettier, `tsc --noEmit`) · `repo` (the architectural gates in `internal/repogate` + the licence firewall) |
 | `test` | `go-unit` · `go-integration` (both `-race`; `-shuffle=on -count=1` on the packages that shell out, and over everything in the nightly `suite / shuffled` job — ADR-0020) · `contract` (oasdiff breaking-change, `operationId` set diff, SDK regen diff) · `migrations` · `e2e`. The importer suite is nightly (#159) |
 | `build` | `binary` (pnpm build → `go build`, uploads the artifact every other job reuses) · `image` |
