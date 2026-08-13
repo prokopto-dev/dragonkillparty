@@ -30,10 +30,36 @@ VERSION_STAMP="${VERSION}"
 COMMIT="${COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo none)}"
 DATE="${DATE:-$(git log -1 --format=%cI 2>/dev/null || echo unknown)}"
 
-# cache-from everywhere, cache-to only on main (branch-scoped caches; a PR's writes help nobody).
-cache_args=(--cache-from "type=gha")
-if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
-    cache_args+=(--cache-to "type=gha,mode=min")
+# The layer cache. BUILDX_CACHE_FROM / BUILDX_CACHE_TO are this repository's convention rather than
+# anything buildx honours by name — the Makefile's `docker` recipe reads the same pair — and the
+# workflow calling this script is what sets them. Unset, as on a laptop or a manual invocation, no
+# cache flag is passed and the build is exactly what it was.
+#
+# THIS USED TO SAY type=gha, and it never worked (issue #163). buildx authenticates to the Actions
+# cache service with ACTIONS_RUNTIME_TOKEN plus the cache service URL, and GitHub injects those into
+# the environment of JavaScript and Docker actions only — never into a `run:` step, which is what
+# invokes this file. `docker/build-push-action` can use the backend for that reason and a shell
+# invocation of the same command cannot, so the release path's cache was either inert or a hard
+# `failed to configure gha cache` depending on the buildx version, and no release had been cut to
+# find out which. Exposing the variables needs a third-party action in a job that holds
+# `packages: write`, which is a dependency decision (AGENTS.md); ci.yml's `build / image` had already
+# answered the same question with the local backend and actions/cache, so both paths now share one
+# mechanism. test/repo/docker_layer_cache_test.go asserts the gha backend is named nowhere.
+#
+# The old `GITHUB_REF = refs/heads/main` test went with it. WHICH REF MAY WRITE is a property of the
+# workflow — it is the workflow that declares the actions/cache step making a write possible at all —
+# and a script re-deriving it would be a second copy of the doctrine to keep in step with the first.
+#
+# The array can now be EMPTY, which it never could before, so the build below expands it as
+# `${cache_args[@]+"${cache_args[@]}"}`: under `set -u`, bash 3.2 — what macOS ships, and what
+# scripts/budget-bundle.sh already accommodates — treats a plain "${cache_args[@]}" on an empty array
+# as an unbound variable and aborts.
+cache_args=()
+if [ -n "${BUILDX_CACHE_FROM:-}" ]; then
+    cache_args+=(--cache-from "$BUILDX_CACHE_FROM")
+fi
+if [ -n "${BUILDX_CACHE_TO:-}" ]; then
+    cache_args+=(--cache-to "$BUILDX_CACHE_TO")
 fi
 
 echo "release-image: building ${IMAGE}:${VERSION}-${ARCH} for ${platform} (no QEMU — cross-compiled)"
@@ -46,7 +72,7 @@ docker buildx build \
     --provenance=false \
     --tag "${IMAGE}:${VERSION}-${ARCH}" \
     --push \
-    "${cache_args[@]}" \
+    ${cache_args[@]+"${cache_args[@]}"} \
     .
 
 echo "release-image: pushed ${IMAGE}:${VERSION}-${ARCH}"

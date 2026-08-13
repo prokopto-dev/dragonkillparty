@@ -206,7 +206,7 @@ jobs:
               # ran neither. Same self-concealing omission as the four blocks above, found while
               # splitting this filter.
               - 'test/golden/**'
-              # .npmrc and deploy/** are the two test/repo inputs that do NOT qualify for the `go`
+              # .npmrc and deploy/** are test/repo inputs that do NOT qualify for the `go`
               # tier below, and they are here rather than there because their readers are
               # -short-SKIPPED: TestNpmrc_SuppressesALifecycleScript installs a fixture with pnpm
               # and runs only in the full suite, so `test / unit` would not cover a change to
@@ -221,6 +221,34 @@ jobs:
               - '.npmrc'
               - 'web/.npmrc'
               - 'deploy/**'
+              # THE WORKFLOW FILES THEMSELVES, which were in no filter at all (issue #161) — not in
+              # *build, not in `go`, and not in `docs`, whose `**/*.md` cannot match a .yml. So a
+              # workflow-only PR selected NOTHING, every test job was skipped, ci-required counted the
+              # skips as success, and every test/repo suite that asserts about a workflow did not run:
+              # ci_required_test.go (that every job reports into the gate), ci_path_filters_test.go
+              # (this block), ci_toolchain_test.go, gate_cache_test.go, migration_gates_test.go,
+              # migrate_lint_test.go, release_gates_test.go, contributing_claims_test.go,
+              # smoke_scripts_test.go, spa_pipeline_test.go, mockup_gates_test.go and
+              # docker_layer_cache_test.go. Renaming a job out of ci-required's needs list, or out of
+              # a CONTRIBUTING.md citation, was a change that ran none of the gates that catch it.
+              #
+              # This block is the sharpest instance of what the header above describes: the test that
+              # exists to prove the filters are right was skipped by the filters whenever the filters
+              # were what changed.
+              #
+              # In `code` AND NOT in `go`, which is where issue #161 proposed it. The rule stated in
+              # the header decides that: a pattern may sit in `go` alone only when its reader still
+              # runs under -short, and gate_cache_test.go, migrate_lint_test.go and
+              # ci_path_filters_test.go's own closure test all skip there. `test / unit` would run
+              # some of these suites and silently not others, so the input belongs to the tier that
+              # reaches `test / integration`.
+              #
+              # The whole tree, not just ci.yml: every other workflow in it is read by a suite too
+              # (release.yml, edge.yml and nightly-verify.yml by the release, smoke, SPA-pipeline,
+              # layer-cache and toolchain suites; pages.yml by the mockup gates). fixtures.yml is the
+              # one file no suite reads yet — covering it with the same line costs one full test run
+              # on a fixtures-only PR, which is the safe direction to be wrong in.
+              - '.github/workflows/**'
             go:
               - *code
               # THE TEST/REPO INPUTS THAT ARE NOT SOURCE — issue #94, and the reason `go` still
@@ -337,10 +365,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # REQUIRED, not an optimisation. The test-integrity analyser diffs against the merge base,
-          # and so does MIG003: it compares db/migrations-sqlite/SHIPPED.lock with its merge-base
-          # version to prove rows were only appended. A shallow checkout downgrades that to a
-          # printed skip and a green check. TestCI_LintRepoJob_FetchesFullHistory pins this line.
+          # REQUIRED, not an optimisation. MIG003 diffs against the merge base: it compares
+          # db/migrations-sqlite/SHIPPED.lock with its merge-base version to prove rows were only
+          # appended. A shallow checkout downgrades that to a printed skip and a green check.
+          # TestCI_LintRepoJob_FetchesFullHistory pins this line.
+          #
+          # This comment also claimed a "test-integrity analyser" needed the history (issue #167). No
+          # CI step runs one: the test-integrity auditor is a subagent in .claude/agents/, invoked by
+          # a human or an agent during review, and CONTRIBUTING.md describes it accurately as review
+          # rather than enforcement. A false enforcement claim in the CI source is worse than none —
+          # it tells a reviewer a weakened assertion would have been caught automatically. Wanting
+          # that coverage means adding a step and a negative fixture, not a sentence.
           fetch-depth: 0
       # REQUIRED for the same gate. MIG003 delegates to internal/migrate/shippedlock (issue #129),
       # and repo-gates.sh treats a missing `go` as a MIG003 FAILURE rather than a skip — a hash gate
@@ -946,10 +981,16 @@ jobs:
       # WHY type=local AND NOT type=gha. The gha backend is the obvious choice and it cannot be used
       # from a `run:` step: buildx authenticates to the Actions cache service with ACTIONS_RUNTIME_
       # TOKEN, which GitHub injects into JS actions only, never into a script step. Exposing it needs
-      # a third-party action, and adding a dependency is a human's decision (AGENTS.md) — proposed in
-      # issue #163, which also covers release-image.sh's `--cache-from type=gha` for the same reason.
-      # type=local is backed by actions/cache, which is already pinned here and already carries the
-      # doctrine below.
+      # a third-party action, and adding a dependency is a human's decision (AGENTS.md). type=local is
+      # backed by actions/cache, which is already pinned here and already carries the doctrine below.
+      #
+      # THE RELEASE PATH NOW ANSWERS THE SAME WAY. scripts/release-image.sh asked buildx for
+      # `--cache-from type=gha` from a `run:` step, so the release and edge image builds carried a
+      # cache that could not authenticate and was inert (issue #163). Rather than take the dependency
+      # to rescue it, release.yml and edge.yml moved onto this backend and this doctrine — one
+      # mechanism to understand instead of two, and no third-party action in a job holding
+      # `packages: write`. test/repo/docker_layer_cache_test.go asserts the gha backend is now named
+      # in no script and no workflow.
       #
       # READ EVERYWHERE, WRITE ON MAIN — the same rule as the Go build cache in setup-toolchain, and
       # the reason is the same: Actions caches are branch-scoped with read-through to the default
@@ -1107,7 +1148,10 @@ jobs:
     needs: [changes, build-binary]
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    # `make budget-bundle` builds the SPA it measures now (issue #166), so this is a pnpm install plus
+    # a Vite build rather than a gzip of a checked-out file. Five seconds locally; the headroom is for
+    # a cold pnpm store.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-toolchain
@@ -1117,6 +1161,12 @@ jobs:
           # (issue #164 — the #83 defect class). If it ever moves, the bundle budget fails as though
           # the BUNDLE were wrong, in a job whoever bumped the image never touched.
           python: "true"
+          # Node and pnpm, because the target builds the bundle before measuring it. Until issue #166
+          # it did not, and this job was measuring the committed internal/ui/dist placeholder — a
+          # required gate reporting 99% headroom against a few hundred bytes of scaffold, on every PR
+          # that touched web/. The build lives in the Makefile target rather than in a step here so a
+          # laptop and this job measure the same thing, which is the other half of #166.
+          node: "true"
       - run: make budget-bundle
         # SPA initial route <= 250 KB gzipped, and <= +5% versus the last release. Breaching it
         # legitimately is a one-line edit to web/bundle-budget.json — reviewed, in the diff, by a

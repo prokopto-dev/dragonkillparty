@@ -629,11 +629,20 @@ generated-digest:
 # does not run makes this target's promise false. It re-runs two packages with coverage on, which
 # costs about two seconds; `make test` above has already run them without it.
 #
+# budget-bundle is here for the same reason, and it was absent for the whole of Phase 0 (issue #166):
+# it is in ci-required's `needs:` list, and the sentence above applied to it word for word. It is the
+# only required job `make check` can run and did not — `osv-scan` and `govulncheck` are the two others
+# missing from this list, and they stay missing because they query api.osv.dev and `make check` must
+# work on a laptop with no network. A Vite build and a gzip measurement need neither.
+#
+# It is LAST because it is the only target here that builds the SPA, and that build is what makes the
+# number real rather than a measurement of the committed placeholder. See the target for why.
+#
 # test-property is NOT listed, and its absence is not an omission: the properties are ordinary Go
 # tests in those two packages, so `make test` has already executed all of them at the per-PR count.
 # The separate target and the separate CI job exist so that a property failure names its own category
 # in the checks list and so the nightly lane can re-run just those tests at 20,000 checks.
-check: verify-commands lint vet test test-coverage-floor
+check: verify-commands lint vet test test-coverage-floor budget-bundle
 	@printf '\033[32m  make check complete\033[0m\n'
 
 ## check-fast: the inner loop — the laws, the linters and the type checkers, NO test suite (~25s)
@@ -912,7 +921,20 @@ api-breaking:
 api-changelog-comment:
 	@$(call notyet,Phase 2,sticky PR comment summarising the spec diff)
 
-budget-bundle:
+# The bundle budget BUILDS the thing it measures, and that is the whole target (issue #166).
+#
+# scripts/budget-bundle.sh falls back to internal/ui/dist when web/dist is absent, and what lives
+# there in a clean checkout is the committed placeholder — a few hundred bytes. So the CI job and any
+# laptop invocation were measuring the placeholder and reporting a pass with 99% headroom: a required
+# gate whose subject was not the bundle. The measurement that closed #133/#134/#135 had to be taken by
+# hand as `make build && make budget-bundle` for exactly that reason.
+#
+# DKP_WEB_STAGE=0 because the budget reads web/dist and nothing else: full staging would delete the
+# tracked internal/ui/dist placeholders and leave `make check` with a dirty tree every run. web-deps
+# is a prerequisite rather than an install inside the recipe, so `make check` still pays for one
+# install across lint, vet and this.
+budget-bundle: web-deps
+	@DKP_WEB_STAGE=0 bash scripts/build-web.sh
 	@bash scripts/budget-bundle.sh
 
 verify-postgres:

@@ -118,13 +118,50 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- The Docker layer cache: THIS is the job that reads it (issue #163) --------------------
+      #
+      # RESTORE ONLY, and the action is actions/cache/restore rather than actions/cache precisely
+      # because that one has no post step and therefore cannot write. This workflow runs on a tag, and
+      # a cache saved under a tag ref is readable by no other run while still evicting the entries
+      # that are shared — so a release that wrote would burn the pool it depends on. edge.yml, which
+      # runs on every push to main, is the writer; a tag run reads the default branch's entries.
+      #
+      # The key, the restore-keys and the directory are IDENTICAL to edge.yml's, because that is the
+      # only thing that makes the two halves one cache. GitHub supports no YAML anchors across
+      # workflow files, so this is a copy, and TestReleaseImage_LayerCache_EdgeWritesReleaseReads is
+      # what stops the copies drifting into a reader that restores a key nobody writes.
+      #
+      # It never hits the full key — that ends in this run's sha, and edge.yml wrote main's — so the
+      # first restore-key is what actually answers: the newest entry for this arch whose Dockerfile
+      # and lockfiles still hash the same, which is the entry whose Node and Go stages are reusable.
+      - name: Restore the Docker layer cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-
+            ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-
+
       - name: Cross-compile and push the per-arch image
         env:
           ARCH: ${{ matrix.arch }}
           VERSION: ${{ needs.prepare.outputs.version }}
+          # A missing or empty src is a buildx WARNING and the build proceeds cold, which is what the
+          # first release after a lockfile bump does. No BUILDX_CACHE_TO: see above.
+          BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
         run: make release-image
-        # buildx build --provenance=mode=max --sbom=true, pushed as $IMAGE:$VERSION-$ARCH.
-        # Also builds the alpine `-debug` variant (a shell, for officers who need to look inside).
+        # buildx build --file deploy/Dockerfile, pushed as $IMAGE:$VERSION-$ARCH, then the HARD
+        # image-size gate against the tag it just pushed. `--provenance=false` on the per-arch build
+        # is deliberate: an attestation manifest inside a per-arch tag turns it into an index that the
+        # imagetools join then nests, and the SLSA provenance and SBOM are attested against the
+        # manifest DIGEST in the next job instead.
+        #
+        # This comment used to claim `--provenance=mode=max --sbom=true` and an alpine `-debug`
+        # variant. The script passes the opposite provenance flag and builds no second image; the
+        # debug variant is promised by docs/design/06-cicd-and-release.md and install-docker.md and is
+        # tracked in its own issue rather than implied by a comment here.
 
   # ---------------------------------------------------------------------------------------------
   # Join the manifest. This writes a manifest list only — it runs nothing.

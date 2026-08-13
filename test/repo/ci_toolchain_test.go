@@ -70,10 +70,12 @@ func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 		},
 		{
 			job: "bundle-budget:",
-			why: "runs `make budget-bundle`, and scripts/budget-bundle.sh reads the budget with python3 " +
-				"— the #83 defect class, where an undeclared interpreter makes the gate fail as though " +
-				"its SUBJECT were wrong (issue #164)",
-			want: map[string]string{"python": "true"},
+			why: "runs `make budget-bundle`, which BUILDS the SPA with Vite before measuring it (issue " +
+				"#166) and reads the budget with python3 — the #83 defect class, where an undeclared " +
+				"interpreter makes the gate fail as though its SUBJECT were wrong (issue #164). Drop " +
+				"node and the job fails `pnpm: command not found`; drop python and it fails as if the " +
+				"bundle were over budget",
+			want: map[string]string{"python": "true", "node": "true"},
 		},
 		{
 			workflow: ".github/workflows/nightly-verify.yml",
