@@ -359,8 +359,10 @@ Multi-guild is a deliberate future project, not a retrofit that hides in this sc
   `ledger_entry` row, in Go, in SQL, or in a migration. `BEFORE UPDATE OR DELETE … RAISE(ABORT)`.
 - **Corrections are reversals.** A new batch with `reverses_batch_id` set and entries negated (or a
   strategy-specific inverse). The original stays visible, struck through.
-- **Balances are derived**, defined as of a `seq`. `balance_snapshot` is a droppable cache verified
-  nightly.
+- **Balances are derived**, defined as of a `seq`. `balance_snapshot` caches that sum and is verified
+  nightly. It is **load-bearing, not droppable**: the log remains the only source of truth, but
+  measurement found no honest fallback that serves the standings page from it, so losing the cache is
+  a *rebuild* and the nightly replay is a correctness dependency rather than hygiene.
 - **Decay is posted, not computed** — explicit batches with idempotency key `(pool_id, cadence_period)`.
 - **Zero-sum splits use largest-remainder allocation** with a deterministic tiebreak on `account_id`.
   Credits must sum to exactly the debit; rounding each credit independently mints or destroys points.
@@ -369,6 +371,12 @@ Multi-guild is a deliberate future project, not a retrofit that hides in this sc
 
 **Enforced by:** the trigger, *plus* an integration test asserting the trigger fires — so the
 guardrail itself cannot be silently regressed.
+
+> Supersedes: this section's own "`balance_snapshot` is a droppable cache", per
+> [ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md), which measured it: 13 pages against
+> the cache versus 10,412 against the definitional SUM, over 527,164 entries. "Derived" is still
+> true and is no longer the whole story. The phrase survives elsewhere in the tree — issue #204 is
+> the sweep — and **this line is the one that decides**.
 
 ## 11. Retention and artifacts
 
