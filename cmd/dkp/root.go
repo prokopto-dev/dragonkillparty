@@ -27,6 +27,8 @@ func newRootCmd() *cobra.Command {
 		// nil: no readiness hook in production. Tests pass one to learn an ephemeral port.
 		newServeCmd(nil),
 		newMigrateCmd(),
+		// `dkp seed` — the synthetic-dataset generator `make seed` runs (issue #190).
+		newSeedCmd(),
 		newOpenAPICmd(),
 		// The container HEALTHCHECK. A loopback GET /healthz that touches no database — canonical
 		// §13 — so it stays green through a migration while /readyz reports not-ready.

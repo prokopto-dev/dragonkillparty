@@ -26,6 +26,29 @@ the cache exists too, but it is derived from an immutable log, so rebuilding it 
 drift is detectable. A nightly job rebuilds every balance from zero and raises an alarm if it
 disagrees.
 
+### There is a cache, and it is not optional
+
+The standings page does not add up half a million rows every time somebody loads it. It reads a
+cached balance per member, kept up to date in the same database transaction as every write — so the
+cache and the history can never be out of step with each other, even if the power goes out mid-raid.
+
+Two things about that cache are worth knowing, because they are the difference between this design
+and the one it replaces.
+
+**It is not the truth, and nothing treats it as the truth.** Your balance is still defined as the sum
+of your entries. A dispute is settled by adding them up. The cache is an answer the software keeps
+handy, and the nightly job rebuilds every balance from zero and compares — so if it were ever wrong,
+that is caught by the software rather than by you noticing.
+
+**It is not a luxury, either.** This was measured, not assumed, on a ledger of 527,164 entries — a
+large guild's five years ([`V5`](../development/verify-before-phase-0.md#v5--standings-answers-in--4-sql-statements-at--150-ms-p99-on-sd-card-storage)).
+Reading the cache touches 13 pages of the database file. Adding the history up instead touches
+10,412 — eight hundred times the work, several seconds on the kind of storage a Raspberry Pi has, and
+unpredictably worse when something else is using the machine. So the honest statement is: your
+balance is *derived* from history and can always be re-derived, and the nightly rebuild that proves
+it is doing real work rather than ticking a box. If the cache were ever lost, the site would rebuild
+it — not shrug and add things up on the fly.
+
 ## Batches and entries
 
 Two levels, and the distinction matters when you go looking for something.
@@ -190,3 +213,5 @@ example in [Choosing a DKP system](../guides/choosing-a-dkp-system.md#zero_sum--
 - [Point strategies](strategies.md) — what a strategy may propose and what the ledger refuses
 - [Attendance and windows](../guides/attendance-and-windows.md) — the other number members check
 - [ADR-0002](../adr/0002-append-only-ledger.md) — the decision, with its downsides
+- [ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md) — why the cached balance is not optional,
+  with the measurement behind it

@@ -177,9 +177,33 @@ negligible, which is consistent with PR 2's finding that the copy was never the 
 PR 9 lands the ledger tables and again when the seeded reference data exists. The thing to watch is
 whether the total grows *proportionally* with schema size; PR 2's decomposition says it should not.
 
+**Re-measured (issue #190, 2026-08-13): `NewDB` p50 1.102 ms, p95 1.556 ms, n=200 — and the thing
+this item existed to watch did not happen.** The ledger tables landed in PR 9, so the template is
+now the full schema: guild, pool, account, `ledger_batch`, `ledger_entry`, `balance_snapshot`,
+`audit_log`, `event_outbox`, `dkp_meta`, their indexes, the four append-only triggers and the seed
+rows. It measures **152 KiB**, against the few KB of PR 3's one-table template.
+
+| Measurement | p50 | p95 | Template |
+|---|---|---|---|
+| PR 2 — size-matched stand-in | 0.97 ms | 1.30 ms | 256 KiB (padded) |
+| PR 3 — real migrations, one table | 0.769 ms | 0.906 ms | a few KB |
+| **#190 — real migrations, nine tables** | **1.102 ms** | **1.556 ms** | **152 KiB** |
+
+The schema grew by roughly 30× between PR 3 and here and the clone grew by 43%. That is the
+decomposition PR 2 predicted holding up: the file copy is not the dominant term, the fixed
+per-test cost (`t.TempDir()`, two `sql.OpenDB` pools, two pings) is, and it does not care how many
+tables it is not reading. At 900 integration tests the whole planned suite is **~1 s** of setup.
+
+**This item can now close.** The remaining clause — "and again when the seeded reference data
+exists" — is answered differently than it was written, and better: `seed.Perf` is not cloned per
+test. A 250 MB performance dataset is built once by `make test-perf` and measured against
+(item V5); cloning it 900 times was never going to be the plan, so there is no third measurement
+owed. What the template holds is the schema plus its reference rows, and that is what the number
+above is.
+
 ### V5 — `/standings` answers in ≤ 4 SQL statements at ≤ 150 ms p99 on SD-card storage
 
-- [ ] Hand-write the four queries against a generated 520k-row ledger and measure, **before any API
+- [x] Hand-write the four queries against a generated 520k-row ledger and measure, **before any API
       exists**. This is ROADMAP Phase 1 item 11 (`seed.Perf` v1) and it is deliberately scheduled
       before the API so the answer can still change the schema.
 
@@ -192,6 +216,90 @@ exit criterion.
 droppable optimisation — which weakens the "balances are derived" argument and needs saying out loud
 in `docs/concepts/ledger.md` — or the standings page gets a materialised path with its own staleness
 story. Both are cheaper to decide now than after Phase 3 builds a UI on the fast path.
+
+**Outcome (issue #190, 2026-08-13): the budget holds with 5.5× headroom, and the "other way"
+paragraph above is also right — the cache is load-bearing, not a droppable optimisation.** Both
+halves are now true at once, and the second is the finding.
+
+The measurement: `internal/seed` generated **527,164 entries across 20,461 batches over 280
+accounts**, every one through `ledger.Service.Commit` — invariant engine, per-pool `seq` allocator,
+hash chain and the synchronous `balance_snapshot` upsert included. Not a bulk insert: a dataset
+written by a side door would prove nothing about the door the product uses, and a
+snapshot-versus-fold check against a snapshot the test wrote itself is circular. The resulting
+database is **242 MiB**. Local, Apple Silicon, NVMe, `-race` off.
+
+| Standings at 280 members, over 527,164 entries | Statements | Warm p50 | Warm tail | Pages read | Derived p99 on SD-card-class storage |
+|---|---|---|---|---|---|
+| **from `balance_snapshot`** (`StandingsFromSnapshot`) | **1** | 289–481 µs | **0.51–1.07 ms** (p99, n=200) | **13** | **26.5–27.1 ms** |
+| from the definitional SUM (`StandingsFromLedger`) | 1 | 125 ms – 1.13 s | 0.67–2.93 s (worst of 25) | 10,412 | 20.9–23.7 s |
+
+**Budget: ≤ 4 statements, ≤ 150 ms p99. Measured: 1 statement, ≤ 27.1 ms. Both hold.**
+
+The wall-clock columns are RANGES over three runs of the identical query against the identical
+data, and the spread is itself part of the finding rather than noise to be averaged away: the cache
+arm varied by under 2×, the definitional SUM by **9×**. The page counts did not vary at all. That is
+the shape of an I/O-bound query whose cost tracks whatever else is competing for the page cache —
+which on a raid night is the writer — against one that reads thirteen pages and does not care.
+
+**On the SD-card number, because it is derived rather than measured and that distinction matters.**
+There is no portable way to drop the OS page cache from a Go test, so the wall clock above is warm.
+The storage figure is `warm p99 + pages × 2 ms`, where the **page count is measured** — SQLite's
+`dbstat` virtual table is compiled into `modernc.org/sqlite` and reports it exactly — and only the
+per-page cost is a model. 2 ms per 4 KiB random read is deliberately pessimistic: the SD
+Association's A1 rating floor is 1,500 random read IOPS, or 0.67 ms. A p99 is the cold, contended
+case, which is exactly where the page cache does not have the page.
+
+**Three things follow.**
+
+1. **`balance_snapshot` survives as-is. No schema change.** It is the verdict this item was
+   scheduled to produce, and it is a decision not to spend a migration — the reasoning is in the
+   PR that recorded it and in the two `EXPLAIN QUERY PLAN` goldens
+   (`test/golden/explain/standings_snapshot.txt`, `standings_ledger.txt`) that now pin both plans.
+
+2. **The cache is LOAD-BEARING, and `docs/concepts/ledger.md` now says so.** The gap is not 20% or
+   2×; it is **801× in page reads** (10,412 against 13) and **~800× in modelled storage time**. The
+   definitional SUM's warm tail exceeded the 150 ms budget in every run — 667 ms at best, 2.93 s at
+   worst — on an NVMe SSD, before any SD card is involved, and its *median* swung by 9× across runs.
+   It is not merely slow, it is *unpredictable*, because it aggregates the whole covering index and
+   then sorts the result in a temp b-tree, so its cost tracks page-cache state rather than the
+   query. A standings page served from the log is not a slower page; it is a page an officer's
+   Raspberry Pi cannot render on a raid night, which is the one night it matters.
+
+   That does **not** weaken "balances are derived", and the distinction is worth being precise
+   about. The log remains the only source of truth: `BalanceAsOfSeq` settles a dispute, the cache is
+   rebuildable from the log at any time, and it is now proven to equal a full fold of it at guild
+   scale. What changed is the operational status of dropping it — that is a **rebuild**, not a
+   graceful degradation, and the nightly verification job (ROADMAP Phase 1 item 9) is therefore a
+   correctness dependency of the standings page rather than a nice-to-have.
+
+3. **`attendance_rollup` is NOT covered by this and still owes its own measurement.** The V5 budget
+   is for the whole `/standings` page: 4 statements, of which the balance half is now 1. The
+   attendance half does not exist yet — `raid`, `raid_tick` and the rollup are Phase 4 — so the
+   remaining 3 statements are unspent headroom, not a measured result. Re-run this item's method
+   when the rollup lands.
+
+**What was checked besides the budget**, since a fast query over a wrong number is worse than a slow
+one over a right one:
+
+- **A full 527,164-entry replay reproduces `balance_snapshot` exactly**, and in both directions: the
+  same set of `(account, balance kind)` rows, and for each one the same `amount_cp`, the same
+  `entry_count` and the same `as_of_seq`. Three columns, not one — a cache holding the right total
+  from the wrong number of entries would pass a sum-only comparison and be wrong in a way a member
+  would eventually find.
+- **Both arms agree** on every account, and `BalanceAsOfSeq` agrees with both.
+- **Every zero-sum batch nets to exactly zero**, read off `net_amount_cp` — the column the commit
+  path wrote — rather than from the planner that produced it.
+
+**Reproduce:** `make test-perf` (about three minutes). `DKP_PERF_RAIDS` sizes it; the same suite runs
+on every PR at eight raids so the code path cannot rot, and nightly at 3,400.
+
+**One measured detail worth keeping**, because it is the only lever this verdict leaves on the table:
+`StandingsFromSnapshot` selects `as_of_seq` and `entry_count`, which `ix_snapshot_standings` does not
+carry, so it walks the index and then probes the `WITHOUT ROWID` primary key — 7 of the 13 pages,
+about 14 ms of the 27.1 ms. That buys the drift check, inside a budget with 5.5× headroom, and it is
+not worth an index migration. If Phase 3 ever needs those 14 ms, the fix is to select two columns
+instead of four: `TestStandings_SnapshotProjection_WithoutTheDriftColumns_IsCovering` proves the same
+index answers the render-only projection with no table access at all. No schema change, then or now.
 
 ### V6 — Atlas preserves hand-added triggers, partial indexes and CHECKs across `migrate diff`
 
@@ -524,8 +632,8 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V1 | Officers want `dkp.exe` | Phase 0 exit | the stack tie-break | open |
 | V2 | Two pilot guilds recruitable | **before Phase 4** | Phase 4 entry | open |
 | V3 | Guild scale ~280 / 3,400 / 520k | week 1 | `seed.Perf`, all budgets | open |
-| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **partially resolved (2026-08-06): re-measured against the real migrations at 0.769 ms p50 (n=200). Pyramid unchanged. Still open because the real schema is one table today — re-measure at PR 9 and once seed data exists** |
-| V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | open |
+| V4 | Template-DB clone ~0.3 ms | PR 2 | the test pyramid | **resolved (2026-08-13): re-measured against the full nine-table schema at 1.102 ms p50 (n=200), template 152 KiB. A 30× bigger schema cost 43% more, so the copy is still not the dominant term and 900 integration tests are ~1 s of setup. The pyramid stands** |
+| V5 | `/standings` ≤ 4 statements, ≤ 150 ms | Phase 1 | `balance_snapshot` survival | **resolved (2026-08-13) — budget met and the cache is load-bearing. Over 527,164 seeded entries: 1 statement, ≤1.07 ms warm p99, 13 pages → ≤27.1 ms modelled on SD-card-class storage, against a budget of 4 and 150 ms. The definitional SUM needs 10,412 pages → ~22 s. `balance_snapshot` survives with NO schema change; dropping it is a rebuild, not a degradation, so the nightly replay is a correctness dependency. `attendance_rollup` still owes its own measurement in Phase 4** |
 | V6 | Atlas preserves triggers | PR 3 | the append-only guarantee | **resolved (2026-08-06), and the answer is NO for triggers: the community edition cannot express them and a 12-step rebuild drops them silently. Partial indexes, CHECKs, STRICT and WITHOUT ROWID all survive. Mitigation shipped in PR 3 — the fresh-install fingerprint covers `type='trigger'`; PR 9 must re-create triggers in any migration that rebuilds a ledger table** |
 | V7 | Huma 3.1 `webhooks` consumable | PR 4 / PR 6 | the one-document promise | **partially resolved (2026-08-07): Huma emits a top-level `webhooks` block from a first-class field, the `ping` placeholder round-trips and the document still parses. The three-generator confirmation is PR 6's and was not attempted. Also found: the document carries 3.1-only `["array","null"]` type unions outside the webhooks block, so 3.0-era consumer risk is not confined to it** |
 | V8 | EQdkp installers run; APA on disk only | week 1 | the fixture lane, the classifier | open |

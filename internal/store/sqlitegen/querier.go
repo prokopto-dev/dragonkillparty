@@ -90,6 +90,17 @@ type Querier interface {
 	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
 	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
 	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
+	// InsertAccount creates one balance holder. The four SYSTEM accounts are seeded by the migration and
+	// never inserted through here; this is the person half, and its first caller is internal/seed - a
+	// ledger of 520k entries needs 280 accounts to hang them on, and the commit path's
+	// EntriesReferenceLiveAccounts invariant looks every one of them up.
+	//
+	// The two paired CHECKs on the table (account_person_shape, account_system_shape) mean the caller
+	// cannot get the kind/person_id/system_key combination wrong quietly: a person with a system_key, or
+	// a system account with no key, is a constraint violation rather than a row nobody notices. Both
+	// nullable columns are supplied explicitly for the reason InsertLedgerBatch names every column -
+	// a value the database invented is a value the caller never saw.
+	InsertAccount(ctx context.Context, arg InsertAccountParams) error
 	// InsertAuditLog appends one row. There is no update and no delete here: trg_audit_log_no_update
 	// aborts an UPDATE, and pruning is `dkp audit prune --before`, a Phase 2+ interactive command that
 	// writes an audit_gap_marker rather than a silence. No endpoint deletes audit rows at any permission
@@ -189,6 +200,43 @@ type Querier interface {
 	// This is dialect divergence #1 (db/RECIPES.md): on Postgres max+1 is NOT safe under real
 	// concurrency and becomes a locked counter row or an advisory lock. Do not copy this pattern.
 	NextPoolSeq(ctx context.Context, poolID string) (int64, error)
+	// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
+	// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
+	// StandingsFromSnapshot against, and it is what a replay or a verification job reads.
+	//
+	// It is one statement either way, so the interesting number is never the statement count - it is the
+	// work. This one aggregates every entry ever written (520k rows at guild scale) where the snapshot
+	// read touches one row per account (280). Both plans are pinned by goldens; the measured gap between
+	// them is the whole of V5's answer.
+	//
+	// It returns the entry COUNT alongside the sum because balance_snapshot caches both, and a drift
+	// check that compared only the sums would pass on a cache that had folded the wrong number of
+	// entries into the right total. count(*) costs nothing here: ix_entry_balance already covers every
+	// column this reads, so the count is of index rows already being walked.
+	//
+	// Aggregate with sum(), never the float-returning alternative SQLite offers (canonical C3 /
+	// MONEY002) - that one would silently convert the ledger to floating point. The CAST pins the
+	// aggregate to INTEGER for sqlc, which cannot infer an affinity for an expression that belongs to
+	// no table.
+	StandingsFromLedger(ctx context.Context, arg StandingsFromLedgerParams) ([]StandingsFromLedgerRow, error)
+	// StandingsFromSnapshot is THE standings read: every account's balance in one pool, highest first,
+	// from the droppable cache rather than from the log. It is the query V5 budgets
+	// (docs/development/verify-before-phase-0.md): 4 SQL statements and p99 150 ms at 280 members over a
+	// 520k-entry ledger, on SD-card-class storage.
+	//
+	// ix_snapshot_standings is (pool_id, balance_kind, amount_cp DESC), and balance_snapshot is
+	// WITHOUT ROWID, so the index's trailing key columns are the primary key - which is what makes
+	// `ORDER BY amount_cp DESC, account_id ASC` an index walk rather than a sort. The account_id
+	// tiebreak is NOT decoration: two accounts on the same balance would otherwise come back in an
+	// order the planner is free to change between releases, and a page boundary that lands between them
+	// would skip or repeat a member. The EXPLAIN QUERY PLAN golden
+	// (test/golden/explain/standings_snapshot.txt) asserts the walk stays a walk.
+	//
+	// NO CURSOR PARAMETER, deliberately. The cursor predicate belongs with the endpoint that pages
+	// (Phase 3), and inventing its shape here would freeze a pagination contract nothing has reviewed.
+	// What this query does owe that endpoint is the ORDER BY above: the cursor it grows must tiebreak on
+	// account_id in the same direction, or the page boundary is not stable.
+	StandingsFromSnapshot(ctx context.Context, arg StandingsFromSnapshotParams) ([]StandingsFromSnapshotRow, error)
 	// UpdateGuild writes every settable column and RETURNS the new row, so the handler emits the fresh
 	// representation and its new ETag in the same round trip a bot needs after a PATCH.
 	//

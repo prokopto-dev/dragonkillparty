@@ -35,6 +35,7 @@ and one link is cheaper than one argument.
 | [0020](0020-two-test-lanes-and-a-nightly-shuffle.md) | Two test lanes, nightly shuffle | accepted | `-count=1` stays where a test can shell out; everything else caches, and `-shuffle=on` runs nightly |
 | [0021](0021-hcl-rule-catalogue-and-schema-parse.md) | HCL rule catalogue, HCL schema parse | accepted | Amends ADR-0018: the config-shaped rules become data and `ENUM001` reads the schema with `hclsyntax`; a file that will not parse fails the gate |
 | [0022](0022-gates-are-compiled-binaries-not-go-run.md) | Gates are compiled, not `go run` | accepted | `go run` collapses the exit code and prints `exit status 1` into the failure block; the engine is built and run, and `MIG003` is imported |
+| [0023](0023-balance-snapshot-is-load-bearing.md) | `balance_snapshot` is load-bearing | accepted | Measured at 520k entries: the cache is 13 pages, the definitional SUM is 10,412. The log stays the truth; losing the cache is a rebuild, so the nightly replay is a dependency |
 
 ## When an ADR is required
 

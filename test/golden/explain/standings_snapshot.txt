@@ -1,0 +1,1 @@
+SEARCH balance_snapshot USING INDEX ix_snapshot_standings (pool_id=? AND balance_kind=?)
