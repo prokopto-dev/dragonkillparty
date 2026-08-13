@@ -146,9 +146,12 @@ func TestNpmrc_SuppressesALifecycleScript(t *testing.T) {
 		t.Skip("runs pnpm install against a fixture; run `make test`")
 	}
 
-	if _, err := exec.LookPath("pnpm"); err != nil {
-		t.Skip("pnpm is not installed — see make setup")
-	}
+	// A FAILURE, not a skip, when CI is set: this test skipped in every CI run for the whole of
+	// phase 0 because no job that runs `make test` installed Node, and it is the only functional
+	// proof web/.npmrc does anything (issue #177). `test / integration` and nightly's
+	// `suite / shuffled` now pass node: "true".
+	requireTool(t, "pnpm", "ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` "+
+		"must pass node: \"true\" to setup-toolchain")
 
 	const sentinel = "postinstall-ran.sentinel"
 

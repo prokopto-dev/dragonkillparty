@@ -78,6 +78,48 @@ func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 			want: map[string]string{"python": "true", "node": "true"},
 		},
 		{
+			job: "test-integration:",
+			why: "runs `make test`, which is the ONLY lane the pnpm-gated suites execute in — above " +
+				"all TestNpmrc_SuppressesALifecycleScript, the only functional proof that web/.npmrc's " +
+				"ignore-scripts stops a dependency's postinstall. No job that ran `make test` " +
+				"installed Node, so it skipped in CI on every run for the whole of phase 0 (issue " +
+				"#177). It also drives actionlint, shellcheck and shfmt through the negative fixtures " +
+				"of the two gates added by #121 and #122",
+			want: map[string]string{
+				"go":     "true",
+				"node":   "true",
+				"python": "true",
+				"tools":  "golangci-lint gofumpt atlas actionlint shellcheck shfmt",
+			},
+		},
+		{
+			workflow: ".github/workflows/nightly-verify.yml",
+			job:      "shuffled-suite:",
+			why: "runs the same two suites as `test / integration` with -shuffle=on, so it needs the " +
+				"same toolchain — the two shared the Node omission issue #177 found, because #159 " +
+				"gave this job that job's `with:` block including the gap",
+			want: map[string]string{
+				"go":     "true",
+				"node":   "true",
+				"python": "true",
+				"tools":  "golangci-lint gofumpt atlas actionlint shellcheck shfmt",
+			},
+		},
+		{
+			job: "lint-actions:",
+			why: "runs `make lint-actions`, which needs actionlint AND shellcheck — actionlint pipes " +
+				"every run: block through shellcheck and silently drops that rule when it is absent " +
+				"(issue #121). Go, because both the actionlint install and the shellcheck installer's " +
+				"destination come from the Go toolchain",
+			want: map[string]string{"go": "true", "tools": "actionlint shellcheck"},
+		},
+		{
+			job: "lint-shell:",
+			why: "runs `make lint-shell`, which is shellcheck plus shfmt over scripts/ and .githooks/ " +
+				"(issue #122)",
+			want: map[string]string{"go": "true", "tools": "shellcheck shfmt"},
+		},
+		{
 			workflow: ".github/workflows/nightly-verify.yml",
 			job:      "importer:",
 			why: "runs `make test-importer`, a Go test binary driving testcontainers once Phase 5 fills " +

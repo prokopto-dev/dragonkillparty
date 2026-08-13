@@ -203,6 +203,8 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `lint / repo` — architectural gates + licence firewall | always | 15 s | required |
 | `lint / go` — gofumpt, golangci-lint | go changed | 75 s | required |
 | `lint / web` — eslint, prettier | web changed | 40 s | required |
+| `lint / actions` — actionlint over the workflows, shellcheck over every `run:` block | workflows changed | 20 s | required |
+| `lint / shell` — shellcheck + `shfmt -d` over `scripts/**` and `.githooks/**` | scripts/hooks changed | 20 s | required |
 | `security / licences` — Go runtime graph + JS production graph, closed allowlist | always | 45 s | required |
 | `security / govulncheck` — REACHABLE Go vulnerabilities (call-graph) | always | 40 s | required |
 | `security / osv` — OSV advisories over `go.mod` **and** `web/pnpm-lock.yaml` | always | 30 s | required |

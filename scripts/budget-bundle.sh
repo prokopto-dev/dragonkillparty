@@ -60,8 +60,16 @@ grep -oE '<script[^>]+src="[^"]+"' "$index" \
 # Placeholder dist (no real hashed entry) still measures something so the pipeline is exercised: the
 # placeholder asset. A scaffold with no real bundle is under budget by a wide margin, which is the
 # correct verdict.
+#
+# A glob rather than `ls assets/*.js | sed`: SC2012, which the shell gate (issue #122) now fails on.
+# The glob is also the correct version — `ls` of a directory whose entries can contain a newline
+# feeds this loop a filename that is not one, and the measurement below would then die on a file
+# that does not exist rather than measure the bundle.
 if [ ! -s "$entries" ]; then
-    (cd "$dist" && ls assets/*.js 2>/dev/null | sed 's#^#/#') >"$entries" || true
+    for asset in "$dist"/assets/*.js; do
+        [ -f "$asset" ] || continue # an unmatched glob expands to itself
+        printf '/%s\n' "${asset#"$dist"/}"
+    done >"$entries"
 fi
 
 [ -s "$entries" ] || die "found no entry JS in $index — cannot measure the initial route"

@@ -1,0 +1,29 @@
+# shellcheck configuration for `make lint-shell` (issue #122).
+#
+# THIS FILE IS A HOLE IN A GATE, so it is deliberately one line long and carries its reason. The
+# rule test/repo/lint_shell_test.go enforces is that the disable list stays exactly what is argued
+# for below: TestShellcheckRC_DisablesOnlyTheArguedRule fails on a second id, so widening this is a
+# reviewed act and not a quiet way to make a diagnostic go away. Everything else runs at
+# shellcheck's DEFAULT severity — style, which is to say all of it — because raising the severity to
+# `warning` would drop SC2086, and SC2086 is precisely the defect (#111) that bought this gate.
+#
+# SC2016 — "expressions don't expand in single quotes".
+#
+# Every hit in this repository is the same shape and every one is correct:
+#
+#     printf '  run `make setup` first\n'
+#
+# A printf FORMAT string is single-quoted here as a matter of course — that is what keeps a `%` or a
+# backslash in it from being re-interpreted, and every value that must expand is passed as an
+# argument to `%s` rather than interpolated into the format. shellcheck reads the markdown backticks
+# in the prose as legacy command substitution and reports the format string. Eight such messages
+# exist across scripts/ and .githooks/, all of them user-facing instructions.
+#
+# The alternative was eight `# shellcheck disable=SC2016` comments sitting above eight printf lines
+# that are not wrong, which teaches the reader that a disable comment means nothing. One reasoned
+# exception in a file whose whole subject is the exception is the more honest version.
+#
+# What this does NOT waive: SC2086 (word splitting — #111), SC2015 and SC2251 (the `a && b || c`
+# shape that made #84's readyz probe assert nothing), or anything else. Those are the rules the gate
+# was bought for.
+disable=SC2016

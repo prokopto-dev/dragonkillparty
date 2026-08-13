@@ -1,0 +1,29 @@
+# SHA-256 pins for the shellcheck release archives (issue #122).
+#
+# Format: <sha256>  <asset-name>, matching sha256sum(1) output. Parsed by
+# scripts/install-shellcheck.sh, which looks the row up by asset name; comment lines never match an
+# asset name, so they are safe.
+#
+# The version is NOT repeated here. It lives in exactly one place — SHELLCHECK_VERSION in the
+# Makefile — and the asset names below embed it, so bumping shellcheck is a two-file change that
+# cannot half-happen: a new SHELLCHECK_VERSION with no matching row makes install-shellcheck.sh exit
+# non-zero before it touches the network, and a stale row is simply never looked up. Same contract
+# as scripts/atlas.sha256, and TestShellcheckPins_CoverEverySupportedPlatform holds the row set.
+#
+# To refresh after bumping SHELLCHECK_VERSION:
+#   gh api repos/koalaman/shellcheck/releases/tags/<version> \
+#     --jq '.assets[] | select(.name|test("tar.xz$")) | "\(.digest|sub("sha256:";""))  \(.name)"'
+#
+# The digests below were taken that way AND recomputed from the downloaded archives; the two agreed.
+# What makes the check worth running is not where the number came from but that it is committed
+# here and reviewed in a pull request — a checksum fetched at install time is served by the same
+# host as the binary and proves nothing an attacker who can serve one could not also forge.
+#
+# Four rows, not six: koalaman also publishes linux.armv6hf and linux.riscv64, which no supported
+# development or CI platform here uses. install-shellcheck.sh maps uname to this set and reports an
+# unsupported architecture rather than guessing at one.
+
+8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  shellcheck-v0.11.0.linux.x86_64.tar.xz
+12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588  shellcheck-v0.11.0.linux.aarch64.tar.xz
+3c89db4edcab7cf1c27bff178882e0f6f27f7afdf54e859fa041fca10febe4c6  shellcheck-v0.11.0.darwin.x86_64.tar.xz
+56affdd8de5527894dca6dc3d7e0a99a873b0f004d7aabc30ae407d3f48b0a79  shellcheck-v0.11.0.darwin.aarch64.tar.xz

@@ -130,9 +130,8 @@ func TestAtlas_ConcurrentInvocations_DoNotShareALock(t *testing.T) {
 		t.Skip("invokes atlas concurrently; run `make test` or `make check`")
 	}
 
-	if _, err := exec.LookPath("atlas"); err != nil {
-		t.Skip("atlas is not installed; run make setup")
-	}
+	requireTool(t, "atlas", "ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` "+
+		"install it through setup-toolchain's tools: input")
 
 	const invocations = 8
 

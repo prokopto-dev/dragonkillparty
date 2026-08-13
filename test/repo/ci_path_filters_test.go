@@ -173,6 +173,9 @@ func TestCIFilters_GoFilter_SelectsEveryTestRepoInput(t *testing.T) {
 		{"deploy/Dockerfile", "release_gates_test.go, spa_pipeline_test.go, npmrc_test.go"},
 		{".dockerignore", "spa_pipeline_test.go — the build-context allowlist"},
 		{"CONTRIBUTING.md", "contributing_claims_test.go — every `Enforced by:` claim resolves"},
+		{"web/package.json", "web_overrides_test.go — a pnpm override with no reviewed row (issue #168)"},
+		{"web/pnpm-lock.yaml", "web_overrides_test.go — an override edited without re-locking is inert"},
+		{"web/OVERRIDES.md", "web_overrides_test.go — the register that carries each override's exit condition"},
 	} {
 		t.Run(input.path, func(t *testing.T) {
 			t.Parallel()
@@ -199,6 +202,65 @@ func TestCIFilters_GoFilter_SelectsEveryTestRepoInput(t *testing.T) {
 					"jobs gated on `go`, so a PR changing that file skips every one of them and "+
 					"ci-required counts the skip as success (issue #94). Add the path to the `go` filter.",
 				input.path, input.reader)
+		})
+	}
+}
+
+// TestCIFilters_ActionsAndShell_SelectTheirOwnInputs covers the two path-filtered jobs added by
+// issues #121 and #122.
+//
+// A gate conditioned on a filter that does not select its own definition is the #101 shape: it sits
+// in the checks list, never runs, and ci-required counts the skip as success. Both filters therefore
+// have to select the gate script AND the pin the script reads AND the tree it lints — and the
+// Makefile is in each of them through the *build anchor, because both jobs are `make <target>`.
+func TestCIFilters_ActionsAndShell_SelectTheirOwnInputs(t *testing.T) {
+	t.Parallel()
+
+	workflow := readCIWorkflow(t)
+
+	for _, tc := range []struct {
+		filter string
+		inputs []struct{ path, why string }
+	}{
+		{
+			filter: "actions",
+			inputs: []struct{ path, why string }{
+				{".github/workflows/ci.yml", "the tree actionlint lints"},
+				{".github/actions/setup-toolchain/action.yml", "actionlint resolves `uses:` inputs " +
+					"against a local action's own action.yml, so a renamed input there is a workflow error"},
+				{"scripts/lint-actions.sh", "the gate script itself — a filter that excludes the file " +
+					"defining a job is the same defect as a target that exits 0 without doing the work"},
+				{"Makefile", "the pin the installer reads, and the target the job runs"},
+			},
+		},
+		{
+			filter: "shell",
+			inputs: []struct{ path, why string }{
+				{"scripts/repo-gates.sh", "the tree shellcheck and shfmt read"},
+				{"scripts/lint-shell.sh", "the gate script itself, which this gate also lints"},
+				{".githooks/pre-push", "the hooks are shell too, and they carry no .sh suffix"},
+				{".shellcheckrc", "the file that decides which rules run at all"},
+				{"Makefile", "the pins and the target the job runs"},
+			},
+		},
+	} {
+		t.Run(tc.filter, func(t *testing.T) {
+			t.Parallel()
+
+			patterns := pathFilterPatterns(t, workflow, tc.filter)
+
+			for _, input := range tc.inputs {
+				_, err := os.Stat(filepath.Join(repoRoot(t), filepath.FromSlash(input.path)))
+				require.NoErrorf(t, err,
+					"%s no longer exists, so this row and the ci.yml filter line it justifies are stale",
+					input.path)
+
+				require.Truef(t, selects(patterns, input.path),
+					"ci.yml's `%s` path filter does not select %s (%s). A job gated on a filter that "+
+						"misses its own inputs never runs, and ci-required counts a skip as success — "+
+						"which is the shape issue #101 deleted two jobs for.",
+					tc.filter, input.path, input.why)
+			}
 		})
 	}
 }
@@ -312,6 +374,9 @@ func TestCIFilters_GoOnlyPatterns_HaveAShortRunningReader(t *testing.T) {
 		"THIRD_PARTY_NOTICES.txt":                      "test/repo/third_party_notices_test.go",
 		".dockerignore":                                "test/repo/spa_pipeline_test.go",
 		"CONTRIBUTING.md":                              "test/repo/contributing_claims_test.go",
+		"web/package.json":                             "test/repo/web_overrides_test.go",
+		"web/pnpm-lock.yaml":                           "test/repo/web_overrides_test.go",
+		"web/OVERRIDES.md":                             "test/repo/web_overrides_test.go",
 	}
 
 	workflow := readCIWorkflow(t)

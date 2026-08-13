@@ -18,18 +18,21 @@ import (
 // which the grep cannot see. The fixtures live under web/test-fixtures/lint/, in eslint.config.js's
 // `ignores` so a bare `eslint .` (pnpm run lint) never flags them.
 //
-// This test is the LAPTOP-side check: it needs `make test` with a Node toolchain, which no CI job
-// runs. The CI-side lock is scripts/lint-web-fixtures.sh, invoked as `pnpm run lint:fixtures` from
-// `make lint-web` in the `lint / web` job — it runs eslint --no-ignore over the same fixtures and
-// fails if a deliberate violation is NOT caught. So the negative fixtures are proven to trip their
-// rule in two places: here on a developer's machine, and there on every PR. Both assert the same
-// thing; neither is redundant, because they run in different environments.
+// These need `make test` with a Node toolchain, WHICH CI NOW HAS. That sentence used to read "which
+// no CI job runs", and it was accurate and quietly expensive: `test / integration` installed no Node,
+// so all five suites here skipped on every run and the only thing actually proving the fixtures trip
+// their rules was scripts/lint-web-fixtures.sh in the `lint / web` job. Issue #177 gave the
+// integration job Node and a frozen install, and eslintBin below now FAILS rather than skips when CI
+// is set — so both mechanisms run on every PR, which is what the paragraph below always claimed.
+//
+// The CI-side lock remains scripts/lint-web-fixtures.sh, invoked as `pnpm run lint:fixtures` from
+// `make lint-web` — it runs eslint --no-ignore over the same fixtures and fails if a deliberate
+// violation is NOT caught. So the negative fixtures are proven to trip their rule in two places, in
+// two different jobs. Neither is redundant: this one asserts the rule id a violation must produce,
+// that one asserts the shell gate around it still fails a clean-looking tree.
 //
 // It runs eslint through the workspace's own binary (web/node_modules/.bin/eslint) with --no-ignore,
 // because eslint.config.js lists test-fixtures/** in `ignores` so a bare `eslint .` stays green.
-//
-// Toolchain gating mirrors new_migration_test.go and licence_gate_test.go: skipped under -short, and
-// skipped with a clear reason when web dependencies are not installed.
 
 // webRoot returns the absolute path of the web/ directory.
 func webRoot(t *testing.T) string {
@@ -38,14 +41,20 @@ func webRoot(t *testing.T) string {
 	return filepath.Join(repoRoot(t), "web")
 }
 
-// eslintBin returns the path to the workspace eslint binary, or "" if web deps are not installed.
+// eslintBin returns the path to the workspace eslint binary.
+//
+// It SKIPS the calling test when web dependencies are not installed, and FAILS it instead when CI is
+// set (issue #177): these five suites skipped in every CI run because no job that ran `make test`
+// installed Node, so the AST-aware half of law 4 was proven only by `lint / web`'s
+// `pnpm run lint:fixtures`. `test / integration` installs web dependencies now, which is what makes
+// the failure the right verdict.
 func eslintBin(t *testing.T) string {
 	t.Helper()
 
 	bin := filepath.Join(webRoot(t), "node_modules", ".bin", "eslint")
-	if _, err := os.Stat(bin); err != nil {
-		return ""
-	}
+	requireToolAt(t, bin, "web/node_modules/.bin/eslint",
+		"ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` must pass "+
+			"node: \"true\" and run `pnpm install --frozen-lockfile --ignore-scripts` in web/")
 
 	return bin
 }
@@ -84,9 +93,6 @@ func TestWebLint_BareFetch_FailsLint(t *testing.T) {
 	}
 
 	eslint := eslintBin(t)
-	if eslint == "" {
-		t.Skip("web dependencies not installed — run `pnpm install` in web/ (or make setup once PR 6 wiring lands)")
-	}
 
 	fixture := filepath.Join(webRoot(t), "test-fixtures", "lint", "bare-fetch.tsx")
 	out, code := runEslint(t, eslint, fixture)
@@ -106,9 +112,6 @@ func TestWebLint_UseEffectFetch_FailsLint(t *testing.T) {
 	}
 
 	eslint := eslintBin(t)
-	if eslint == "" {
-		t.Skip("web dependencies not installed — run `pnpm install` in web/ (or make setup once PR 6 wiring lands)")
-	}
 
 	fixture := filepath.Join(webRoot(t), "test-fixtures", "lint", "useeffect-fetch.tsx")
 	out, code := runEslint(t, eslint, fixture)
@@ -137,9 +140,6 @@ func TestWebLint_RawTokenValues_FailsLint(t *testing.T) {
 	}
 
 	eslint := eslintBin(t)
-	if eslint == "" {
-		t.Skip("web dependencies not installed — run `pnpm install` in web/")
-	}
 
 	fixture := filepath.Join(webRoot(t), "test-fixtures", "lint", "raw-token-values.tsx")
 	out, code := runEslint(t, eslint, fixture)
@@ -167,9 +167,6 @@ func TestWebLint_CleanComponent_PassesLint(t *testing.T) {
 	}
 
 	eslint := eslintBin(t)
-	if eslint == "" {
-		t.Skip("web dependencies not installed — run `pnpm install` in web/ (or make setup once PR 6 wiring lands)")
-	}
 
 	// The landing route uses useSuspenseQuery over the generated client — the sanctioned pattern.
 	clean := filepath.Join(webRoot(t), "src", "routes", "index.tsx")
@@ -191,9 +188,8 @@ func TestWebLint_PostinstallGuard_ScriptDoesNotRun(t *testing.T) {
 		t.Skip("runs pnpm install against a fixture; run `make test`")
 	}
 
-	if _, err := exec.LookPath("pnpm"); err != nil {
-		t.Skip("pnpm is not installed — run make setup once PR 6 wiring lands")
-	}
+	requireTool(t, "pnpm", "ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` "+
+		"must pass node: \"true\" to setup-toolchain (issue #177)")
 
 	src := filepath.Join(webRoot(t), "test-fixtures", "postinstall-guard")
 
