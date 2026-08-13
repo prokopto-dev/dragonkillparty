@@ -668,8 +668,18 @@ typical diff, and it costs a whole image build.
 | `:latest` | latest stable, any major | **after smoke** |
 | `:next` | latest RC | at RC publish |
 | `:edge`, `:edge-<sha7>` | latest green main | every main merge |
-| `:1.5.0-debug` | alpine variant with a shell | at publish |
 | `:pr-1234` | maintainer-authored PR heads only | per push, pruned at 14 days |
+
+There is deliberately **no `-debug` variant**. This table carried a row for one, promising an Alpine
+image carrying a shell, and the size-budget table below carried its matching row — while
+`scripts/release-image.sh` built exactly one image per architecture from the single `FROM scratch`
+target in `deploy/Dockerfile`, and no workflow published a second tag (issue #184). An officer
+following the tag table would `docker pull …:1-debug`, get `manifest unknown`, and get it at the
+moment something was already wrong. Shipping a shell-bearing build of a deliberately distroless image
+is a security-posture decision — §3's argument for the scratch base is that there is no shell to
+inject into — so the promise came out rather than the image going in.
+[Install with Docker](../getting-started/install-docker.md) documents how to inspect the image
+without one, and `test/repo/release_gates_test.go` fails if either half drifts back.
 
 Documentation pins `:1` everywhere. `:latest` is discouraged in the README with a one-line reason: it
 will cross a major and change the deployment contract.
@@ -728,7 +738,6 @@ it and ran on the channel that could not pass it.
 |---|---|---|
 | `dkp` binary, linux/amd64, embedded SPA + tzdata | 45 MB uncompressed | +3% vs last release |
 | `:X.Y.Z` scratch image | 30 MB compressed / 65 MB uncompressed | +5% |
-| `:X.Y.Z-debug` alpine image | 45 MB compressed | +5% |
 | SPA initial route | 250 KB gzipped | +5% |
 
 ---

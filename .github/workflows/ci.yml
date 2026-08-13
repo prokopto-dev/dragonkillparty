@@ -390,8 +390,19 @@ jobs:
               - '.shellcheckrc'
 
   # ---------------------------------------------------------------------------------------------
-  # lint — the grep gates run always and cost 15 seconds. They are the cheapest gate in the repo
-  # and the only one that catches an architectural-law violation before a human reads the diff.
+  # lint — the architectural gates run always. They are the cheapest gate in the repo and the only
+  # one that catches an architectural-law violation before a human reads the diff.
+  #
+  # THEY ARE NOT GREPS, and this header said they were until issue #179. They are internal/repogate:
+  # `go/parser` analyzers for the Go-syntax laws, data in internal/repogate/rules.hcl for the
+  # config-shaped rules, an HCL parse for ENUM001 and an in-process lockmanifest.Verify for MIG003
+  # (ADR-0018, ADR-0021, issue #123). scripts/repo-gates.sh is the shim that BUILDS that engine and
+  # points it at a tree — a compiled binary, never `go run`, so the exit code survives (ADR-0022).
+  #
+  # The difference is not cosmetic: "it is a grep" is what an agent reasons from when the next rule
+  # lands, and it decides between adding a pattern and writing an analyzer. The wall-clock claim went
+  # with it — the cost is one Go build from a warm cache plus one pass over the tree, and the job
+  # budget lives in docs/design/06-cicd-and-release.md §4 rather than in two places.
   # ---------------------------------------------------------------------------------------------
   lint-repo:
     name: lint / repo
@@ -420,7 +431,7 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
-      - name: Architectural grep gates and the licence firewall
+      - name: Architectural gates and the licence firewall
         env:
           # The pull-request context ADR001 reads. Both are EMPTY on push and merge_group, which is
           # how the rule knows it is not looking at a PR and skips; on a pull_request they are what

@@ -37,10 +37,16 @@ resolves to a real target, not that every target appears here.)
 **`check-fast` is for the edit-compile-lint cycle, `check` is the gate.** `check-fast` is
 `lint-repo` + `lint-actions` + `lint-shell` + `lint-go` + `vet`: the four laws, the money rules,
 actionlint over the workflows, shellcheck and shfmt over the shell tree, gofumpt, golangci-lint,
-`go vet`, staticcheck and `tsc`. It runs no tests, no coverage floor, no licence gate and no eslint,
-so it cannot tell you the change works — only that the tree is coherent. Reach for it between edits;
-`make check` is still what "done" means, and the pre-push hook does not accept the faster one
-instead.
+`go vet`, staticcheck and `tsc`. It runs no tests, no coverage floor, no licence gate, no eslint and
+none of the drift gates (`verify-generated`, `verify-spec`, the docs links), so it cannot tell you
+the change works — only that the tree is coherent. Reach for it between edits; `make check` is still
+what "done" means, and the pre-push hook does not accept the faster one instead.
+
+**What `make check` runs is derived, not remembered.** `test/repo/check_closure_test.go` reads
+`ci-required`'s `needs:` list, works out the `make` target each blocking job runs, and fails if one
+is neither in `check`'s prerequisite closure nor a row in its reviewed exemption table — with the
+reason. A required gate `make check` skips is a push, a CI round trip and a contributor who did
+exactly what this file told them to (issues #166, #183).
 
 `make setup` installs three tools the linters need beyond the Go ones: **actionlint**, **shellcheck**
 and **shfmt**. `make lint-actions` and `make lint-shell` hard-fail when one is missing rather than
