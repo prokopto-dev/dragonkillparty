@@ -1,0 +1,2 @@
+SEARCH ledger_entry USING COVERING INDEX ix_entry_balance (pool_id=?)
+USE TEMP B-TREE FOR ORDER BY

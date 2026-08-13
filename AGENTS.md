@@ -17,13 +17,14 @@ is a bug worth reporting.
 | unit tests | `make test-unit` | < 5 s |
 | integration tests (real SQLite in `t.TempDir`) | `make test` | ~30 s |
 | ledger + strategy properties (200 checks; 20 000 nightly) | `make test-property` | ~10 s |
+| standings spike over a 520 k-entry seeded ledger | `make test-perf` | ~180 s |
 | coverage floor for the ledger, strategy and enum catalogues | `make test-coverage-floor` | ~10 s |
 | importer suite (needs Docker) | `make test-importer` | ~120 s |
 | browser suite (Playwright vs the built binary) | `make test-e2e` | ~60 s |
 | lint | `make lint` | ~20 s |
 | build + vet + staticcheck + tsc | `make vet` | ~15 s |
 | new migration | `make migration NAME=<snake_case>` | — |
-| seed a dev guild | `make seed` | — |
+| seed a dev guild (`PROFILE=perf`; `RAIDS=200` for a small one) | `make seed` | ~120 s |
 | container image | `make docker` | ~90 s |
 | inner loop — laws + linters + type checks, no tests | `make check-fast` | ~25 s |
 | **everything CI runs** | **`make check`** | **~60 s** |
@@ -66,6 +67,10 @@ reads, so a cached pass there would be a gate reporting green on the change it e
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
+- `internal/seed/` — the synthetic-dataset generator behind `make seed`. Every row it writes goes
+  through `ledger.Service.Commit`, never a bulk insert: a dataset built by a side door proves nothing
+  about the door the product uses, and the budgets in `.claude/rules/seed-profiles.md` are measured
+  against it.
 - `internal/licence/` — the dependency licence gate (LIC001/002/003) and the ONE `go list`
   runtime-graph platform union, shared with `scripts/third-party-notices.sh`. Tooling, not
   product: stdlib only, and not linked into `dkp` — a test asserts the binary's package graph

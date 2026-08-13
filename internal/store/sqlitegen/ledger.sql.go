@@ -190,6 +190,45 @@ func (q *Queries) GetSystemAccount(ctx context.Context, systemKey *string) (Acco
 	return i, err
 }
 
+const insertAccount = `-- name: InsertAccount :exec
+
+INSERT INTO account (id, kind, person_id, system_key, label, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+`
+
+type InsertAccountParams struct {
+	ID        string
+	Kind      string
+	PersonID  *string
+	SystemKey *string
+	Label     string
+	CreatedAt int64
+	UpdatedAt int64
+}
+
+// InsertAccount creates one balance holder. The four SYSTEM accounts are seeded by the migration and
+// never inserted through here; this is the person half, and its first caller is internal/seed - a
+// ledger of 520k entries needs 280 accounts to hang them on, and the commit path's
+// EntriesReferenceLiveAccounts invariant looks every one of them up.
+//
+// The two paired CHECKs on the table (account_person_shape, account_system_shape) mean the caller
+// cannot get the kind/person_id/system_key combination wrong quietly: a person with a system_key, or
+// a system account with no key, is a constraint violation rather than a row nobody notices. Both
+// nullable columns are supplied explicitly for the reason InsertLedgerBatch names every column -
+// a value the database invented is a value the caller never saw.
+func (q *Queries) InsertAccount(ctx context.Context, arg InsertAccountParams) error {
+	_, err := q.db.ExecContext(ctx, insertAccount,
+		arg.ID,
+		arg.Kind,
+		arg.PersonID,
+		arg.SystemKey,
+		arg.Label,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
 const insertLedgerBatch = `-- name: InsertLedgerBatch :exec
 
 INSERT INTO ledger_batch (
@@ -353,6 +392,144 @@ func (q *Queries) NextPoolSeq(ctx context.Context, poolID string) (int64, error)
 	var next_seq int64
 	err := row.Scan(&next_seq)
 	return next_seq, err
+}
+
+const standingsFromLedger = `-- name: StandingsFromLedger :many
+
+SELECT account_id,
+       CAST(COALESCE(sum(amount_cp), 0) AS INTEGER) AS amount_cp,
+       CAST(count(*) AS INTEGER) AS entry_count
+FROM ledger_entry
+WHERE pool_id = ? AND balance_kind = ? AND seq <= ?
+GROUP BY account_id
+ORDER BY amount_cp DESC, account_id ASC
+LIMIT ?
+`
+
+type StandingsFromLedgerParams struct {
+	PoolID      string
+	BalanceKind string
+	Seq         int64
+	Limit       int64
+}
+
+type StandingsFromLedgerRow struct {
+	AccountID  string
+	AmountCp   int64
+	EntryCount int64
+}
+
+// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
+// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
+// StandingsFromSnapshot against, and it is what a replay or a verification job reads.
+//
+// It is one statement either way, so the interesting number is never the statement count - it is the
+// work. This one aggregates every entry ever written (520k rows at guild scale) where the snapshot
+// read touches one row per account (280). Both plans are pinned by goldens; the measured gap between
+// them is the whole of V5's answer.
+//
+// It returns the entry COUNT alongside the sum because balance_snapshot caches both, and a drift
+// check that compared only the sums would pass on a cache that had folded the wrong number of
+// entries into the right total. count(*) costs nothing here: ix_entry_balance already covers every
+// column this reads, so the count is of index rows already being walked.
+//
+// Aggregate with sum(), never the float-returning alternative SQLite offers (canonical C3 /
+// MONEY002) - that one would silently convert the ledger to floating point. The CAST pins the
+// aggregate to INTEGER for sqlc, which cannot infer an affinity for an expression that belongs to
+// no table.
+func (q *Queries) StandingsFromLedger(ctx context.Context, arg StandingsFromLedgerParams) ([]StandingsFromLedgerRow, error) {
+	rows, err := q.db.QueryContext(ctx, standingsFromLedger,
+		arg.PoolID,
+		arg.BalanceKind,
+		arg.Seq,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StandingsFromLedgerRow
+	for rows.Next() {
+		var i StandingsFromLedgerRow
+		if err := rows.Scan(&i.AccountID, &i.AmountCp, &i.EntryCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const standingsFromSnapshot = `-- name: StandingsFromSnapshot :many
+
+SELECT account_id, amount_cp, as_of_seq, entry_count
+FROM balance_snapshot
+WHERE pool_id = ? AND balance_kind = ?
+ORDER BY amount_cp DESC, account_id ASC
+LIMIT ?
+`
+
+type StandingsFromSnapshotParams struct {
+	PoolID      string
+	BalanceKind string
+	Limit       int64
+}
+
+type StandingsFromSnapshotRow struct {
+	AccountID  string
+	AmountCp   int64
+	AsOfSeq    int64
+	EntryCount int64
+}
+
+// StandingsFromSnapshot is THE standings read: every account's balance in one pool, highest first,
+// from the droppable cache rather than from the log. It is the query V5 budgets
+// (docs/development/verify-before-phase-0.md): 4 SQL statements and p99 150 ms at 280 members over a
+// 520k-entry ledger, on SD-card-class storage.
+//
+// ix_snapshot_standings is (pool_id, balance_kind, amount_cp DESC), and balance_snapshot is
+// WITHOUT ROWID, so the index's trailing key columns are the primary key - which is what makes
+// `ORDER BY amount_cp DESC, account_id ASC` an index walk rather than a sort. The account_id
+// tiebreak is NOT decoration: two accounts on the same balance would otherwise come back in an
+// order the planner is free to change between releases, and a page boundary that lands between them
+// would skip or repeat a member. The EXPLAIN QUERY PLAN golden
+// (test/golden/explain/standings_snapshot.txt) asserts the walk stays a walk.
+//
+// NO CURSOR PARAMETER, deliberately. The cursor predicate belongs with the endpoint that pages
+// (Phase 3), and inventing its shape here would freeze a pagination contract nothing has reviewed.
+// What this query does owe that endpoint is the ORDER BY above: the cursor it grows must tiebreak on
+// account_id in the same direction, or the page boundary is not stable.
+func (q *Queries) StandingsFromSnapshot(ctx context.Context, arg StandingsFromSnapshotParams) ([]StandingsFromSnapshotRow, error) {
+	rows, err := q.db.QueryContext(ctx, standingsFromSnapshot, arg.PoolID, arg.BalanceKind, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StandingsFromSnapshotRow
+	for rows.Next() {
+		var i StandingsFromSnapshotRow
+		if err := rows.Scan(
+			&i.AccountID,
+			&i.AmountCp,
+			&i.AsOfSeq,
+			&i.EntryCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const upsertBalanceSnapshot = `-- name: UpsertBalanceSnapshot :exec

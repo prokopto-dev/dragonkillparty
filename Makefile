@@ -141,7 +141,7 @@ define notyet
 printf '\033[33m  not yet implemented\033[0m  %s\n  lands in: %s\n' "$(2)" "$(1)"
 endef
 
-.PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
+.PHONY: help setup dev gen test-unit test test-property test-perf test-coverage-floor test-importer \
         test-lanes lint vet migration seed docker check check-fast \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
         lint-repo lint-go lint-web lint-migrations lint-actions lint-shell licence-gate \
@@ -416,6 +416,50 @@ test-property:
 	fi; \
 	printf '  \033[32m%s properties\033[0m at %s checks each\n' "$$n" "$${DKP_PROPERTY_CHECKS:-200}"
 
+## test-perf: seed 520k ledger entries and measure the standings read (budget ~3 min)
+# The V5 spike (docs/development/verify-before-phase-0.md, issue #190): internal/seed builds a
+# realistic-guild-scale ledger through the real commit path, and internal/ledger's TestPerf_ suite
+# measures the standings read over it, replays every entry against balance_snapshot, and holds the
+# read to 4 statements and a 150 ms p99 on SD-card-class storage.
+#
+# DKP_PERF_RAIDS is the ONE knob, and it is the same code path at every size — the shape
+# test-property uses for DKP_PROPERTY_CHECKS. The suite runs on every PR under `make test` at its
+# small default so it cannot rot; this target is the full 3,400-raid, 527,164-entry article.
+#
+# NO -race, and that is the whole reason this target exists rather than being folded into `make
+# test`. The detector instruments modernc.org/sqlite — the SQLite engine compiled to Go — so seeding
+# costs ~30x and a measured latency is a measurement of the detector. The suite knows: under -race it
+# asserts the I/O half of the budget (page counts, which instrumentation cannot change) and says in
+# its output that the wall-clock half was deferred to here.
+#
+# The grep drops internal/ledger's per-batch "committed ledger batch" line. It is the right log for a
+# raid night and 20,461 lines of noise for a seed, and the alternative — turning it off — would mean
+# the measured path differed from the production one by one write.
+#
+# NO VACUOUS PASS, twice over.
+#
+# `-run '^TestPerf_'` exits 0 with "no tests to run" when the filter matches nothing, so the recipe
+# counts what actually ran and fails at zero — same guard, same reason, as test-property.
+#
+# And `-count=1` UNCONDITIONALLY, where the cacheable lane's targets take $(TEST_CACHE_FLAGS): this
+# target's output IS the result. `go test`'s cache would happily replay a stored `ok` — with the
+# stored p50 and p99 in its stored output — for a tree whose Go inputs had not changed, and print
+# last week's latency as this run's measurement. A cached benchmark is a benchmark that did not
+# happen. (DKP_PERF_RAIDS is read with os.LookupEnv, which the cache does track, so the two scales
+# could not alias; the reason here is the timing, not the scale.)
+test-perf:
+	@out=$$(DKP_PERF_RAIDS=$${DKP_PERF_RAIDS:-3400} $(GO) test -v -count=1 -timeout 30m \
+		-run '^TestPerf_' ./internal/ledger/... 2>&1) || { \
+		printf '%s\n' "$$out" | grep -v 'committed ledger batch'; exit 1; }; \
+	printf '%s\n' "$$out" | grep -v 'committed ledger batch' || true; \
+	n=$$(printf '%s\n' "$$out" | grep -cE '^=== RUN[[:space:]]+TestPerf_' || true); \
+	if [ "$$n" -eq 0 ]; then \
+		printf '\033[31m  no perf tests ran\033[0m — `-run ^TestPerf_` matched nothing.\n'; \
+		printf '  A perf suite that selects zero tests reports green. Check the test names.\n'; \
+		exit 1; \
+	fi; \
+	printf '  \033[32m%s perf test(s)\033[0m at %s raids\n' "$$n" "$${DKP_PERF_RAIDS:-3400}"
+
 ## test-coverage-floor: fail if the ledger, strategy or enum-catalogue packages fall below 95% covered
 # A JOB, not a report (Phase 0 PR 10's acceptance criterion). The packages this covers are the ones
 # where a plausible-looking wrong change reallocates points across the whole guild, and an uncovered
@@ -550,9 +594,23 @@ ifndef NAME
 endif
 	@env -u DKP_REPO_ROOT NAME='$(NAME)' bash scripts/new-migration.sh
 
-## seed: seed a dev guild — make seed PROFILE=demo (or small, perf)
-seed:
-	@$(call notyet,Phase 1 (perf) / Phase 2 (small) / Phase 3 (demo),dkp seed --profile $${PROFILE:-demo})
+## seed: seed a dev guild — make seed PROFILE=perf (small lands in P2, demo in P3)
+# Real work as of issue #190, for the `perf` profile. `small` and `demo` are not stubs here any
+# more: `dkp seed --profile small` exits non-zero naming the phase that implements it, which is a
+# better answer than a Makefile that prints a note and exits 0.
+#
+# It builds the binary first and runs THAT, rather than `go run`: the seed writes to a real database
+# through the real commit path, and running the shipped artefact is the only version of this whose
+# result an operator could reproduce. RAIDS is the depth knob — `make seed RAIDS=200` is a few
+# seconds where the full profile is a couple of minutes.
+#
+# DKP_DB_PATH defaults to the same ./data/dev.db `make dev` uses, and the migration runs first
+# because seeding an unmigrated database fails on a table that does not exist yet.
+seed: build
+	@DKP_DB_PATH=$${DKP_DB_PATH:-./data/dev.db}; export DKP_DB_PATH; \
+	mkdir -p "$$(dirname "$$DKP_DB_PATH")"; \
+	$(BUILD_DIR)/$(BIN) migrate >/dev/null; \
+	$(BUILD_DIR)/$(BIN) seed --profile $${PROFILE:-perf} $${RAIDS:+--raids $$RAIDS}
 
 ## docker: build the container image
 # buildx, not `docker build`: it is what CI's build/image job invokes, and it is what the

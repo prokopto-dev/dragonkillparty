@@ -37,6 +37,19 @@ type Queries interface {
 	GetAccount(ctx context.Context, id string) (sqlitegen.Account, error)
 	GetSystemAccount(ctx context.Context, systemKey *string) (sqlitegen.Account, error)
 
+	// The standings pair and the account writer (Phase 1, issue #190). The two standings queries
+	// answer the SAME question by the two available routes — the droppable cache and the
+	// definitional SUM over the log — and they are both on the contract because the gap between
+	// them at 520k entries is what decides whether balance_snapshot survives
+	// (docs/development/verify-before-phase-0.md V5). Keeping the slow arm generated and pinned by
+	// an EXPLAIN golden is what makes that comparison repeatable rather than a number in a PR body.
+	//
+	// InsertAccount is the person half of the account table; the four system accounts are seeded by
+	// the migration. Its first caller is internal/seed, which cannot hang 520k entries on four rows.
+	StandingsFromSnapshot(ctx context.Context, arg sqlitegen.StandingsFromSnapshotParams) ([]sqlitegen.StandingsFromSnapshotRow, error)
+	StandingsFromLedger(ctx context.Context, arg sqlitegen.StandingsFromLedgerParams) ([]sqlitegen.StandingsFromLedgerRow, error)
+	InsertAccount(ctx context.Context, arg sqlitegen.InsertAccountParams) error
+
 	// The ledger WRITE path (Phase 0 PR 10a). These five are called from exactly one place —
 	// ledger.Service.Commit — and all five run inside a single store.Tx together with
 	// UpsertBalanceSnapshot and UpsertMetaValue, because a batch, its entries, the snapshot cache,

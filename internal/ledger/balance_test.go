@@ -3,7 +3,6 @@ package ledger_test
 import (
 	"flag"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -54,15 +53,65 @@ func insertBatch(tb testing.TB, s *store.Store, poolID string, seq int64, entrie
 	}
 }
 
-// padID builds a deterministic, valid 26-char ULID from a prefix and a number, using only Crockford
-// base32 characters. Test-only: real ids are minted by core.Generator.
+// padID builds a deterministic, valid 26-char ULID from a prefix and a number. Test-only: real ids
+// are minted by core.Generator.
+//
+// The digits are CROCKFORD base32, not strconv's. This used to be
+// `strings.ToUpper(strconv.FormatInt(n, 32))`, whose alphabet is 0-9a-v — which contains I, L, O and
+// U, the four letters Crockford excludes precisely so a human reading an id aloud cannot turn a 1
+// into an I. Roughly one id in eight came out failing `core.ULID.Valid()` while the comment above it
+// said it was valid. Nothing depended on it (these ids go into TEXT columns with no format CHECK),
+// so it was a false claim rather than a bug — but a test helper that mints invalid ids is a helper
+// that will eventually be used somewhere that checks.
+//
+// Order-preserving, which IS depended on: TestAllocate_Tiebreak_IsAccountIDAscending asserts the
+// largest-remainder +1 lands on the lowest account ids, and it could not do so against ids whose
+// lexical order did not follow their index. The fixed-width, most-significant-digit-first encoding
+// below keeps that property.
 func padID(prefix string, n int64) string {
-	body := prefix + strings.ToUpper(strconv.FormatInt(n, 32))
-	// Left-pad with '0' to 26 chars. '0' is a legal Crockford base32 digit and a legal leading char.
-	if len(body) > core.ULIDLength {
-		body = body[:core.ULIDLength]
+	const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+	// Six digits: 32^6 is a billion, comfortably more than any test index, and fixed-width so the
+	// tail sorts numerically rather than by length.
+	const digits = 6
+
+	body := []byte(strings.Repeat("0", digits))
+	for i := range digits {
+		body[digits-1-i] = crockford[n%int64(len(crockford))]
+		n /= int64(len(crockford))
 	}
-	return strings.Repeat("0", core.ULIDLength-len(body)) + body
+
+	full := prefix + string(body)
+	if len(full) > core.ULIDLength {
+		full = full[:core.ULIDLength]
+	}
+
+	// Left-pad with '0' to 26 chars. '0' is a legal Crockford base32 digit and a legal leading char,
+	// which keeps the encoded timestamp at zero and inside the overflow rule ParseStrict enforces.
+	return strings.Repeat("0", core.ULIDLength-len(full)) + full
+}
+
+// TestPadID_MintsValidULIDs asserts the helper above produces ids core.ULID accepts, and that their
+// order follows their index. Both properties are load-bearing and neither was checked before.
+func TestPadID_MintsValidULIDs(t *testing.T) {
+	t.Parallel()
+
+	prev := ""
+
+	for _, prefix := range []string{"ACCT", "BATCH", "ENTRY", "SNAPB", "SNAPE", "PERS"} {
+		prev = ""
+
+		for n := range int64(300) {
+			id := padID(prefix, n)
+
+			require.Len(t, id, core.ULIDLength, "%s/%d", prefix, n)
+			require.True(t, core.ULID(id).Valid(),
+				"%s/%d produced %q, which is not a valid Crockford ULID", prefix, n, id)
+			require.Greater(t, id, prev, "%s ids must sort by index", prefix)
+
+			prev = id
+		}
+	}
 }
 
 // TestBalance_SumMatchesFold asserts BalanceAsOfSeq equals a naive Go fold over the entries, with the

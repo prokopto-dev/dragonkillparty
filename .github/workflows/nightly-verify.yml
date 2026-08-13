@@ -135,6 +135,40 @@ jobs:
         # happened.
 
   # ---------------------------------------------------------------------------------------------
+  # perf / 520k — the V5 standings spike at full guild scale (issue #190).
+  #
+  # `make test` runs the same suite on every PR at eight raids, which proves the code path still
+  # works; this runs it at 3,400, which is the only size the question is actually about. It seeds
+  # 527,164 entries through the real ledger commit path, replays every one of them against
+  # balance_snapshot, and holds the standings read to 4 statements and a 150 ms p99 on
+  # SD-card-class storage.
+  #
+  # It belongs here rather than in ci.yml for this file's own reason and one more. The reason: three
+  # minutes and a few hundred megabytes of scratch disk is not a per-PR cost anybody should pay for
+  # a number that changes when the SCHEMA changes, not when a PR does. The extra one: `make
+  # test-perf` deliberately runs without `-race`, because the detector instruments
+  # modernc.org/sqlite — the SQLite engine compiled to Go — and a latency measured under it is a
+  # measurement of the detector. The per-PR run knows that and asserts only the page-count half.
+  #
+  # DKP_PERF_RAIDS is the same one-knob shape as DKP_PROPERTY_CHECKS above: read at runtime, no
+  # second code path, and a malformed value fails the tests rather than silently running the small
+  # profile while reporting a deep one.
+  # ---------------------------------------------------------------------------------------------
+  perf-standings:
+    name: perf / 520k
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          go: "true"
+      - env:
+          DKP_PERF_RAIDS: "3400"
+        run: make test-perf
+
+  # ---------------------------------------------------------------------------------------------
   # suite / shuffled — the whole Go suite with `-shuffle=on -count=1`, which the per-PR run no
   # longer carries (issue #155).
   #
@@ -431,6 +465,7 @@ jobs:
       - guard
       - importer
       - property-deep
+      - perf-standings
       - shuffled-suite
       - postgres-convergence
       - image-arm64
