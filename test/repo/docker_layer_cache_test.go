@@ -14,6 +14,8 @@
 package repo_test
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -26,6 +28,16 @@ const (
 	layerCacheRestoreStep = "Restore the Docker layer cache"
 	layerCacheSaveStep    = "Restore and save the Docker layer cache (main only)"
 	layerCacheRollStep    = "Roll the layer cache forward (main only)"
+)
+
+// The same three on the release path (issue #163), where the write/read split is by WORKFLOW rather
+// than by an `if:`: edge.yml runs on push to main and only ever writes, release.yml runs on a tag and
+// only ever reads. The restore step's name is shared with ci.yml's; they are different files.
+const (
+	releaseCacheSaveStep = "Restore and save the Docker layer cache"
+	releaseCacheRollStep = "Roll the layer cache forward"
+	edgeWorkflowRel      = ".github/workflows/edge.yml"
+	releaseWorkflowRel   = ".github/workflows/release.yml"
 )
 
 // localCacheDirRe pulls the directory out of a `type=local,src=…` / `type=local,dest=…` cache
@@ -97,42 +109,12 @@ func TestBuildImage_LayerCache_WritesOnMainReadsEverywhere(t *testing.T) {
 	require.Equal(t, restore.key, save.key, "the two cache steps must share one key")
 	require.Equal(t, restore.restoreKeys, save.restoreKeys, "the two cache steps must share one restore-keys list")
 
-	require.NotEmpty(t, restore.restoreKeys, "without restore-keys a key that misses restores nothing")
-
-	for _, prefix := range restore.restoreKeys {
-		require.True(t, strings.HasSuffix(prefix, "-"),
-			"a restore-key is matched as a PREFIX; %q does not end in a separator, so it can match a "+
-				"neighbouring key it was never meant to", prefix)
-		require.True(t, strings.HasPrefix(restore.key, prefix),
-			"restore-key %q is not a prefix of the key %q, so it can only ever restore another "+
-				"cache's entry or nothing at all", prefix, restore.key)
-	}
-
-	// The narrowest fallback first, or the broad lane answers and the specific one never runs.
-	for i := 1; i < len(restore.restoreKeys); i++ {
-		require.Less(t, len(restore.restoreKeys[i]), len(restore.restoreKeys[i-1]),
-			"restore-keys are tried in order, so each must be a SHORTER prefix than the one before "+
-				"it:\n%v", restore.restoreKeys)
-	}
-
-	// THE KEY HAS TO ROLL. Actions cache entries are immutable and actions/cache SKIPS its post-job
-	// save on an exact hit, so a key that does not roll is written the first time it exists and never
-	// refreshed: main exports a fresh cache, the roll step swaps it into place, and nothing is ever
-	// uploaded again. The layer cache would then be frozen at whatever the first build for that
-	// lockfile set happened to contain — a cache that looks configured and cannot advance.
-	require.True(t, strings.HasSuffix(restore.key, "${{ github.sha }}"),
-		"the layer cache key must end in the commit sha so main writes a fresh entry every run: an "+
-			"exactly-hit key is never rewritten, so the export the roll step prepares would never be "+
-			"saved. Got %q", restore.key)
-
-	// And its middle segment must be the content that decides whether the expensive stages are
-	// reusable at all, so the first fallback lands on an entry whose builder stages still apply.
-	require.Contains(t, restore.key, "hashFiles(",
-		"the layer cache key must carry the hash of the files that decide what the builder stages can "+
-			"reuse — without it every fallback is to an arbitrary previous build. Got %q", restore.key)
-	require.Contains(t, restore.restoreKeys[0], "hashFiles(",
-		"the FIRST restore-key must keep the content hash, or a lockfile bump silently falls back to "+
-			"an entry whose Node and Go stages cannot be reused. Got %q", restore.restoreKeys[0])
+	// The restore-key ordering, the rolling key and its content-hash segment. Shared with the release
+	// path (issue #163) rather than copied, so both pools are held to one argument: THE KEY HAS TO
+	// ROLL, because Actions cache entries are immutable and actions/cache SKIPS its post-job save on
+	// an exact hit — a key that did not roll would be written the first time it existed and never
+	// refreshed, leaving a cache that looks configured and cannot advance.
+	assertRollingCacheKey(t, restore)
 }
 
 // TestBuildImage_LayerCache_IsWiredToTheDirectoryItArchives is the anti-#119 assertion.
@@ -182,6 +164,208 @@ func TestBuildImage_LayerCache_IsWiredToTheDirectoryItArchives(t *testing.T) {
 	require.NotContains(t, uncommented(roll), "|| true",
 		"a failed swap means buildx exported nothing and the policy above is not happening — that is "+
 			"a failure to report, not one to swallow")
+}
+
+// TestLayerCache_GhaBackend_IsNamedNowhere closes issue #163 from the direction that cannot rot.
+//
+// `--cache-from type=gha` is not a wrong setting, it is an IMPOSSIBLE one from a `run:` step: buildx
+// authenticates to the Actions cache service with ACTIONS_RUNTIME_TOKEN, and GitHub injects that into
+// the environment of JavaScript and Docker actions only. scripts/release-image.sh asked for it
+// anyway, so the release and edge image builds carried a cache that was inert or a hard failure
+// depending on the buildx version — and no release had been cut to find out which, which is the
+// property that let it sit there. ci.yml's build / image had already hit the same wall for #119.
+//
+// So the string is banned outright rather than the wiring being re-checked. Reintroducing it needs
+// `crazy-max/ghaction-github-runtime` or an equivalent in every job that builds an image, which is a
+// dependency decision AGENTS.md reserves for a human — and this failure names it.
+//
+// Comments are stripped: three of the files below explain at length why the backend is not used, and
+// an assertion a comment can fail is the mirror image of one a comment can satisfy.
+func TestLayerCache_GhaBackend_IsNamedNowhere(t *testing.T) {
+	t.Parallel()
+
+	for _, dir := range []string{"scripts", ".github/workflows", ".github/actions"} {
+		t.Run(dir, func(t *testing.T) {
+			t.Parallel()
+
+			for _, rel := range filesUnder(t, dir) {
+				require.NotContainsf(t, uncommented(readRepoFile(t, rel)), "type=gha",
+					"%s asks buildx for the gha cache backend. It cannot authenticate from a `run:` step "+
+						"— ACTIONS_RUNTIME_TOKEN reaches JS and Docker actions only — so the cache is inert "+
+						"or a hard failure, silently (issue #163). Use the local backend behind "+
+						"actions/cache, as ci.yml, edge.yml and release.yml all do.", rel)
+			}
+		})
+	}
+}
+
+// TestReleaseImage_ConsumesTheLayerCacheVariables is the #119 assertion applied to the other script
+// that builds an image: the variables the workflows set reach the buildx command line.
+//
+// The empty-array expansion is asserted too, because it is load-bearing and invisible: the array can
+// now be empty (a laptop, a manual invocation), and under `set -u` bash 3.2 aborts on a plain
+// "${empty[@]}" — which would turn `make release-image` outside CI into an unbound-variable error.
+func TestReleaseImage_ConsumesTheLayerCacheVariables(t *testing.T) {
+	t.Parallel()
+
+	script := readRepoFile(t, "scripts/release-image.sh")
+	body := uncommented(script)
+
+	require.Contains(t, body, "docker buildx build", "release-image.sh must build with buildx")
+
+	for _, want := range []struct{ variable, flag string }{
+		{"BUILDX_CACHE_FROM", "--cache-from"},
+		{"BUILDX_CACHE_TO", "--cache-to"},
+	} {
+		require.Containsf(t, body, `cache_args+=(`+want.flag+` "$`+want.variable+`")`,
+			"release-image.sh must append %s to the buildx flags when %s is set — that pair is this "+
+				"repository's convention, shared with the Makefile's `docker` recipe, and it is what "+
+				"replaced the gha backend that could never authenticate (issue #163)", want.flag, want.variable)
+	}
+
+	require.Contains(t, body, `${cache_args[@]+"${cache_args[@]}"}`,
+		"release-image.sh must expand cache_args with the empty-array guard: the array is empty on a "+
+			"laptop and on a manual invocation, and `set -u` under bash 3.2 — what macOS ships — treats "+
+			`a plain "${cache_args[@]}" as an unbound variable and aborts the release build`)
+}
+
+// TestReleaseImage_LayerCache_EdgeWritesReleaseReads pins the release path to the same doctrine
+// ci.yml's build / image follows, with the split moved from an `if:` to the two workflows.
+//
+// edge.yml runs on push to main and nothing else, so every run of it is a main-branch run and may
+// write. release.yml runs on a tag; a cache saved under a tag ref is readable by no other run and
+// still evicts the shared entries, so a release that wrote would burn the pool it depends on.
+//
+// The keys have to be IDENTICAL or the two halves are not one cache — the reader would restore under
+// a prefix nobody writes and miss forever, which looks exactly like a cold build and reports green.
+func TestReleaseImage_LayerCache_EdgeWritesReleaseReads(t *testing.T) {
+	t.Parallel()
+
+	edge := jobBlock(t, readRepoFile(t, edgeWorkflowRel), "image:")
+	release := jobBlock(t, readRepoFile(t, releaseWorkflowRel), "image:")
+
+	save := workflowCacheStep(t, edge, releaseCacheSaveStep)
+	restore := workflowCacheStep(t, release, layerCacheRestoreStep)
+
+	require.True(t, strings.HasPrefix(save.uses, "actions/cache@"),
+		"edge.yml is the writer, so it must use the full action, whose post step saves at job end. Got %s", save.uses)
+	require.True(t, strings.HasPrefix(restore.uses, "actions/cache/restore@"),
+		"release.yml must be restore-only — actions/cache/restore has no post step, so it CANNOT write "+
+			"a cache under a tag ref that no other run could read. Got %s", restore.uses)
+
+	require.Equal(t, save.path, restore.path, "both workflows must cache the same directory")
+	require.Equal(t, save.key, restore.key,
+		"edge.yml writes under one key and release.yml restores under another, so the release build "+
+			"restores nothing and is uncached — the #163 outcome with a different cause")
+	require.Equal(t, save.restoreKeys, restore.restoreKeys,
+		"the two workflows must share one restore-keys list; the tag run never hits the full key, so "+
+			"the fallbacks are the whole mechanism")
+
+	// Per-arch, or three architectures overwrite each other's entry every release and every restore
+	// lands on another architecture's builder stages.
+	require.Contains(t, save.key, "${{ matrix.arch }}",
+		"the release layer-cache key must be per-architecture: the matrix builds three, their builder "+
+			"stages differ, and one key would have each arch evict the last. Got %q", save.key)
+
+	// And out from under ci.yml's prefix, whose broadest restore-key would otherwise match these
+	// entries and warm a native amd64 `--load` build from a cross-compiled `--push` one.
+	ci := workflowCacheStep(t, jobBlock(t, readCIWorkflow(t), "build-image:"), layerCacheRestoreStep)
+	for _, prefix := range ci.restoreKeys {
+		require.Falsef(t, strings.HasPrefix(save.key, prefix),
+			"the release layer-cache key %q starts with ci.yml's restore-key %q, so `build / image` can "+
+				"restore a release entry as its fallback. Keep the two pools disjoint.", save.key, prefix)
+	}
+
+	assertRollingCacheKey(t, save)
+}
+
+// TestReleaseImage_LayerCache_IsWiredToTheDirectoryItArchives is the anti-#119 assertion for the
+// release path: a cache step archiving one directory while the build reads another is
+// indistinguishable, in a green run, from having no cache at all.
+func TestReleaseImage_LayerCache_IsWiredToTheDirectoryItArchives(t *testing.T) {
+	t.Parallel()
+
+	edge := jobBlock(t, readRepoFile(t, edgeWorkflowRel), "image:")
+	release := jobBlock(t, readRepoFile(t, releaseWorkflowRel), "image:")
+
+	cached := workflowCacheStep(t, edge, releaseCacheSaveStep).path
+
+	for _, tc := range []struct{ workflow, job string }{
+		{edgeWorkflowRel, edge},
+		{releaseWorkflowRel, release},
+	} {
+		from := workflowEnvValue(t, tc.job, "BUILDX_CACHE_FROM")
+
+		src := localCacheDirRe.FindStringSubmatch(from)
+		require.NotNilf(t, src, "%s: BUILDX_CACHE_FROM must name a local cache directory. Got %q", tc.workflow, from)
+		require.Equalf(t, cached, src[1],
+			"%s: the build imports %q but the cache step archives %q, so it imports a directory nothing "+
+				"restores — a cache in name only (issue #119)", tc.workflow, src[1], cached)
+	}
+
+	// The reader declares no write at all, rather than a write guarded by an expression: there is no
+	// ref this workflow can run on for which writing is right.
+	require.Empty(t, workflowEnvValues(release, "BUILDX_CACHE_TO"),
+		"release.yml must set no BUILDX_CACHE_TO. It runs on a tag, and a cache written under a tag ref "+
+			"is visible to no other run while still evicting the entries that are — edge.yml is the writer.")
+
+	to := workflowEnvValue(t, edge, "BUILDX_CACHE_TO")
+	require.Contains(t, to, "mode=max",
+		"mode=min exports only the layers of the resulting image, and deploy/Dockerfile's final stage is "+
+			"`FROM scratch` with three COPYs — every expensive layer is in the Node and Go builder "+
+			"stages, which only mode=max exports. Issue #163 called this out for the release path "+
+			"specifically. Got %q", to)
+
+	dest := localCacheDirRe.FindStringSubmatch(to)
+	require.NotNilf(t, dest, "edge.yml: BUILDX_CACHE_TO must name a local cache directory. Got %q", to)
+	require.NotEqual(t, cached, dest[1],
+		"BUILDX_CACHE_TO must export to a different directory than it imports from — buildkit's local "+
+			"exporter writes a whole cache and prunes nothing already there, so exporting over the "+
+			"restored copy grows the entry every run")
+
+	roll := workflowStep(t, edge, releaseCacheRollStep)
+	require.Containsf(t, roll, "mv "+dest[1]+" "+cached,
+		"the roll step must move the fresh export (%s) into the directory actions/cache archives (%s), "+
+			"or edge saves the copy it restored and the cache never advances", dest[1], cached)
+	require.NotContains(t, uncommented(roll), "|| true",
+		"a failed swap means buildx exported nothing and the policy above is not happening — that is a "+
+			"failure to report, not one to swallow")
+}
+
+// assertRollingCacheKey is the key-shape argument from
+// TestBuildImage_LayerCache_WritesOnMainReadsEverywhere, extracted so the release path is held to it
+// too rather than to a second, weaker copy of it.
+func assertRollingCacheKey(t *testing.T, step cacheStep) {
+	t.Helper()
+
+	require.NotEmpty(t, step.restoreKeys, "without restore-keys a key that misses restores nothing")
+
+	for _, prefix := range step.restoreKeys {
+		require.True(t, strings.HasSuffix(prefix, "-"),
+			"a restore-key is matched as a PREFIX; %q does not end in a separator, so it can match a "+
+				"neighbouring key it was never meant to", prefix)
+		require.True(t, strings.HasPrefix(step.key, prefix),
+			"restore-key %q is not a prefix of the key %q, so it can only ever restore another cache's "+
+				"entry or nothing at all", prefix, step.key)
+	}
+
+	// The narrowest fallback first, or the broad lane answers and the specific one never runs.
+	for i := 1; i < len(step.restoreKeys); i++ {
+		require.Less(t, len(step.restoreKeys[i]), len(step.restoreKeys[i-1]),
+			"restore-keys are tried in order, so each must be a SHORTER prefix than the one before it:\n%v",
+			step.restoreKeys)
+	}
+
+	require.True(t, strings.HasSuffix(step.key, "${{ github.sha }}"),
+		"the layer cache key must end in the commit sha so the writer produces a fresh entry every run: "+
+			"an exactly-hit key is never rewritten, so the export the roll step prepares would never be "+
+			"saved. Got %q", step.key)
+	require.Contains(t, step.key, "hashFiles(",
+		"the layer cache key must carry the hash of the files that decide what the builder stages can "+
+			"reuse — without it every fallback is to an arbitrary previous build. Got %q", step.key)
+	require.Contains(t, step.restoreKeys[0], "hashFiles(",
+		"the FIRST restore-key must keep the content hash, or a lockfile bump silently falls back to an "+
+			"entry whose Node and Go stages cannot be reused. Got %q", step.restoreKeys[0])
 }
 
 // uncommented drops whole-line `#` comments, so an assertion about what a step DOES is not answered
@@ -239,6 +423,16 @@ func workflowCacheStep(t *testing.T, job, name string) cacheStep {
 func workflowEnvValue(t *testing.T, job, name string) string {
 	t.Helper()
 
+	found := workflowEnvValues(job, name)
+
+	require.Lenf(t, found, 1, "expected exactly one %s: declaration in the job, found %d", name, len(found))
+
+	return found[0]
+}
+
+// workflowEnvValues is workflowEnvValue without the arity requirement, for the assertion that a job
+// declares a variable NO times — which is a different claim from declaring it empty.
+func workflowEnvValues(job, name string) []string {
 	var found []string
 
 	for _, line := range strings.Split(job, "\n") {
@@ -250,7 +444,39 @@ func workflowEnvValue(t *testing.T, job, name string) string {
 		found = append(found, strings.TrimSpace(strings.TrimPrefix(trimmed, name+":")))
 	}
 
-	require.Lenf(t, found, 1, "expected exactly one %s: declaration in the job, found %d", name, len(found))
+	return found
+}
 
-	return found[0]
+// filesUnder returns every regular file under a repo-relative directory, as repo-relative slash
+// paths ready for readRepoFile.
+func filesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+
+	root := repoRoot(t)
+
+	var out []string
+
+	require.NoError(t, filepath.WalkDir(filepath.Join(root, filepath.FromSlash(dir)),
+		func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+
+			if d.IsDir() {
+				return nil
+			}
+
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+
+			out = append(out, filepath.ToSlash(rel))
+
+			return nil
+		}), "walk %s", dir)
+
+	require.NotEmptyf(t, out, "no files under %s — has the tree moved?", dir)
+
+	return out
 }

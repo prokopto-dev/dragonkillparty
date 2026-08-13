@@ -20,6 +20,11 @@
 # Fails loudly when pnpm is missing rather than skipping: a `make build` that silently shipped the
 # placeholder SPA would produce a binary that serves "web UI not yet built" to a guild. The one
 # sanctioned skip is the pre-scaffold state, where web/package.json does not exist at all.
+#
+# DKP_WEB_STAGE=0 builds web/dist and stops before staging. `make budget-bundle` is the only caller
+# that sets it, and the reason is the paragraph above: staging deletes the tracked placeholders, and
+# the bundle budget became a prerequisite of `make check` (issue #166), so without this every `make
+# check` would leave the tree dirty. The budget measures web/dist, so staging buys it nothing.
 
 set -euo pipefail
 
@@ -59,6 +64,13 @@ if [ -n "$maps" ]; then
 	die "vite emitted source maps — a .map leaks the unminified SPA source and must not ship:
 $(printf '%s\n' "$maps" | sed 's/^/  /')
 Set build.sourcemap: false in web/vite.config.ts."
+fi
+
+# The measure-only caller stops here: web/dist is built and verified, nothing tracked has moved. See
+# the header for why `make budget-bundle` wants that.
+if [ "${DKP_WEB_STAGE:-1}" = "0" ]; then
+	printf '  \033[32mSPA built\033[0m (DKP_WEB_STAGE=0 — not staged for go:embed)\n'
+	exit 0
 fi
 
 # Stage into the embed directory. Clear the previous real output first so a renamed hashed asset

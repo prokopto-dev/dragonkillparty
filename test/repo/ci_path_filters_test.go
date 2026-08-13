@@ -203,6 +203,61 @@ func TestCIFilters_GoFilter_SelectsEveryTestRepoInput(t *testing.T) {
 	}
 }
 
+// TestCIFilters_CodeFilter_SelectsTheWorkflowFiles closes issue #161.
+//
+// `.github/workflows/**` was in NO filter: not in *build, not in `go`, and not in `docs`, whose
+// `**/*.md` cannot match a .yml. A workflow-only PR therefore selected nothing at all, every test job
+// was skipped, ci-required counted the skips as success, and every suite below — each of which reads
+// a workflow file as its INPUT — silently did not run. Renaming a job out of ci-required's `needs:`
+// list, or out of a CONTRIBUTING.md citation, is exactly the change that ran none of the gates that
+// catch it. The fourth instance of the omission the filter block's own header warns about, after
+// scripts/**, .githooks/** and the web inputs of issue #94.
+//
+// Asserted against `code` AND NOT `go`, which is where the issue proposed it, because the rule the
+// filter block states decides it: a pattern belongs in `go` alone only while its reader still runs
+// under -short, and gate_cache_test.go, migrate_lint_test.go and this file's own
+// TestCIFilters_ClosureFilters_CoverTheirDependencies all skip there. Their input has to reach
+// `test / integration`, so it goes in the tier that does. `code` is nested inside `go`, so this is
+// strictly the stronger placement and TestCIFilters_CodeFilter_IsASubsetOfGo keeps it that way.
+func TestCIFilters_CodeFilter_SelectsTheWorkflowFiles(t *testing.T) {
+	t.Parallel()
+
+	patterns := pathFilterPatterns(t, readCIWorkflow(t), "code")
+
+	for _, input := range []struct{ path, reader string }{
+		{
+			".github/workflows/ci.yml",
+			"ci_required_test.go (every job reports into the gate), ci_path_filters_test.go (this " +
+				"block), ci_toolchain_test.go, gate_cache_test.go, migration_gates_test.go, " +
+				"migrate_lint_test.go, contributing_claims_test.go, docker_layer_cache_test.go",
+		},
+		{
+			".github/workflows/release.yml",
+			"release_gates_test.go, smoke_scripts_test.go, spa_pipeline_test.go, docker_layer_cache_test.go",
+		},
+		{".github/workflows/edge.yml", "smoke_scripts_test.go, docker_layer_cache_test.go"},
+		{".github/workflows/nightly-verify.yml", "ci_toolchain_test.go, release_gates_test.go"},
+		{".github/workflows/pages.yml", "mockup_gates_test.go"},
+	} {
+		t.Run(input.path, func(t *testing.T) {
+			t.Parallel()
+
+			// The input must still exist, or the row is protecting a file nobody has.
+			_, err := os.Stat(filepath.Join(repoRoot(t), filepath.FromSlash(input.path)))
+			require.NoErrorf(t, err,
+				"%s no longer exists, so this row is stale — move it to whatever replaced the workflow",
+				input.path)
+
+			require.Truef(t, selects(patterns, input.path),
+				"ci.yml's `code` path filter does not select %s, which %s reads. A workflow-only PR then "+
+					"skips `test / unit` and `test / integration`, ci-required counts the skips as "+
+					"success, and the suites that assert about this file do not run — including the ones "+
+					"that would catch a job renamed out of the gate (issue #161).",
+				input.path, input.reader)
+		})
+	}
+}
+
 // TestCIFilters_CodeFilter_IsASubsetOfGo is the safety argument for issue #159's split, in one
 // assertion.
 //

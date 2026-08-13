@@ -220,7 +220,7 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `build / binary` — uploads the artifact everything reuses | always | 165 s | required |
 | `build / image` — amd64, `--load`, first-boot smoke | **post-merge** (not a PR) | 60 s | required |
 | `test / e2e` — Playwright, sharded ×2, `--retries=0` | non-draft | 150 s | required |
-| `budget / bundle` — SPA initial route ≤ 250 KB gz | web changed | 10 s | required |
+| `budget / bundle` — builds the SPA, then measures the initial route ≤ 250 KB gz | web changed | 75 s | required |
 | `docs / build` — embed.FS link resolution, `dkp:exec` blocks | docs/go changed | 40 s | required |
 | `ci-required` | always | 5 s | **the only check in branch protection** |
 
@@ -236,6 +236,14 @@ the product's sources and the inputs only the *full* suite reads; the heavy suit
 the world because a mockup was refreshed. `pointmath` and `authz` are dependency closures, not
 judgement calls: `test/repo/ci_path_filters_test.go` recomputes each with `go list -deps` and fails
 if an import escapes its filter.
+
+**`.github/workflows/**` is in `code`, and until issue #161 it was in no filter at all.** A
+workflow-only PR therefore selected nothing, every test job was skipped, and `ci-required` counted
+the skips as success — so none of the dozen `test/repo` suites that read a workflow file ran,
+including the one that exists to prove this filter block is right. It sits in `code` rather than the
+wider `go`, where the issue proposed it, because the rule above cuts the other way for it: three of
+those suites skip under `-short`, so their input has to reach `test / integration` and not only
+`test / unit`.
 
 **`test / importer` is not in this table any more, and that is issue #159.** It ran one fixture, on
 PRs that touched the importer, for about ten minutes. `nightly-verify.yml` runs all six every night

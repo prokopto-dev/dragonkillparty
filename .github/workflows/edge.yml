@@ -68,12 +68,58 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- The Docker layer cache: THIS is the job that fills it (issue #163) --------------------
+      #
+      # scripts/release-image.sh asked for `--cache-from type=gha`, which cannot authenticate from a
+      # `run:` step — see that script's header. It reads BUILDX_CACHE_FROM/TO now, the same pair
+      # ci.yml's `build / image` sets, and the local backend those name is restored and saved here.
+      #
+      # NO `if:` ON THE WRITE, unlike ci.yml's split, and the trigger is the whole reason: this
+      # workflow runs on push to main and nothing else, so every run of it IS the main-branch run the
+      # doctrine says may write. release.yml is the reader — a tag build restores what main last left
+      # here and saves nothing, because a cache written under a tag ref is visible to no other run
+      # while still evicting the entries that are.
+      #
+      # THE KEY IS PER-ARCH. Two architectures share this recipe (three on the release path) and their
+      # builder stages differ, so one key would have each arch overwrite the last and every restore
+      # land on the wrong stages. It is also deliberately NOT under ci.yml's `<os>-<arch>-buildx-`
+      # prefix: that job's broadest restore-key would otherwise match these entries and try to warm a
+      # native amd64 `--load` build from a cross-compiled `--push` one.
+      #
+      # The key ends in the commit sha for the reason ci.yml's does — an exactly-hit key is immutable
+      # and actions/cache skips its save, so a key that did not roll would be written once and never
+      # refreshed — and carries the content hash in the middle so the first fallback lands on an entry
+      # whose Node and Go stages still apply. mode=max because deploy/Dockerfile's final stage is
+      # `FROM scratch` with three COPYs: mode=min exports the only cheap layer in the build, which is
+      # the second half of what #163 reported.
+      - name: Restore and save the Docker layer cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-${{ hashFiles('deploy/Dockerfile', 'web/pnpm-lock.yaml', 'go.sum') }}-
+            ${{ runner.os }}-${{ runner.arch }}-release-buildx-${{ matrix.arch }}-
+
       - name: Cross-compile and push the per-arch edge image
         env:
           ARCH: ${{ matrix.arch }}
+          BUILDX_CACHE_FROM: type=local,src=/tmp/.buildx-cache
+          # Exported to a DIFFERENT directory than it reads: buildkit's local exporter writes a whole
+          # cache and prunes nothing already there, so exporting over the restored copy would grow the
+          # entry every run. The step below swaps the fresh export into place for the post-job save.
+          BUILDX_CACHE_TO: type=local,dest=/tmp/.buildx-cache-new,mode=max
         run: make release-image
         # buildx build --file deploy/Dockerfile, pushed as $IMAGE:edge-$ARCH. No QEMU: Go
         # cross-compiles at native speed on this amd64 runner.
+      - name: Roll the layer cache forward
+        run: |
+          set -euo pipefail
+          # No `|| true`: if buildx exported nothing, the cache policy above is not happening and this
+          # says so, rather than archiving the restored copy under a fresh key forever.
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
   # ---------------------------------------------------------------------------------------------
   # Join the two per-arch images into the immutable manifest list and emit its digest. Writes ONLY
