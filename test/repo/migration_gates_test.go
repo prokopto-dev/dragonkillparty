@@ -85,10 +85,11 @@ func sealFixtureBase(tb testing.TB, tree string) {
 
 // requireOnlyMIG003 asserts the other migration rules stayed silent.
 //
-// A MIG003 fixture has to hold a MODIFIED migration, and the obvious way to write the modification
-// — appending an `ALTER TABLE` — also trips MIG001, which greps the whole file for DDL rather than
-// only the Down block. The MIG003 assertion would then pass on a run that went red for an unrelated
-// reason, which is the failure the whole `test/repo` package exists to make impossible.
+// A MIG003 fixture has to hold a MODIFIED migration, and a modification that also tripped MIG001 or
+// MIG002 would make the MIG003 assertion pass on a run that went red for an unrelated reason —
+// the failure the whole `test/repo` package exists to make impossible. (Appending an `ALTER TABLE`
+// was that trap while MIG001 read the whole file rather than the Down block; issue #137 fixed the
+// rule, and this stays because the class of trap did not go away.)
 func requireOnlyMIG003(t *testing.T, out string) {
 	t.Helper()
 
@@ -139,10 +140,9 @@ func runShippedLock(t *testing.T, tree string, args ...string) (output string, e
 // reason under test and not because of a backtick or a stray DDL keyword.
 //
 // tamperedMigration is what an edit to a shipped migration looks like: different bytes, therefore a
-// different hash, and nothing else wrong with it. Writing the edit as an appended `ALTER TABLE`
-// would be the natural choice and is a trap — MIG001 greps the whole file for `DROP`/`ALTER`, not
-// just the Down block, so the fixture would trip two rules and every MIG003 assertion below would
-// pass while proving nothing. The tests assert MIG001 and MIG002 stay silent for that reason.
+// different hash, and nothing else wrong with it. The tests assert MIG001 and MIG002 stay silent, so
+// that a fixture which tripped a second rule cannot make the MIG003 assertions pass while proving
+// nothing.
 const (
 	cleanMigration = `-- +goose Up
 CREATE TABLE "thing" ("id" text NOT NULL PRIMARY KEY) STRICT;
@@ -235,6 +235,117 @@ func TestRepoGates_DDLInDownBlock_FailsGate(t *testing.T) {
 	require.NotZero(t, code, "DDL in a Down block must fail the gates\n%s", out)
 	require.Contains(t, out, "MIG001",
 		"the gates went red, but not because of the forward-only rule\n%s", out)
+}
+
+// TestRepoGates_AtlasTableRebuild_InTheUpBlock_PassesMIG001 is the fixture whose absence was issue
+// #137, and it is deliberately driven by the REAL rebuild rather than by a hand-typed imitation.
+//
+// SQLite's ALTER TABLE cannot drop or retype a column, so any such change becomes the 12-step table
+// rebuild — and .claude/rules/migrations.md says in as many words to let Atlas generate it. What
+// Atlas generates, in the UP block, is:
+//
+//	DROP TABLE "ledger_batch";
+//	ALTER TABLE "new_ledger_batch" RENAME TO "ledger_batch";
+//
+// MIG001 read the whole file, so the first migration to take the documented, recommended path would
+// have failed `lint / repo` with a message saying its DDL was in a Down block when it was in the Up
+// block. The two readings available to its author are "the gate is broken" and "I must hand-write
+// the rebuild", and the second one is how a rebuild silently loses the ledger's append-only
+// triggers.
+//
+// The body comes from test/fixtures/migrations/rebuild, which internal/migrate APPLIES to a
+// populated ledger on every CI run. That is the point: the file that proves the rebuild pattern
+// works lives in a tree MIG001 does not scan, which is exactly why nobody had ever watched the gate
+// misfire on it. Reading it here means a change to what Atlas emits cannot drift away from the rule
+// that judges it.
+func TestRepoGates_AtlasTableRebuild_InTheUpBlock_PassesMIG001(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// From the first goose annotation onwards: the file as ATLAS emitted it, without the fixture
+	// commentary this repository wrote above it. That header explains the pragma and the
+	// transaction, quoting both in backticks — prose that belongs in test/fixtures and that MIG002
+	// would rightly fail in db/migrations-sqlite, where a backtick outside a string literal is the
+	// quoting sqlc cannot parse.
+	full := readRepoFile(t, "test/fixtures/migrations/rebuild/000002_ledger_batch_rebuild.sql")
+
+	start := strings.Index(full, "-- +goose ")
+	require.Positive(t, start, "the rebuild fixture carries no goose annotation")
+
+	rebuild := full[start:]
+
+	require.Contains(t, rebuild, "\nDROP TABLE ",
+		"the rebuild fixture no longer contains the Up-block DROP this test exists to protect")
+	require.Contains(t, rebuild, "\nALTER TABLE ",
+		"the rebuild fixture no longer contains the Up-block ALTER this test exists to protect")
+
+	writeMigration(t, tree, "000002_ledger_batch_rebuild.sql", rebuild)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.Zero(t, code, "Atlas's 12-step rebuild is the documented way to retype a column and must "+
+		"pass the gates\n%s", out)
+	require.NotContains(t, out, "MIG001",
+		"MIG001 fired on DDL in the UP block. The rule is about the DOWN block — a gate that fails "+
+			"the recommended path teaches people to hand-write a rebuild, which is how the ledger's "+
+			"append-only triggers get lost (issue #137)\n%s", out)
+}
+
+// TestRepoGates_BacktickInAStringLiteral_PassesMIG002 is the other half of the same defect class,
+// and it is the assertion that makes `make migration`'s refusal message true (issue #138).
+//
+// The generator refuses when a backtick sits inside a string literal, because rewriting it would
+// change the value db/schema.hcl asked for, and it offers the author two ways out: fix the
+// expression in the schema, or rewrite the identifiers in the file by hand. This is what the second
+// one produces — valid SQL, applies in goose, hashes cleanly — and MIG002 failed it, because it
+// failed on any backtick at all. So half the advice led into a dead end, discovered after the work.
+//
+// The must-fire twin is TestRepoGates_BacktickedMigration_FailsGate above: the identifier quoting
+// sqlc cannot parse still fails. A rule that stopped firing on that would satisfy this test too,
+// which is why the pair has to be read together.
+func TestRepoGates_BacktickInAStringLiteral_PassesMIG002(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeMigration(t, tree, "000001_init.sql",
+		"-- +goose Up\n"+
+			`CREATE TABLE "dkp_meta" ("key" text NOT NULL DEFAULT 'the `+"`value`"+` column') STRICT;`+"\n"+
+			"\n-- +goose Down\nSELECT RAISE(ABORT, 'DKP migrations are forward-only');\n")
+
+	out, code := runGateScript(t, script, tree)
+
+	require.Zero(t, code, "a backtick that is DATA inside a string literal must be landable: it is "+
+		"what `make migration` refuses on, and its own refusal tells the author to hand-fix the "+
+		"identifiers and keep it\n%s", out)
+	require.NotContains(t, out, "MIG002", "%s", out)
+}
+
+// TestRepoGates_BacktickBesideAStringLiteral_FailsMIG002 stops the narrowing above from becoming a
+// bypass.
+//
+// "The file contains a literal with a backtick in it" must not exempt the FILE — only that backtick.
+// A rule that took the easy reading would be defeated by adding one harmless literal to any
+// migration, which is a worse hole than the false positive it was fixing.
+func TestRepoGates_BacktickBesideAStringLiteral_FailsMIG002(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	writeMigration(t, tree, "000001_init.sql",
+		"-- +goose Up\n"+
+			"CREATE TABLE `dkp_meta` (\"key\" text NOT NULL DEFAULT 'the `value` column') STRICT;\n"+
+			"\n-- +goose Down\nSELECT RAISE(ABORT, 'DKP migrations are forward-only');\n")
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "an identifier quote is still an identifier quote when a literal on the "+
+		"same line also holds a backtick\n%s", out)
+	require.Contains(t, out, "MIG002", "%s", out)
 }
 
 // TestRepoGates_ModifiedShippedMigration_FailsGate proves MIG003 fires on an EDIT.

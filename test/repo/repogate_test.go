@@ -183,14 +183,33 @@ func TestRepoGates_WithoutTheGoToolchain_FailsClosed(t *testing.T) {
 //
 // So the script must invoke the engine, and must be short enough that nobody has hidden a rule in
 // it. The line budget is deliberately generous — it is a smell test, not a formatter.
+//
+// It must also invoke it as a COMPILED BINARY rather than through `go run` (issue #142). `go run`
+// exits 1 whatever the child exited with, which erases the engine's own distinction between "a rule
+// fired" (1) and "the gates could not run" (2), and it appends `exit status 1` to stderr inside the
+// failure block — where it reads as a crash in the tool rather than as a finding about the tree.
 func TestRepoGates_ScriptDelegatesToTheEngine(t *testing.T) {
 	t.Parallel()
 
 	body := readRepoFile(t, "scripts/repo-gates.sh")
 
-	require.Contains(t, body, "go -C \"$module_root\" run ./internal/repogate/cmd/repogate",
+	require.Contains(t, body, "build -o \"$build_dir/repogate\" ./internal/repogate/cmd/repogate",
 		"the gate script must delegate to the Go engine — that delegation is what makes the "+
 			"fixtures in this package tests of the rules rather than tests of a shell pipeline")
+	require.Contains(t, body, `env DKP_REPO_ROOT="$target" "$build_dir/repogate"`,
+		"the gate script must RUN the binary it built, with the tree under inspection")
+
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		require.NotContains(t, trimmed, "go run",
+			"the gates are invoked as a compiled binary, never through `go run`: it collapses the "+
+				"engine's exit code and prints `exit status 1` into the failure block (issue #142)\n  %s",
+			line)
+	}
 
 	var code int
 

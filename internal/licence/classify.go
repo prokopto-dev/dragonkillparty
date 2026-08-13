@@ -26,9 +26,18 @@ type Pattern struct {
 // a file to its first sentence. Matching the canonical MPL-2.0 §1.12 sentence verbatim cannot
 // over-reach. If a future MPL variant rewords it the strip stops matching and the gate fails closed
 // on MPL, which is the safe direction, and TestLicenceGate_AllowedLicence_Passes/mpl2 says so.
+//
+// THE QUOTE CHARACTERS ARE THE ONE EXCEPTION, and they are not a rewording. Mozilla publishes the
+// text with typographic quotation marks (U+201C/U+201D) and most projects vendor the ASCII
+// transcription, so the same canonical sentence arrives in two spellings that differ by two bytes:
+// github.com/hashicorp/golang-lru/v2 ships the straight form and github.com/hashicorp/hcl/v2 the
+// curly one. Reading only the straight form failed hcl as LIC001 — an MPL-2.0 module denied for
+// quoting its own section heading the way its author published it. A quote character carries no
+// licence meaning, so accepting both cannot admit anything: every word of the grant is still matched
+// verbatim.
 var mpl2SecondaryLicenseDefinition = regexp.MustCompile(
-	`"Secondary License" means either the GNU General Public License, Version 2\.0, the GNU ` +
-		`Lesser General Public License, Version 2\.1, the GNU Affero General Public License, ` +
+	`[\x{201C}"]Secondary License[\x{201D}"] means either the GNU General Public License, Version 2\.0, ` +
+		`the GNU Lesser General Public License, Version 2\.1, the GNU Affero General Public License, ` +
 		`Version 3\.0, or any later versions of those licenses\.`)
 
 // asciiSpace is the byte-wise whitespace class. ASCII only, deliberately: a dependency shipping a

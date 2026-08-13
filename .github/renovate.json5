@@ -91,6 +91,12 @@
     // until a human ticks the box. This is the mechanism that implements "pin River exactly" —
     // riversqlite is an early-preview job driver (risk R6), and modernc.org/sqlite is the entire
     // storage engine. A green CI run is not sufficient evidence for either.
+    //
+    // hashicorp/hcl is here for a different reason (ADR-0021). It is tooling-only and cannot reach
+    // the shipped binary, but it decides two things about the GATES: how internal/repogate/rules.hcl
+    // decodes into the rule catalogue, and what ENUM001 reads out of db/schema.hcl. A parser change
+    // moves what the repository enforces, and green fixtures are evidence about the shapes somebody
+    // already thought of.
     // ----------------------------------------------------------------------------------------
     {
       matchPackageNames: [
@@ -99,6 +105,7 @@
         "modernc.org/sqlite",
         "github.com/pressly/goose/**",
         "github.com/danielgtaylor/huma/**",
+        "github.com/hashicorp/hcl/**",
         "go",
         "node",
         "react",

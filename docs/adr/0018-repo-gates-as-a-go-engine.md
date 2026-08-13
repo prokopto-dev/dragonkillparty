@@ -1,6 +1,8 @@
 # ADR-0018 — Repository gates as a Go engine, not grep, HCL or `go/analysis`
 
 **Status:** accepted · **Date:** 2026-08-11 · **Deciders:** owner
+**Amended in part by [ADR-0021](0021-hcl-rule-catalogue-and-schema-parse.md):** option B's catalogue
+half was taken up once the dependency was approved. The rest of this record stands as written.
 
 ## Context and problem statement
 

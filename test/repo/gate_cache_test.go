@@ -429,9 +429,11 @@ var hermeticExecPackages = map[string]string{
 	"internal/store": "store_test.go re-execs its OWN test binary (os.Args[0]) to observe a " +
 		"subtest's failure output. The binary is content-addressed by the build, so the cache " +
 		"already tracks the only input that subprocess reads.",
-	"internal/migrate/shippedlock": "history.go and fixture_test.go drive `git` against a " +
+	"internal/migrate/lockmanifest": "history.go and fixture_test.go drive `git` against a " +
 		"repository the test creates in t.TempDir(). Nothing outside that temporary tree is read, " +
-		"and the tree is written by the test on every run.",
+		"and the tree is written by the test on every run. (It was internal/migrate/shippedlock " +
+		"until issue #173 made the manifest logic importable; the command that remains there spawns " +
+		"nothing and has no tests to cache.)",
 }
 
 // TestGoTestLanes_EveryPackageThatCanShellOut_IsInTheGateLane is the assertion the lane split rests

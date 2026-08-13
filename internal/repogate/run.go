@@ -40,6 +40,7 @@ func Run(root string, out io.Writer) error {
 
 	runASTRules(scan, rep)
 	runTextRules(scan, rep)
+	runMigrationRules(scan, rep)
 	runShippedLockRule(scan, rep)
 	runEnumRule(scan, rep)
 	runADRRule(abs, rep)

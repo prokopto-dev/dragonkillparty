@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Architectural gates and the licence firewall — the entry point `make lint-repo` runs.
 #
-# The RULES live in internal/repogate (issue #123). This file is the shim that points them at a
-# tree, and it is deliberately the whole of it: everything that decides whether a rule fires is Go,
-# unit-tested directly instead of only through a subprocess, and the negative fixtures in
-# test/repo/gates_test.go run through this script exactly as they did when the rules were greps.
+# The RULES live in internal/repogate (issue #123). This file is the shim that builds them and
+# points them at a tree, and it is deliberately the whole of it: the config-shaped rules are data in
+# internal/repogate/rules.hcl, everything that DECIDES is Go — unit-tested directly instead of only
+# through a subprocess — and the negative fixtures in test/repo/gates_test.go run through this
+# script exactly as they did when the rules were greps.
 #
 # The rule ids, so that a search for one lands somewhere useful:
 #
@@ -66,4 +67,27 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
-exec env DKP_REPO_ROOT="$target" go -C "$module_root" run ./internal/repogate/cmd/repogate
+# BUILD, THEN RUN — never `go run` (issue #142). `go run` is fine for a generator and wrong for a
+# gate, for two reasons that both land on the person reading a red check:
+#
+#   1. It collapses the exit code. Whatever the child exits with, `go run` exits 1, so a gate that
+#      failed and a gate that was invoked wrongly are indistinguishable — and the engine
+#      deliberately separates them (2 is "could not run", 1 is "a rule fired").
+#   2. It appends `exit status 1` to stderr, inside the failure block, after the explanation the
+#      gate just wrote. It reads like a crash in the tool rather than a finding about the tree.
+#
+# The binary goes to a temp directory rather than to a checked-in bin/: nothing has to keep it
+# fresh, and Go's build cache makes the rebuild about as cheap as the link `go run` did anyway.
+build_dir="$(mktemp -d)"
+trap 'rm -rf "$build_dir"' EXIT
+
+if ! go -C "$module_root" build -o "$build_dir/repogate" ./internal/repogate/cmd/repogate; then
+    printf '\033[31mFAIL\033[0m [GATE000] the gate engine did not compile, so no repository gate could run\n'
+    printf '\n\033[31mrepo gates failed\033[0m — see the rule ids above.\n'
+    exit 1
+fi
+
+status=0
+env DKP_REPO_ROOT="$target" "$build_dir/repogate" || status=$?
+
+exit "$status"

@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/migrate/sqlscan"
 )
 
 // committedMigrations is db/migrations-sqlite, relative to this package. A Go test's working
@@ -124,13 +126,13 @@ func TestRewrite_BacktickInStringLiteral_Refuses(t *testing.T) {
 
 			got, err := rewrite(tc.in)
 
-			require.ErrorIs(t, err, errBacktickInStringLiteral,
+			require.ErrorIs(t, err, sqlscan.ErrBacktickInStringLiteral,
 				"the rewrite would change what that literal MEANS; it must refuse")
 			require.Empty(t, got, "a refusal must produce no output at all")
 
-			var lit literalBacktick
+			var lit sqlscan.LiteralBacktick
 			require.ErrorAs(t, err, &lit)
-			require.Equal(t, tc.wantLine, lit.line, "the refusal must name the offending line")
+			require.Equal(t, tc.wantLine, lit.Line, "the refusal must name the offending line")
 		})
 	}
 }
@@ -234,14 +236,14 @@ func TestRewrite_MultilineStringLiteral_Refuses(t *testing.T) {
 
 			got, err := rewrite(tc.in)
 
-			require.ErrorIs(t, err, errBacktickInStringLiteral,
+			require.ErrorIs(t, err, sqlscan.ErrBacktickInStringLiteral,
 				"a backtick inside a multiline literal is data, and rewriting it changes the value")
 			require.Empty(t, got)
 
-			var lit literalBacktick
+			var lit sqlscan.LiteralBacktick
 			require.ErrorAs(t, err, &lit)
-			require.Equal(t, tc.wantLine, lit.line, "the refusal must name the line the backtick is on")
-			require.Equal(t, tc.wantOpenedAt, lit.openedAt,
+			require.Equal(t, tc.wantLine, lit.Line, "the refusal must name the line the backtick is on")
+			require.Equal(t, tc.wantOpenedAt, lit.OpenedAt,
 				"and the line the literal opened on, which is where the reader has to look")
 		})
 	}
@@ -399,7 +401,7 @@ func TestRewrite_AtlasDownBlock_IsReplaced(t *testing.T) {
 	require.NotContains(t, got, "`", "no backtick may reach the committed file")
 
 	require.True(t, strings.HasSuffix(got, downBlock), "the file must end with the forward-only block")
-	require.Equal(t, 1, strings.Count(got, gooseDownMarker), "exactly one Down marker")
+	require.Equal(t, 1, strings.Count(got, sqlscan.DownMarker), "exactly one Down marker")
 
 	require.Equal(t,
 		"-- +goose Up\n"+
@@ -565,7 +567,7 @@ func TestRun_Refusal_WritesNothing(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
 
 	err := run(path)
-	require.ErrorIs(t, err, errBacktickInStringLiteral)
+	require.ErrorIs(t, err, sqlscan.ErrBacktickInStringLiteral)
 
 	body, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
@@ -597,7 +599,7 @@ func TestRefusalMessage_CarriesThePhraseTheFixtureAssertsOn(t *testing.T) {
 
 	path := "db/migrations-sqlite/000005_add_thing.sql"
 
-	msg := refusalMessage(path, literalBacktick{line: 7, openedAt: 7, text: "  DEFAULT 'the `value` column'"})
+	msg := refusalMessage(path, sqlscan.LiteralBacktick{Line: 7, OpenedAt: 7, Text: "  DEFAULT 'the `value` column'"})
 
 	require.Contains(t, msg, "backtick inside a string literal")
 	require.Contains(t, msg, path+":7")
@@ -609,7 +611,7 @@ func TestRefusalMessage_CarriesThePhraseTheFixtureAssertsOn(t *testing.T) {
 
 	// The multiline case is the one where the line the reader is sent to is not the line the backtick
 	// is on, so the message has to say both.
-	multiline := refusalMessage(path, literalBacktick{line: 9, openedAt: 7, text: "`value`"})
+	multiline := refusalMessage(path, sqlscan.LiteralBacktick{Line: 9, OpenedAt: 7, Text: "`value`"})
 
 	require.Contains(t, multiline, path+":9")
 	require.Contains(t, multiline, "opened at line 7")
@@ -641,8 +643,8 @@ func TestDisplayPath_UnderTheWorkingDirectory_IsRelative(t *testing.T) {
 func TestUnwrap_IsErrBacktickInStringLiteral(t *testing.T) {
 	t.Parallel()
 
-	err := literalBacktick{line: 3, openedAt: 3, text: "x"}
+	err := sqlscan.LiteralBacktick{Line: 3, OpenedAt: 3, Text: "x"}
 
-	require.True(t, errors.Is(err, errBacktickInStringLiteral))
+	require.True(t, errors.Is(err, sqlscan.ErrBacktickInStringLiteral))
 	require.Contains(t, err.Error(), "line 3")
 }

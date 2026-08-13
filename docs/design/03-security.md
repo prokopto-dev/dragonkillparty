@@ -617,9 +617,11 @@ the scope (canonical §6).
 ### 7.2 SQL injection, by construction
 
 - **sqlc-generated parameterized queries only.** The generated code cannot concatenate.
-- CI grep gates: `.Query(`, `.Exec(`, `.QueryRow(` outside `internal/store`; `fmt.Sprintf` within
-  five lines of a SQL string literal; any string containing `SELECT `/`INSERT `/`UPDATE `/`DELETE `
-  outside `db/queries/`, `internal/store` and `internal/importer`.
+- CI repository gates (`internal/repogate`, ADR-0018): `SQL001` and `SQL002` fail `sql.Open`,
+  `.Query(`, `.QueryRow(` and `.Exec(` outside `internal/store`. They read the parsed Go rather than
+  the text, so an aliased import does not defeat them and a zero-argument `r.URL.Query()` is not a
+  false positive; `fmt.Sprintf` near a SQL string literal and a bare `SELECT `/`INSERT `/`UPDATE `/
+  `DELETE ` outside `db/queries/`, `internal/store` and `internal/importer` remain review rules.
 - **Dynamic sort and filter are allowlist maps**, never interpolation. Unknown sort key → `422`.
   Direction is a two-valued enum. A fuzz test throws hostile sort, filter and cursor values at every
   list endpoint.
@@ -1351,7 +1353,7 @@ Each box is a CI assertion or a `dkp doctor` check, not a manual review item.
 **Input and output**
 - [ ] Unknown request fields rejected; every array bounded; money as unquoted int64 centipoints;
       time plausibility window
-- [ ] SQL grep gates green; sort/filter allowlists; FTS5 escaping goldens; signed cursors
+- [ ] `SQL001`/`SQL002`/`SQL003` green; sort/filter allowlists; FTS5 escaping goldens; signed cursors
 - [ ] Importer MySQL: `LOCAL INFILE` disabled, `allowAllFiles=false`, read-only statement wrapper
 - [ ] `internal/richtext` is the only HTML producer (test); `body_md` + `body_html` both stored;
       re-render migration path exists

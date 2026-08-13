@@ -1,4 +1,4 @@
-package main
+package lockmanifest
 
 import (
 	"os"

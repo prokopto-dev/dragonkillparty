@@ -106,8 +106,8 @@ scripts/repo-gates.sh
 - `ci-required` is a single job with `if: always()` that reads `needs.*.result`, treats `skipped` as
   success, **and** fails when a job that the path filter should have selected reports `skipped`.
   Branch protection requiring exactly `ci-required` and `DCO` is then sufficient.
-- `scripts/repo-gates.sh` asserts every `uses:` in `.github/workflows/**` is pinned to a 40-character
-  commit SHA. A fixture workflow containing `actions/checkout@v4` makes the script exit non-zero, and
+- `scripts/repo-gates.sh` (the entry point for `internal/repogate`, ADR-0018) asserts every `uses:`
+  in `.github/workflows/**` is pinned to a 40-character commit SHA. A fixture workflow containing `actions/checkout@v4` makes the script exit non-zero, and
   a test asserts that.
 - `CLAUDE.md` contains the line `@AGENTS.md` and does not restate the four laws. A test asserts the
   four-laws heading appears in exactly one tracked file.
@@ -138,6 +138,8 @@ scripts/repo-gates.sh          # extend
   `busy_timeout=10000`, `synchronous=1` (NORMAL), `foreign_keys=1`, and — on the write pool only —
   `_txlock=immediate` and `db.Stats().MaxOpenConnections == 1`. The read pool has `max(4, NumCPU)`.
 - `scripts/repo-gates.sh` bans `sql.Open`, `.Query(`, `.Exec(` and `total(` outside `internal/store`.
+  The script is the entry point; the rules are `internal/repogate` (ADR-0018) — `SQL001`/`SQL002`
+  read the parsed Go, `MONEY002` is a text rule declared in `internal/repogate/rules.hcl`.
   `TestRepoGates_MisplacedSQLOpen_FailsGate` writes a tainted tree into `t.TempDir()`, runs the
   script against it, and requires a non-zero exit. The gate is tested, not trusted.
 - `store.Tx(ctx, fn)` rolls back on any returned error and on panic, and re-panics. A test asserts a

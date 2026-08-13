@@ -264,6 +264,40 @@ func TestClassify_MPL2_IsNotDeniedByItsOwnCrossReference(t *testing.T) {
 	require.Equal(t, "MPL-2.0", c.Verdict(), "%+v", c)
 }
 
+// TestClassify_MPL2_WithTypographicQuotes_IsNotDenied is the same rule against the OTHER spelling of
+// the same sentence, and it is the one that was wrong.
+//
+// Mozilla publishes MPL-2.0 with typographic quotation marks; most projects vendor the ASCII
+// transcription. Both are the canonical text — they differ by two bytes — and the §1.12 strip read
+// only the straight form. So github.com/hashicorp/golang-lru/v2 (straight) passed and
+// github.com/hashicorp/hcl/v2 (curly) was reported as LIC001 under "AGPL LGPL GPL": an MPL-2.0
+// library denied for quoting its own section heading the way its author wrote it.
+//
+// A false LIC001 is not a safe failure in practice. It arrives as "this dependency is copyleft",
+// about a dependency that is not, and the two available responses are to drop a correct dependency
+// or to add an exception to a gate that did not need one.
+func TestClassify_MPL2_WithTypographicQuotes_IsNotDenied(t *testing.T) {
+	t.Parallel()
+
+	const mpl2 = `Mozilla Public License, version 2.0
+
+1. Definitions
+
+1.12. ` + "“" + `Secondary License` + "”" + `
+
+      means either the GNU General Public License, Version 2.0, the GNU Lesser
+      General Public License, Version 2.1, the GNU Affero General Public
+      License, Version 3.0, or any later versions of those licenses.
+`
+
+	c := licence.Classify(mpl2)
+
+	require.Empty(t, c.Denied,
+		"the §1.12 strip must read both quote spellings of the canonical sentence: the curly form is "+
+			"what Mozilla publishes, and hashicorp/hcl ships it\n%+v", c)
+	require.Equal(t, "MPL-2.0", c.Verdict(), "%+v", c)
+}
+
 // TestNormalise_SecondaryLicenceStrip_DoesNotSwallowAGrantAfterIt is the other half of rule 2, and
 // the regression that made the strip an exact literal.
 //

@@ -7,30 +7,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// scanSchema runs the ENUM001 state machine over a schema body with the given declared markers, and
-// returns what it reported.
+// scanSchema runs ENUM001 over a schema body with the given declared markers, and returns what it
+// reported.
 //
-// Calling the scanner directly is the point of this file. test/repo's fixture drives the same logic
+// Calling the rule directly is the point of this file. test/repo's fixture drives the same logic
 // through `bash scripts/repo-gates.sh` against a t.TempDir() tree — one subprocess and one
 // filesystem per case — which is why the shell version had ONE fixture carrying sixteen interleaved
 // cases rather than sixteen tests. Both are worth having: that one proves the gate fires end to
-// end, these prove each transition of the machine on its own, and a failure here names the
-// transition instead of the tree.
+// end, these prove each case on its own, and a failure here names the case instead of the tree.
+//
+// The cases below are the ones the awk scanner was specified by (issue #116), and they are the
+// specification of the HCL parse that replaced it: what a rule DECIDES is not allowed to change
+// when how it decides does.
 func scanSchema(t *testing.T, body string, declared ...string) []string {
 	t.Helper()
 
-	scan := &enumScan{declared: make(map[string]bool)}
+	markers := make(map[string]bool, len(declared))
 	for _, marker := range declared {
-		scan.declared[marker] = true
+		markers[marker] = true
 	}
 
-	for i, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
-		scan.line(i+1, line)
-	}
-
-	scan.finish()
-
-	return scan.hits
+	return scanEnums(strings.Split(strings.TrimSuffix(body, "\n"), "\n"), markers)
 }
 
 // TestEnumScan_Vocabularies_AreReportedAndBooleansAreNot walks every shape the rule has to tell
@@ -87,11 +84,18 @@ func TestEnumScan_Vocabularies_AreReportedAndBooleansAreNot(t *testing.T) {
 			why:  "no catalogue could generate a boolean",
 		},
 		{
-			name: "a boolean whose trailing comment quotes two enum values",
-			expr: "expr = \"retry IN (0, 1)\" -- never 'draft', never 'open'",
+			name: "a boolean whose SQL comment quotes two enum values",
+			expr: "expr = \"retry IN (0, 1) -- never 'draft', never 'open'\"",
 			want: false,
 			why: "comments are STRIPPED, not merely tolerated — otherwise every documented CHECK " +
 				"reads as a vocabulary",
+		},
+		{
+			name: "a boolean whose HCL comment quotes two enum values",
+			expr: "expr = \"retry IN (0, 1)\" // never 'draft', never 'open'",
+			want: false,
+			why: "the same case one level out: a comment ABOUT the expression is not part of it, and " +
+				"the parse is what makes that free rather than a shape to model",
 		},
 		{
 			name: "a shape check that quotes one value",

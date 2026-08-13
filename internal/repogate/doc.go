@@ -1,10 +1,15 @@
 // Package repogate is the repository's architectural gate engine: the rules `make lint-repo` runs,
 // and the fences AGENTS.md's architectural laws and the AGPL firewall rest on.
 //
-// It is repo tooling, not product surface — stdlib only, and deliberately NOT a `dkp` subcommand,
-// because nothing an operator runs should carry the gates and cmd/dkp stays the only shipped
-// binary. TestRepoGates_IsNotLinkedIntoTheBinary asserts the binary's package graph never reaches
-// here, the same way TestLicence_IsNotLinkedIntoTheBinary does for internal/licence.
+// It is repo tooling, not product surface — deliberately NOT a `dkp` subcommand, because nothing an
+// operator runs should carry the gates and cmd/dkp stays the only shipped binary.
+// TestRepoGates_IsNotLinkedIntoTheBinary asserts the binary's package graph never reaches here, the
+// same way TestLicence_IsNotLinkedIntoTheBinary does for internal/licence.
+//
+// It reads `hashicorp/hcl/v2` (ADR-0021) for two things and nothing else: decoding rules.hcl, and
+// parsing db/schema.hcl for ENUM001. The dependency is tooling-only — it is not in the shipped
+// binary's package graph, and `make third-party-notices` produces no line for it, because attribution
+// is owed for what the binary links.
 //
 // # The rules
 //

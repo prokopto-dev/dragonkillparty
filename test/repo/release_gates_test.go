@@ -229,10 +229,12 @@ func TestReleaseWorkflow_PrepareVerifiesShippedLock(t *testing.T) {
 		"`make release-shipped-lock` must run the manifest check with --complete; plain `verify` is "+
 			"the per-PR gate and would pass a release whose manifest was never sealed")
 
-	// The manifest check is Go since issue #129. The flag has to be REACHED as well as passed:
+	// The manifest check is Go since issue #129, and a library the gate engine imports since #173 —
+	// so the argument parsing lives in internal/migrate/lockmanifest and the command is a wrapper.
+	// The flag has to be REACHED as well as passed:
 	// TestShippedLock_ReleaseMode_RequiresEveryMigrationBeSealed proves the completeness assertion
 	// fires, and this proves the release target's argument is the one that reaches it.
-	cmd := readRepoFile(t, "internal/migrate/shippedlock/main.go")
+	cmd := readRepoFile(t, "internal/migrate/lockmanifest/lockmanifest.go")
 	require.Contains(t, cmd, `args[1] == "--complete"`,
 		"the shipped-lock command must honour --complete; without it the flag is cosmetic and the "+
 			"release gate is a laundered no-op")
