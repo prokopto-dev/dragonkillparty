@@ -231,11 +231,15 @@ trigger is a named guild in an issue, not a maintainer's guess.
 - ✓ Determinism hash test (P8), and the cache-versus-fold equality (P3) at guild scale under
   `make test-perf` rather than at 200 checks — a fold of 527,164 entries is not a property-test-sized
   operation.
+- ✓ Ledger replay over a 10⁵-entry synthetic ledger — `make verify-ledger` builds `dkp`, seeds the
+  full `seed.Perf` profile and replays all 527,164 entries against both hash chains and
+  `balance_snapshot`, nightly as `replay / seed.Perf`. Nightly rather than per push for the same
+  reason as the line above it: the scale is ninety seconds of seeding, while `internal/ledger`'s
+  perf suite runs the same `ledger.Verify` over an eight-raid ledger on every push, so the path
+  cannot rot between nightlies.
 - Properties P1–P12 at 200 checks per PR, 20k nightly. **P1, P2, P5 and P8 exist**; the rest arrive
   with the strategies and subsystems they constrain — P4 with the bid FSM, P6/P7/P9 with `cap`,
   `start_points` and the decay family, P10 with attendance in Phase 4.
-- Ledger replay over a 10⁵-entry synthetic ledger — the dataset exists (item 11), the replay does
-  not (item 9).
 - Decay idempotency across DST and month boundaries. The trap is treating a cadence period as a
   duration rather than a guild-local label; `.claude/rules/decay-and-jobs.md` §2.
 - Per-strategy golden `BatchProposal` files — one exists, twelve follow their strategies.
