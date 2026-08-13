@@ -114,7 +114,20 @@ lifts each directive onto the element it repeats (`<tr data-sc-for="…" data-sc
 valid HTML anywhere, then asserts no `<sc-*>` element survives inside table context — and finally
 hands the finished page to a real HTML5 tree builder and refuses it if any of the mockups' own
 elements came back with fewer children than the markup gave them. That last check is what catches the
-same failure arriving through `<x-import>` or `<helmet>`, which the lift does not touch.
+same failure arriving through `<x-import>` or `<helmet>`.
+
+`<x-import>` has an attribute form of its own for that case — `data-sc-import="Name"` plus one
+`data-sc-prop-*` per prop — and a single-child `<x-import>` **inside table context** is lifted onto
+its child the same way a directive is. Only there: everywhere else the element form is what the
+mockups are authored in and what gets published, unchanged. `<helmet>` has no attribute form, since
+the runtime hoists its contents into `<head>` by tag name.
+
+**The fix for a refusal is always in the harness, never in the vendored file.** These files are
+byte-exact against the export and are not edited to work around a build failure. A block the build
+refuses is one with no attribute form to lift onto, so the change is a new form in
+[`harness/mockup-runtime.js`](harness/mockup-runtime.js) and a case beside the others in
+[`internal/mockup/publish.go`](../../../internal/mockup/publish.go)'s `liftOnto`. The failure message
+says so, with both file names in it.
 
 ### Nothing here is indexable
 
