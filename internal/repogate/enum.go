@@ -288,7 +288,7 @@ func checkFindings(lines []string, regions []region) (found []finding) {
 	file, diags := hclsyntax.ParseConfig(src, enumSchemaRel, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
 		return []finding{{
-			diags[0].Subject.Start.Line,
+			diagLine(diags[0]),
 			"the schema does not parse, so the string-enum CHECK scan did not run — this is a gate " +
 				"failure, not a pass: " + diags[0].Summary + ": " + diags[0].Detail,
 		}}
@@ -322,6 +322,20 @@ func checkFindings(lines []string, regions []region) (found []finding) {
 	}
 
 	return found
+}
+
+// diagLine is the line a diagnostic points at, or 1 when it points at nothing.
+//
+// `Subject` is a POINTER and hcl leaves it nil for a diagnostic about the file as a whole, so
+// reading through it is a panic waiting for the one input this branch exists to handle. A gate that
+// crashes on an unparseable schema and one that passes it are the same outcome to a CI log: no rule
+// id, no line, nothing to fix.
+func diagLine(d *hcl.Diagnostic) int {
+	if d.Subject == nil {
+		return 1
+	}
+
+	return d.Subject.Start.Line
 }
 
 // checkBlocks returns every `check` block in the file, at any depth.

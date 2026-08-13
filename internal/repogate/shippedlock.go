@@ -67,22 +67,22 @@ func runShippedLockRule(s *scanner, rep *report) {
 	var out bytes.Buffer
 
 	err := lockmanifest.Verify(s.root, os.Getenv("DKP_SHIPPED_LOCK_BASE_REF"), false, &out)
-	report := strings.TrimRight(out.String(), "\n")
+	found := strings.TrimRight(out.String(), "\n")
 
 	switch {
 	case err == nil:
-		rep.print(report)
+		rep.print(found)
 
 	case errors.Is(err, lockmanifest.ErrDisagrees):
 		rep.violation("MIG003",
 			"a migration listed in "+shippedLockRel+" was modified or deleted",
-			[]string{report})
+			[]string{found})
 
 	default:
 		// A hash gate that cannot hash must not report green. It also must not claim a migration was
 		// edited: the tree may be untouched and the fault entirely in the checkout.
 		rep.violation("MIG003",
 			shippedLockRel+" could not be checked, so the frozen-migration rule did not run",
-			[]string{strings.TrimSpace(report + "\n" + err.Error())})
+			[]string{strings.TrimSpace(found + "\n" + err.Error())})
 	}
 }
