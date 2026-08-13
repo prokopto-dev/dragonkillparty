@@ -166,3 +166,92 @@ func TestTx_UsesTheWritePool(t *testing.T) {
 	})
 	require.NoError(t, err)
 }
+
+// TestReadTx_ConcurrentCommit_IsNotVisibleInTheSnapshot is the property ReadTx exists for, and the
+// one Q() cannot provide.
+//
+// Inside a read transaction, every statement must observe the database as it was when the first one
+// ran. A job that reads several things and then compares them against each other depends on that
+// absolutely: through Q() each statement gets its own connection and its own view, so the reads are
+// individually right and the comparison between them is wrong. `dkp verify-ledger` is the caller
+// that found this — a batch committing between its batch walk and its chain-head read made it report
+// corruption on a healthy ledger (PR #211 review).
+//
+// The reads go through the callback's Queries, which is the ONLY handle bound to the transaction.
+// A query issued against s.read instead would take a different connection out of the pool and see
+// the committed row, which is a true fact about the pool and no evidence at all about the snapshot.
+//
+// The write lands through Tx on the write pool while the read transaction is open, which is the
+// second half of the claim: in WAL a reader does not block the writer, so this test would hang
+// rather than fail if that were ever untrue.
+func TestReadTx_ConcurrentCommit_IsNotVisibleInTheSnapshot(t *testing.T) {
+	t.Parallel()
+
+	s := NewDB(t)
+
+	const key = "snapshot_probe"
+
+	require.NoError(t, s.SetMetaValue(t.Context(), key, "before", 1))
+
+	err := s.ReadTx(t.Context(), func(ctx context.Context, q Queries) error {
+		// The first statement is what establishes the snapshot — BEGIN is deferred on the read pool,
+		// so a transaction that had not read yet would have nothing pinned and this test would pass
+		// for the wrong reason.
+		first, err := q.GetMetaValue(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, "before", first, "the snapshot opens on the committed state")
+
+		require.NoError(t, s.SetMetaValue(t.Context(), key, "after", 2),
+			"a writer must not be blocked by an open read transaction in WAL")
+
+		second, err := q.GetMetaValue(ctx, key)
+		require.NoError(t, err)
+		require.Equal(t, "before", second,
+			"a value committed after the snapshot opened must not appear inside it — this is exactly "+
+				"the read-your-neighbour's-write that makes a multi-read job compare two different "+
+				"databases")
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	// And the snapshot is released with the transaction: a fresh read now sees the new value, so the
+	// isolation above was a snapshot and not a stuck connection.
+	after, err := s.MetaValue(t.Context(), key)
+	require.NoError(t, err)
+	require.Equal(t, "after", after, "the write was real and is visible once the snapshot ends")
+}
+
+// TestReadTx_UsesTheReadPool is the law-2 plumbing assertion its write-side twin above makes: a
+// replay that took the single write connection for its duration would queue every raid-night write
+// behind a report (.claude/rules/store-and-sql.md).
+func TestReadTx_UsesTheReadPool(t *testing.T) {
+	t.Parallel()
+
+	s := NewDB(t)
+
+	err := s.ReadTx(t.Context(), func(_ context.Context, _ Queries) error {
+		require.Equal(t, 1, s.read.Stats().InUse, "the transaction must hold a read-pool connection")
+		require.Zero(t, s.write.Stats().InUse, "the transaction must not touch the write pool")
+
+		return nil
+	})
+	require.NoError(t, err)
+}
+
+// TestReadTx_CallbackError_IsWrappedAndTheSnapshotIsReleased covers the error path: a read
+// transaction has nothing to commit, so the only thing that can leak is the connection and the WAL
+// snapshot it pins.
+func TestReadTx_CallbackError_IsWrappedAndTheSnapshotIsReleased(t *testing.T) {
+	t.Parallel()
+
+	s := NewDB(t)
+
+	err := s.ReadTx(t.Context(), func(_ context.Context, _ Queries) error { return errBoom })
+	require.ErrorIs(t, err, errBoom)
+
+	require.Zero(t, s.read.Stats().InUse, "the failed transaction released its connection")
+
+	// And the pool still works, which is what a leaked snapshot would eventually stop being true.
+	require.NoError(t, s.ReadTx(t.Context(), func(_ context.Context, _ Queries) error { return nil }))
+}

@@ -121,7 +121,7 @@ subscribed and which were denied.
 
 | Symptom | What it means | Do |
 |---|---|---|
-| A member's balance disagrees with their statement | The cached balance drifted from the log | Run `dkp verify-ledger`. This is a **bug in this software**, not data loss: the log is intact and the cache is derived. `--rebuild` recomputes it. Please report the drift. |
+| A member's balance disagrees with their statement | The cached balance drifted from the log | Run `dkp verify-ledger`. This is a **bug in this software**, not data loss: the log is intact and the cache is derived from it. Report the drift with the command's output — the repair (`--rebuild`) is [#209](https://github.com/prokopto-dev/dragonkillparty/issues/209) and is not implemented yet. |
 | A tick credited nobody | The dump parsed but every name was unresolved | Check the reconciliation queue. Nothing is dropped. |
 | A tick credited people twice | Two officers uploaded dumps whose sequence and contents both differed | Void the duplicates. Ticks void; they never delete. |
 | Attendance dropped with no missed raids | The rolling window moved | Compare `as_of_day` between the two figures. |

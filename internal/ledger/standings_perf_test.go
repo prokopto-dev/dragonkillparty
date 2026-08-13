@@ -1,6 +1,8 @@
 package ledger_test
 
 import (
+	"context"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"slices"
@@ -185,6 +187,14 @@ func TestPerf_StandingsOverASeededLedger_MeetsItsBudgets(t *testing.T) {
 
 	t.Run("a full replay reproduces balance_snapshot exactly", func(t *testing.T) {
 		requireReplayReproducesSnapshot(t, seeded, profile, planned)
+	})
+
+	// On the UNCOUNTED handle, like the replay above it and for the same reason: a full verification
+	// issues one statement per batch plus one per page, which is ~41,000 at the full profile, and
+	// store.Counter retains the SQL text of every one. The counted handle exists to measure the
+	// standings read and must go on seeing only that.
+	t.Run("dkp verify-ledger is clean over the whole seeded ledger", func(t *testing.T) {
+		requireVerifyLedgerIsClean(t, seeded, profile, planned)
 	})
 
 	t.Run("the standings read meets its p99 on SD-card-class storage", func(t *testing.T) {
@@ -394,6 +404,63 @@ func requireReplayReproducesSnapshot(
 			"cached as_of_seq for %s kind %q must be the last seq that touched it",
 			k.accountID, k.balanceKind)
 	}
+}
+
+// requireVerifyLedgerIsClean runs the PRODUCT'S verifier — the engine behind `dkp verify-ledger`
+// (issue #198) — over the whole seeded ledger and requires it to find nothing.
+//
+// It is deliberately not a replacement for requireReplayReproducesSnapshot above, and the difference
+// is the point of having both. That one folds the entries with its own hand-written scan and its own
+// map, so it is an INDEPENDENT second opinion about the cache; this one runs the code an operator
+// runs, over the same rows, and so also covers the two hash chains, the dkp_meta heads and the
+// per-batch summary columns, none of which a fold can see. Two implementations agreeing about the
+// balances, and one of them additionally attesting the log they came from, is a stronger statement
+// than either alone — and if they ever disagree, one of them is the bug.
+//
+// This is also the acceptance criterion of issue #198 executed at its real scale: `make test` runs
+// it at eight raids on every PR, `make test-perf` and nightly-verify.yml's `replay / seed.Perf` job
+// run it at 3,400, over rows that ledger.Service.Commit wrote through the invariant engine, the seq
+// allocator and the hash chain.
+//
+// The counts are asserted, not just the verdict. A verifier that read nothing reports clean too, and
+// "clean" is exactly the word that would hide it.
+func requireVerifyLedgerIsClean(
+	tb testing.TB, s *store.Store, profile seed.Profile, planned seed.Counts,
+) {
+	tb.Helper()
+
+	// Through store.ReadTx, which is how the command runs it: one consistent snapshot for the whole
+	// replay. Nothing writes to this database while the subtest runs, so isolation buys nothing here
+	// — what it buys is that the path under test is the path that ships.
+	var report ledger.Report
+
+	require.NoError(tb, s.ReadTx(tb.Context(), func(ctx context.Context, q store.Queries) error {
+		var err error
+
+		report, err = ledger.Verify(ctx, q, ledger.VerifyOptions{})
+
+		return err
+	}), "the replay must be able to read the seeded database")
+
+	require.True(tb, report.Clean(),
+		"a ledger written entirely by ledger.Service.Commit must verify clean; %d finding(s):\n%v",
+		report.FindingCount, report.Findings)
+
+	require.Equal(tb, int64(planned.Batches), report.Batches(),
+		"the replay walked every batch the profile planned")
+	require.Equal(tb, int64(planned.Entries), report.Entries(),
+		"the replay folded every entry the profile planned")
+	require.Positive(tb, report.Snapshots(), "the replay compared the cached balances")
+	require.Equal(tb, int64(planned.Batches), report.Audit.Rows,
+		"the commit path writes one audit row per batch, so the audit chain is the same length")
+
+	// The pool the profile seeded, and a chain head to show for it. The head is what a published
+	// anchor will attest (docs/design/01-domain-model.md §9.6); today it is evidence that the walk
+	// reached the end of the chain rather than stopping quietly at a page boundary.
+	require.Len(tb, report.Pools, 1)
+	require.Equal(tb, profile.PoolID, report.Pools[0].PoolID)
+	require.Equal(tb, int64(planned.Batches), report.Pools[0].HeadSeq)
+	require.Len(tb, report.Pools[0].Head, 2*sha256.Size, "the pool head is a hex SHA-256")
 }
 
 // requireLatencyBudget times both arms and holds the cache arm to V5's 150 ms p99 on SD-card-class

@@ -1084,7 +1084,11 @@ Notes that matter:
 ## 9. The ledger
 
 The only source of truth for points. Every other points-bearing table is either a **fact** (what
-happened) or a **cache** (droppable). A balance is a `SUM`.
+happened) or a **cache** (derived, and rebuildable from the log). A balance is a `SUM`.
+
+Rebuildable is not the same as droppable: `balance_snapshot` is **load-bearing**
+([ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md)), so losing it is a rebuild rather than
+a slower page. §9.5 has the measurement.
 
 ### 9.1 DDL
 
@@ -1260,9 +1264,16 @@ In exchange, `/standings` for 200 members is **one indexed scan** joined to the 
 watermark, no delta query, no async lag, and no "the page was stale for 30 seconds after the raid"
 bug report.
 
-**It is still a cache and is treated as one.** `dkp verify-ledger` — a nightly River job, plus CI
-against a synthetic 10⁵-entry ledger — recomputes every row from `seq = 0` and asserts equality;
-drift raises a visible admin alert, and `dkp verify-ledger --rebuild` truncates and recomputes.
+**It is still a cache and is treated as one — but it is load-bearing, not droppable**
+([ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md), measured over 527,164 entries: 13 pages
+against the cache, 10,412 against the definitional SUM). The log stays the only source of truth and a
+dispute is still settled by `BalanceAsOfSeq`; what the measurement removed is the *fallback*. There
+is no honest path that serves this page from the log, so losing the cache is a **rebuild** and the
+job below is a correctness dependency rather than hygiene.
+
+`dkp verify-ledger` — a nightly job, plus CI against a seeded ledger on every PR — recomputes every
+row from `seq = 0` and asserts equality; drift raises a visible admin alert, and
+`dkp verify-ledger --rebuild` truncates and recomputes.
 
 The distinguishing property versus EQdkp is **not** "we have no cache". It is that the cache is
 derived from an *immutable* log, so rebuilding is total and cheap and drift is *detectable*.

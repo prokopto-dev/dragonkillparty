@@ -121,6 +121,15 @@ func TestCIJobs_RunningGoTargets_DeclareTheGoToolchain(t *testing.T) {
 		},
 		{
 			workflow: ".github/workflows/nightly-verify.yml",
+			job:      "replay-ledger:",
+			why: "runs `make verify-ledger` (issue #198), which compiles cmd/dkp and runs the binary " +
+				"to seed and replay a 520k-entry ledger. Nothing else in the job needs a toolchain — " +
+				"no SPA, no Python — so `go` is the whole declaration, and without it the job would " +
+				"build the product on whatever compiler the runner image happened to ship",
+			want: map[string]string{"go": "true"},
+		},
+		{
+			workflow: ".github/workflows/nightly-verify.yml",
 			job:      "importer:",
 			why: "runs `make test-importer`, a Go test binary driving testcontainers once Phase 5 fills " +
 				"the stub. It was `test / importer` in ci.yml until issue #159 moved it here",

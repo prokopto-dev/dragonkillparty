@@ -124,7 +124,7 @@ Three properties fall out of that ordering:
 
 | Read | How |
 |---|---|
-| A balance | `SUM(amount)` over the covering index on entries, bounded by `seq`. The current balance comes from `balance_snapshot`, which is a droppable cache verified nightly. |
+| A balance | `SUM(amount)` over the covering index on entries, bounded by `seq`. The current balance comes from `balance_snapshot`, a cache verified nightly — and **load-bearing, not droppable** ([ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md)): the log is still the only source of truth, but nothing serves the standings page from it in under 22 seconds. |
 | Standings | One indexed scan of `balance_snapshot`, one of `attendance_rollup`, one roster join, one count. Four statements, and there is a test that says so. |
 | An attendance percentage | The dated rollup row, so the number shown is the number a tie-break used |
 | A statement | The entry index scanned backwards with a running total |

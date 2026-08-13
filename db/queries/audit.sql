@@ -48,3 +48,25 @@ INSERT INTO audit_log (
     ?, ?, ?, ?, ?, ?, ?, ?,
     ?, ?, ?, ?
 );
+
+-- ListAuditRowsAfterSeq is one page of the audit log in seq order, for `dkp verify-ledger` (Phase 1,
+-- issue #198). It is the FIRST read of this table, and it is not the officer-facing forensic view
+-- the header above defers to Phase 2: it is the chain verifier, it selects no PII the write path did
+-- not already put in the row, and its only caller is a CLI command an operator runs against their
+-- own database. The Phase 2 route still needs `audit.read` and still does not exist.
+--
+-- Every column the audit hash covers, plus the two chain columns: the verifier recomputes
+-- SHA-256(prev_hash || canonical_json(row without hash)) and compares it to what is stored, so a
+-- projection missing a column would be a hash computed over a row that is not the one on disk.
+--
+-- Keyset, `seq > ?` seeking ux_audit_seq, for the reason the ledger replay reads are keyset: an
+-- instance-wide log has no bound, and a :many over all of it is the whole audit log in memory.
+-- Start at 0.
+
+-- name: ListAuditRowsAfterSeq :many
+SELECT id, seq, at, actor_kind, actor_label, action, resource_kind, resource_id,
+       outcome, ledger_batch_id, prev_hash, hash
+FROM audit_log
+WHERE seq > ?
+ORDER BY seq
+LIMIT ?;

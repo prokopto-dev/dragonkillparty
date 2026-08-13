@@ -123,12 +123,15 @@ so the snippet gate skips them; unfence them to `sql` when the table exists.
 
 ## Additive upsert — `balance_snapshot` (Phase 0 PR 9, live in `db/queries/ledger.sql`)
 
-The snapshot is a droppable cache, maintained synchronously in the same transaction as the write. It
-is upserted **additively**: the caller passes this batch's per-account delta (the SUM and COUNT of just
-its entries) and the running total accumulates. The primary key is `(pool_id, account_id, balance_kind)`
-— the same order the `WITHOUT ROWID` table is built on — and the conflict target matches it exactly.
-`entry_count` is carried alongside `amount_cp` (per the domain model) so a nightly drift check has both
-a sum and a count to compare against the fold.
+The snapshot is a cache, maintained synchronously in the same transaction as the write, and it is
+**load-bearing rather than droppable**
+([ADR-0023](../docs/adr/0023-balance-snapshot-is-load-bearing.md)): the log stays the only source of
+truth, but nothing serves the standings page from it in under 22 seconds, so losing this table is a
+rebuild. It is upserted **additively**: the caller passes this batch's per-account delta (the SUM and
+COUNT of just its entries) and the running total accumulates. The primary key is
+`(pool_id, account_id, balance_kind)` — the same order the `WITHOUT ROWID` table is built on — and the
+conflict target matches it exactly. `entry_count` is carried alongside `amount_cp` (per the domain
+model) so the nightly drift check has both a sum and a count to compare against the fold.
 
 There is deliberately no `WHERE excluded.as_of_seq > ...` guard: under the single writer the snapshot
 only ever moves forward, one batch at a time, and an additive upsert with a backward guard would
@@ -222,6 +225,37 @@ WHERE deleted_at IS NULL
   AND (started_at, id) < (?, ?)   -- (sort_key, tiebreak) from the decoded cursor
 ORDER BY started_at DESC, id DESC
 LIMIT ?;                          -- fetch limit+1 to compute has_more
+```
+
+## Keyset over a composite primary key — `balance_snapshot` (Phase 1, live in `db/queries/ledger.sql`)
+
+The same row-value seek as the cursor recipe above, applied to a **job** rather than to an endpoint:
+`dkp verify-ledger` (issue #198) walks every cached balance in a pool and compares it against a fold
+over the log. It pages for one reason and it is not politeness — a `:many` materialises its whole
+result set as a Go slice, so an unpaged walk of the ledger is the ledger in memory, on a Raspberry Pi.
+Paged, the verifier's footprint is one page plus one accumulator per account, whatever the log's size.
+
+Two things here that the `raid` recipe does not show:
+
+**The cursor is the primary key itself.** `balance_snapshot` is `WITHOUT ROWID` on
+`(pool_id, account_id, balance_kind)`, so `ORDER BY account_id, balance_kind` with the pool fixed *is*
+the table's own order — the seek walks the table b-tree rather than an index and a lookup. Start at
+`('', '')`: the empty string sorts before every ULID, so no "first page" special case is needed.
+
+**Name the cursor parameters.** sqlc names a positional parameter after the column it is compared
+to, so `(account_id, balance_kind) > (?, ?)` generates `AccountID` and `AccountID_2` — and a caller
+passing a balance kind to a field called `AccountID_2` is one edit away from passing them in the wrong
+order, which is a page boundary that silently skips rows. `sqlc.arg(...)` costs one line per parameter
+and makes the params struct say what it holds.
+
+```text
+-- name: ListSnapshotsAfter :many
+SELECT account_id, balance_kind, amount_cp, as_of_seq, entry_count
+FROM balance_snapshot
+WHERE pool_id = sqlc.arg(pool_id)
+  AND (account_id, balance_kind) > (sqlc.arg(cursor_account_id), sqlc.arg(cursor_balance_kind))
+ORDER BY account_id, balance_kind
+LIMIT sqlc.arg(page_limit);
 ```
 
 ## Full-text search — `item_fts` (Phase 3)

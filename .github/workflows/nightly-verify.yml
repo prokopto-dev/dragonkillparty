@@ -169,6 +169,59 @@ jobs:
         run: make test-perf
 
   # ---------------------------------------------------------------------------------------------
+  # replay / seed.Perf — `dkp verify-ledger` over a guild-scale ledger (issue #198, ROADMAP Phase 1
+  # item 9).
+  #
+  # It seeds 527,164 entries through ledger.Service.Commit and then replays every one of them:
+  # recomputes each batch hash and each audit hash from the stored rows, walks both prev_hash chains
+  # to the heads in dkp_meta, and folds the whole log back into per-account balances that must
+  # reproduce balance_snapshot exactly — amount, entry count and as-of seq, with no cached row the
+  # log does not support and no account the cache has missed.
+  #
+  # THIS JOB IS A CORRECTNESS DEPENDENCY, not a verification nicety, and ADR-0023 is what makes it
+  # one. The cache is LOAD-BEARING: serving standings from the log is 10,412 pages against the
+  # cache's 13, so there is no fallback that answers more slowly and a drifted cache is a wrong page
+  # rather than a degraded one. That ADR names the failure mode in its own consequences — "if the
+  # nightly replay silently stops running, a drifted cache becomes undetectable — the failure mode
+  # this project criticises EQdkp Plus for" — and raises a standard for this job: it must fail
+  # loudly and visibly. It does: `dkp verify-ledger` exits non-zero on a finding AND on a read it
+  # could not make, and `nightly-report` below carries it into the single nightly issue.
+  #
+  # Until this existed, the cache-versus-fold claim rested on a unit test whose snapshot rows the
+  # test itself had written, which is circular. Here the rows were written by the commit path while
+  # it was busy committing 20,461 transactions, and the replay is the product's own verifier rather
+  # than a fold written for the occasion.
+  #
+  # HERE AND NOT IN ci.yml, by this file's own rule, and it is a close call worth stating. The
+  # per-PR half DOES run: internal/ledger's perf suite seeds eight raids and runs the same
+  # ledger.Verify over them on every push, so the code path cannot rot unnoticed. What it cannot do
+  # per PR is the SCALE — ninety seconds of seeding and a few hundred megabytes of scratch disk for
+  # a property that changes when the SCHEMA or the commit path changes, not when a typical diff
+  # does. That is the same trade `perf / 520k` above makes with the same profile.
+  #
+  # A failure here is a bug in this software, never data loss, and the nightly issue should say so:
+  # the log is intact and the cache is derived from it. The repair is `dkp verify-ledger --rebuild`,
+  # which is not implemented yet (issue filed) — and which this job would not run in any case,
+  # because a verifier that could write is a verifier that can hide what it found.
+  replay-ledger:
+    name: replay / seed.Perf
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          # `make verify-ledger` compiles cmd/dkp and runs the binary — no SPA, no other toolchain.
+          go: "true"
+      - run: make verify-ledger
+        # Build, migrate, seed the full Perf profile into a scratch directory, replay it, remove the
+        # directory. RAIDS is unset, so this is the 3,400-raid profile — the size every budget in
+        # the roadmap is stated at. `dkp verify-ledger` exits non-zero on any finding AND on any
+        # read it could not make, so a green step here is a replay that happened and was clean,
+        # rather than one that quietly found nothing to read.
+
+  # ---------------------------------------------------------------------------------------------
   # suite / shuffled — the whole Go suite with `-shuffle=on -count=1`, which the per-PR run no
   # longer carries (issue #155).
   #
@@ -466,6 +519,7 @@ jobs:
       - importer
       - property-deep
       - perf-standings
+      - replay-ledger
       - shuffled-suite
       - postgres-convergence
       - image-arm64

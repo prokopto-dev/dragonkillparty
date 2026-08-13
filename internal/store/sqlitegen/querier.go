@@ -160,6 +160,70 @@ type Querier interface {
 	// orders the audit chain; event_seq is instance-wide, never-reused and orders the event stream. A
 	// bot author who confuses them gets wrong answers silently, which is why they do not share a name.
 	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) (int64, error)
+	// ListAuditRowsAfterSeq is one page of the audit log in seq order, for `dkp verify-ledger` (Phase 1,
+	// issue #198). It is the FIRST read of this table, and it is not the officer-facing forensic view
+	// the header above defers to Phase 2: it is the chain verifier, it selects no PII the write path did
+	// not already put in the row, and its only caller is a CLI command an operator runs against their
+	// own database. The Phase 2 route still needs `audit.read` and still does not exist.
+	//
+	// Every column the audit hash covers, plus the two chain columns: the verifier recomputes
+	// SHA-256(prev_hash || canonical_json(row without hash)) and compares it to what is stored, so a
+	// projection missing a column would be a hash computed over a row that is not the one on disk.
+	//
+	// Keyset, `seq > ?` seeking ux_audit_seq, for the reason the ledger replay reads are keyset: an
+	// instance-wide log has no bound, and a :many over all of it is the whole audit log in memory.
+	// Start at 0.
+	ListAuditRowsAfterSeq(ctx context.Context, arg ListAuditRowsAfterSeqParams) ([]AuditLog, error)
+	// ListBatchesAfterSeq is one page of a pool's batches in seq order, for the replay. It returns every
+	// column the batch hash covers plus the two chain columns, because the verifier recomputes
+	// SHA-256(prev_hash || canonical_json(batch without hash) || canonical_json(entries)) and compares it
+	// to what is stored - a projection missing a column would be a hash computed over a batch that is
+	// not the one on disk.
+	//
+	// The cursor is `seq > ?` with ORDER BY seq, seeking ux_batch_seq(pool_id, seq): the unique index
+	// makes seq its own tiebreak, so no second cursor column is needed here. Start at 0.
+	ListBatchesAfterSeq(ctx context.Context, arg ListBatchesAfterSeqParams) ([]LedgerBatch, error)
+	// ListEntriesByBatch reads one batch's entries, in ID ORDER, which is the order the batch hash is
+	// computed over (docs/design/01-domain-model.md section 9.6). Sorting in SQL rather than in Go is
+	// not an optimisation - the hash input is defined as `entries ORDER BY id`, so the order is part of
+	// the attestation and belongs next to the read that produces it. internal/ledger sorts again anyway,
+	// because BatchHash must not depend on its caller having read the rows in any particular order.
+	//
+	// By batch_id, not by a seq range: ix_entry_batch(batch_id) makes this an index seek, and a batch
+	// holds at most ~70 entries, so the page is bounded by the domain rather than by a LIMIT.
+	ListEntriesByBatch(ctx context.Context, batchID string) ([]LedgerEntry, error)
+	// The REPLAY reads - Phase 1, issue #198. `dkp verify-ledger` walks the whole ledger from genesis
+	// and recomputes it: the per-pool hash chain, and balance_snapshot from a fold over every entry.
+	//
+	// ALL FOUR ARE KEYSET-PAGED, and at 520,000 entries that is not a style preference. A `:many` query
+	// materialises its whole result set as a Go slice, so a single `SELECT * FROM ledger_entry` would
+	// put the entire ledger in memory at once on the smallest machine this product targets - a
+	// Raspberry Pi with the database on an SD card. Paged, the verifier's memory is one page plus one
+	// accumulator per (account, balance kind), which is a few hundred rows at guild scale whether the
+	// log holds ten batches or ten million. Offset would be the other way to page and is banned
+	// (.claude/rules/store-and-sql.md): it drifts, and every one of these has a unique key to seek on.
+	//
+	// Every one of them is a SELECT. The verifier reads and never writes: the two tables are
+	// append-only, and the cache rebuild the docs describe (`--rebuild`) is a separate job that does not
+	// ship here.
+	// ListPoolIDs enumerates the pools, in id order. The ledger hash chain is PER POOL, so a verifier
+	// has to know the whole set - reading only the default pool would report a clean ledger while an
+	// entire second pool's chain was broken.
+	ListPoolIDs(ctx context.Context) ([]string, error)
+	// ListSnapshotsAfter is one page of a pool's cached balances, walked in primary-key order so the
+	// verifier can compare them against its fold without holding the whole cache in memory.
+	//
+	// The cursor is a ROW VALUE - `(account_id, balance_kind) > (?, ?)` - which SQLite has supported
+	// since 3.15 and which db/RECIPES.md prescribes over the `a > ? OR (a = ? AND b > ?)` expansion: it
+	// is one seek into the WITHOUT ROWID primary key rather than a predicate the planner has to unpick.
+	// balance_snapshot's PK is (pool_id, account_id, balance_kind), so this walks the table itself.
+	// Start at ('', '') - the empty string sorts before every ULID.
+	//
+	// The two cursor columns are NAMED (sqlc.arg) rather than positional, because sqlc names a
+	// positional parameter after the column it is compared to: both halves of the row value would come
+	// back as AccountID and AccountID_2, and a caller passing the balance kind to a field called
+	// AccountID_2 is a caller one edit away from passing them in the wrong order.
+	ListSnapshotsAfter(ctx context.Context, arg ListSnapshotsAfterParams) ([]ListSnapshotsAfterRow, error)
 	// MaxPoolSeq is the current head seq for a pool: the ?4 argument BalanceAsOfSeq needs to compute a
 	// CURRENT balance ("as of the latest seq"). COALESCE to 0 for an empty pool, so a pool with no
 	// batches yet reports head 0 rather than NULL.
@@ -220,9 +284,15 @@ type Querier interface {
 	// no table.
 	StandingsFromLedger(ctx context.Context, arg StandingsFromLedgerParams) ([]StandingsFromLedgerRow, error)
 	// StandingsFromSnapshot is THE standings read: every account's balance in one pool, highest first,
-	// from the droppable cache rather than from the log. It is the query V5 budgets
+	// from the cache rather than from the log. It is the query V5 budgets
 	// (docs/development/verify-before-phase-0.md): 4 SQL statements and p99 150 ms at 280 members over a
 	// 520k-entry ledger, on SD-card-class storage.
+	//
+	// V5 answered, and the answer is ADR-0023: this read is 13 pages where StandingsFromLedger below is
+	// 10,412, so the cache is LOAD-BEARING rather than droppable. The log is still the only source of
+	// truth and a dispute is still settled by BalanceAsOfSeq - what the measurement removed is the
+	// fallback. Do not give this read a recompute-from-the-log path "for safety": that path is 22
+	// seconds.
 	//
 	// ix_snapshot_standings is (pool_id, balance_kind, amount_cp DESC), and balance_snapshot is
 	// WITHOUT ROWID, so the index's trailing key columns are the primary key - which is what makes
@@ -247,8 +317,8 @@ type Querier interface {
 	// in SQL, where it cannot be unit-tested without a database and where absent and set-to-the-current
 	// value become indistinguishable. id is never updated: it is the singleton key.
 	UpdateGuild(ctx context.Context, arg UpdateGuildParams) (Guild, error)
-	// UpsertBalanceSnapshot maintains the droppable balance cache, ADDITIVELY, in the same transaction
-	// as the batch write (PR 10). The primary key is (pool_id, account_id, balance_kind) - the same key
+	// UpsertBalanceSnapshot maintains the balance cache, ADDITIVELY, in the same transaction as the
+	// batch write (PR 10). The primary key is (pool_id, account_id, balance_kind) - the same key
 	// the WITHOUT ROWID table is built on - and on conflict the amount and the entry count are ADDED to
 	// the existing row, not replaced: the caller passes this batch's delta (the SUM and COUNT of just its
 	// entries), so the running total accumulates. as_of_seq and updated_at are advanced to the new head.

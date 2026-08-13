@@ -28,7 +28,7 @@ type Queries interface {
 	// service is PR 10, so there is no batch or entry INSERT on this contract yet. BalanceAsOfSeq is
 	// the definitional balance query, served from the covering index ix_entry_balance;
 	// MaxPoolSeq/NextPoolSeq are the per-pool sequence head and allocator (NextPoolSeq is safe only
-	// inside Tx); UpsertBalanceSnapshot maintains the droppable balance cache additively;
+	// inside Tx); UpsertBalanceSnapshot maintains the balance cache additively;
 	// GetAccount/GetSystemAccount resolve accounts by id and by system_key.
 	BalanceAsOfSeq(ctx context.Context, arg sqlitegen.BalanceAsOfSeqParams) (int64, error)
 	MaxPoolSeq(ctx context.Context, poolID string) (int64, error)
@@ -38,10 +38,10 @@ type Queries interface {
 	GetSystemAccount(ctx context.Context, systemKey *string) (sqlitegen.Account, error)
 
 	// The standings pair and the account writer (Phase 1, issue #190). The two standings queries
-	// answer the SAME question by the two available routes — the droppable cache and the
-	// definitional SUM over the log — and they are both on the contract because the gap between
-	// them at 520k entries is what decides whether balance_snapshot survives
-	// (docs/development/verify-before-phase-0.md V5). Keeping the slow arm generated and pinned by
+	// answer the SAME question by the two available routes — the cache and the definitional SUM over
+	// the log — and they are both on the contract because the gap between them at 520k entries is
+	// what decided whether balance_snapshot survives (V5, answered by ADR-0023: 13 pages against the
+	// cache, 10,412 against the SUM, so it survives and is load-bearing). Keeping the slow arm generated and pinned by
 	// an EXPLAIN golden is what makes that comparison repeatable rather than a number in a PR body.
 	//
 	// InsertAccount is the person half of the account table; the four system accounts are seeded by
@@ -66,6 +66,25 @@ type Queries interface {
 	NextAuditSeq(ctx context.Context) (int64, error)
 	InsertAuditLog(ctx context.Context, arg sqlitegen.InsertAuditLogParams) error
 	InsertOutboxEvent(ctx context.Context, arg sqlitegen.InsertOutboxEventParams) (int64, error)
+
+	// The REPLAY reads (Phase 1, issue #198). `dkp verify-ledger` walks the whole ledger from
+	// genesis: every pool's batch chain, the instance-wide audit chain, and a fold over every entry
+	// compared against balance_snapshot. ledger.Verify is the only caller.
+	//
+	// All five are SELECTs, and all five are KEYSET-PAGED rather than whole-table reads (except
+	// ListEntriesByBatch, whose page is one batch and is bounded by the domain). That is what keeps
+	// the verifier's memory proportional to the roster instead of to the log — a `:many` over
+	// 520,000 entries is 520,000 structs at once on the Raspberry Pi this product targets.
+	//
+	// There is no rebuild here, only reads. Recomputing balance_snapshot is a write, so the flag the
+	// operations docs describe (`--rebuild`) needs an upsert this contract already has and a job that
+	// is not this one — and under ADR-0023 that job matters more than it used to, because losing the
+	// cache is a rebuild rather than a slower page.
+	ListPoolIDs(ctx context.Context) ([]string, error)
+	ListBatchesAfterSeq(ctx context.Context, arg sqlitegen.ListBatchesAfterSeqParams) ([]sqlitegen.LedgerBatch, error)
+	ListEntriesByBatch(ctx context.Context, batchID string) ([]sqlitegen.LedgerEntry, error)
+	ListSnapshotsAfter(ctx context.Context, arg sqlitegen.ListSnapshotsAfterParams) ([]sqlitegen.ListSnapshotsAfterRow, error)
+	ListAuditRowsAfterSeq(ctx context.Context, arg sqlitegen.ListAuditRowsAfterSeqParams) ([]sqlitegen.AuditLog, error)
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

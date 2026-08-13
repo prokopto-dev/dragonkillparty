@@ -286,8 +286,11 @@ Infrastructure that earns its place:
 - **Ledger replay.** `dkp verify-ledger` recomputes every balance from the append-only log and
   compares it against `balance_snapshot` and the published chain head. It runs **in CI against
   `seed.Perf`** on every PR, and **nightly in production** as a scheduled job that alarms on any
-  drift. The snapshot is explicitly a droppable cache; replay is what makes that claim true rather
-  than hopeful.
+  drift. The snapshot is **load-bearing, not droppable**
+  ([ADR-0023](../adr/0023-balance-snapshot-is-load-bearing.md)), so replay is not hygiene: there is
+  no fallback that serves the page from the log, which makes this the job the correctness of every
+  displayed balance rests on. A replay that silently stopped running would leave a drifted cache
+  undetectable — the exact failure this project criticises EQdkp Plus for.
 - **Response validation on every request** in the whole suite, failing hard (pending the validator
   decision above).
 - **`goleak.VerifyTestMain`** in `events`, `webhook`, `bids`, `jobs`, `server`.
