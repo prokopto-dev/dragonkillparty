@@ -383,12 +383,19 @@ func walkDocument(doc map[string]any, v fieldVisitor) {
 
 // walk descends node, invoking v for every named field it finds.
 //
-// IT DOES NOT DESCEND INTO A `properties` MAP, only across it: each direct child is checked, and the
-// recursion below skips the key. That is the behaviour of the Python this replaces, preserved
-// deliberately so this change is a move and not a silent widening of the rules — a nested schema
-// (`properties.list.items.properties.value_centipoints`) is therefore not reached. The gap is real and
-// is tracked as issue #144 rather than fixed in a port, because a "move to Go" PR that also changes
-// what the gate catches is a PR whose diff cannot be reviewed for either property.
+// IT DESCENDS INTO A `properties` MAP AS WELL AS ACROSS IT. Each direct child is checked, and then
+// walked, so a field one level deeper than a schema's own properties is reached:
+// `Thing.properties.inner.properties.value_centipoints` and the array form
+// `Thing.properties.list.items.properties.amount_cp` are both seen. Crossing without descending is
+// what scripts/verify-spec.py did and what the Go port carried over unchanged so that #127 was a
+// move rather than a silent widening of the rules; issue #144 is that gap, closed here.
+//
+// The trail SKIPS the word "properties" — `components.schemas.Thing.inner.value_centipoints` — which
+// is why the recursion happens at the point the child is checked rather than by letting the generic
+// loop below reach the `properties` key. The generic loop still skips it, or every field would be
+// reported twice under two different trails.
+//
+// A document is a tree: `$ref` is a string, never a cycle, so this recursion terminates.
 func walk(node any, trail string, v fieldVisitor) {
 	switch n := node.(type) {
 	case []any:
@@ -401,6 +408,7 @@ func walk(node any, trail string, v fieldVisitor) {
 			for _, name := range slices.Sorted(maps.Keys(props)) {
 				if prop, ok := props[name].(map[string]any); ok {
 					v.property(name, prop, trail+"."+name)
+					walk(prop, trail+"."+name, v)
 				}
 			}
 		}

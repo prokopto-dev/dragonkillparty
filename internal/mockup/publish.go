@@ -18,7 +18,8 @@ import (
 //  2. drop the design tool's no-op namespace bundle
 //  3. rewrite the design system's stylesheet path to the layout this repo uses
 //  4. strip type="text/x-dc" so the authored logic executes as an ordinary classic script
-//  5. lift <sc-for>/<sc-if> onto their child element where the child is unambiguous
+//  5. lift <sc-for>/<sc-if> onto their child element where the child is unambiguous, and <x-import>
+//     onto its child where it sits in table context
 //  6. inject the "MOCKUP — not a live instance" banner
 //  7. inject <meta name="robots" content="noindex">
 //
@@ -40,7 +41,7 @@ func Publish(name string, src []byte, title string) (Page, error) {
 		return Page{}, fmt.Errorf("publish %s: %w", name, err)
 	}
 
-	lifted, err := liftDirectives(toks, 0, len(toks))
+	lifted, err := liftDirectives(toks, 0, len(toks), inTableContext(toks))
 	if err != nil {
 		return Page{}, fmt.Errorf("publish %s: %w", name, err)
 	}
@@ -189,36 +190,39 @@ func trimTrailingSpaceBefore(toks []token, i int) {
 	prev.raw = trimmed
 }
 
-// liftDirectives rewrites <sc-for>/<sc-if> onto their single child element, innermost blocks first,
-// and returns how many were lifted.
+// liftDirectives rewrites <sc-for>/<sc-if>, and an <x-import> in table context, onto their single
+// child element, innermost blocks first, and returns how many were lifted.
 //
 // Innermost first, because whether a block has one child is a question about the block AFTER its own
 // nested directives have collapsed: <sc-if><sc-for>…</sc-for></sc-if> has one child before lifting
 // and however many the <sc-for> wrapped after it.
-func liftDirectives(toks []token, lo, hi int) (int, error) {
+//
+// inTable is indexed by token, and is what confines the <x-import> lift to the one place the element
+// form cannot survive; see liftOnto.
+func liftDirectives(toks []token, lo, hi int, inTable []bool) (int, error) {
 	lifted := 0
 
 	for i := lo; i < hi; i++ {
 		t := toks[i]
-		if t.typ != html.StartTagToken || !t.isDirective() {
+		if t.typ != html.StartTagToken || !t.isBlock() {
 			continue
 		}
 
-		end := matchDirective(toks, i, hi)
+		end := matchBlock(toks, i, hi)
 		if end < 0 {
 			// Unbalanced. Leave the tag alone rather than corrupt the document; the table-context
 			// assertion below still refuses to publish it if it sits anywhere dangerous.
 			continue
 		}
 
-		inner, err := liftDirectives(toks, i+1, end)
+		inner, err := liftDirectives(toks, i+1, end, inTable)
 		if err != nil {
 			return 0, err
 		}
 
 		lifted += inner
 
-		ok, err := liftOnto(toks, i, end)
+		ok, err := liftOnto(toks, i, end, inTable[i])
 		if err != nil {
 			return 0, err
 		}
@@ -233,16 +237,16 @@ func liftDirectives(toks []token, lo, hi int) (int, error) {
 	return lifted, nil
 }
 
-// matchDirective returns the index of the end tag closing the directive that opens at start, or -1
-// if there is none inside [start, hi).
-func matchDirective(toks []token, start, hi int) int {
+// matchBlock returns the index of the end tag closing the block that opens at start, or -1 if there
+// is none inside [start, hi).
+func matchBlock(toks []token, start, hi int) int {
 	depth := 0
 
 	for i := start; i < hi; i++ {
 		switch {
-		case toks[i].typ == html.StartTagToken && toks[i].isDirective():
+		case toks[i].typ == html.StartTagToken && toks[i].isBlock():
 			depth++
-		case toks[i].typ == html.EndTagToken && toks[i].isDirective():
+		case toks[i].typ == html.EndTagToken && toks[i].isBlock():
 			depth--
 			if depth == 0 {
 				if toks[i].name != toks[start].name {
@@ -257,29 +261,89 @@ func matchDirective(toks []token, start, hi int) int {
 	return -1
 }
 
-// liftOnto moves the directive opening at start onto its single element child, if it has exactly
-// one and that child is not itself a directive. It reports whether it lifted.
-func liftOnto(toks []token, start, end int) (bool, error) {
+// inTableContext reports, per token index, whether that token sits inside an element from which the
+// HTML5 tree construction algorithm foster-parents an unknown child.
+//
+// The same element stack assertNoDirectiveInTable walks, computed once up front: the lift needs the
+// answer BEFORE it starts dropping tokens, and an index into this slice stays valid afterwards
+// because tokens are only ever marked dropped, never removed.
+func inTableContext(toks []token) []bool {
+	out := make([]bool, len(toks))
+
+	var stack []string
+
+	for i, t := range toks {
+		if t.dropped || !t.isTag() {
+			continue
+		}
+
+		if t.typ == html.EndTagToken {
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j] == t.name {
+					stack = stack[:j]
+
+					break
+				}
+			}
+
+			continue
+		}
+
+		for _, open := range stack {
+			if tableContext[open] {
+				out[i] = true
+
+				break
+			}
+		}
+
+		if t.opensLevel() {
+			stack = append(stack, t.name)
+		}
+	}
+
+	return out
+}
+
+// liftOnto moves the block opening at start onto its single element child, if it has exactly one and
+// that child is not itself a block. It reports whether it lifted.
+func liftOnto(toks []token, start, end int, inTable bool) (bool, error) {
+	d := toks[start]
+
+	// An <x-import> is lifted ONLY in table context, and that restraint is the point rather than
+	// caution. Its element form is what the mockups are authored in and what the runtime has always
+	// rendered — including the two IOSDevice frames in guild-portal.dc.html, each of which is a
+	// single-child block and would otherwise be rewritten for no reason. Inside a <table> the element
+	// form is not a style choice: it is foster-parented out and arrives empty, and there the
+	// attribute form is the only shape that survives the parser. Everywhere else, leave it alone.
+	if d.name == tagXImport && !inTable {
+		return false, nil
+	}
+
 	kids, text := topLevelChildren(toks, start+1, end)
 
 	// Exactly one element child and nothing else. `text` guards a case the regex implementation got
 	// wrong: <sc-if>Some copy<b>x</b></sc-if> counted one child, lifted onto the <b>, and left the
 	// copy behind unconditionally — rendering text that was supposed to be hidden. Several siblings,
 	// or one sibling plus loose text, keep the element form.
+	//
+	// The same condition is what makes the <x-import> lift faithful rather than merely convenient:
+	// the runtime hands a component ALL of the element's children as a fragment, so moving the import
+	// onto one child preserves the fragment exactly when that child is the only thing in it.
 	if len(kids) != 1 || text {
 		return false, nil
 	}
 
 	child := &toks[kids[0]]
 
-	// Never lift onto another directive element: <sc-if><sc-for>…</sc-for></sc-if> would put
+	// Never lift onto another of these elements: <sc-if><sc-for>…</sc-for></sc-if> would put
 	// data-sc-if on the <sc-for>, and mockup-runtime.js's element-form branch returns before it
-	// looks at data-* attributes — silently dropping the condition. Keep the outer element form.
-	if child.isDirective() {
+	// looks at data-* attributes — silently dropping the condition. The same is true of an
+	// <x-import> child, whose element-form branch returns before the attribute form is read. Keep
+	// the outer element form.
+	if child.isBlock() {
 		return false, nil
 	}
-
-	d := toks[start]
 
 	switch d.name {
 	case tagSCFor:
@@ -297,14 +361,40 @@ func liftOnto(toks []token, start, end int) (bool, error) {
 	case tagSCIf:
 		value, _ := d.attr("value")
 		child.addAttrs(html.Attribute{Key: "data-sc-if", Val: value})
+	case tagXImport:
+		child.addAttrs(importAttrs(d)...)
 	default:
-		return false, fmt.Errorf("liftOnto: %q is not a directive", d.name)
+		return false, fmt.Errorf("liftOnto: %q is not a liftable element", d.name)
 	}
 
 	toks[start].dropped = true
 	toks[end].dropped = true
 
 	return true, nil
+}
+
+// importAttrs renders an <x-import> as the attributes its lifted form carries: the component name,
+// then one data-sc-prop-* attribute per prop, in source order.
+//
+// `from` is dropped with the component name because the runtime ignores it — it names the design
+// tool's own module path, which nothing here loads. Everything else is passed through untouched,
+// including the authoring hints: what counts as a prop is mockup-runtime.js's decision in ONE place,
+// and a lift that also filtered would be a second place to keep in step with it.
+func importAttrs(d token) []html.Attribute {
+	attrs := make([]html.Attribute, 0, len(d.attrs))
+
+	name, _ := d.attr(attrImportComponent)
+	attrs = append(attrs, html.Attribute{Key: attrImport, Val: name})
+
+	for _, a := range d.attrs {
+		if a.Key == attrImportComponent || a.Key == attrImportFrom {
+			continue
+		}
+
+		attrs = append(attrs, html.Attribute{Key: attrImportProp + a.Key, Val: a.Val})
+	}
+
+	return attrs
 }
 
 // topLevelChildren returns the indices of the start tags of the immediate element children of
@@ -476,7 +566,13 @@ func assertCustomElementsKeepTheirChildren(name string, out []byte) error {
 			"the markup gives them:\n%s\n"+
 			"That is foster-parenting: an element that is not valid table content is hoisted out of a "+
 			"<table> and arrives EMPTY, because its rows stay behind. mockup-runtime.js repeats and "+
-			"conditions an element's CHILDREN, so an emptied one renders nothing",
+			"conditions an element's CHILDREN, so an emptied one renders nothing.\n"+
+			"THE FIX IS IN THE HARNESS, NOT IN THE MOCKUP. The vendored .dc.html files are byte-exact "+
+			"against the design tool's export and are never edited (docs/design/mockups/README.md). A "+
+			"single-child <sc-for>, <sc-if> or <x-import> is already lifted onto its child by liftOnto "+
+			"in internal/mockup/publish.go; a block this build refuses is one that has no attribute "+
+			"form to lift onto, so give it one in docs/design/mockups/harness/mockup-runtime.js and add "+
+			"the case beside the others there",
 		name, strings.Join(append(lost, gained...), "\n"))
 }
 

@@ -14,6 +14,11 @@
 //   <x-import component-from-global-scope="Name" ...>   render window.Name(props, childrenFragment)
 //   onClick / onChange / onScroll       bound to a function resolved from the same path space
 //
+// Three of those have an equivalent ATTRIBUTE form — data-sc-for/data-sc-as, data-sc-if and
+// data-sc-import/data-sc-prop-* — carried on the element the block wraps. Nothing authors them: the
+// build step (internal/mockup) lifts a single-child block onto its child wherever the element form
+// would be foster-parented out of a <table> and arrive empty. See the notes at each branch below.
+//
 // EVERY binding in the five mockups is a plain dotted path or a literal (`true`, `false`, a number)
 // — verified by survey, and asserted by internal/mockup (MOCK001) before a build proceeds. So
 // there is deliberately **no expression evaluator**: no eval, no `new Function`, no Babel. A binding
@@ -153,13 +158,31 @@
   }
 
   const DIRECTIVE_ATTRS = new Set(['data-sc-for', 'data-sc-as', 'data-sc-if']);
+  // The attribute form of <x-import>, and the prefix its props are carried under. The build step
+  // rewrites the element into these wherever the element form cannot survive the parser — inside a
+  // <table>, where an unknown element is foster-parented out and arrives empty, exactly as <sc-for>
+  // is. One attribute per prop rather than one serialised blob, so a value stays a value.
+  const IMPORT_ATTR = 'data-sc-import';
+  const IMPORT_PROP = 'data-sc-prop-';
+
+  // Render an imported component: window[Name](props, childrenFragment). Shared by both forms, so
+  // there is one answer to "what happens when the component is missing".
+  function mountImport(name, props, children, out) {
+    const comp = name && window[name];
+    if (typeof comp === 'function') {
+      const rendered = comp(props, children);
+      if (rendered) out.appendChild(rendered);
+      return;
+    }
+    // Missing component: emit the children bare rather than losing the screen.
+    console.warn('mockup-runtime: no global component named', name);
+    out.appendChild(children);
+  }
 
   function renderElement(node, scope, vals, out) {
     const tag = node.tagName.toLowerCase();
 
     if (tag === 'x-import') {
-      const name = node.getAttribute('component-from-global-scope');
-      const comp = name && window[name];
       const props = {};
       for (const attr of Array.from(node.attributes)) {
         if (attr.name === 'component-from-global-scope' || attr.name === 'from') continue;
@@ -168,21 +191,37 @@
       }
       const inner = document.createDocumentFragment();
       renderChildren(node, scope, vals, inner);
-      if (typeof comp === 'function') {
-        const rendered = comp(props, inner);
-        if (rendered) out.appendChild(rendered);
-      } else {
-        // Missing component: emit the children bare rather than losing the screen.
-        console.warn('mockup-runtime: no global component named', name);
-        out.appendChild(inner);
-      }
+      mountImport(node.getAttribute('component-from-global-scope'), props, inner, out);
       return;
     }
 
+    // Attribute form. The element carrying it IS the single child the <x-import> wrapped, so it is
+    // rendered INTO the children fragment rather than into `out`, and what lands in `out` is
+    // whatever the component returns — the same shape the element form produces.
+    if (node.hasAttribute(IMPORT_ATTR)) {
+      const props = {};
+      for (const attr of Array.from(node.attributes)) {
+        if (!attr.name.startsWith(IMPORT_PROP)) continue;
+        const key = attr.name.slice(IMPORT_PROP.length);
+        if (HINT_ATTRS.test(key)) continue;
+        props[key] = attrValue(attr.value, scope, vals);
+      }
+      const inner = document.createDocumentFragment();
+      renderTag(node, scope, vals, inner);
+      mountImport(node.getAttribute(IMPORT_ATTR), props, inner, out);
+      return;
+    }
+
+    renderTag(node, scope, vals, out);
+  }
+
+  function renderTag(node, scope, vals, out) {
+    const tag = node.tagName.toLowerCase();
     const el = document.createElement(tag);
     for (const attr of Array.from(node.attributes)) {
       const { name, value } = attr;
       if (HINT_ATTRS.test(name) || DIRECTIVE_ATTRS.has(name)) continue;
+      if (name === IMPORT_ATTR || name.startsWith(IMPORT_PROP)) continue;
 
       // The mockups author these as onClick/onChange/onScroll, but the HTML parser lowercases every
       // attribute name, so match on the lowercased form. `continue` unconditionally: a handler that

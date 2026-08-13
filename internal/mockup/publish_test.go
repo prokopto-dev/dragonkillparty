@@ -180,14 +180,24 @@ func TestPublish_DirectiveSurvivingInsideTable_IsRefused(t *testing.T) {
 // TestPublish_FosterParentedElement_IsRefusedEvenWhenItIsNotADirective is the gate the shell version
 // could not express.
 //
-// <x-import> is one of the mockups' own elements and the lift does not touch it, so the
-// "no directive in table context" check — the only structural assertion scripts/dc-publish.py made —
-// passes this page happily. Handing the result to a real tree builder does not: the <x-import> is
-// hoisted out of the table and arrives empty, and an empty custom element renders nothing.
+// <x-import> is one of the mockups' own elements and assertNoDirectiveInTable does not look at it, so
+// the "no directive in table context" check — the only structural assertion scripts/dc-publish.py
+// made — passes this page happily. Handing the result to a real tree builder does not: the
+// <x-import> is hoisted out of the table and arrives empty, and an empty custom element renders
+// nothing.
+//
+// TWO ROWS RATHER THAN ONE, since issue #147: a single-child <x-import> in table context is now
+// lifted onto its child and publishes correctly, which is what that issue asked for and what
+// TestPublish_SingleChildImportInATable_IsLiftedOntoTheChild covers. Everything this test asserts is
+// unchanged — a non-directive custom element, invisible to the check above, emptied by the parser and
+// refused, with the loser named before the receiver. What changed is the input, to one the lift
+// cannot repair, because the runtime hands a component all of its children as one fragment and
+// moving the import onto one of two rows would silently drop the other.
 func TestPublish_FosterParentedElement_IsRefusedEvenWhenItIsNotADirective(t *testing.T) {
 	t.Parallel()
 
-	body := `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr></x-import></tbody></table>`
+	body := `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr>` +
+		`<tr><td>b</td></tr></x-import></tbody></table>`
 
 	toks, err := tokenize(wrap(body))
 	require.NoError(t, err)
@@ -201,10 +211,130 @@ func TestPublish_FosterParentedElement_IsRefusedEvenWhenItIsNotADirective(t *tes
 	// The element that LOST its children is named first, and named as the loser. The <x-dc> that
 	// received them is reported too, but second: sending a reader to the receiving element is
 	// sending them to the wrong end of the document.
-	require.Contains(t, err.Error(), "<x-import> lost 1")
+	require.Contains(t, err.Error(), "<x-import> lost 2")
 	require.Contains(t, err.Error(), "<x-dc> gained 1")
 	require.Less(t, strings.Index(err.Error(), "<x-import>"), strings.Index(err.Error(), "<x-dc>"),
 		"the emptied element must be reported before the one that received its children")
+}
+
+// TestPublish_SingleChildImportInATable_IsLiftedOntoTheChild is the remedy issue #147 asked for.
+//
+// Before it, an <x-import> inside a <table> was a refusal with nowhere to go: the lift knew only
+// <sc-for> and <sc-if>, the runtime resolved an import by TAG NAME so there was no attribute form to
+// lift onto, and the vendored .dc.html files may not be edited to work around it
+// (docs/design/mockups/README.md). The build simply would not publish. It cannot happen on today's
+// export — which is why this fixture, not a real page, is the evidence the path works.
+func TestPublish_SingleChildImportInATable_IsLiftedOntoTheChild(t *testing.T) {
+	t.Parallel()
+
+	page := publish(t, `<table><tbody><x-import component-from-global-scope="Row" from="./row.jsx" `+
+		`dark="{{ true }}" hint-size="1px"><tr><td>{{ r.name }}</td></tr></x-import></tbody></table>`)
+	out := string(page.HTML)
+
+	require.Containsf(t, out, `<tr data-sc-import="Row" data-sc-prop-dark="{{ true }}" data-sc-prop-hint-size="1px">`,
+		"the import must move onto the row it wraps, carrying its props; published page:\n%s", out)
+
+	require.NotContains(t, out, "<x-import", "the element form must not survive a lifted block")
+	require.NotContains(t, out, "data-sc-prop-from",
+		"`from` names the design tool's module path and is not a prop — the runtime drops it")
+	require.NotContains(t, out, "data-sc-prop-component-from-global-scope",
+		"the component name is carried by data-sc-import, not as a prop")
+
+	require.Equal(t, 1, page.Lifted)
+}
+
+// TestPublish_LiftedImportSurvivesARealParse is the property the lift exists for, asked of the same
+// tree builder a browser runs: before, the <x-import> is hoisted out of the table and arrives empty;
+// after, the row is still in the table and carries the import.
+func TestPublish_LiftedImportSurvivesARealParse(t *testing.T) {
+	t.Parallel()
+
+	const rows = `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr>` +
+		`</x-import></tbody></table>`
+
+	before, err := html.Parse(bytes.NewReader(wrap(rows)))
+	require.NoError(t, err)
+
+	beforeCounts := map[string]int{}
+	parsedChildCounts(before, beforeCounts)
+	require.Zerof(t, beforeCounts[tagXImport],
+		"precondition: unpublished, the <x-import> is foster-parented out of the table and left "+
+			"empty — that is the failure with no remedy that issue #147 reported")
+
+	page := publish(t, rows)
+
+	after, err := html.Parse(bytes.NewReader(page.HTML))
+	require.NoError(t, err)
+
+	tr := findElement(after, "tr")
+	require.NotNil(t, tr, "the row must survive the parse")
+	require.Equal(t, "tbody", tr.Parent.Data, "the row must still be inside the table")
+	require.Equal(t, "Row", attrValue(tr, "data-sc-import"))
+	require.Zero(t, countElement(after, tagXImport), "no element-form import should remain")
+}
+
+// TestPublish_ImportOutsideATable_KeepsTheElementForm fences the lift to the one place it is needed.
+//
+// The element form is what the mockups are authored in and what the runtime has always rendered;
+// guild-portal.dc.html's two IOSDevice frames are each a single-child <x-import> and would be
+// rewritten by an unconditional lift, for no benefit and with the published bytes changed. Inside a
+// <table> the element form is not a style choice — it does not survive the parser — and only there
+// does the attribute form earn its keep.
+func TestPublish_ImportOutsideATable_KeepsTheElementForm(t *testing.T) {
+	t.Parallel()
+
+	page := publish(t, `<div><x-import component-from-global-scope="IOSDevice" dark="{{ true }}">`+
+		`<div>screen</div></x-import></div>`)
+	out := string(page.HTML)
+
+	require.Contains(t, out, `<x-import component-from-global-scope="IOSDevice" dark="{{ true }}">`,
+		"an <x-import> outside table context must be published exactly as authored")
+	require.NotContains(t, out, "data-sc-import")
+	require.Zero(t, page.Lifted)
+}
+
+// TestPublish_AmbiguousImportInATable_IsStillRefused is the counterweight to the lift.
+//
+// The runtime hands a component ALL of the element's children as one fragment, so moving the import
+// onto one of several children would silently drop the rest. Those pages stay refused — with a
+// message that now names the harness as the place to fix it, since the vendored file is not.
+func TestPublish_AmbiguousImportInATable_IsStillRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "two rows",
+			body: `<table><tbody><x-import component-from-global-scope="Rows"><tr><td>a</td></tr>` +
+				`<tr><td>b</td></tr></x-import></tbody></table>`,
+		},
+		{
+			name: "one row plus loose text",
+			body: `<table><tbody><x-import component-from-global-scope="Rows">copy<tr><td>a</td></tr>` +
+				`</x-import></tbody></table>`,
+		},
+		{
+			name: "helmet, which has no attribute form at all",
+			body: `<table><tbody><helmet><link rel="stylesheet" href="a.css"></helmet><tr><td>a</td></tr>` +
+				`</tbody></table>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Publish("fixture.dc.html", wrap(tc.body), "Fixture")
+
+			require.Error(t, err, "a block that cannot be lifted must not publish from inside a table")
+			require.Contains(t, err.Error(), "foster-parenting")
+			require.Contains(t, err.Error(), "THE FIX IS IN THE HARNESS",
+				"the refusal must name the remedy: the vendored file may not be edited, so a reader "+
+					"with no way forward is the defect issue #147 reported")
+			require.Contains(t, err.Error(), "mockup-runtime.js",
+				"the refusal must name the file that has to change")
+		})
+	}
 }
 
 // TestPublish_FosterParentingMessage_IsStable pins the ordering, which was a map range and therefore
@@ -214,7 +344,9 @@ func TestPublish_FosterParentedElement_IsRefusedEvenWhenItIsNotADirective(t *tes
 func TestPublish_FosterParentingMessage_IsStable(t *testing.T) {
 	t.Parallel()
 
-	body := `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr></x-import></tbody></table>`
+	// Two rows for the reason given on the test above: one row is now lifted rather than refused.
+	body := `<table><tbody><x-import component-from-global-scope="Row"><tr><td>a</td></tr>` +
+		`<tr><td>b</td></tr></x-import></tbody></table>`
 
 	_, first := Publish("fixture.dc.html", wrap(body), "Fixture")
 	require.Error(t, first)

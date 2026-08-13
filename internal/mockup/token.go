@@ -232,9 +232,32 @@ func (t token) isDirective() bool {
 	return t.name == tagSCFor || t.name == tagSCIf
 }
 
+// isBlock reports whether t is one of the mockups' own elements that WRAPS children the runtime
+// consumes rather than renders: the two directives, whose children it repeats or conditions, and
+// <x-import>, whose children it hands to the component as a fragment.
+//
+// That shared property is what makes all three liftable and all three fatal inside a <table>: the
+// tree builder hoists an unknown element out of table context and the children stay behind, so the
+// wrapper arrives empty and the runtime consumes nothing. <helmet> is deliberately not here — its
+// children are hoisted into <head> by tag name at mount, so there is no attribute form to lift onto.
+func (t token) isBlock() bool {
+	return t.isDirective() || t.name == tagXImport
+}
+
 const (
-	tagSCFor = "sc-for"
-	tagSCIf  = "sc-if"
+	tagSCFor   = "sc-for"
+	tagSCIf    = "sc-if"
+	tagXImport = "x-import"
+)
+
+// The <x-import> attributes the runtime reads rather than passes on as props, and the attribute form
+// the lift rewrites the element into. attrImportProp is a PREFIX: one attribute per prop, so a
+// component's props survive the move without being serialised into a single value.
+const (
+	attrImportComponent = "component-from-global-scope"
+	attrImportFrom      = "from"
+	attrImport          = "data-sc-import"
+	attrImportProp      = "data-sc-prop-"
 )
 
 // tableContext is the set of elements inside which an unknown element is foster-parented out of the

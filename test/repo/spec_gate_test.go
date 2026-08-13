@@ -801,3 +801,210 @@ func TestSpecGate_EQdkpConfigKeyAsParameter_IsRejected(t *testing.T) {
 	require.NotZero(t, code, "the gate accepted an EQdkp config key as a query parameter\n%s", out)
 	require.Contains(t, firedRules(out), "SPEC008", "%s", out)
 }
+
+// specWithSchema returns a conforming document carrying schema as components.schemas.Thing.
+func specWithSchema(schema map[string]any) map[string]any {
+	doc := conformingSpec()
+	doc["components"] = map[string]any{"schemas": map[string]any{"Thing": schema}}
+
+	return doc
+}
+
+// specWithRequestBody returns a conforming document whose one operation takes schema as an INLINE
+// request body, which is the other region the walker covers and the shape Huma emits for a body type
+// it was not asked to name.
+func specWithRequestBody(schema map[string]any) map[string]any {
+	doc := conformingSpec()
+	op := conformingOperation()
+	op["requestBody"] = map[string]any{
+		"required": true,
+		"content":  map[string]any{"application/json": map[string]any{"schema": schema}},
+	}
+	doc["paths"] = map[string]any{"/api/v1/things": map[string]any{"post": op}}
+
+	return doc
+}
+
+// TestSpecGate_MoneyViolationInANestedSchema_IsRejected covers the third shape a field name takes,
+// and the one both SPEC006 and SPEC008 were blind to until issue #144.
+//
+// The shared walker CROSSED a `properties` map — checking each direct child — and then skipped the
+// key on the way down, so a field one level deeper was never seen. Every document below passed the
+// gate, reporting "all conforming" over exactly the field the rule exists to catch.
+//
+// It had not bitten because Huma emits a `$ref` for a named nested type rather than inlining it, so
+// the operations that existed when the gate was written had no nested `properties` at all. That
+// stops being true the first time a DTO carries an inline struct, an array of inline objects or a
+// map of them — and a float on the wire is the failure canonical §1 exists to prevent, because JSON
+// numbers round-trip through IEEE-754 doubles in every client language and a guild's balances stop
+// adding up long after the contract was published.
+func TestSpecGate_MoneyViolationInANestedSchema_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		doc  func(map[string]any) map[string]any
+		// schema is the offending document fragment; doc places it in one of the two regions the
+		// walker covers.
+		schema map[string]any
+		trail  string
+	}{
+		{
+			name: "an inline object one level down",
+			doc:  specWithSchema,
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"inner": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"value_centipoints": map[string]any{"type": "number"}},
+					},
+				},
+			},
+			trail: "components.schemas.Thing.inner.value_centipoints",
+		},
+		{
+			name: "an array of inline objects",
+			doc:  specWithSchema,
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"list": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"amount_cp": map[string]any{"type": "integer"}},
+						},
+					},
+				},
+			},
+			trail: "components.schemas.Thing.list.items.amount_cp",
+		},
+		{
+			name: "a map of inline objects",
+			doc:  specWithSchema,
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tallies": map[string]any{
+						"type": "object",
+						"additionalProperties": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"total_centipoints": map[string]any{"type": "string"}},
+						},
+					},
+				},
+			},
+			trail: "components.schemas.Thing.tallies.additionalProperties.total_centipoints",
+		},
+		{
+			name: "two levels down, in an inline request body rather than a component",
+			doc:  specWithRequestBody,
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"outer": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"inner": map[string]any{
+								"type":       "object",
+								"properties": map[string]any{"weight_ratio": map[string]any{"type": "number"}},
+							},
+						},
+					},
+				},
+			},
+			trail: "outer.inner.weight_ratio",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tree := t.TempDir()
+			writeSpec(t, tree, tc.doc(tc.schema))
+
+			out, code := runSpecGate(t, tree)
+
+			require.NotZero(t, code, "the gate accepted a nested money violation\n%s", out)
+			require.Contains(t, firedRules(out), "SPEC006", "%s", out)
+			require.Contains(t, out, tc.trail,
+				"the failure must name the field by the path a reader can follow, with the word "+
+					"`properties` left out of it\n%s", out)
+		})
+	}
+}
+
+// TestSpecGate_EQdkpConfigKeyInANestedSchema_IsRejected is the same gap seen by the other rule that
+// shares the walker.
+//
+// SPEC008 and SPEC006 both walk field names, so neither could see below the first level. A nested
+// `auto_set_active` is the worse half: it is the OPPOSITE control from DKP's `auto_set_inactive`, so
+// a bot written from the published contract sets the wrong value and the contract agrees with it.
+func TestSpecGate_EQdkpConfigKeyInANestedSchema_IsRejected(t *testing.T) {
+	t.Parallel()
+
+	tree := t.TempDir()
+	writeSpec(t, tree, specWithSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"settings": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"auto_set_active": map[string]any{"type": "boolean"},
+				},
+			},
+		},
+	}))
+
+	out, code := runSpecGate(t, tree)
+
+	require.NotZero(t, code, "the gate accepted a nested EQdkp config key\n%s", out)
+	require.Contains(t, firedRules(out), "SPEC008", "%s", out)
+	require.Contains(t, out, "components.schemas.Thing.settings.auto_set_active", "%s", out)
+	require.Contains(t, out, "auto_set_inactive", "the failure must name what to use instead\n%s", out)
+}
+
+// TestSpecGate_LegitimateNestedSchema_IsAccepted is the counterweight, and it is the half that makes
+// the four cases above mean something.
+//
+// Without it, "descend into properties" could be implemented as "fail on anything nested" and every
+// assertion above would still pass — blocking the first DTO that carries an inline struct at all.
+// Same argument as TestSpecGate_LegitimateParameter_IsAccepted for the parameter shape.
+func TestSpecGate_LegitimateNestedSchema_IsAccepted(t *testing.T) {
+	t.Parallel()
+
+	tree := t.TempDir()
+	writeSpec(t, tree, specWithSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"balance_centipoints": map[string]any{"type": "integer"},
+					"attendance_bp":       map[string]any{"type": []any{"integer", "null"}},
+					"timezone":            map[string]any{"type": "string"},
+				},
+			},
+			"entries": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"delta_centipoints": map[string]any{"type": "integer", "example": 1250},
+						"note":              map[string]any{"type": "string"},
+					},
+				},
+			},
+			"pool": map[string]any{"$ref": "#/components/schemas/Thing"},
+		},
+	}))
+
+	out, code := runSpecGate(t, tree)
+
+	require.Zero(t, code,
+		"integer centipoints, basis points and ordinary names must still be accepted one level "+
+			"down, or the first inline struct blocks a merge\n%s", out)
+	require.Empty(t, firedRules(out), "%s", out)
+}
