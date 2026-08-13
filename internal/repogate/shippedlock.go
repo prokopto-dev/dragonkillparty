@@ -1,10 +1,12 @@
 package repogate
 
 import (
+	"bytes"
+	"errors"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/migrate/lockmanifest"
 )
 
 // MIG003 — a migration that has shipped is frozen.
@@ -35,20 +37,26 @@ import (
 // Deliberately NOT a completeness check. A migration added on a feature branch has not shipped and
 // must not be listed yet. Completeness is checked once, at tag time, by `make release-shipped-lock`.
 //
-// # Why this one rule shells out
+// # Why this rule no longer shells out
 //
-// The check itself lives in internal/migrate/shippedlock because the release path runs the same
-// code with one more assertion, and a second copy here would be a second implementation nobody
-// keeps in step. That package is a `package main` (issue #129 moved it out of shell), so it cannot
-// be imported — hence the nested `go run`, which is exactly what the shell gate did and costs the
-// same. Extracting its verify logic into an importable package would remove the nested build; that
-// is a change to internal/migrate, not to the gates, and is tracked separately.
+// The check lives in internal/migrate/lockmanifest because the release path runs the same code with
+// one more assertion, and a second copy here would be a second implementation nobody keeps in step.
+// That package was a `package main` until issue #173, so this rule ran it with `go run` — nesting a
+// Go build inside the one that built this engine, on every `make lint-repo` and inside each of the
+// thirty subprocesses test/repo spawns.
+//
+// The build was the cheap half of the cost. The expensive half was that `go run` returns one bit: a
+// manifest that DISAGREES and a check that COULD NOT RUN both arrived as a non-zero exit and a blob
+// of captured stdout, so this rule had to report the first about both — telling a reader to look for
+// an edit to a migration when the real fault was an unreadable file or a git that would not answer.
+// [lockmanifest.ErrDisagrees] is that distinction, and the two messages below are what it buys.
 const shippedLockRel = "db/migrations-sqlite/SHIPPED.lock"
 
 // runShippedLockRule evaluates MIG003.
 //
-// root is the tree being INSPECTED. The command is built and run from THIS checkout, never from
-// that tree: the negative fixtures are t.TempDir() trees with no Go module in them.
+// root is the tree being INSPECTED, which for a negative fixture is a t.TempDir() with no Go module
+// in it at all. Nothing about that matters any more: the check is a function call in this process,
+// so the tree needs to hold a manifest and a git history and nothing else.
 func runShippedLockRule(s *scanner, rep *report) {
 	if !s.exists(shippedLockRel) {
 		rep.skip("MIG003", shippedLockRel)
@@ -56,52 +64,25 @@ func runShippedLockRule(s *scanner, rep *report) {
 		return
 	}
 
-	module, err := moduleRoot()
-	if err != nil {
-		// A hash gate that cannot hash must not report green — the same posture the command itself
-		// takes on a migration it cannot read.
-		rep.violation("MIG003", "the gate engine could not locate its own module, so "+shippedLockRel+
-			" could not be checked", []string{err.Error()})
+	var out bytes.Buffer
 
-		return
-	}
+	err := lockmanifest.Verify(s.root, os.Getenv("DKP_SHIPPED_LOCK_BASE_REF"), false, &out)
+	found := strings.TrimRight(out.String(), "\n")
 
-	cmd := exec.Command("go", "-C", module, "run", "./internal/migrate/shippedlock", "verify")
-	cmd.Env = append(os.Environ(), "DKP_REPO_ROOT="+s.root)
+	switch {
+	case err == nil:
+		rep.print(found)
 
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	case errors.Is(err, lockmanifest.ErrDisagrees):
 		rep.violation("MIG003",
 			"a migration listed in "+shippedLockRel+" was modified or deleted",
-			[]string{strings.TrimRight(string(out), "\n")})
+			[]string{found})
 
-		return
-	}
-
-	rep.print(string(out))
-}
-
-// moduleRoot is the checkout holding this engine's own source: the nearest ancestor of the working
-// directory with a go.mod in it.
-//
-// The working directory is the right place to start because the gate script runs the engine with
-// `go -C <checkout> run`, which puts go — and therefore the program it builds — in the checkout.
-func moduleRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	for {
-		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
-			return dir, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", os.ErrNotExist
-		}
-
-		dir = parent
+	default:
+		// A hash gate that cannot hash must not report green. It also must not claim a migration was
+		// edited: the tree may be untouched and the fault entirely in the checkout.
+		rep.violation("MIG003",
+			shippedLockRel+" could not be checked, so the frozen-migration rule did not run",
+			[]string{strings.TrimSpace(found + "\n" + err.Error())})
 	}
 }

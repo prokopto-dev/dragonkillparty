@@ -181,26 +181,13 @@ func hit(rel string, line int, text string) string {
 	return fmt.Sprintf("%s:%d:%s", rel, line, text)
 }
 
-// commentPrefixes are the whole-line comment openers each rule strips, as data rather than as a
-// mode flag: what counts as a comment is a property of the files a rule reads, and the AGPL
-// firewall's answer is "none of them" (see the package doc).
-var (
-	// hashAndSlash is what the general text rules strip — the two spellings a Go, SQL, YAML, HCL or
-	// TypeScript file uses between them.
-	hashAndSlash = []string{"#", "//"}
-
-	// hashOnly is for the workflow rules. YAML has one comment syntax, and a `//` there is part of
-	// a URL or a path far more often than it is a comment.
-	hashOnly = []string{"#"}
-
-	// cssComments covers a component stylesheet, whose every value is documented in prose beside
-	// it — "a 1px accent border", "fades over 48px at each end". `*` is the continuation line of a
-	// block comment.
-	cssComments = []string{"/*", "*", "//"}
-
-	// webComments adds HTML's opener, because WEB003 reads index.html as well as the stylesheets.
-	webComments = []string{"/*", "*", "//", "#", "<!--"}
-)
+// hashAndSlash is the comment-opener set the rules written in Go strip — the two spellings a Go,
+// SQL, YAML, HCL or TypeScript file uses between them.
+//
+// The config-shaped rules carry their own set as data, in `strip` in internal/repogate/rules.hcl,
+// and the reasoning for each choice lives beside the rule that makes it: what counts as a comment is
+// a property of the files a rule reads, and the AGPL firewall's answer is "none of them".
+var hashAndSlash = []string{"#", "//"}
 
 // isComment reports whether a line is a whole-line comment in one of the given syntaxes.
 //

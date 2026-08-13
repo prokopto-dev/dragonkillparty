@@ -3,7 +3,11 @@ package repogate
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 )
 
 // ENUM001 — a string-enum CHECK comes from a Go catalogue, never from a literal.
@@ -51,18 +55,30 @@ import (
 // so that an exception is visible in the diff a reviewer reads, and it requires a reason for the
 // same purpose the ADR waiver does.
 //
-// # Why this is a hand-written scanner and not an HCL parse
+// # Why this is an HCL parse and not a hand-written scanner (issue #116)
 //
-// Issue #123's direction was hashicorp/hcl/v2, and it is the right library for reading a schema.
-// It is also a new direct dependency, which AGENTS.md makes a human decision, and this rule does
-// not need it: the question is not "what does this schema mean" but "is a vocabulary written down
-// here", and the answer has to survive a file that does not parse. A tainted schema mid-edit, a
-// heredoc a generator half-wrote, a merge conflict marker — an HCL parse fails on all three and a
-// gate that reports "could not parse" on them is a gate that gets bypassed. The scan is
-// line-ordered and stateful for the same reason `make gen` finds its own regions that way.
-
-// enumSchemaRel is the one file this rule reads. Hardcoded, because it is the single source of
-// schema truth and a rule that searched for schemas would find the fixtures.
+// It was a scanner: 90 lines of awk, then the same state machine in Go. Review of the PR that added
+// it found five bypasses, one per round, and every one of them was an INPUT SHAPE THE SCANNER DID
+// NOT MODEL rather than a logic error — a heredoc, a list wrapped over several lines, the keyword
+// and its parenthesis split by a comment. The rate of discovery was the finding: a hand-written
+// parser gets a new bypass per reviewer.
+//
+// hclsyntax hands back the `expr` attribute's EVALUATED string, so those shapes stop existing as a
+// category. Quoted or heredoc, wrapped or not, escaped or not, the parser returns the same SQL, and
+// what is left is one small scan over a real SQL string — the part that genuinely belongs to this
+// rule.
+//
+// TWO THINGS THE AST DOES NOT HAND YOU, and both stay raw scans over the source lines:
+//
+//   - GENERATED REGIONS. The markers are comments, and comments are not in a parsed body.
+//   - THE WAIVER, for the same reason.
+//
+// A SCHEMA THAT DOES NOT PARSE IS A VIOLATION, never a pass. ADR-0018 rejected an HCL parse partly
+// because "a gate that reports could not parse is a gate that gets bypassed"; the answer is that it
+// does not report a pass either. A merge-conflict marker or a half-written heredoc in db/schema.hcl
+// is a tree where `make gen`, Atlas and sqlc are all already failing, and this rule saying so in one
+// line is not what stops that person landing their change. Reporting green on a file nobody could
+// read is.
 const enumSchemaRel = "db/schema.hcl"
 
 var (
@@ -72,15 +88,20 @@ var (
 	enumMarkerDecl = regexp.MustCompile(`^[ \t]*schemaEnum(Begin|End)[ \t]*=[ \t]*"`)
 
 	enumCommentLine = regexp.MustCompile(`^[ \t]*(//|#)`)
-	enumCheckStart  = regexp.MustCompile(`^[ \t]*check[ \t]+"`)
 
 	// The waiver, and the same reason requirement the ADR waiver carries: two whitespace-separated
 	// tokens after the marker, so a separator alone is not a reason.
 	enumWaiverWithReason = regexp.MustCompile(`dkp:enum-literal[ \t]+[^ \t]+[ \t]*[^ \t]`)
 
-	enumLeadingParen = regexp.MustCompile(`^[ \t]*\(`)
-	enumInParen      = regexp.MustCompile(`(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*\(`)
-	enumInEOL        = regexp.MustCompile(`(^|[^A-Za-z0-9_])[Ii][Nn][ \t]*$`)
+	// enumInList is the SQL keyword and the parenthesis that opens its list. `[Ii][Nn]`, because SQL
+	// keywords are case-insensitive: the uppercase the generator emits is a convention rather than a
+	// rule, and a hand-written CHECK — the only kind this rule ever sees — is written in whatever
+	// case its author was typing in. The leading non-word character keeps JOIN and MIN out.
+	//
+	// Whitespace between the two now includes a NEWLINE, which is what the AST bought: the
+	// expression arrives as one string however its author wrapped it, so "the keyword is at the end
+	// of a line" is no longer a separate case to model.
+	enumInList = regexp.MustCompile(`(^|[^A-Za-z0-9_])[Ii][Nn][ \t\r\n]*\(`)
 )
 
 // runEnumRule evaluates ENUM001.
@@ -102,19 +123,11 @@ func runEnumRule(s *scanner, rep *report) {
 		return
 	}
 
-	scan := &enumScan{declared: declaredEnumMarkers(s)}
-
-	for i, line := range lines {
-		scan.line(i+1, line)
-	}
-
-	scan.finish()
-
-	if len(scan.hits) > 0 {
+	if hits := scanEnums(lines, declaredEnumMarkers(s)); len(hits) > 0 {
 		rep.violation("ENUM001",
 			"hand-written string-enum CHECK in "+enumSchemaRel+" — the values come from a Go catalogue "+
 				"between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)",
-			scan.hits)
+			hits)
 	}
 }
 
@@ -163,141 +176,246 @@ func declaredEnumMarkers(s *scanner) map[string]bool {
 	return declared
 }
 
-// enumScan is the line-ordered state of one pass over the schema.
+// finding is one thing the rule has to say, and the line to say it about.
+type finding struct {
+	line int
+	msg  string
+}
+
+// scanEnums returns every ENUM001 finding in a schema, in line order.
 //
-// The scan tracks the check block STRUCTURALLY and carries an unfinished IN list across lines, so a
-// wrapped or heredoc expression is read as the one expression it is. A line-scoped scan misses that
-// shape entirely — `IN (` alone on its line, then the values on theirs — which would have made the
-// longest vocabularies, the ones most worth generating, the ones that walked through.
-type enumScan struct {
-	declared map[string]bool
-	hits     []string
+// THREE PASSES, and the split is the rule's whole shape: the markers and the waiver are comments and
+// are read from the source lines, the CHECK blocks are read from the parsed body, and neither pass
+// can do the other's job.
+func scanEnums(lines []string, declared map[string]bool) []string {
+	regions, found := enumRegions(lines, declared)
+	found = append(found, bareWaivers(lines)...)
+	found = append(found, checkFindings(lines, regions)...)
 
-	inRegion  bool
-	beginLine int
+	slices.SortStableFunc(found, func(a, b finding) int { return a.line - b.line })
 
-	waived     bool
-	bareWaiver int
+	hits := make([]string, 0, len(found))
+	for _, f := range found {
+		hits = append(hits, fmt.Sprintf("%s:%d: %s", enumSchemaRel, f.line, f.msg))
+	}
 
-	inCheck    bool
-	depth      int
-	name       string
-	thisWaived bool
-
-	listDepth int
-	pendingIn bool
-	listLine  int
-	listText  string
-	reported  bool
-
-	inBlockComment bool
+	return hits
 }
 
-// line advances the scan by one source line.
-func (e *enumScan) line(no int, text string) {
-	if strings.Contains(text, "BEGIN GENERATED") {
-		if e.declared[text] {
-			e.inRegion = true
-			e.beginLine = no
-		} else {
-			e.report(no, "BEGIN GENERATED marker no Go catalogue declares — a region is generated "+
-				"only if a catalogue in internal/*/kinds owns it:"+text)
-		}
+// region is a half-open span of generated lines: [begin, end).
+type region struct{ begin, end int }
 
-		return
-	}
+// enumRegions reads the generated-region markers and returns the spans they open, plus a finding per
+// marker that no catalogue owns.
+//
+// An UNCLOSED `BEGIN GENERATED` is itself a violation AND still exempts the rest of the file, which
+// is the pair that matters: without the violation, one unbalanced marker line silently exempts every
+// check after it and the gate stays green while doing nothing; without the exemption, the same line
+// would produce a wall of findings that buries the one that explains them.
+func enumRegions(lines []string, declared map[string]bool) (regions []region, found []finding) {
+	open := 0
 
-	if strings.Contains(text, "END GENERATED") {
-		if e.declared[text] {
-			e.inRegion = false
-		} else {
-			e.report(no, "END GENERATED marker no Go catalogue declares:"+text)
-		}
+	for i, text := range lines {
+		no := i + 1
 
-		return
-	}
-
-	// Comment lines, in both HCL spellings. A gate that fires on the prose documenting it is a gate
-	// people route around — and db/schema.hcl's own header names the enum shape.
-	if enumCommentLine.MatchString(text) {
 		switch {
-		case enumWaiverWithReason.MatchString(text):
-			e.waived = true
-		case strings.Contains(text, "dkp:enum-literal"):
-			e.waived = false
-			e.bareWaiver = no
-		}
+		case strings.Contains(text, "BEGIN GENERATED"):
+			if !declared[text] {
+				found = append(found, finding{no, "BEGIN GENERATED marker no Go catalogue declares — " +
+					"a region is generated only if a catalogue in internal/*/kinds owns it:" + text})
 
-		return
-	}
+				continue
+			}
 
-	if enumCheckStart.MatchString(text) {
-		e.inCheck = true
-		e.depth = 0
-		e.name = checkName(text)
-		e.thisWaived = e.waived
+			open = no
 
-		// A list cannot span two check blocks. Clearing it here means an unbalanced parenthesis in
-		// one block cannot swallow the next one.
-		e.listDepth = 0
-		e.pendingIn = false
-		e.inBlockComment = false
-	}
+		case strings.Contains(text, "END GENERATED"):
+			if !declared[text] {
+				found = append(found, finding{no, "END GENERATED marker no Go catalogue declares:" + text})
 
-	if e.inCheck {
-		// The order of these conditions is load-bearing: the list scan runs only when the check is
-		// neither generated nor waived, so a waived block does not leave half-open list state
-		// behind for the next one. The list is then reported at the line it STARTED on — where the
-		// author is looking — and once, however many quoted values follow it.
-		if !e.inRegion && !e.thisWaived && e.quotedInList(e.stripSQLComments(text), no, text) && !e.reported {
-			e.reported = true
-			e.report(e.listLine, fmt.Sprintf("check %q: %s", e.name, e.listText))
-		}
+				continue
+			}
 
-		e.depth += strings.Count(text, "{") - strings.Count(text, "}")
-		if e.depth <= 0 {
-			e.inCheck = false
-			e.listDepth = 0
-			e.pendingIn = false
-			e.inBlockComment = false
+			if open > 0 {
+				regions = append(regions, region{begin: open, end: no})
+				open = 0
+			}
 		}
 	}
 
-	// A blank line or any other statement ends the waiver's reach: it applies to the check block it
-	// sits above, not to the rest of the file.
-	if !e.inCheck {
-		e.waived = false
+	if open > 0 {
+		found = append(found, finding{
+			open,
+			"unclosed BEGIN GENERATED marker — every check after it is silently exempt",
+		})
+		regions = append(regions, region{begin: open, end: len(lines) + 1})
 	}
+
+	return regions, found
 }
 
-// finish emits the two whole-file findings.
-func (e *enumScan) finish() {
-	// An UNCLOSED `BEGIN GENERATED` is itself a violation. Without it, one unbalanced marker line
-	// exempts every check after it — the whole rest of the file — and the gate stays green while
-	// doing nothing.
-	if e.inRegion {
-		e.report(e.beginLine, "unclosed BEGIN GENERATED marker — every check after it is silently exempt")
+// bareWaivers reports every `dkp:enum-literal` carrying no reason.
+//
+// The reason is the artefact and the marker is only its carrier — a waiver that costs one token is a
+// waiver that gets pasted onto the next literal. This is the same requirement, and the same
+// argument, as ADR001's `adr: n/a — <reason>`.
+func bareWaivers(lines []string) (found []finding) {
+	for i, text := range lines {
+		if !enumCommentLine.MatchString(text) || !strings.Contains(text, "dkp:enum-literal") {
+			continue
+		}
+
+		if !enumWaiverWithReason.MatchString(text) {
+			found = append(found, finding{
+				i + 1,
+				"dkp:enum-literal with no reason — the reason is the point of the waiver",
+			})
+		}
 	}
 
-	if e.bareWaiver > 0 {
-		e.report(e.bareWaiver, "dkp:enum-literal with no reason — the reason is the point of the waiver")
-	}
+	return found
 }
 
-func (e *enumScan) report(line int, msg string) {
-	e.hits = append(e.hits, fmt.Sprintf("%s:%d: %s", enumSchemaRel, line, msg))
-}
+// checkFindings parses the schema and reports every `check` block whose expression writes a
+// vocabulary down.
+//
+// A PARSE FAILURE IS A FINDING. See the package-level note above: the alternative is a rule that
+// reports green on a file nobody could read, which is the failure mode every other rule here is
+// written to avoid.
+func checkFindings(lines []string, regions []region) (found []finding) {
+	src := []byte(strings.Join(lines, "\n"))
 
-// checkName pulls the block name out of a `check "…" {` line. It is what a reviewer keys a waiver
-// to, so it is carried into the message.
-func checkName(text string) string {
-	rest := enumCheckStart.ReplaceAllString(text, "")
-
-	if end := strings.Index(rest, `"`); end >= 0 {
-		return rest[:end]
+	file, diags := hclsyntax.ParseConfig(src, enumSchemaRel, hcl.Pos{Line: 1, Column: 1})
+	if diags.HasErrors() {
+		return []finding{{
+			diagLine(diags[0]),
+			"the schema does not parse, so the string-enum CHECK scan did not run — this is a gate " +
+				"failure, not a pass: " + diags[0].Summary + ": " + diags[0].Detail,
+		}}
 	}
 
-	return rest
+	body, ok := file.Body.(*hclsyntax.Body)
+	if !ok {
+		return []finding{{1, "the schema parsed into a body this rule cannot read — gate failure, not a pass"}}
+	}
+
+	for _, blk := range checkBlocks(body) {
+		line := blk.DefRange().Start.Line
+
+		if inRegion(line, regions) || waived(lines, line) {
+			continue
+		}
+
+		attr, hasExpr := blk.Body.Attributes["expr"]
+		if !hasExpr {
+			continue
+		}
+
+		if !quotedInList(stripSQLComments(exprText(attr, src))) {
+			continue
+		}
+
+		found = append(found, finding{
+			line,
+			fmt.Sprintf("check %q: %s", label(blk), strings.TrimRight(lines[line-1], " \t")),
+		})
+	}
+
+	return found
+}
+
+// diagLine is the line a diagnostic points at, or 1 when it points at nothing.
+//
+// `Subject` is a POINTER and hcl leaves it nil for a diagnostic about the file as a whole, so
+// reading through it is a panic waiting for the one input this branch exists to handle. A gate that
+// crashes on an unparseable schema and one that passes it are the same outcome to a CI log: no rule
+// id, no line, nothing to fix.
+func diagLine(d *hcl.Diagnostic) int {
+	if d.Subject == nil {
+		return 1
+	}
+
+	return d.Subject.Start.Line
+}
+
+// checkBlocks returns every `check` block in the file, at any depth.
+//
+// Depth-independent because the rule is about the CHECK, not about where somebody nested it: Atlas
+// puts them inside `table`, and a schema that grew another container would otherwise silently stop
+// being scanned.
+func checkBlocks(body *hclsyntax.Body) (blocks []*hclsyntax.Block) {
+	for _, blk := range body.Blocks {
+		if blk.Type == "check" {
+			blocks = append(blocks, blk)
+		}
+
+		if blk.Body != nil {
+			blocks = append(blocks, checkBlocks(blk.Body)...)
+		}
+	}
+
+	return blocks
+}
+
+// label is the check's name — what a reviewer keys a waiver to, so it is carried into the message.
+func label(blk *hclsyntax.Block) string {
+	if len(blk.Labels) == 0 {
+		return blk.Type
+	}
+
+	return blk.Labels[0]
+}
+
+func inRegion(line int, regions []region) bool {
+	for _, r := range regions {
+		if line >= r.begin && line < r.end {
+			return true
+		}
+	}
+
+	return false
+}
+
+// waived reports whether a `dkp:enum-literal` waiver with a reason sits immediately above line.
+//
+// IMMEDIATELY ABOVE, through any run of comment lines and nothing else. The waiver applies to the
+// check block it sits on top of, not to the rest of the file — a waiver that outlived its own block
+// would exempt everything after it, which is the bypass the reason requirement exists to make
+// visible rather than to create.
+func waived(lines []string, line int) bool {
+	for i := line - 2; i >= 0; i-- {
+		text := lines[i]
+
+		if strings.TrimSpace(text) == "" || !enumCommentLine.MatchString(text) {
+			return false
+		}
+
+		if strings.Contains(text, "dkp:enum-literal") {
+			return enumWaiverWithReason.MatchString(text)
+		}
+	}
+
+	return false
+}
+
+// exprText returns the SQL a `check` block's expr attribute carries.
+//
+// The EVALUATED string where hclsyntax can produce one, which is the whole point of the parse: a
+// heredoc, a wrapped list and an escaped quote all arrive here as the same SQL that reaches SQLite.
+// Where it cannot — an expression referencing something, which `expr` never is today — the raw
+// source of the expression is scanned instead. That is the fail-closed direction: an expression this
+// rule could not evaluate must not become an expression it did not read.
+func exprText(attr *hclsyntax.Attribute, src []byte) string {
+	if v, diags := attr.Expr.Value(nil); !diags.HasErrors() && !v.IsNull() && v.Type().FriendlyName() == "string" {
+		return v.AsString()
+	}
+
+	rng := attr.Expr.Range()
+	if rng.Start.Byte < 0 || rng.End.Byte > len(src) || rng.Start.Byte > rng.End.Byte {
+		return ""
+	}
+
+	return string(src[rng.Start.Byte:rng.End.Byte])
 }
 
 // stripSQLComments removes SQL comments from an expression before it is scanned.
@@ -306,136 +424,78 @@ func checkName(text string) string {
 // written without them, so the scanner has to see the same thing. Removing the comments is what
 // makes the token boundary between the keyword and its parenthesis insensitive to whatever a person
 // wrote in the gap, rather than a list of gaps the pattern happens to allow — the enumeration
-// failure this rule has now been bitten by three times.
-//
-// Block-comment state is file-scoped, like the list state, because `/*` may close lines later.
+// failure this rule was bitten by three times.
 //
 // STRING CONTEXT IS DELIBERATELY NOT TRACKED, and the direction of that error is the reason it is
 // safe. A `--` inside a value truncates the rest of the line, which can only REMOVE text from the
 // scan — and never the quote that opens the literal it appears in, since that quote comes first and
 // has already been counted. So this can lose the closing parenthesis of a list it has already
-// reported; it cannot hide a vocabulary.
-func (e *enumScan) stripSQLComments(s string) string {
+// entered; it cannot hide a vocabulary.
+func stripSQLComments(s string) string {
 	var out strings.Builder
 
 	for i := 0; i < len(s); {
-		ch := s[i]
-
-		var next byte
-		if i+1 < len(s) {
-			next = s[i+1]
-		}
-
-		if e.inBlockComment {
-			if ch == '*' && next == '/' {
-				e.inBlockComment = false
-				i += 2
-			} else {
-				i++
+		switch {
+		case strings.HasPrefix(s[i:], "--"):
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				return out.String()
 			}
 
-			continue
+			// The newline survives: it is whitespace the keyword and its parenthesis may be
+			// separated by, and swallowing it would fuse the tokens on either side.
+			out.WriteByte('\n')
+
+			i += end + 1
+
+		case strings.HasPrefix(s[i:], "/*"):
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				return out.String()
+			}
+
+			out.WriteByte(' ')
+
+			i += 2 + end + 2
+
+		default:
+			out.WriteByte(s[i])
+			i++
 		}
-
-		if ch == '-' && next == '-' {
-			break
-		}
-
-		if ch == '/' && next == '*' {
-			e.inBlockComment = true
-			i += 2
-
-			continue
-		}
-
-		out.WriteByte(ch)
-		i++
 	}
 
 	return out.String()
 }
 
-// quotedInList reports whether an IN list on this line holds a quoted value, carrying an unfinished
-// list ACROSS LINES:
-//
-//	expr = <<-SQL
-//	  state IN (
-//	    'draft',
-//	    'open'
-//	  )
-//	SQL
-//
-// A line-scoped scanner reads `IN (` with no quote after it, then two value lines with no `IN (` on
-// them, and finds nothing. listDepth is therefore scan-scoped state: the walk runs character by
-// character, entering a list at `IN (`, and staying in it until the parenthesis that closes it
-// however many lines later.
+// quotedInList reports whether any `IN (…)` list in the expression holds a quoted value.
 //
 // Character-wise rather than by regex because the question is about the text BETWEEN the
 // parentheses — `IN (0, 1)` is a boolean and must not match, a quote anywhere in a list is a
 // vocabulary — and because nesting has to be counted rather than assumed away.
-//
-// `[Ii][Nn]`, because SQL keywords are case-insensitive: the uppercase the generator emits is a
-// convention rather than a rule, and a hand-written CHECK — the only kind this rule ever sees — is
-// written in whatever case its author was typing in. The leading non-word character keeps JOIN and
-// MIN out: what precedes the keyword decides, not its case.
-//
-// The keyword and its parenthesis may also be split across the line break — the same shape one
-// token earlier — so a line ending in the bare keyword arms pendingIn and the next line opening
-// with `(` enters the list. A line with nothing left on it returns early rather than clearing that
-// state, which is what carries the keyword across a blank or comment-only line between the two.
-func (e *enumScan) quotedInList(s string, no int, full string) bool {
-	if strings.TrimLeft(s, " \t") == "" {
-		return false
-	}
-
-	i := 0
-
-	if e.listDepth == 0 && e.pendingIn {
-		if loc := enumLeadingParen.FindStringIndex(s); loc != nil {
-			i = loc[1]
-			e.listDepth = 1
-			e.reported = false
-		}
-	}
-
-	e.pendingIn = false
-
-	hit := false
-
-	for i < len(s) {
-		if e.listDepth > 0 {
-			switch s[i] {
-			case '(':
-				e.listDepth++
-			case ')':
-				e.listDepth--
-			case '\'', '"':
-				hit = true
-			}
-
-			i++
-
-			continue
-		}
-
-		loc := enumInParen.FindStringIndex(s[i:])
+func quotedInList(sql string) bool {
+	for i := 0; i < len(sql); {
+		loc := enumInList.FindStringIndex(sql[i:])
 		if loc == nil {
-			if enumInEOL.MatchString(s[i:]) {
-				e.pendingIn = true
-				e.listLine = no
-				e.listText = full
-			}
-
-			break
+			return false
 		}
 
 		// Just past the opening parenthesis the match ended on.
-		i += loc[1]
-		e.listDepth = 1
-		e.listLine = no
-		e.listText = full
-		e.reported = false
+		j := i + loc[1]
+		depth := 1
+
+		for ; j < len(sql) && depth > 0; j++ {
+			switch sql[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			case '\'', '"':
+				return true
+			}
+		}
+
+		i = j
 	}
 
-	return hit
+	return false
 }

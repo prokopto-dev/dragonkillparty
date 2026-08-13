@@ -55,8 +55,8 @@ regions.
 A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
 `internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in
 `internal/ledger/enumgen`'s `catalogues()`. Every string-enum CHECK in the schema is now generated;
-the next one added has no excuse to be a literal — and **`ENUM001` in `scripts/repo-gates.sh` is the
-machine half of that sentence**, because the three `CheckMatchesCatalogue` tests each compare their
+the next one added has no excuse to be a literal — and **`ENUM001` in `internal/repogate` (run by
+`scripts/repo-gates.sh`) is the machine half of that sentence**, because the three `CheckMatchesCatalogue` tests each compare their
 own region with their own catalogue and none of them can see a seventh vocabulary that has no
 catalogue at all. A `check` block in `db/schema.hcl` whose `expr` lists quoted values — in either SQL
 quote form, since SQLite makes a string literal out of `'x'` and out of a double-quoted token that
@@ -139,7 +139,7 @@ and no backup discipline.
 
 - `db/migrations-sqlite/SHIPPED.lock` lists them, one `filename sha256` row per migration. The
   `schema-migration-reviewer` subagent checks the diff against it.
-- **`MIG003` in `scripts/repo-gates.sh` is the machine half**, on every PR, in `ci-required`. Two
+- **`MIG003` in `internal/repogate` is the machine half**, on every PR, in `ci-required`. Two
   assertions, and the second is what makes the first mean anything:
   1. Every listed file exists and still hashes to its recorded value.
   2. The manifest at the **merge base** is an exact byte **prefix** of the manifest now.
@@ -173,6 +173,13 @@ SQLite's `ALTER TABLE` cannot drop or retype a column, so any such change become
 **Let Atlas generate that rebuild.** A hand-written rebuild silently loses every trigger, index and
 partial index attached to the old table — including the append-only triggers, which is exactly the
 failure mode where the product's trust argument evaporates without a single test going red.
+
+A rebuild's Up block contains `DROP TABLE` and `ALTER TABLE … RENAME TO`, and that is fine:
+**`MIG001` is scoped to the Down block** (issue #137), which it finds through the same
+`-- +goose Down` marker `make migration` truncates at. A gate that failed the documented path would
+teach exactly the hand-written rebuild this section is warning against, so
+`TestRepoGates_AtlasTableRebuild_InTheUpBlock_PassesMIG001` drives the real fixture through the real
+gate.
 
 If a rebuild touches a table that carries hand-allowlisted objects, the migration must **re-create
 them after the rename**, in the same file, and a test must assert the trigger still fires.

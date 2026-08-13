@@ -1831,6 +1831,45 @@ func TestRepoGates_UnclosedGeneratedMarker_FailsGate(t *testing.T) {
 		"ENUM001 must name the unbalanced marker: it silently exempts every check below it\n%s", out)
 }
 
+// TestRepoGates_UnparseableSchema_FailsEnumGate is the fixture the HCL parse owes (issue #116).
+//
+// ENUM001 reads db/schema.hcl with hclsyntax now, which buys it every input shape a hand-written
+// scanner had to model one bypass at a time — and costs it the one thing the scanner had: an answer
+// on a file that does not parse. ADR-0018 named that as the reason to keep the scanner, so the
+// replacement has to say what it does instead, and prove it.
+//
+// It FAILS. A schema carrying a merge-conflict marker or a half-written heredoc is a tree where
+// `make gen`, Atlas and sqlc are already failing; this rule saying so costs that author nothing.
+// Reporting green on a file nobody could read is the failure that would matter, and it is the exact
+// shape of vacuous pass every other rule in this package is written against.
+func TestRepoGates_UnparseableSchema_FailsEnumGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// A merge that went wrong — the most likely way this file ever stops parsing.
+	writeRepoFile(t, tree, "db/schema.hcl", `table "bid_session" {
+<<<<<<< HEAD
+  check "bid_session_state_enum" {
+    expr = "state IN ('draft', 'open')"
+  }
+=======
+>>>>>>> theirs
+}
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "a schema the enum scan could not read must not report green\n%s", out)
+	require.Contains(t, out, "ENUM001", "%s", out)
+	require.Contains(t, out, "did not run",
+		"the failure must say the SCAN did not run. \"hand-written enum CHECK\" would send the "+
+			"reader looking for a literal that may not be there\n%s", out)
+	require.NotContains(t, out, tree,
+		"reported paths must be repo-root-relative, not absolute temp paths\n%s", out)
+}
+
 // TestRepoGates_FabricatedGeneratedMarker_FailsGate closes the self-service exemption, and it is the
 // bypass that mattered most: everything else ENUM001 does is undone by two comment lines without it.
 //

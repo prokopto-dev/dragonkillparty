@@ -4,33 +4,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
 	"github.com/stretchr/testify/require"
 )
 
-// scanSchema runs the ENUM001 state machine over a schema body with the given declared markers, and
-// returns what it reported.
+// scanSchema runs ENUM001 over a schema body with the given declared markers, and returns what it
+// reported.
 //
-// Calling the scanner directly is the point of this file. test/repo's fixture drives the same logic
+// Calling the rule directly is the point of this file. test/repo's fixture drives the same logic
 // through `bash scripts/repo-gates.sh` against a t.TempDir() tree — one subprocess and one
 // filesystem per case — which is why the shell version had ONE fixture carrying sixteen interleaved
 // cases rather than sixteen tests. Both are worth having: that one proves the gate fires end to
-// end, these prove each transition of the machine on its own, and a failure here names the
-// transition instead of the tree.
+// end, these prove each case on its own, and a failure here names the case instead of the tree.
+//
+// The cases below are the ones the awk scanner was specified by (issue #116), and they are the
+// specification of the HCL parse that replaced it: what a rule DECIDES is not allowed to change
+// when how it decides does.
 func scanSchema(t *testing.T, body string, declared ...string) []string {
 	t.Helper()
 
-	scan := &enumScan{declared: make(map[string]bool)}
+	markers := make(map[string]bool, len(declared))
 	for _, marker := range declared {
-		scan.declared[marker] = true
+		markers[marker] = true
 	}
 
-	for i, line := range strings.Split(strings.TrimSuffix(body, "\n"), "\n") {
-		scan.line(i+1, line)
-	}
-
-	scan.finish()
-
-	return scan.hits
+	return scanEnums(strings.Split(strings.TrimSuffix(body, "\n"), "\n"), markers)
 }
 
 // TestEnumScan_Vocabularies_AreReportedAndBooleansAreNot walks every shape the rule has to tell
@@ -87,11 +85,18 @@ func TestEnumScan_Vocabularies_AreReportedAndBooleansAreNot(t *testing.T) {
 			why:  "no catalogue could generate a boolean",
 		},
 		{
-			name: "a boolean whose trailing comment quotes two enum values",
-			expr: "expr = \"retry IN (0, 1)\" -- never 'draft', never 'open'",
+			name: "a boolean whose SQL comment quotes two enum values",
+			expr: "expr = \"retry IN (0, 1) -- never 'draft', never 'open'\"",
 			want: false,
 			why: "comments are STRIPPED, not merely tolerated — otherwise every documented CHECK " +
 				"reads as a vocabulary",
+		},
+		{
+			name: "a boolean whose HCL comment quotes two enum values",
+			expr: "expr = \"retry IN (0, 1)\" // never 'draft', never 'open'",
+			want: false,
+			why: "the same case one level out: a comment ABOUT the expression is not part of it, and " +
+				"the parse is what makes that free rather than a shape to model",
 		},
 		{
 			name: "a shape check that quotes one value",
@@ -243,6 +248,35 @@ func TestEnumScan_Waiver_NeedsAReason(t *testing.T) {
 	require.Contains(t, reach, "second_enum",
 		"a waiver that outlived its own check block would exempt everything after it\n%s", reach)
 	require.NotContains(t, reach, "bid_tier_enum", "%s", reach)
+}
+
+// TestEnumScan_UnparseableSchema_IsAFinding is the fail-closed half of the parse (issue #116), and
+// the second case is the one a fixture cannot reach.
+//
+// ADR-0018 rejected an HCL parse partly because "a gate that reports could not parse is a gate that
+// gets bypassed". The answer is that it does not report a PASS either — so the branch has to produce
+// a finding, and it has to survive a diagnostic with no Subject.
+//
+// `hcl.Diagnostic.Subject` is a POINTER, and hcl leaves it nil for a diagnostic about the file as a
+// whole rather than about a position in it. Reading through it unguarded is a panic on exactly the
+// input this branch exists to handle, and a gate that panics tells a CI log the same thing as a gate
+// that passes: no rule id, no line, nothing to fix. A parser diagnostic normally carries a subject,
+// which is why the malformed-schema fixture cannot exercise this and the constructed one can.
+func TestEnumScan_UnparseableSchema_IsAFinding(t *testing.T) {
+	t.Parallel()
+
+	hits := scanSchema(t, "table \"t\" {\n  check \"c\" {\n    expr = \n  }\n}\n")
+
+	require.Len(t, hits, 1, "%v", hits)
+	require.Contains(t, hits[0], "did not run",
+		"the finding must say the SCAN did not run: \"hand-written enum CHECK\" would send the reader "+
+			"looking for a literal that may not be there\n%s", hits[0])
+
+	require.Equal(t, 1, diagLine(&hcl.Diagnostic{Summary: "a whole-file complaint", Detail: "no subject"}),
+		"a diagnostic with no Subject must report line 1, not panic")
+	require.Equal(t, 7, diagLine(&hcl.Diagnostic{Subject: &hcl.Range{Start: hcl.Pos{Line: 7}}}),
+		"a diagnostic WITH a subject must still name its line — a fallback that swallowed every "+
+			"position would make the finding unactionable")
 }
 
 // TestEnumScan_IndexPredicate_IsNotACheck is #97: a partial index over a SUBSET of a vocabulary is

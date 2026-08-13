@@ -46,8 +46,29 @@ type textRule struct {
 }
 
 // runTextRules evaluates every config-shaped rule in the catalogue against the tree.
+//
+// A catalogue that cannot be read is GATE000 — the same posture a missing toolchain gets, and for
+// the same reason: these rules are the whole of laws 1-4's text half, the money rules, the design
+// tokens, the supply-chain pins and the AGPL firewall, and reporting green having run none of them
+// is the one outcome that must be impossible.
 func runTextRules(s *scanner, rep *report) {
-	for _, rule := range textRules() {
+	rules, err := textRules()
+
+	reportTextRules(rules, err, s, rep)
+}
+
+// reportTextRules is the half a test can drive with a catalogue that failed to load. The failure
+// path is the one branch here that no fixture tree can reach — the catalogue is embedded, so a tree
+// cannot corrupt it — and it is also the branch whose regression would silently disable half the
+// rules in the repository.
+func reportTextRules(rules []textRule, err error, s *scanner, rep *report) {
+	if err != nil {
+		rep.violation("GATE000", errNoCatalogue.Error()+", so no text rule ran", []string{err.Error()})
+
+		return
+	}
+
+	for _, rule := range rules {
 		if !s.hasTree(rule.tree) {
 			if !rule.quiet {
 				rep.skip(rule.id, rule.tree)
