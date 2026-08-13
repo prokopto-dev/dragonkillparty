@@ -134,7 +134,8 @@ Three settings guilds argue about, so set them deliberately:
 | Missed runs after downtime | apply once · apply once per missed period | Apply per period, or the maths quietly differs from your stated rules. |
 | Floor | a value below which decay stops | Without one, a lapsed member decays asymptotically forever. |
 
-The run is idempotent on `(pool_id, cadence_period)`, so a job that fires twice decays once.
+The run is idempotent on `(pool_id, kind, cadence_period)`, so a job that fires twice decays once —
+and a cap running the same week is a separate run rather than a silent no-op.
 
 ### `decay_window` — earnings expire
 

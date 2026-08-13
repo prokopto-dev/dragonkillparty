@@ -9,6 +9,7 @@ import (
 
 	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
@@ -189,4 +190,65 @@ func TestAccountKinds_SeededSystemAccounts_MatchTheCatalogue(t *testing.T) {
 	require.Equal(t, want, seeded,
 		"the seeded system accounts and internal/account/kinds disagree — a key with no row cannot be "+
 			"resolved by strategy.Ctx.SystemAccount, and a row with no key holds a balance nothing names")
+}
+
+// TestDecayKinds_AppliedSchema_MatchesCatalogue is the applied-schema half for decay_run's two
+// vocabularies, here for the reason the three above are: internal/decay/kinds is a leaf with no
+// repository imports, and this package already has the migrated-database harness.
+func TestDecayKinds_AppliedSchema_MatchesCatalogue(t *testing.T) {
+	t.Parallel()
+
+	s := store.NewDB(t)
+
+	var ddl string
+
+	require.NoError(t,
+		s.QueryRowForTest(t,
+			`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'decay_run'`).Scan(&ddl),
+		"read the applied decay_run DDL")
+
+	tests := []struct {
+		constraint string
+		expr       string
+	}{
+		{constraint: "decay_run_kind_enum", expr: decaykinds.KindCheckExpr()},
+		{constraint: "decay_run_state_enum", expr: decaykinds.StateCheckExpr()},
+	}
+
+	for _, tt := range tests {
+		want := fmt.Sprintf("CONSTRAINT %q CHECK (%s)", tt.constraint, tt.expr)
+
+		require.Contains(t, ddl, want,
+			"the migrated database's decay_run does not carry the catalogue's %s — either a migration is "+
+				"missing after a catalogue change, or a later migration rebuilt the table and dropped the "+
+				"constraint. Applied DDL:\n%s", tt.constraint, ddl)
+	}
+}
+
+// TestDecayKinds_Kinds_AreLedgerBatchKinds is the assertion internal/decay/kinds' package comment
+// promises, and the reason that catalogue does not import this one.
+//
+// The three cadence families spell the same three strings as ledger_batch's decay, cap and
+// start_points kinds, and they must: a run of family X posts a batch of kind X, so a mismatch is a
+// decay run whose batch says something else. But the two vocabularies are not the same LIST —
+// ledger_batch has fourteen kinds and there are three cadence families — so importing one from the
+// other would make adding a fifteenth batch kind look like adding a fourth family. Agreement is
+// asserted here instead, in the one package that can see both without either depending on the other.
+//
+// SUBSET, not equality, and in one direction only: every cadence family is a batch kind. The reverse
+// is false by design — 'award', 'reversal' and 'import' post no run row.
+func TestDecayKinds_Kinds_AreLedgerBatchKinds(t *testing.T) {
+	t.Parallel()
+
+	batchKinds := kinds.BatchKinds()
+
+	for _, family := range decaykinds.Kinds() {
+		require.Contains(t, batchKinds, family,
+			"decay_run.kind %q is not a ledger_batch kind. A run of that family would post a batch whose "+
+				"kind the ledger's CHECK refuses, from inside the commit transaction — or, worse, one "+
+				"spelled differently from the run that produced it.", family)
+	}
+
+	require.True(t, kinds.IsBatchKind(decaykinds.KindDecay),
+		"the ledger's runtime validation and the cadence catalogue disagree about 'decay'")
 }

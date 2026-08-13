@@ -87,7 +87,7 @@ The header is a convenience layer over real uniqueness constraints, never a subs
 |---|---|
 | A tick parsed from an artifact | unique `(raid_id, content_sha256)` |
 | A bid settlement | unique `ledger_batch.source_ref = "bid_session:{id}"` |
-| A decay, cap or start-points run | unique `(pool_id, cadence_period)` |
+| A decay, cap or start-points run | unique `(pool_id, kind, cadence_period)` — the `kind` separates the three families, which share one cadence vocabulary and one table (ADR-0024) |
 | An artifact upload | content-addressed by sha256 |
 | A raid submission commit | unique `source_ref = "raid_submission:{id}"` |
 

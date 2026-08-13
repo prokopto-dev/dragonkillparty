@@ -363,7 +363,11 @@ Multi-guild is a deliberate future project, not a retrofit that hides in this sc
   nightly. It is **load-bearing, not droppable**: the log remains the only source of truth, but
   measurement found no honest fallback that serves the standings page from it, so losing the cache is
   a *rebuild* and the nightly replay is a correctness dependency rather than hygiene.
-- **Decay is posted, not computed** — explicit batches with idempotency key `(pool_id, cadence_period)`.
+- **Decay is posted, not computed** — explicit batches with idempotency key
+  `(pool_id, kind, cadence_period)`. The `kind` is load-bearing rather than decorative: `decay`, `cap`
+  and `start_points` share one cadence vocabulary and one `decay_run` table, so a two-part key makes
+  the second family of any period collide with the first and look successfully deduplicated
+  (ADR-0024).
 - **Zero-sum splits use largest-remainder allocation** with a deterministic tiebreak on `account_id`.
   Credits must sum to exactly the debit; rounding each credit independently mints or destroys points.
 - **Strategies are pure.** No `internal/store`, no `time.Now`, no `math/rand`. Clock and a seeded RNG

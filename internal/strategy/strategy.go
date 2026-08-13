@@ -306,7 +306,7 @@ type AdjustmentEvent struct {
 // what keeps a balance literally a SUM and makes "why did my points change?" answerable.
 type DecayRun struct {
 	// PeriodKey identifies the cadence period ('2024-06'), and is the second half of the
-	// idempotency key (pool_id, cadence_period) that makes a re-run a no-op rather than a second
+	// idempotency key (pool_id, kind, cadence_period) that makes a re-run a no-op rather than a second
 	// decay.
 	PeriodKey string
 

@@ -156,7 +156,7 @@ product is a client of this package.
 8. `PlanReversal` per strategy. Reversal is not always negation — this is where the interface earns
    its shape.
 9. `dkp verify-ledger` + the nightly replay job.
-10. Pools, `pool_config_change`, `decay_run` with `UNIQUE(pool_id, cadence_period)`.
+10. Pools, `pool_config_change`, `decay_run` with `UNIQUE(pool_id, kind, cadence_period)`.
 11. **`seed.Perf` v1 (ledger-only): accounts + 520k ledger entries**, plus the hand-written standings
     query spike run against it *before any API exists*. This is the experiment that decides whether
     `balance_snapshot` survives (see `docs/development/verify-before-phase-0.md`, item 5).
@@ -195,8 +195,8 @@ strategies — plus the four subsystems in items 9, 10, 12 and 13.
 | 6 | `PointStrategy`, injected `Clock`/`Rng`, purity test | **done** | `internal/strategy/{strategy,proposal}.go`, `arch_test.go` |
 | 7 | Thirteen strategies | **1 of 13** | `fixed_price` only. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) (`tick`, `start_points`, `cap`) · [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) (`decay_percent`, `decay_window`) · [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) (the four bid strategies) · [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196) (`zero_sum`, `attendance_weighted`) · [#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) (`loot_council`) |
 | 8 | `PlanReversal` per strategy | **ships with each** | `FixedPrice.PlanReversal` and `BatchProposal.Negated` set the shape, including dropping `NonNegative` |
-| 9 | `dkp verify-ledger` + nightly replay | **not started** | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198). ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page |
-| 10 | Pools, `pool_config_change`, `decay_run` | **pool only** | `pool` exists in the minimal form the ledger needs (id, name, strategy id/version, balance kinds). `pool_config_change` [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191) and `decay_run` [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) are not in the schema; the semantics both must satisfy are `.claude/rules/decay-and-jobs.md` |
+| 9 | `dkp verify-ledger` + nightly replay | **done** | `cmd/dkp/verify_ledger.go`, `internal/ledger/verify.go`, `.github/workflows/nightly-verify.yml`. ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page, which is what [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) then shipped against |
+| 10 | Pools, `pool_config_change`, `decay_run` | **done** | `db/schema.hcl`; `db/migrations-sqlite/000005_pool_config_versioning_and_decay_run.sql`; `internal/decay/kinds`; `test/migrations/config_history_and_decay_test.go`. `pool` also gained `strategy_config_json` — the configuration `pool_config_change` versions. `decay_run`'s key is `(pool_id, kind, cadence_period)` per [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md); the semantics both tables must satisfy are `.claude/rules/decay-and-jobs.md`. No writer yet: the strategies are items 7 and 12 |
 | 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
 | 12 | Tier-aware auction resolution | **not started** | Lands with the bid strategies, [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
 | 13 | `internal/swap` | **not started** | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
@@ -256,7 +256,7 @@ property holds for every shipped strategy; `internal/strategy` provably cannot i
 |---|---|---|
 | The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
 | `dkp verify-ledger` + the nightly replay — now a correctness dependency, not a check | 9 | [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) |
-| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, cadence_period)` — settle [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206) first, or `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
+| `pool_config_change` and `decay_run` with `UNIQUE(pool_id, kind, cadence_period)` — kind-scoped by [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md), which settled [#206](https://github.com/prokopto-dev/dragonkillparty/issues/206): un-scoped, `cap` silently no-ops in any period decay already ran | 10 | [#191](https://github.com/prokopto-dev/dragonkillparty/issues/191), [#192](https://github.com/prokopto-dev/dragonkillparty/issues/192) |
 | Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
 | `internal/swap` | 13 | [#199](https://github.com/prokopto-dev/dragonkillparty/issues/199) |
 

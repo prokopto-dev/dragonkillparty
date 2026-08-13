@@ -39,6 +39,23 @@ type BalanceSnapshot struct {
 	UpdatedAt   int64
 }
 
+type DecayRun struct {
+	ID                 string
+	PoolID             string
+	Kind               string
+	CadencePeriod      string
+	ScheduledForAt     int64
+	ExecutedAt         *int64
+	State              string
+	DryRunResultJson   string
+	ConfigSnapshotJson string
+	LedgerBatchID      *string
+	TriggeredBy        *string
+	Error              string
+	CreatedAt          int64
+	UpdatedAt          int64
+}
+
 type DkpMetum struct {
 	Key       string
 	Value     string
@@ -112,12 +129,28 @@ type LedgerEntry struct {
 }
 
 type Pool struct {
-	ID              string
-	Name            string
-	NameNorm        string
-	StrategyID      string
-	StrategyVersion string
-	BalanceKinds    string
-	CreatedAt       int64
-	UpdatedAt       int64
+	ID                 string
+	Name               string
+	NameNorm           string
+	StrategyID         string
+	StrategyVersion    string
+	BalanceKinds       string
+	CreatedAt          int64
+	UpdatedAt          int64
+	StrategyConfigJson string
+}
+
+type PoolConfigChange struct {
+	ID                  string
+	PoolID              string
+	ChangedAt           int64
+	ChangedBy           *string
+	FromStrategyID      string
+	FromStrategyVersion string
+	FromConfigJson      string
+	ToStrategyID        string
+	ToStrategyVersion   string
+	ToConfigJson        string
+	Reason              string
+	MigrationBatchID    *string
 }

@@ -357,6 +357,7 @@ jobs:
               - 'internal/audit/kinds/**'
               - 'internal/clock/**'
               - 'internal/core/**'
+              - 'internal/decay/kinds/**'
               - 'internal/ledger/**'
               - 'internal/schemaenum/**'
               - 'internal/store/**'
