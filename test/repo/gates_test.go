@@ -30,6 +30,7 @@ import (
 
 	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
 	ledgerkinds "github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
@@ -1935,10 +1936,12 @@ table "bid_session" {
 // the pairs the registered catalogues own — no fabricated region, and no catalogue whose region has
 // gone missing from the schema.
 //
-// The three catalogues are named here rather than enumerated, which is deliberate: a fourth added to
-// `internal/ledger/enumgen`'s catalogues() puts a fourth marker pair in the schema, and this test
+// The four catalogues are named here rather than enumerated, which is deliberate: a fifth added to
+// `internal/ledger/enumgen`'s catalogues() puts a fifth marker pair in the schema, and this test
 // then fails until it is listed here too. That is the correct direction for it to break — the
-// alternative, reflecting over the tree, would silently accept a catalogue nobody registered.
+// alternative, reflecting over the tree, would silently accept a catalogue nobody registered. It
+// broke exactly that way when internal/decay/kinds landed with decay_run (#192), which is the
+// evidence the direction is right.
 func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
 	t.Parallel()
 
@@ -1948,6 +1951,7 @@ func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
 		ledgerkinds.SchemaEnumBlock(),
 		auditkinds.SchemaEnumBlock(),
 		accountkinds.SchemaEnumBlock(),
+		decaykinds.SchemaEnumBlock(),
 	} {
 		lines := strings.Split(block, "\n")
 		require.GreaterOrEqual(t, len(lines), 2, "a generated block is at least its two markers")

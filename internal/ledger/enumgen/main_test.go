@@ -10,6 +10,7 @@ import (
 
 	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
@@ -19,7 +20,7 @@ import (
 //
 // The last one is the case worth a test: a generator that cannot find its target and succeeds
 // anyway leaves every gate downstream reporting a clean tree it never wrote to. It matters more with
-// every region added — there are THREE — because a file carrying only some of them must refuse, not
+// every region added — there are FOUR — because a file carrying only some of them must refuse, not
 // quietly rewrite the regions it recognises and leave the rest frozen.
 
 // fixture writes a miniature schema.hcl into t.TempDir() and returns its path. The markers are taken
@@ -34,11 +35,11 @@ func fixture(t *testing.T, body string) string {
 	return path
 }
 
-// markedSchema returns a fixture body whose three generated regions ALL hold stale values: each
+// markedSchema returns a fixture body whose four generated regions ALL hold stale values: each
 // catalogue's real rendered block with one value dropped from its CHECK. Every marker survives, so
-// the generator's job is to notice all three regions are out of date and replace them.
+// the generator's job is to notice all four regions are out of date and replace them.
 //
-// All three are stale rather than one, because the failure this shape catches is a generator that
+// All four are stale rather than one, because the failure this shape catches is a generator that
 // stops after the first render — which would leave the later regions frozen while reporting success.
 func markedSchema(t *testing.T) string {
 	t.Helper()
@@ -54,7 +55,8 @@ func markedSchema(t *testing.T) string {
 
 	return "table \"ledger_batch\" {\n" + stale(kinds.SchemaEnumBlock(), "'attendance', ") + "\n}\n\n" +
 		"table \"audit_log\" {\n" + stale(auditkinds.SchemaEnumBlock(), "'boot', ") + "\n}\n\n" +
-		"table \"account\" {\n" + stale(accountkinds.SchemaEnumBlock(), "'write_off', ") + "\n}\n"
+		"table \"account\" {\n" + stale(accountkinds.SchemaEnumBlock(), "'write_off', ") + "\n}\n\n" +
+		"table \"decay_run\" {\n" + stale(decaykinds.SchemaEnumBlock(), "'skipped', ") + "\n}\n"
 }
 
 func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
@@ -73,6 +75,7 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	require.Contains(t, string(got), auditkinds.OutcomeCheckExpr())
 	require.Contains(t, string(got), accountkinds.KindCheckExpr())
 	require.Contains(t, string(got), accountkinds.SystemKeyCheckExpr())
+	require.Contains(t, string(got), decaykinds.StateCheckExpr())
 
 	// And the rewrite is exactly what rendering the ORIGINAL through every catalogue would produce —
 	// no drift between the generator's write path and the drift tests' comparison.
@@ -83,6 +86,9 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	require.NoError(t, err)
 
 	want, err = accountkinds.RenderSchemaHCL(want)
+	require.NoError(t, err)
+
+	want, err = decaykinds.RenderSchemaHCL(want)
 	require.NoError(t, err)
 
 	require.Equal(t, want, string(got))

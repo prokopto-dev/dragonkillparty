@@ -491,7 +491,8 @@ test-perf:
 # any host — Linux CI included — and holds both halves, in both directions.
 COVERAGE_FLOOR          := 95
 COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
-                           ./internal/account/kinds ./internal/schemaenum ./internal/strategy
+                           ./internal/account/kinds ./internal/decay/kinds ./internal/schemaenum \
+                           ./internal/strategy
 #
 # Cacheable (issue #155), for the same reason as test-property: none of these packages shells out.
 # A cached package replays its `ok ... coverage: N%` line, so the awk below measures the same
@@ -693,10 +694,11 @@ labels-sync:
 #
 # `find` includes the tree names, so a file that gen DELETES is caught as well as one it rewrites.
 #
-# db/schema.hcl is in the list even though it is hand-authored schema truth, because THREE REGIONS of
+# db/schema.hcl is in the list even though it is hand-authored schema truth, because FOUR REGIONS of
 # it are not: scripts/gen-enums.sh rewrites the ledger_batch enum CHECKs from internal/ledger/kinds,
-# audit_log's actor_kind and outcome CHECKs from internal/audit/kinds, and account's kind and
-# system_key CHECKs from internal/account/kinds, each between its own GENERATED markers. Listing the
+# audit_log's actor_kind and outcome CHECKs from internal/audit/kinds, account's kind and
+# system_key CHECKs from internal/account/kinds, and decay_run's state CHECK from
+# internal/decay/kinds, each between its own GENERATED markers. Listing the
 # file is what makes a hand-edit of any region fail here with "run make gen" instead of surviving
 # until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \

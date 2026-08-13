@@ -2,7 +2,8 @@
 // renderer and the marked-region rewrite that `make gen` applies to db/schema.hcl.
 //
 // The VALUES live in the catalogue that owns the table — internal/ledger/kinds for ledger_batch,
-// internal/audit/kinds for audit_log, internal/account/kinds for account — and nothing in here knows
+// internal/audit/kinds for audit_log, internal/account/kinds for account, internal/decay/kinds for
+// decay_run — and nothing in here knows
 // a single enum value. The split is
 // what lets a second catalogue exist at all: before it, CheckExpr and the region rewrite lived in
 // internal/ledger/kinds, so audit_log's catalogue would have had to either import the ledger's (a

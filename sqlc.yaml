@@ -133,3 +133,33 @@ sql:
             go_type:
               type: "byte"
               slice: true
+          # pool_config_change and decay_run (Phase 1, #191/#192). Same affinity loss again, and the
+          # first table to hit it with a nullable INTEGER as well as nullable TEXT: without these
+          # five, `make gen` writes `interface{}` into the two generated row structs. Each is pinned
+          # to what emit_pointers_for_null_types would have produced.
+          #
+          # changed_by and triggered_by are DEFERRED FKs — app_user is a Phase 2 table — so they are
+          # nullable TEXT with no constraint today and stay *string when the FK lands. executed_at is
+          # NULL until a run reaches a terminal state, which is a fact about the row rather than a
+          # zero Micros; ledger_batch_id and migration_batch_id are NULL for a run or a config change
+          # that posted no batch.
+          - column: "pool_config_change.changed_by"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "pool_config_change.migration_batch_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "decay_run.executed_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "decay_run.ledger_batch_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "decay_run.triggered_by"
+            go_type:
+              type: "string"
+              pointer: true

@@ -1144,3 +1144,344 @@ table "event_outbox" {
 
   strict = true
 }
+
+// ============================================================================
+// Pool configuration history and decay cadence — Phase 1, issues #191 and #192.
+//
+// Two tables, both hanging off `pool`, both about the same problem: EQdkp Plus kept every decay,
+// cap and start-points rule in `data/<md5>/eqdkp/apa/apatab.php` — a PHP-serialised file on disk,
+// OUTSIDE the database (docs/design/01-domain-model.md §7, row 15 of the parity table). A DB-only
+// backup silently lost every rule the guild had, and nothing anywhere recorded that a rule had
+// changed or that a decay had already run. Ours are `pool.strategy_config_json` plus these two:
+// in the database, in the backup, in the audit log, previewable, and idempotent per period.
+//
+// They are declared LAST in this file, after every table they reference. HCL resolves references
+// after the parse, so the order is a readability choice rather than a requirement — but a reader
+// checking that `migration_batch_id` really points at the ledger should not have to scroll up.
+//
+// NEITHER TABLE CARRIES AN APPEND-ONLY TRIGGER, and for `pool_config_change` that is a decision
+// rather than an omission. Domain model §21 lists exactly four tables under "Immutable (DB
+// trigger)" — ledger_batch, ledger_entry, bid and audit_log — and this is not one of them. The
+// argument against adding a fifth is the one 000004_audit_and_outbox.sql already writes down about
+// audit_log's ABSENT delete trigger: a guardrail that normal operation has to drop is not a
+// guardrail. `DELETE /pools/{pool_id}` exists in docs/design/02-api-design.md:293, and a no-delete
+// trigger on a pool's config history is a trigger that a pool deletion has to work around. What
+// makes the history trustworthy here is structural instead: the row has no `updated_at` and no
+// mutable column — it is a from→to pair and the reason for it, written once — so there is nothing
+// an UPDATE could legitimately say.
+// ============================================================================
+
+// pool_config_change — a pool's strategy configuration, versioned as events
+// (docs/design/01-domain-model.md:818).
+//
+// The point of the table is in its shape: it records BOTH SIDES of every change. `pool` holds the
+// configuration in force; this holds what it was, what it became, who did it and why. A change is
+// therefore never "overwriting the config" — it is an append here plus an update there, and the
+// question "what was this pool's decay rule in March?" is answerable from rows rather than from a
+// backup nobody took.
+//
+// The FULL domain-model shape, with one deferred FK (changed_by) and one real one
+// (migration_batch_id).
+//
+// WHY from_config_json AND to_config_json CARRY NO DEFAULT while every other *_json column in this
+// schema defaults to '{}'. They are SNAPSHOTS, not settings: a snapshot that defaults to '{}'
+// records "the configuration was empty" whenever a writer forgets to pass it, which is a lie the
+// history cannot be distinguished from. The domain model writes them NOT NULL with no default for
+// that reason, and the convention in canonical §8 is about configuration columns — decay_run's own
+// two *_json columns below take the default, because "no dry run has been computed yet" genuinely
+// is the empty document.
+table "pool_config_change" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // Real FK -> pool(id). NO ON DELETE CASCADE, deliberately: matching the domain model, and because
+  // a pool whose history would be silently erased by its own deletion is the failure this table
+  // exists to prevent. A pool with config history is a pool a delete has to deal with explicitly.
+  column "pool_id" {
+    null = false
+    type = text
+  }
+
+  // Micros. The event's time, and the second half of ix_pcc_pool's ordering. There is no
+  // created_at/updated_at pair: this row IS the event, so a separate "when was it recorded" would be
+  // the same number, and an updated_at would be a column describing a mutation that cannot happen.
+  column "changed_at" {
+    null = false
+    type = integer
+  }
+
+  // DEFERRED FK -> app_user(id). app_user is a Phase 2 table (docs/design/01-domain-model.md §5).
+  // Nullable TEXT, no foreign key until it lands. NULL is also the honest value for a change made by
+  // the importer or by a boot-time migration, which have no user behind them.
+  column "changed_by" {
+    null = true
+    type = text
+  }
+
+  // The configuration in force BEFORE this change. strategy_id and strategy_version mirror the
+  // columns of the same name on pool; from_config_json is what pool.strategy_config_json held (that
+  // column is itself deferred on pool — see the pool table above — so the first writer of this table
+  // lands with or after it).
+  column "from_strategy_id" {
+    null = false
+    type = text
+  }
+
+  column "from_strategy_version" {
+    null = false
+    type = text
+  }
+
+  column "from_config_json" {
+    null = false
+    type = text
+  }
+
+  // The configuration in force AFTER it. Compared against the from_* trio by the officer-facing
+  // diff, never queried into: canonical §8's "*_json is validated on write and read whole".
+  column "to_strategy_id" {
+    null = false
+    type = text
+  }
+
+  column "to_strategy_version" {
+    null = false
+    type = text
+  }
+
+  column "to_config_json" {
+    null = false
+    type = text
+  }
+
+  // Free text from the officer who made the change. Defaults to '' rather than being nullable: ""
+  // and NULL would be two spellings of "no reason given" and some reader would eventually compare
+  // against the wrong one.
+  column "reason" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // Real FK -> ledger_batch(id). A strategy change can require a compensating batch — an EPGP
+  // switchover, a decay rule that back-applies — and this is the pointer to it. NULL when the change
+  // moved nobody's points, which is the common case.
+  column "migration_batch_id" {
+    null = true
+    type = text
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "pool_config_change_pool" {
+    columns     = [column.pool_id]
+    ref_columns = [table.pool.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  foreign_key "pool_config_change_batch" {
+    columns     = [column.migration_batch_id]
+    ref_columns = [table.ledger_batch.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  // One pool's history, newest first — the only read this table has
+  // (docs/design/01-domain-model.md:827). DESC in the index rather than at the query, because "what
+  // is the current configuration and what was it before" is the shape every caller wants and a
+  // descending scan of the leading rows is what serves it without a sort.
+  index "ix_pcc_pool" {
+    on {
+      column = column.pool_id
+    }
+    on {
+      column = column.changed_at
+      desc   = true
+    }
+  }
+
+  strict = true
+}
+
+// decay_run — one cadence period of one pool's decay, and whether it has run
+// (docs/design/01-domain-model.md:1768).
+//
+// THE UNIQUE INDEX IS THE TABLE'S REASON TO EXIST. Canonical §10 and ADR-0002 both state the rule
+// as "decay is posted, not computed — explicit batches with idempotency key (pool_id,
+// cadence_period)", and ux_decay_period below is the database half of that key. Without it, a job
+// that fires twice — a box that rebooted mid-run, a periodic scheduler catching up after downtime,
+// an officer clicking Commit twice — decays every balance in the pool a second time, and because
+// the ledger is append-only the repair is a reversal batch that every member sees. P9 in
+// docs/design/04-testing.md is the property test for it; the index is what makes the property hold
+// under a race the Go code cannot see, since two workers can both read "no run for 2026-W31" before
+// either writes one.
+//
+// The FULL domain-model shape, with one deferred FK (triggered_by) and two real ones.
+table "decay_run" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // Real FK -> pool(id). Decay is per-pool: the cadence, the rule and the run all belong to one
+  // currency.
+  column "pool_id" {
+    null = false
+    type = text
+  }
+
+  // The period this run covers: '2026-W31' | '2026-08' | 'raid:<ulid>'. TEXT rather than a pair of
+  // timestamps because it is an IDENTITY, not a range — it is the half of the idempotency key that
+  // says "this period, once" — and a weekly, a monthly and a per-raid cadence have to be expressible
+  // in the same column without three nullable date pairs. Derived by the strategy from its cadence
+  // config (docs/design/04-testing.md:102), never parsed back apart by a query.
+  column "cadence_period" {
+    null = false
+    type = text
+  }
+
+  // Micros. When the period was due, which is NOT when it ran: a run that catches up after three
+  // days of downtime keeps the period's own schedule here and records the wall clock in executed_at.
+  // The gap between the two is the "decay silently didn't run because cron wasn't wired" that
+  // .claude/rules/jobs-and-events.md designs out — it is visible rather than inferred.
+  column "scheduled_for_at" {
+    null = false
+    type = integer
+  }
+
+  // Micros, NULL until the run reaches a terminal state. NULL is "not yet", which is a fact about
+  // the row and not a zero.
+  column "executed_at" {
+    null = true
+    type = integer
+  }
+
+  // The values are internal/decay/kinds' and the CHECK below is generated from it — this comment
+  // deliberately does not restate them, because a prose list beside a generated one is the drift the
+  // catalogue exists to remove. The DEFAULT is the one value written twice: it is a column
+  // attribute rather than a check block, so neither `make gen` nor ENUM001 reads it, and
+  // TestDecayKinds_SchemaDefault_MatchesTheCatalogue is what ties it back to kinds.DefaultState().
+  column "state" {
+    null    = false
+    type    = text
+    default = "planned"
+  }
+
+  // What a dry run computed, for the officer to approve before anything moves: per-account deltas,
+  // totals, clamped floors. Read whole and never queried into (canonical §8) — the authoritative
+  // record of what actually happened is the ledger batch, not this document.
+  column "dry_run_result_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  // The strategy configuration this run was computed AGAINST, snapshotted at run time. A pool's
+  // decay rule can change between the period and the run (that change is a pool_config_change row
+  // above), and without the snapshot "why was March's decay 10% when the rule says 5%?" is
+  // unanswerable.
+  column "config_snapshot_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  // Real FK -> ledger_batch(id). The batch this run posted; NULL until state = 'committed'. This is
+  // the join that makes a decay traceable in both directions — from the run to the points it moved,
+  // and from a member's statement line back to the period that produced it.
+  column "ledger_batch_id" {
+    null = true
+    type = text
+  }
+
+  // DEFERRED FK -> app_user(id). app_user is a Phase 2 table. Nullable TEXT, no foreign key until it
+  // lands — and NULL is the correct value for the periodic job, which is the expected trigger.
+  column "triggered_by" {
+    null = true
+    type = text
+  }
+
+  // Why a failed run failed, for the officer reading /admin/jobs. Defaults to '' for the reason
+  // pool_config_change.reason does: NULL and '' would be two spellings of "no error".
+  column "error" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  // Present here where pool_config_change has none, and the difference is the point: a decay_run IS
+  // mutable — planned becomes preview becomes committed — where a config-change event is not.
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "decay_run_pool" {
+    columns     = [column.pool_id]
+    ref_columns = [table.pool.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  foreign_key "decay_run_batch" {
+    columns     = [column.ledger_batch_id]
+    ref_columns = [table.ledger_batch.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  // BEGIN GENERATED — decay_run enum CHECK, from internal/decay/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestDecayKinds_CheckMatchesCatalogue fails on.
+  check "decay_run_state_enum" {
+    expr = "state IN ('planned', 'preview', 'committed', 'skipped', 'failed')"
+  }
+  // END GENERATED — decay_run enum CHECK.
+
+  // Times are Micros and never negative; the same shape as ledger_batch_times_nonneg. executed_at is
+  // omitted because it is nullable — `x >= 0` is NULL rather than true for a run that has not
+  // executed, and SQLite admits a row only when a CHECK is not false, so including it would happen
+  // to work while saying something it does not mean.
+  check "decay_run_times_nonneg" {
+    expr = "scheduled_for_at >= 0 AND created_at >= 0 AND updated_at >= 0"
+  }
+
+  // THE IDEMPOTENCY KEY (issue #192). One run per (pool, period), enforced by the database rather
+  // than by a read-then-write in Go. NOT partial and NOT nullable on either column: a period with no
+  // row has not run, and a row that exists — in ANY state, including 'skipped' and 'failed' — means
+  // that period has been decided. Re-running is not "delete the row and try again": that is the
+  // double-decay the key exists to prevent, and a failed run is corrected by a new period or by a
+  // reversal batch, never by rewriting history.
+  index "ux_decay_period" {
+    unique  = true
+    columns = [column.pool_id, column.cadence_period]
+  }
+
+  // The operator's read: this pool's runs, due-date order. Serves both "what is coming up" and the
+  // catch-up scan a periodic job does after downtime.
+  index "ix_decay_pool" {
+    columns = [column.pool_id, column.scheduled_for_at]
+  }
+
+  strict = true
+}
