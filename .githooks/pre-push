@@ -20,7 +20,7 @@
 set -euo pipefail
 
 if [[ "${DKP_HOOKS:-on}" == "off" ]]; then
-	exit 0
+    exit 0
 fi
 
 root="$(git rev-parse --show-toplevel)"
@@ -28,16 +28,16 @@ cd "$root"
 
 gotools_bin="$(go env GOBIN 2>/dev/null || true)"
 if [[ -z "$gotools_bin" ]]; then
-	gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
+    gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
 fi
 
 tool() {
-	local bin
-	bin="$(command -v "$1" 2>/dev/null || true)"
-	if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
-		bin="$gotools_bin/$1"
-	fi
-	printf '%s' "$bin"
+    local bin
+    bin="$(command -v "$1" 2>/dev/null || true)"
+    if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
+        bin="$gotools_bin/$1"
+    fi
+    printf '%s' "$bin"
 }
 
 fail=0
@@ -47,51 +47,51 @@ fail=0
 # is not asked to police them anywhere else).
 gofumpt="$(tool gofumpt)"
 if [[ -n "$gofumpt" ]]; then
-	# while-read rather than `mapfile`: macOS's stock bash 3.2 lacks it.
-	go_files=()
-	while IFS= read -r -d '' f; do go_files+=("$f"); done < <(
-		git ls-files -z -- '*.go' \
-			':(exclude)internal/store/sqlitegen/**' \
-			':(exclude)internal/store/pggen/**' \
-			':(exclude)**/*.pb.go' \
-			':(exclude)**/*_generated.go'
-	)
-	if [[ ${#go_files[@]} -gt 0 ]]; then
-		# gofumpt -l lists files that are NOT formatted; empty output means clean.
-		unformatted="$("$gofumpt" -l -- "${go_files[@]}")"
-		if [[ -n "$unformatted" ]]; then
-			printf 'pre-push: these Go files are not gofumpt-clean:\n' >&2
-			printf '  %s\n' $unformatted >&2
-			fail=1
-		fi
-	fi
+    # while-read rather than `mapfile`: macOS's stock bash 3.2 lacks it.
+    go_files=()
+    while IFS= read -r -d '' f; do go_files+=("$f"); done < <(
+        git ls-files -z -- '*.go' \
+            ':(exclude)internal/store/sqlitegen/**' \
+            ':(exclude)internal/store/pggen/**' \
+            ':(exclude)**/*.pb.go' \
+            ':(exclude)**/*_generated.go'
+    )
+    if [[ ${#go_files[@]} -gt 0 ]]; then
+        # gofumpt -l lists files that are NOT formatted; empty output means clean.
+        unformatted="$("$gofumpt" -l -- "${go_files[@]}")"
+        if [[ -n "$unformatted" ]]; then
+            printf 'pre-push: these Go files are not gofumpt-clean:\n' >&2
+            printf '  %s\n' $unformatted >&2
+            fail=1
+        fi
+    fi
 else
-	printf 'pre-push: gofumpt not installed — skipping the Go format check. Run `make setup`.\n' >&2
+    printf 'pre-push: gofumpt not installed — skipping the Go format check. Run `make setup`.\n' >&2
 fi
 
 # --- Web --------------------------------------------------------------------------------------
 prettier="web/node_modules/.bin/prettier"
 if [[ -x "$prettier" ]]; then
-	web_files=()
-	while IFS= read -r -d '' f; do web_files+=("$f"); done \
-		< <(git ls-files -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
-	if [[ ${#web_files[@]} -gt 0 ]]; then
-		if ! "$prettier" --check --log-level warn -- "${web_files[@]}" >&2; then
-			fail=1
-		fi
-	fi
+    web_files=()
+    while IFS= read -r -d '' f; do web_files+=("$f"); done \
+        < <(git ls-files -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
+    if [[ ${#web_files[@]} -gt 0 ]]; then
+        if ! "$prettier" --check --log-level warn -- "${web_files[@]}" >&2; then
+            fail=1
+        fi
+    fi
 else
-	# No note when web/ is not scaffolded yet; only mention it if there is web source to check.
-	if git ls-files --error-unmatch -- 'web/**/*.ts' >/dev/null 2>&1; then
-		printf 'pre-push: web/node_modules/.bin/prettier not installed — skipping the web format check.\n' >&2
-	fi
+    # No note when web/ is not scaffolded yet; only mention it if there is web source to check.
+    if git ls-files --error-unmatch -- 'web/**/*.ts' >/dev/null 2>&1; then
+        printf 'pre-push: web/node_modules/.bin/prettier not installed — skipping the web format check.\n' >&2
+    fi
 fi
 
 if [[ "$fail" -ne 0 ]]; then
-	printf '\npre-push blocked: unformatted files would fail CI. Fix with:\n' >&2
-	printf '  make fmt && git commit\n' >&2
-	printf '(then push again). To bypass in an emergency: git push --no-verify — CI will still reject it.\n' >&2
-	exit 1
+    printf '\npre-push blocked: unformatted files would fail CI. Fix with:\n' >&2
+    printf '  make fmt && git commit\n' >&2
+    printf '(then push again). To bypass in an emergency: git push --no-verify — CI will still reject it.\n' >&2
+    exit 1
 fi
 
 exit 0

@@ -21,10 +21,13 @@ set -euo pipefail
 
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
-command -v pnpm >/dev/null 2>&1 ||
-	die "pnpm is not installed — the e2e harness is a Node tool. See make setup (Node + pnpm)."
+command -v pnpm >/dev/null 2>&1 \
+    || die "pnpm is not installed — the e2e harness is a Node tool. See make setup (Node + pnpm)."
 
 [ -f web/package.json ] || die "web/ is not scaffolded — there is no SPA to exercise"
 
@@ -34,9 +37,9 @@ command -v pnpm >/dev/null 2>&1 ||
 # Building when it is absent is not the "guard that skips the work" the Makefile header bans — the
 # work still runs, unconditionally. What it must never become is `[ -f bin/dkp ] || exit 0`.
 if [ ! -f bin/dkp ]; then
-	printf '  no bin/dkp — building it first (make build)\n'
-	make build
-	[ -f bin/dkp ] || die "make build produced no bin/dkp"
+    printf '  no bin/dkp — building it first (make build)\n'
+    make build
+    [ -f bin/dkp ] || die "make build produced no bin/dkp"
 fi
 
 printf '  installing web dependencies (frozen, no scripts)\n'
@@ -54,19 +57,19 @@ printf '  installing web dependencies (frozen, no scripts)\n'
 # array idiom for that is unreadable, and this script has exactly two such flags.
 printf '  installing the Chromium build Playwright pins\n'
 if [ "$(uname -s)" = "Linux" ]; then
-	(cd web && pnpm exec playwright install --with-deps chromium)
+    (cd web && pnpm exec playwright install --with-deps chromium)
 else
-	(cd web && pnpm exec playwright install chromium)
+    (cd web && pnpm exec playwright install chromium)
 fi
 
 # --retries=0 is the config's default and is restated on the command line because the CI step's
 # comment promises it by name. A flaky e2e is QUARANTINED, never retried: a retried test is a test an
 # agent learns to trust when it should not.
 if [ -n "${SHARD:-}" ]; then
-	printf '  shard %s\n' "$SHARD"
-	(cd web && pnpm exec playwright test --retries=0 --shard="$SHARD")
+    printf '  shard %s\n' "$SHARD"
+    (cd web && pnpm exec playwright test --retries=0 --shard="$SHARD")
 else
-	(cd web && pnpm exec playwright test --retries=0)
+    (cd web && pnpm exec playwright test --retries=0)
 fi
 
 # The anti-vacuum check, in the same spirit as `make test-property`'s test counter. Playwright exits
@@ -84,7 +87,7 @@ ran=$(node -e '
 ' "$results")
 
 if [ "$ran" -eq 0 ]; then
-	die "no e2e tests ran$([ -n "${SHARD:-}" ] && printf ' in shard %s' "$SHARD")
+    die "no e2e tests ran$([ -n "${SHARD:-}" ] && printf ' in shard %s' "$SHARD")
 A browser suite that selects zero tests reports green. Check web/e2e/ and the testDir in
 web/playwright.config.ts."
 fi

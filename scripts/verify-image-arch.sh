@@ -34,20 +34,20 @@ ref="${IMAGE}:${VERSION}"
 # 0x00b7 = EM_AARCH64, 0x003e = EM_X86_64 (elf.h). Read as two bytes, so the constants below are the
 # on-disk order.
 case "$platform" in
-linux/amd64)
-    want_arch="amd64"
-    want_machine="3e00"
-    ;;
-linux/arm64)
-    want_arch="arm64"
-    want_machine="b700"
-    ;;
-*)
-    echo "verify-image-arch: unsupported platform ${platform}" >&2
-    echo "  Known: linux/amd64, linux/arm64. Adding one means adding its EM_ constant here — the" >&2
-    echo "  ELF check is the point of this script, so a platform without one must not silently pass." >&2
-    exit 1
-    ;;
+    linux/amd64)
+        want_arch="amd64"
+        want_machine="3e00"
+        ;;
+    linux/arm64)
+        want_arch="arm64"
+        want_machine="b700"
+        ;;
+    *)
+        echo "verify-image-arch: unsupported platform ${platform}" >&2
+        echo "  Known: linux/amd64, linux/arm64. Adding one means adding its EM_ constant here — the" >&2
+        echo "  ELF check is the point of this script, so a platform without one must not silently pass." >&2
+        exit 1
+        ;;
 esac
 
 for tool in docker od; do

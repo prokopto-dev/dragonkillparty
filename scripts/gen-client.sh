@@ -17,13 +17,16 @@ set -euo pipefail
 # Same DKP_REPO_ROOT contract as the other gen scripts; `make gen` strips it with `env -u`.
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 # Pre-scaffold: no web project yet, nothing to generate. Disappears once web/package.json is
 # committed (which is the human-gated manifest that lands the SPA dependency set).
 if [ ! -f web/package.json ]; then
-	printf '  web/ is not scaffolded — no client to generate\n'
-	exit 0
+    printf '  web/ is not scaffolded — no client to generate\n'
+    exit 0
 fi
 
 command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed — see make setup"

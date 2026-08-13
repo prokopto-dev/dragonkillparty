@@ -37,7 +37,10 @@ module_root=$(cd "$(dirname "$0")/.." && pwd)
 # proves it cannot live in this checkout. `make migration` strips it with `env -u`.
 cd "${DKP_REPO_ROOT:-$module_root}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 name=${NAME:-}
 [ -n "$name" ] || die "NAME is required: make migration NAME=add_bid_hold"
@@ -62,7 +65,7 @@ $(printf '%s\n' "$existing_same_name" | sed 's/^/    /')
 # never-committed file must not cause a number to be reused.
 highest=$(find "$dir" -maxdepth 1 -name '[0-9]*_*.sql' -exec basename {} \; 2>/dev/null \
     | sed -E 's/^0*([0-9]+)_.*/\1/' | sort -n | tail -1)
-next=$(printf '%06d' $(( ${highest:-0} + 1 )))
+next=$(printf '%06d' $((${highest:-0} + 1)))
 
 # Belt and braces. If this fires, the sequence above is wrong and generating anyway would
 # overwrite a migration that has possibly already run on somebody's database.

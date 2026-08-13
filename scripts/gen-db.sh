@@ -15,7 +15,10 @@ set -euo pipefail
 # Same DKP_REPO_ROOT contract as the gate scripts; `make gen` strips it with `env -u`.
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 # Both tools are hard requirements, never soft-skipped. A `make gen` that exits 0 because a
 # generator was missing reports a clean tree it never inspected, and the next `verify-generated`

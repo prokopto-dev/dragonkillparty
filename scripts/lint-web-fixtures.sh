@@ -22,49 +22,49 @@ set -euo pipefail
 
 # Run from web/ (the pnpm script sets the cwd) or fall back to the repo's web/ directory.
 if [ -f eslint.config.js ]; then
-	web_dir="$(pwd)"
+    web_dir="$(pwd)"
 else
-	web_dir="$(cd "$(dirname "$0")/../web" && pwd)"
+    web_dir="$(cd "$(dirname "$0")/../web" && pwd)"
 fi
 cd "$web_dir"
 
 eslint="node_modules/.bin/eslint"
 [ -x "$eslint" ] || {
-	printf '\033[31m  eslint not installed — run pnpm install in web/\033[0m\n' >&2
-	exit 1
+    printf '\033[31m  eslint not installed — run pnpm install in web/\033[0m\n' >&2
+    exit 1
 }
 
 # fixture <file> <expected-rule>: eslint MUST exit non-zero and the output MUST name the rule.
 fail=0
 check_fixture() {
-	local file="$1" rule="$2" out rc
+    local file="$1" rule="$2" out rc
 
-	[ -f "$file" ] || {
-		printf '\033[31mFAIL\033[0m [WEBFIX] fixture missing: %s\n' "$file" >&2
-		fail=1
-		return
-	}
+    [ -f "$file" ] || {
+        printf '\033[31mFAIL\033[0m [WEBFIX] fixture missing: %s\n' "$file" >&2
+        fail=1
+        return
+    }
 
-	set +e
-	out="$("$eslint" --no-ignore "$file" 2>&1)"
-	rc=$?
-	set -e
+    set +e
+    out="$("$eslint" --no-ignore "$file" 2>&1)"
+    rc=$?
+    set -e
 
-	if [ "$rc" -eq 0 ]; then
-		printf '\033[31mFAIL\033[0m [WEBFIX] %s passed eslint — law 4 (%s) has gone blind\n' "$file" "$rule" >&2
-		printf '%s\n' "$out" | sed 's/^/  /' >&2
-		fail=1
-		return
-	fi
+    if [ "$rc" -eq 0 ]; then
+        printf '\033[31mFAIL\033[0m [WEBFIX] %s passed eslint — law 4 (%s) has gone blind\n' "$file" "$rule" >&2
+        printf '%s\n' "$out" | sed 's/^/  /' >&2
+        fail=1
+        return
+    fi
 
-	if ! grep -q "$rule" <<<"$out"; then
-		printf '\033[31mFAIL\033[0m [WEBFIX] %s failed eslint but not on %s\n' "$file" "$rule" >&2
-		printf '%s\n' "$out" | sed 's/^/  /' >&2
-		fail=1
-		return
-	fi
+    if ! grep -q "$rule" <<<"$out"; then
+        printf '\033[31mFAIL\033[0m [WEBFIX] %s failed eslint but not on %s\n' "$file" "$rule" >&2
+        printf '%s\n' "$out" | sed 's/^/  /' >&2
+        fail=1
+        return
+    fi
 
-	printf '  \033[32m%s trips %s\033[0m\n' "$file" "$rule"
+    printf '  \033[32m%s trips %s\033[0m\n' "$file" "$rule"
 }
 
 check_fixture "test-fixtures/lint/bare-fetch.tsx" "no-restricted-globals"
@@ -75,8 +75,8 @@ check_fixture "test-fixtures/lint/useeffect-fetch.tsx" "no-restricted-syntax"
 check_fixture "test-fixtures/lint/raw-token-values.tsx" "no-restricted-syntax"
 
 if [ "$fail" -ne 0 ]; then
-	printf '\n\033[31mweb lint negative-fixture gate failed\033[0m — a deliberate law-4 violation was not caught.\n' >&2
-	exit 1
+    printf '\n\033[31mweb lint negative-fixture gate failed\033[0m — a deliberate law-4 violation was not caught.\n' >&2
+    exit 1
 fi
 
 printf '  \033[32mweb law-4 negative fixtures all trip their rule\033[0m\n'

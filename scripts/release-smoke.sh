@@ -61,7 +61,10 @@ echo "release-smoke: /healthz ok"
 # immediately before scripts/smoke-spa.sh; the /readyz probe below is the second user of it and the
 # earlier of the two, so the discovery moves up rather than being duplicated.
 port="$(docker port "$name" 8080/tcp | head -1 | sed 's/.*://')"
-[ -n "$port" ] || { echo "release-smoke: could not determine the published port" >&2; exit 1; }
+[ -n "$port" ] || {
+    echo "release-smoke: could not determine the published port" >&2
+    exit 1
+}
 base="http://127.0.0.1:${port}"
 
 # /readyz must answer, and answer AS ITSELF. This is the probe the script's comment promised and its
@@ -112,7 +115,10 @@ fi
 echo "release-smoke: /readyz ${readyz_code} — state ${readyz_state}"
 
 # Version, from inside the container.
-docker exec "$name" /usr/local/bin/dkp version || { echo "release-smoke: dkp version failed" >&2; exit 1; }
+docker exec "$name" /usr/local/bin/dkp version || {
+    echo "release-smoke: dkp version failed" >&2
+    exit 1
+}
 
 # The published digest must serve the BUILT SPA, not internal/ui's committed placeholder. "It boots"
 # was the whole of this gate until issue #55, and a placeholder image boots flawlessly — it just
