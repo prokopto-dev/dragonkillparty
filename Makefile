@@ -158,7 +158,7 @@ endef
         release-promote-rc release-refdb release-failure-issue \
         shipped-lock-seal release-shipped-lock \
         eval-example-endpoint third-party-notices image-size subset-fonts verify-fonts \
-        verify-image-arm64
+        verify-image-arm64 verify-ledger
 
 ## help: list every target with its description
 help:
@@ -1141,6 +1141,45 @@ budget-bundle: web-deps
 
 verify-postgres:
 	@$(call notyet,post-1.0,nightly Postgres schema convergence)
+
+# verify-ledger — seed a guild-scale ledger and replay it (issue #198). Called by nightly-verify.yml's
+# `replay / seed.Perf`, which is the job ROADMAP Phase 1 item 9 names.
+#
+# NOT a row in AGENTS.md's command table, like verify-postgres above it and verify-fonts below: the
+# hand-runnable form is `dkp verify-ledger` against an operator's own database, and this target is the
+# CI orchestration around it — build, migrate, seed, replay, in a directory it created itself.
+#
+# THE SEED IS THE POINT. A replay of an empty database is clean, instantly, and proves nothing; what
+# this asserts is that half a million entries written through ledger.Service.Commit — the invariant
+# engine, the seq allocator, the hash chain and the synchronous balance_snapshot upsert — still
+# recompute to themselves and still reproduce every cached balance exactly. That is the property
+# .claude/rules/seed-profiles.md says the Perf profile exists to make checkable.
+#
+# RAIDS sizes it, the same one-knob shape `make seed` and DKP_PERF_RAIDS use: the full 3,400-raid
+# profile by default (~90 s to seed, ~4 s to replay, ~250 MB), and `make verify-ledger RAIDS=200` for
+# a quick local run. There is no second code path at either size.
+#
+# It writes into a fresh mktemp directory rather than ./data, because seeding is not undoable: the
+# generator refuses a pool that already has batches, so pointing this at a developer's dev database
+# would fail on the second run and, worse, would be pointing a test at a file somebody was using.
+# The directory is removed on the way out, including on failure.
+#
+# go_build_bin rather than `build`, for the reason `seed` gives: staging the SPA deletes the tracked
+# internal/ui/dist placeholders and leaves the working tree dirty, and nothing here serves HTTP.
+#
+# `set -euo pipefail` before anything else, because every step here is a precondition for the next
+# one and the verdict is the LAST command's exit code: without -e a failed migrate would run the
+# seed anyway, and without pipefail a failed seed would be masked by the `tail` it is piped into —
+# either way the replay would run against a database that is not what this target claims to have
+# built. The trap still fires on the way out, so the scratch directory goes whichever way it ends.
+verify-ledger:
+	@$(go_build_bin)
+	@set -euo pipefail; \
+	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; \
+	export DKP_DB_PATH="$$dir/verify.db"; \
+	$(BUILD_DIR)/$(BIN) migrate >/dev/null; \
+	$(BUILD_DIR)/$(BIN) seed --profile perf $${RAIDS:+--raids $$RAIDS} | tail -n 1; \
+	$(BUILD_DIR)/$(BIN) verify-ledger --quiet
 
 test-golden:
 	@$(call notyet,Phase 4,parser golden files)

@@ -28,6 +28,13 @@ cache, rebuilt on demand and verified nightly. Decay is **posted** as explicit b
 idempotency key of `(pool_id, cadence_period)`, so a balance is always literally a `SUM` rather than
 a formula evaluated at read time.
 
+> **Amended by [ADR-0023](0023-balance-snapshot-is-load-bearing.md)** (2026-08-13): "droppable"
+> above is retired. The reasoning in this ADR is unchanged and its conclusion stands — balances are
+> derived, the log is the only source of truth, and the snapshot is rebuilt from it. What ADR-0023
+> measured is the *cost* of rebuilding: 13 pages against the cache versus 10,412 against the
+> definitional SUM, over 527,164 entries. So losing the snapshot is a **rebuild**, not a slower page,
+> and the nightly replay that verifies it is a correctness dependency rather than hygiene.
+
 **Enforced by:** a `BEFORE UPDATE OR DELETE ON ledger_batch|ledger_entry … RAISE(ABORT, 'ledger is
 append-only')` trigger, **plus** an integration test asserting the trigger actually fires — so the
 guardrail itself cannot be silently regressed by a migration. A nightly `verify` job rebuilds every
