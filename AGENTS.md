@@ -34,11 +34,16 @@ Makefile also has a few internal helpers, such as `fmt` and `build`; CI checks t
 resolves to a real target, not that every target appears here.)
 
 **`check-fast` is for the edit-compile-lint cycle, `check` is the gate.** `check-fast` is
-`lint-repo` + `lint-go` + `vet`: the four laws, the money rules, gofumpt, golangci-lint, `go vet`,
-staticcheck and `tsc`. It runs no tests, no coverage floor, no licence gate and no eslint, so it
-cannot tell you the change works — only that the tree is coherent. Reach for it between edits;
+`lint-repo` + `lint-actions` + `lint-shell` + `lint-go` + `vet`: the four laws, the money rules,
+actionlint over the workflows, shellcheck and shfmt over the shell tree, gofumpt, golangci-lint,
+`go vet`, staticcheck and `tsc`. It runs no tests, no coverage floor, no licence gate and no eslint,
+so it cannot tell you the change works — only that the tree is coherent. Reach for it between edits;
 `make check` is still what "done" means, and the pre-push hook does not accept the faster one
 instead.
+
+`make setup` installs three tools the linters need beyond the Go ones: **actionlint**, **shellcheck**
+and **shfmt**. `make lint-actions` and `make lint-shell` hard-fail when one is missing rather than
+skipping — a linter that exits 0 because it is absent reports a clean tree it never read.
 
 The test suite **caches**: `go test`'s result cache is on for every package that cannot spawn a
 subprocess, so a second `make test` over an unchanged package prints `(cached)` rather than running

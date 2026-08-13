@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# pre-push — the formatting backstop. Blocks a push that would fail CI's `lint / go` or
-# `lint / web` on formatting alone.
+# pre-push — the formatting backstop. Blocks a push that would fail CI's `lint / go`,
+# `lint / web`, `lint / actions` or `lint / shell` on formatting or a static defect alone.
 #
 # Why this exists in ADDITION to pre-commit: git does NOT run pre-commit for a clean merge commit.
 # GitHub's "Update branch" button and a local `git merge origin/main` that merges without conflict
@@ -13,14 +13,18 @@
 # It only CHECKS — it never rewrites files (a push is the wrong moment to mutate the tree). If it
 # finds drift it prints the offending files and the fix, then exits non-zero to block the push.
 #
-# Fast and offline: gofumpt -l over tracked .go files and prettier --check over tracked web files.
-# No network, no compile, no module download. If a formatter is not installed the check is skipped
-# with a note rather than blocking — a missing tool is a setup problem, and CI still enforces.
+# Fast and offline: gofumpt -l over tracked .go files, prettier --check over tracked web files,
+# actionlint over .github/workflows and shellcheck + shfmt over the shell tree (issues #121 and
+# #122). No network, no compile, no module download — the whole hook is well under a second. If a
+# tool is not installed the check it drives is skipped with a note rather than blocking: a missing
+# tool is a setup problem, and CI still enforces. That is the ONE thing this hook does differently
+# from `make lint-actions` / `make lint-shell`, which hard-fail on an absent tool because a CI job
+# that lints nothing must never report green.
 #
 set -euo pipefail
 
 if [[ "${DKP_HOOKS:-on}" == "off" ]]; then
-	exit 0
+    exit 0
 fi
 
 root="$(git rev-parse --show-toplevel)"
@@ -28,17 +32,22 @@ cd "$root"
 
 gotools_bin="$(go env GOBIN 2>/dev/null || true)"
 if [[ -z "$gotools_bin" ]]; then
-	gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
+    gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
 fi
 
 tool() {
-	local bin
-	bin="$(command -v "$1" 2>/dev/null || true)"
-	if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
-		bin="$gotools_bin/$1"
-	fi
-	printf '%s' "$bin"
+    local bin
+    bin="$(command -v "$1" 2>/dev/null || true)"
+    if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
+        bin="$gotools_bin/$1"
+    fi
+    printf '%s' "$bin"
 }
+
+# The gate scripts below resolve their tools with `command -v`, so what `make setup` installed has to
+# be on PATH for them the way the Makefile's own `export PATH` puts it there for every recipe.
+# Appended, so a deliberately chosen system tool still wins.
+export PATH="$PATH:$gotools_bin"
 
 fail=0
 
@@ -47,51 +56,94 @@ fail=0
 # is not asked to police them anywhere else).
 gofumpt="$(tool gofumpt)"
 if [[ -n "$gofumpt" ]]; then
-	# while-read rather than `mapfile`: macOS's stock bash 3.2 lacks it.
-	go_files=()
-	while IFS= read -r -d '' f; do go_files+=("$f"); done < <(
-		git ls-files -z -- '*.go' \
-			':(exclude)internal/store/sqlitegen/**' \
-			':(exclude)internal/store/pggen/**' \
-			':(exclude)**/*.pb.go' \
-			':(exclude)**/*_generated.go'
-	)
-	if [[ ${#go_files[@]} -gt 0 ]]; then
-		# gofumpt -l lists files that are NOT formatted; empty output means clean.
-		unformatted="$("$gofumpt" -l -- "${go_files[@]}")"
-		if [[ -n "$unformatted" ]]; then
-			printf 'pre-push: these Go files are not gofumpt-clean:\n' >&2
-			printf '  %s\n' $unformatted >&2
-			fail=1
-		fi
-	fi
+    # while-read rather than `mapfile`: macOS's stock bash 3.2 lacks it.
+    go_files=()
+    while IFS= read -r -d '' f; do go_files+=("$f"); done < <(
+        git ls-files -z -- '*.go' \
+            ':(exclude)internal/store/sqlitegen/**' \
+            ':(exclude)internal/store/pggen/**' \
+            ':(exclude)**/*.pb.go' \
+            ':(exclude)**/*_generated.go'
+    )
+    if [[ ${#go_files[@]} -gt 0 ]]; then
+        # gofumpt -l lists files that are NOT formatted; empty output means clean.
+        unformatted="$("$gofumpt" -l -- "${go_files[@]}")"
+        if [[ -n "$unformatted" ]]; then
+            printf 'pre-push: these Go files are not gofumpt-clean:\n' >&2
+            # One path per line, indented. Was `printf '  %s\n' $unformatted` — an UNQUOTED
+            # expansion relied on word splitting to turn gofumpt's newline-separated list into one
+            # argument per file, which is SC2086 and which the shell gate (issue #122) now fails on.
+            # It is also wrong for a path containing a space, and this is a hook that prints paths.
+            while IFS= read -r unformatted_file; do
+                printf '  %s\n' "$unformatted_file" >&2
+            done <<<"$unformatted"
+            fail=1
+        fi
+    fi
 else
-	printf 'pre-push: gofumpt not installed — skipping the Go format check. Run `make setup`.\n' >&2
+    printf 'pre-push: gofumpt not installed — skipping the Go format check. Run `make setup`.\n' >&2
 fi
 
 # --- Web --------------------------------------------------------------------------------------
 prettier="web/node_modules/.bin/prettier"
 if [[ -x "$prettier" ]]; then
-	web_files=()
-	while IFS= read -r -d '' f; do web_files+=("$f"); done \
-		< <(git ls-files -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
-	if [[ ${#web_files[@]} -gt 0 ]]; then
-		if ! "$prettier" --check --log-level warn -- "${web_files[@]}" >&2; then
-			fail=1
-		fi
-	fi
+    web_files=()
+    while IFS= read -r -d '' f; do web_files+=("$f"); done \
+        < <(git ls-files -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
+    if [[ ${#web_files[@]} -gt 0 ]]; then
+        if ! "$prettier" --check --log-level warn -- "${web_files[@]}" >&2; then
+            fail=1
+        fi
+    fi
 else
-	# No note when web/ is not scaffolded yet; only mention it if there is web source to check.
-	if git ls-files --error-unmatch -- 'web/**/*.ts' >/dev/null 2>&1; then
-		printf 'pre-push: web/node_modules/.bin/prettier not installed — skipping the web format check.\n' >&2
-	fi
+    # No note when web/ is not scaffolded yet; only mention it if there is web source to check.
+    if git ls-files --error-unmatch -- 'web/**/*.ts' >/dev/null 2>&1; then
+        printf 'pre-push: web/node_modules/.bin/prettier not installed — skipping the web format check.\n' >&2
+    fi
+fi
+
+# --- Workflows (issue #121) --------------------------------------------------------------------
+# actionlint statically checks the expression grammar, the `needs:` graph and the event catalogue,
+# and pipes every `run:` block through shellcheck. Most of the phase-0 CI tail this repository fixed
+# by hand — #82, #94, #101, #113 — was in that class, which is to say it was findable here in 200 ms
+# by a push rather than by a merge.
+#
+# BOTH tools, or neither: actionlint silently disables its shellcheck rule when the binary is
+# absent, so running it alone would be a quieter check wearing the same name.
+#
+# The `-f` guard is not defensiveness about the repository: test/repo runs this hook against
+# fabricated trees in t.TempDir() that carry a Go file and nothing else, and a hook that failed
+# because a gate script was absent would be reporting on a tree it never read.
+if [[ -f scripts/lint-actions.sh && -n "$(tool actionlint)" && -n "$(tool shellcheck)" ]]; then
+    # Captured, not streamed: the gate prints a success line this hook has no reason to show, and
+    # its diagnostics go to two different streams. One run, and the output is shown only on failure.
+    if ! actionlint_out="$(bash scripts/lint-actions.sh 2>&1)"; then
+        printf '%s\n' "$actionlint_out" >&2
+        fail=1
+    fi
+elif [[ -f scripts/lint-actions.sh ]]; then
+    printf 'pre-push: actionlint or shellcheck not installed — skipping the workflow check. Run `make setup`.\n' >&2
+fi
+
+# --- Shell (issue #122) ------------------------------------------------------------------------
+# Correctness from shellcheck, shape from shfmt, over scripts/*.sh and the hooks themselves — this
+# file included. Issue #111 (an unquoted `$(wc -w)` word-splitting an awk invocation, which killed
+# `make test-coverage-floor` on macOS) is one SC2086 line.
+if [[ -f scripts/lint-shell.sh && -n "$(tool shellcheck)" && -n "$(tool shfmt)" ]]; then
+    if ! shell_out="$(bash scripts/lint-shell.sh 2>&1)"; then
+        printf '%s\n' "$shell_out" >&2
+        fail=1
+    fi
+elif [[ -f scripts/lint-shell.sh ]]; then
+    printf 'pre-push: shellcheck or shfmt not installed — skipping the shell check. Run `make setup`.\n' >&2
 fi
 
 if [[ "$fail" -ne 0 ]]; then
-	printf '\npre-push blocked: unformatted files would fail CI. Fix with:\n' >&2
-	printf '  make fmt && git commit\n' >&2
-	printf '(then push again). To bypass in an emergency: git push --no-verify — CI will still reject it.\n' >&2
-	exit 1
+    printf '\npre-push blocked: this tree would fail CI on formatting or a static check. Fix with:\n' >&2
+    printf '  make fmt && git commit          # gofumpt, prettier and shfmt\n' >&2
+    printf '  make lint-actions lint-shell    # what the two static gates say\n' >&2
+    printf '(then push again). To bypass in an emergency: git push --no-verify — CI will still reject it.\n' >&2
+    exit 1
 fi
 
 exit 0

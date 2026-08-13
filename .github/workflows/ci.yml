@@ -112,6 +112,8 @@ jobs:
       authz: ${{ steps.filter.outputs.authz }}
       pointmath: ${{ steps.filter.outputs.pointmath }}
       docs: ${{ steps.filter.outputs.docs }}
+      actions: ${{ steps.filter.outputs.actions }}
+      shell: ${{ steps.filter.outputs.shell }}
       # deep == "run the expensive jobs". Draft PRs get lint + unit only.
       #
       # `merge_group` is a term here for the reason the trigger comment above gives, and it is not an
@@ -294,6 +296,16 @@ jobs:
               # enforcement promise is added by editing exactly this file and nothing else, which is
               # the change that would run none of it.
               - 'CONTRIBUTING.md'
+              # The web manifest, its lockfile and the overrides register: web_overrides_test.go
+              # reads all three (issue #168) and asserts they agree — that every pnpm.overrides entry
+              # has a reviewed row saying why it exists and what removes it, that the lockfile records
+              # the same override set, and that the pin is what the tree actually resolved. Without
+              # these lines an override could be added, changed or left to rot on a PR that selects
+              # only `web`, and the register would be checked by nothing. The suite is pure file
+              # reading and runs under -short, which is what puts it in `go` rather than in `code`.
+              - 'web/package.json'
+              - 'web/pnpm-lock.yaml'
+              - 'web/OVERRIDES.md'
             web:
               - *build
               - 'web/**'
@@ -353,6 +365,28 @@ jobs:
               - *build
               - 'docs/**'
               - '**/*.md'
+            # The two static gates over the files CI is itself written in (issues #121 and #122).
+            # Both are path-filtered because both are about one tree and nothing else can change
+            # their verdict — and both include the gate script that drives them plus the pin it
+            # reads, which is the anti-self-concealment rule the header states: a filter that
+            # excludes the file defining a job is the same defect as a target that exits 0 without
+            # doing the work.
+            #
+            # `.github/actions/**` is in `actions` as well as in the *build anchor, because
+            # actionlint resolves `uses:` inputs against the local action's own action.yml — an
+            # input renamed there is a workflow error this gate catches.
+            actions:
+              - *build
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - 'scripts/lint-actions.sh'
+            # `.githooks/**` is in `shell` because the hooks ARE shell scripts this gate lints, and
+            # .shellcheckrc because it is the file that decides which rules run at all.
+            shell:
+              - *build
+              - 'scripts/**'
+              - '.githooks/**'
+              - '.shellcheckrc'
 
   # ---------------------------------------------------------------------------------------------
   # lint — the grep gates run always and cost 15 seconds. They are the cheapest gate in the repo
@@ -430,6 +464,16 @@ jobs:
           go: "true"
           tools: "gofumpt golangci-lint"
       - run: make lint-go # gofumpt -l, goimports, golangci-lint
+      - run: make mod-tidy-check
+        # go.mod and go.sum must ALREADY be tidy (issue #149). Nothing asserted this, so the cleanup
+        # arrived attached to whichever PR next happened to run `go mod tidy` — #126 pruned ~100
+        # stale `/go.mod` lines from go.sum inside a PR about HTML parsing — and, in the direction
+        # that matters more, a PR adding a dependency without tidying left the graph and the lock
+        # disagreeing with nothing to say so.
+        #
+        # In THIS job rather than one of its own: the `code` filter above already selects on go.mod,
+        # go.sum and the Makefile, so the inputs that can make this fail are exactly the inputs that
+        # run it, and a tidy check is 200 ms against the module cache this job has already warmed.
 
   lint-web:
     name: lint / web
@@ -450,6 +494,56 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
         working-directory: web
       - run: make lint-web # eslint over src/**, plus eslint --no-ignore over the negative fixtures
+
+  lint-actions:
+    name: lint / actions
+    needs: changes
+    # Path-filtered to the workflow tree and the gate that reads it. Nothing else can change
+    # actionlint's verdict, and a workflow-only PR is exactly when this must run — which it now
+    # does, because issue #161 put `.github/workflows/**` into a filter at all.
+    if: needs.changes.outputs.actions == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          # go, because actionlint is `go install`ed from the pin in the Makefile, and because the
+          # shellcheck installer derives its destination from `go env GOPATH`.
+          go: "true"
+          tools: "actionlint shellcheck"
+      - run: make lint-actions
+        # Issue #121. Most of the phase-0 CI tail this repository fixed by hand was STATIC workflow
+        # error that actionlint reports mechanically:
+        #   #82   a PR leaving draft never re-ran the required jobs, because declaring `types:`
+        #         REPLACES the default event list rather than extending it
+        #   #94   web and design gates conditioned on a filter their inputs never select
+        #   #101  merge_group-only jobs on a repository with no queue: permanently skipped, and
+        #         counted as success by a gate that treats skipped as green
+        #   #113  a release smoke pulling GHCR with no docker login
+        # It also runs shellcheck over every `run:` block, which is the half `lint / shell` below
+        # cannot see — those scripts are embedded in YAML, not in scripts/.
+
+  lint-shell:
+    name: lint / shell
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-toolchain
+        with:
+          # shfmt is `go install`ed, and the shellcheck installer derives its destination from
+          # `go env GOPATH`, so the toolchain is required even though neither gate compiles anything.
+          go: "true"
+          tools: "shellcheck shfmt"
+      - run: make lint-shell
+        # Issue #122. ~4,800 lines of bash across scripts/ and .githooks/ that nothing linted, and
+        # two shipped phase-0 bugs that one shellcheck line each would have caught: #84 (a readyz
+        # probe that printed "reachable" whether or not the server was) and #111 (an unquoted
+        # `$(wc -w)` word-splitting an awk invocation, which killed `make test-coverage-floor` on
+        # macOS before it read a single coverage number).
 
   # ---------------------------------------------------------------------------------------------
   # security — the supply-chain gates. Three of them, and each covers something the other two
@@ -763,13 +857,34 @@ jobs:
           # migrate_lint_test.go, whose fixtures drive scripts/migrate-lint.sh against a fabricated
           # migration directory in t.TempDir() to prove MODE=advise exits 0 while MODE=enforce does
           # not — the negative fixture for the advisory gate added in issue #131.
-          tools: "golangci-lint gofumpt atlas"
+          # actionlint, shellcheck and shfmt for the negative fixtures of the two gates added in
+          # issues #121 and #122: test/repo drives scripts/lint-actions.sh against a workflow with an
+          # undefined `needs:` and scripts/lint-shell.sh against a word-splitting script, both in
+          # t.TempDir(). Without the tools on PATH those fixtures cannot run — and since issue #177
+          # they no longer skip quietly when that happens, they FAIL, which is what makes this line a
+          # requirement rather than an optimisation.
+          tools: "golangci-lint gofumpt atlas actionlint shellcheck shfmt"
           # test/repo's python_floor_test.go re-parses every scripts/*.py at the declared floor with
           # ast.parse(feature_version=...), which is the check that stops CI's newer interpreter
           # accepting syntax a contributor's laptop cannot run. It is gated out of the -short unit run
           # and executes here. (The spec-gate fixtures were the other reason for this line; they run a
           # Go command since issue #127 and need no interpreter.)
           python: "true"
+          # NODE, AND IT CLOSES A GATE THAT HAS NEVER RUN IN CI (issue #177). No job that runs
+          # `make test` installed Node, so every test gated on `exec.LookPath("pnpm")` skipped here,
+          # silently, on every run — including TestNpmrc_SuppressesALifecycleScript, the ONLY
+          # functional proof that web/.npmrc's ignore-scripts actually stops a dependency's
+          # postinstall. `lint / web` covers the eslint half functionally; nothing covered that one.
+          #
+          # The #83/#156 defect class one step removed: not a job that fails for the wrong reason,
+          # but a job whose green includes a suite that never ran.
+          node: "true"
+      # The eslint negative fixtures (TestWebLint_BareFetch_FailsLint and its four neighbours) run
+      # eslint through web/node_modules/.bin, so Node on PATH is necessary and not sufficient. The
+      # same frozen, no-scripts posture every other install in this repository uses — ~20 s against
+      # the pnpm store this action caches.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: web
       - run: make test
         # Real SQLite in t.TempDir(), real migrations, real River workers, real append-only
         # triggers. Mocks are banned here: a mocked store does not fire the trigger, which is the
@@ -1229,6 +1344,8 @@ jobs:
       - lint-repo
       - lint-go
       - lint-web
+      - lint-actions
+      - lint-shell
       - security-licences
       - security-govulncheck
       - security-osv

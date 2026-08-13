@@ -30,15 +30,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 dist=internal/ui/dist
 
 # Pre-scaffold: no web project yet. Nothing to build; the placeholder stays and the binary compiles.
 # This branch disappears the moment web/package.json is committed.
 if [ ! -f web/package.json ]; then
-	printf '  web/ is not scaffolded — internal/ui serves the placeholder\n'
-	exit 0
+    printf '  web/ is not scaffolded — internal/ui serves the placeholder\n'
+    exit 0
 fi
 
 command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed — see make setup (Node + pnpm)"
@@ -61,7 +64,7 @@ printf '  building the SPA (vite)\n'
 # lock is internal/ui's TestEmbed_NoSourceMapShips, which walks the embedded tree.
 maps=$(find web/dist -type f -name '*.map' 2>/dev/null || true)
 if [ -n "$maps" ]; then
-	die "vite emitted source maps — a .map leaks the unminified SPA source and must not ship:
+    die "vite emitted source maps — a .map leaks the unminified SPA source and must not ship:
 $(printf '%s\n' "$maps" | sed 's/^/  /')
 Set build.sourcemap: false in web/vite.config.ts."
 fi
@@ -69,8 +72,8 @@ fi
 # The measure-only caller stops here: web/dist is built and verified, nothing tracked has moved. See
 # the header for why `make budget-bundle` wants that.
 if [ "${DKP_WEB_STAGE:-1}" = "0" ]; then
-	printf '  \033[32mSPA built\033[0m (DKP_WEB_STAGE=0 — not staged for go:embed)\n'
-	exit 0
+    printf '  \033[32mSPA built\033[0m (DKP_WEB_STAGE=0 — not staged for go:embed)\n'
+    exit 0
 fi
 
 # Stage into the embed directory. Clear the previous real output first so a renamed hashed asset

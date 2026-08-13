@@ -33,10 +33,16 @@ APPLY=0
 case "${1:-}" in
     --apply) APPLY=1 ;;
     "") ;;
-    *) echo "usage: $0 [--apply]" >&2; exit 2 ;;
+    *)
+        echo "usage: $0 [--apply]" >&2
+        exit 2
+        ;;
 esac
 
-[ -f "$MANIFEST" ] || { echo "$MANIFEST not found"; exit 1; }
+[ -f "$MANIFEST" ] || {
+    echo "$MANIFEST not found"
+    exit 1
+}
 
 command -v gh >/dev/null 2>&1 || {
     echo "gh is not installed — see https://cli.github.com" >&2
@@ -86,12 +92,15 @@ manifest_file="$(mktemp)"
 existing_file="$(mktemp)"
 trap 'rm -f "$manifest_file" "$existing_file"' EXIT
 
-parse_manifest > "$manifest_file"
+parse_manifest >"$manifest_file"
 
-[ -s "$manifest_file" ] || { echo "sync-labels: $MANIFEST declared no labels" >&2; exit 1; }
+[ -s "$manifest_file" ] || {
+    echo "sync-labels: $MANIFEST declared no labels" >&2
+    exit 1
+}
 
 # `gh label list` paginates at 30 by default; the manifest is already larger than that.
-gh label list --limit 200 --json name --jq '.[].name' | sort > "$existing_file"
+gh label list --limit 200 --json name --jq '.[].name' | sort >"$existing_file"
 
 created=0
 updated=0
@@ -110,7 +119,7 @@ while IFS=$'\t' read -r name color desc; do
         printf '  \033[32mcreate\033[0m          %-18s #%s\n' "$name" "$color"
         created=$((created + 1))
     fi
-done < "$manifest_file"
+done <"$manifest_file"
 
 # The report half. Not an error: Renovate, GitHub and a human triaging at midnight all create
 # labels, and this script is not the authority on whether one of those was a mistake.
@@ -120,7 +129,7 @@ while IFS= read -r name; do
         printf '  \033[33mnot in manifest\033[0m %s\n' "$name"
         extra=$((extra + 1))
     fi
-done < "$existing_file"
+done <"$existing_file"
 
 if [ "$APPLY" -eq 1 ]; then
     printf '\n  \033[32m%d created, %d updated\033[0m' "$created" "$updated"

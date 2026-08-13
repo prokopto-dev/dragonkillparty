@@ -31,9 +31,10 @@ func hookPath(t *testing.T, name string) string {
 }
 
 // findGofumpt resolves gofumpt the same way the hooks do: command -v first, then $GOTOOLS_BIN
-// (GOBIN, else GOPATH/bin). Returns "" when it is not installed, so the functional subtests can skip
-// cleanly rather than fail on a laptop without the toolchain. In CI's `test / integration` job
-// setup-toolchain installs gofumpt, so there the skip never fires and the check runs for real.
+// (GOBIN, else GOPATH/bin). It SKIPS the calling test when gofumpt is not installed and FAILS it
+// instead when CI is set (issue #177): "CI's test/integration job installs it, so there the skip
+// never fires" was a claim nothing checked, and the whole point of #177 is that a tool-gated skip in
+// CI is a gate reporting green over work it did not do.
 func findGofumpt(t *testing.T) string {
 	t.Helper()
 
@@ -43,18 +44,22 @@ func findGofumpt(t *testing.T) string {
 
 	bin := os.Getenv("GOBIN")
 	if bin == "" {
-		out, err := exec.Command("go", "env", "GOPATH").Output()
-		if err != nil {
-			return ""
+		if out, err := exec.Command("go", "env", "GOPATH").Output(); err == nil {
+			bin = filepath.Join(strings.TrimSpace(string(out)), "bin")
 		}
-		bin = filepath.Join(strings.TrimSpace(string(out)), "bin")
 	}
 
-	cand := filepath.Join(bin, "gofumpt")
-	if info, err := os.Stat(cand); err == nil && info.Mode().Perm()&0o111 != 0 {
-		return cand
+	if bin != "" {
+		cand := filepath.Join(bin, "gofumpt")
+		if info, err := os.Stat(cand); err == nil && info.Mode().Perm()&0o111 != 0 {
+			return cand
+		}
 	}
 
+	requireToolPresent(t, "gofumpt", "ci.yml's `test / integration` and nightly-verify.yml's "+
+		"`suite / shuffled` install it through setup-toolchain's tools: input")
+
+	// Unreachable: requireToolPresent either skips or fails the test. The compiler needs it.
 	return ""
 }
 
@@ -174,10 +179,18 @@ func TestGitHooks_SetupWiresHooksPath(t *testing.T) {
 func TestGitHooks_PreCommit_FormatsAndRestagesStagedGo(t *testing.T) {
 	t.Parallel()
 
-	gofumpt := findGofumpt(t)
-	if gofumpt == "" {
-		t.Skip("gofumpt not installed — skipping the functional pre-commit test (CI's test/integration job installs it, so it runs there)")
+	// -short, like every other functional test in this package. These two build a git repository,
+	// run a hook over it and need gofumpt on PATH, which is the toolchain `test / integration`
+	// installs and `test / unit` deliberately does not. They had no guard and so RAN in the -short
+	// lane, where they silently skipped for want of the tool — the exact defect issue #177 is about,
+	// found by its own fix: making the tool-missing skip loud turned that silence into a failure in
+	// `test / unit`. Selecting the lane explicitly is what makes the loud skip mean what it says,
+	// because a skip here is now a statement about the LANE and never about the environment.
+	if testing.Short() {
+		t.Skip("runs a hook against a real git repository and needs gofumpt; run `make test`")
 	}
+
+	gofumpt := findGofumpt(t)
 
 	hook := hookPath(t, "pre-commit")
 	tree := t.TempDir()
@@ -228,10 +241,18 @@ func TestGitHooks_PreCommit_FormatsAndRestagesStagedGo(t *testing.T) {
 func TestGitHooks_PrePush_BlocksUnformattedTrackedGo(t *testing.T) {
 	t.Parallel()
 
-	gofumpt := findGofumpt(t)
-	if gofumpt == "" {
-		t.Skip("gofumpt not installed — skipping the functional pre-push test (CI's test/integration job installs it, so it runs there)")
+	// -short, like every other functional test in this package. These two build a git repository,
+	// run a hook over it and need gofumpt on PATH, which is the toolchain `test / integration`
+	// installs and `test / unit` deliberately does not. They had no guard and so RAN in the -short
+	// lane, where they silently skipped for want of the tool — the exact defect issue #177 is about,
+	// found by its own fix: making the tool-missing skip loud turned that silence into a failure in
+	// `test / unit`. Selecting the lane explicitly is what makes the loud skip mean what it says,
+	// because a skip here is now a statement about the LANE and never about the environment.
+	if testing.Short() {
+		t.Skip("runs a hook against a real git repository and needs gofumpt; run `make test`")
 	}
+
+	gofumpt := findGofumpt(t)
 
 	hook := hookPath(t, "pre-push")
 	tree := t.TempDir()

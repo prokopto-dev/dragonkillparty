@@ -37,9 +37,9 @@ OUT="${1:-THIRD_PARTY_NOTICES.txt}"
 mods_file="$(mktemp)"
 trap 'rm -f "$mods_file"' EXIT
 
-go run ./internal/licence/cmd/licence modules > "$mods_file"
+go run ./internal/licence/cmd/licence modules >"$mods_file"
 
-count="$(wc -l < "$mods_file" | tr -d ' ')"
+count="$(wc -l <"$mods_file" | tr -d ' ')"
 if [ "$count" -eq 0 ]; then
     echo "third-party-notices: go list produced no runtime modules — refusing to write an empty file" >&2
     exit 1
@@ -87,7 +87,7 @@ if [ "$asset_count" -gt 0 ]; then
             exit 1
         }
 
-        IFS=',' read -r -a asset_files <<< "${entry##*|}"
+        IFS=',' read -r -a asset_files <<<"${entry##*|}"
         for f in "${asset_files[@]}"; do
             [ -f "$f" ] || {
                 echo "third-party-notices: vendored asset $f does not exist" >&2
@@ -101,7 +101,10 @@ fi
 find_license() {
     local dir="$1" f
     for f in LICENSE LICENSE.md LICENSE.txt LICENCE COPYING LICENSE-MIT LICENSE-APACHE; do
-        [ -f "$dir/$f" ] && { printf '%s\n' "$dir/$f"; return 0; }
+        [ -f "$dir/$f" ] && {
+            printf '%s\n' "$dir/$f"
+            return 0
+        }
     done
     # Some modules keep it one level down (e.g. a v2 subdir). Take the shallowest match.
     find "$dir" -maxdepth 2 -type f \
@@ -130,7 +133,7 @@ find_license() {
             printf '(no licence file found in the module; see %s upstream)\n' "$path"
         fi
         printf '\n'
-    done < "$mods_file"
+    done <"$mods_file"
 
     if [ "$asset_count" -gt 0 ]; then
         printf '\n'
@@ -148,7 +151,7 @@ find_license() {
             printf '%s\n' "$label"
             printf -- '--------------------------------------------------------------------------------\n\n'
 
-            IFS=',' read -r -a asset_files <<< "${entry##*|}"
+            IFS=',' read -r -a asset_files <<<"${entry##*|}"
             for f in "${asset_files[@]}"; do
                 printf '%s\n' "$f"
             done
@@ -158,6 +161,6 @@ find_license() {
             printf '\n'
         done
     fi
-} > "$OUT"
+} >"$OUT"
 
 printf '  wrote %s (%d modules, %d vendored asset%s)\n' "$OUT" "$count" "$asset_count" "$assets_plural"

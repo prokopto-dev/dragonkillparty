@@ -24,9 +24,10 @@ inputs:
     default: "false"
   tools:
     description: >
-      Space-separated dev tools to install: gofumpt golangci-lint govulncheck sqlc atlas
-      oasdiff vale lychee. An unknown or not-yet-available entry is reported and skipped, never
-      fatal. `goose` is accepted and skipped: it is a library, not a CLI this project uses.
+      Space-separated dev tools to install: gofumpt golangci-lint govulncheck sqlc atlas actionlint
+      shfmt shellcheck oasdiff vale lychee. An unknown or not-yet-available entry is reported and
+      skipped, never fatal. `goose` is accepted and skipped: it is a library, not a CLI this project
+      uses.
     required: false
     default: ""
 
@@ -280,7 +281,7 @@ runs:
         pin() { awk -v k="$1" '$1==k { print $3; exit }' Makefile; }
         for t in $DKP_TOOLS; do
           case "$t" in
-            gofumpt|golangci-lint|govulncheck|sqlc|oasdiff)
+            gofumpt|golangci-lint|govulncheck|sqlc|actionlint|shfmt|oasdiff)
               if command -v go >/dev/null 2>&1 && [ -f go.mod ]; then
                 echo "::group::install $t"
                 case "$t" in
@@ -293,6 +294,11 @@ runs:
                   # is what the GOVULNCHECK_VERSION pin tracks.
                   govulncheck)   go install "golang.org/x/vuln/cmd/govulncheck@$(pin GOVULNCHECK_VERSION)" ;;
                   sqlc)          go install "github.com/sqlc-dev/sqlc/cmd/sqlc@$(pin SQLC_VERSION)" ;;
+                  # The two halves of `lint / actions` and `lint / shell` that ARE Go programs
+                  # (issues #121 and #122). shellcheck is the third and is not — see its own case
+                  # below.
+                  actionlint)    go install "github.com/rhysd/actionlint/cmd/actionlint@$(pin ACTIONLINT_VERSION)" ;;
+                  shfmt)         go install "mvdan.cc/sh/v3/cmd/shfmt@$(pin SHFMT_VERSION)" ;;
                   # Not yet pinned because no job requests it; the PR that first needs it adds its
                   # pin to the Makefile alongside the others. See Phase 2.
                   oasdiff)       go install github.com/oasdiff/oasdiff@latest ;;
@@ -319,6 +325,32 @@ runs:
                 echo "::endgroup::"
               else
                 echo "note: skipping atlas — no Go module yet (lands in Phase 0 PR 1)"
+              fi
+              ;;
+            # shellcheck cannot be `go install`ed either — it is Haskell — so it takes Atlas's route
+            # exactly: a version pinned in the Makefile and an archive verified against a checksum
+            # committed to this repository (issue #122).
+            #
+            # NOT the runner image's shellcheck, which ubuntu-24.04 does ship. That would make this
+            # gate's verdict depend on whichever version the base image happens to carry, so a
+            # laptop and CI could disagree about a green lint and an image bump could move the
+            # rules — the same defect issue #156 filed against jobs that declared no toolchain at
+            # all. `make install-shellcheck` rather than the script directly, so GOTOOLS_BIN is
+            # computed in one place.
+            #
+            # Guarded on `go` like atlas, and not because shellcheck needs a compiler: the Makefile
+            # derives GOTOOLS_BIN from `go env GOBIN`/`GOPATH`, so without a toolchain that
+            # expression is empty and the install directory becomes `/bin`. Every job that asks for
+            # shellcheck also asks for shfmt or actionlint, both of which are `go install`ed, so
+            # this costs nothing anyone was not already paying.
+            shellcheck)
+              if command -v go >/dev/null 2>&1 && [ -f Makefile ]; then
+                echo "::group::install shellcheck"
+                make install-shellcheck
+                echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+                echo "::endgroup::"
+              else
+                echo "note: skipping shellcheck — needs Go on PATH to resolve the install directory"
               fi
               ;;
             # The goose CLI is deliberately absent. Atlas authors the migrations and the goose

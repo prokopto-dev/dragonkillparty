@@ -32,7 +32,10 @@ placeholder_marker='web UI not yet built into this binary'
 
 dist="${1:-internal/ui/dist}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 [ -d "$dist" ] || die "$dist does not exist — nothing was staged for go:embed"
 
@@ -40,7 +43,7 @@ index="$dist/index.html"
 [ -f "$index" ] || die "$index is missing — the SPA has no entry document"
 
 if grep -qF "$placeholder_marker" "$index"; then
-	die "$index is the COMMITTED PLACEHOLDER, not the built SPA.
+    die "$index is the COMMITTED PLACEHOLDER, not the built SPA.
   The web build never ran, or its output never reached $dist. scripts/build-web.sh is what builds
   and stages it — that is what \`make build\` runs, and what deploy/Dockerfile's \`web\` stage runs."
 fi
@@ -52,7 +55,7 @@ referenced=$(grep -oE '(src|href)="[^"]*/assets/[^"]+"' "$index" | sed -E 's/^[^
 
 bundles=$(printf '%s\n' "$referenced" | grep -E '\.js$' || true)
 if [ -z "$bundles" ]; then
-	die "$index references no JavaScript bundle under assets/, so it cannot be the Vite output.
+    die "$index references no JavaScript bundle under assets/, so it cannot be the Vite output.
   It references:
 $(printf '%s' "${referenced:-(nothing)}" | sed 's/^/    /')"
 fi
@@ -61,7 +64,7 @@ fi
 # for every asset is only safe because the name changes when the bytes do (web/vite.config.ts pins
 # assets/[name]-[hash].js); a build that turned hashing off would pin browsers to a stale bundle.
 if ! printf '%s\n' "$bundles" | grep -qE -- '-[A-Za-z0-9_-]{8,}\.js$'; then
-	die "no referenced bundle carries a content hash:
+    die "no referenced bundle carries a content hash:
 $(printf '%s' "$bundles" | sed 's/^/    /')
   internal/ui serves assets with a one-year immutable cache header, which is only sound for hashed
   names. Check build.rollupOptions.output in web/vite.config.ts."
@@ -72,15 +75,15 @@ fi
 # HTML where it asked for JavaScript and the page dies in the console with a 200 on every request.
 missing=""
 while IFS= read -r ref; do
-	[ -n "$ref" ] || continue
-	# References are absolute ("/assets/x.js") or relative ("./assets/x.js"); both resolve under $dist.
-	rel="${ref#/}"
-	rel="${rel#./}"
-	[ -f "$dist/$rel" ] || missing="${missing}    ${ref}"$'\n'
+    [ -n "$ref" ] || continue
+    # References are absolute ("/assets/x.js") or relative ("./assets/x.js"); both resolve under $dist.
+    rel="${ref#/}"
+    rel="${rel#./}"
+    [ -f "$dist/$rel" ] || missing="${missing}    ${ref}"$'\n'
 done <<<"$referenced"
 
 if [ -n "$missing" ]; then
-	die "$index references assets that are not in $dist:
+    die "$index references assets that are not in $dist:
 ${missing}  A partially staged dist still serves index.html for those paths, so the page loads and
   then fails in the browser."
 fi
@@ -89,9 +92,9 @@ fi
 # existing directory, so staging over the placeholder rather than replacing it leaves this file in
 # the tree, where the embed's `all:` directive picks it up and ships it.
 if [ -e "$dist/assets/app-placeholder.js" ]; then
-	die "$dist/assets/app-placeholder.js is still present — the built SPA was staged OVER the
+    die "$dist/assets/app-placeholder.js is still present — the built SPA was staged OVER the
   placeholder instead of replacing it. Remove $dist before copying the real output in."
 fi
 
 printf '  \033[32mSPA verified\033[0m in %s — %s bundle(s) referenced by index.html\n' \
-	"$dist" "$(printf '%s\n' "$bundles" | grep -c .)"
+    "$dist" "$(printf '%s\n' "$bundles" | grep -c .)"

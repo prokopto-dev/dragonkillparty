@@ -121,6 +121,19 @@ ATLAS_VERSION          ?= v1.3.0
 # missing, and TestOSV_ActionPin_MatchesTheMakefilePin keeps it equal to the version ci.yml runs.
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION    ?= v2.5.0
+# The two static gates over the files CI itself is written in (issues #121 and #122). actionlint and
+# shfmt are ordinary Go programs and install exactly like gofumpt above; shellcheck is Haskell and
+# joins Atlas as the second pin that cannot be `go install`ed, so it is fetched as a
+# checksum-verified archive — see scripts/install-shellcheck.sh and scripts/shellcheck.sha256, which
+# read this pin with the same `$1==k { print $3 }` parse, so the `NAME ?= value` shape is
+# load-bearing here too.
+#
+# renovate: datasource=go depName=github.com/rhysd/actionlint
+ACTIONLINT_VERSION     ?= v1.7.12
+# renovate: datasource=go depName=mvdan.cc/sh/v3
+SHFMT_VERSION          ?= v3.13.1
+# renovate: datasource=github-releases depName=koalaman/shellcheck
+SHELLCHECK_VERSION     ?= v0.11.0
 
 # notyet <phase> <what> — a target that is declared but not yet implemented.
 # No leading '@': call sites add it, so this also works inside shell if/else blocks.
@@ -131,9 +144,10 @@ endef
 .PHONY: help setup dev gen test-unit test test-property test-coverage-floor test-importer \
         test-lanes lint vet migration seed docker check check-fast \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
-        lint-repo lint-go lint-web lint-migrations licence-gate govulncheck osv-scan \
+        lint-repo lint-go lint-web lint-migrations lint-actions lint-shell licence-gate \
+        govulncheck osv-scan mod-tidy-check \
         bench-clone verify-action-pins \
-        install-atlas generated-digest \
+        install-atlas install-shellcheck generated-digest \
         docs-build docs-links verify-spec \
         api-breaking api-changelog-comment budget-bundle verify-postgres test-golden \
         test-authz test-migrations test-e2e test-upgrade test-upgrade-ladder \
@@ -192,6 +206,11 @@ setup:
 	@$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@printf '  installing sqlc $(SQLC_VERSION)\n'
 	@$(GO) install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
+	@printf '  installing actionlint $(ACTIONLINT_VERSION)\n'
+	@$(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+	@printf '  installing shfmt $(SHFMT_VERSION)\n'
+	@$(GO) install mvdan.cc/sh/v3/cmd/shfmt@$(SHFMT_VERSION)
+	@$(MAKE) --no-print-directory install-shellcheck
 	@$(MAKE) --no-print-directory install-atlas
 	@printf '\033[32m  toolchain installed\033[0m into %s\n' '$(GOTOOLS_BIN)'
 	@# Install the tracked git hooks: pre-commit auto-formats staged files, pre-push blocks a push
@@ -481,7 +500,13 @@ test-e2e:
 # It does mean `make lint`, and therefore `make check`, now needs atlas on PATH. `make setup`
 # installs it, and `make gen` has always required it, so this adds no new toolchain obligation —
 # only a new place that reports its absence.
-lint: lint-repo licence-gate lint-migrations lint-go lint-web
+#
+# lint-actions and lint-shell (issues #121 and #122) are here for the reason lint-migrations is: they
+# are milliseconds, need no network and read no database, and the person who can act on a workflow
+# expression error or an unquoted expansion is the one still holding the file. Both hard-fail when
+# their tool is missing rather than skipping — see lint-go for why a linter that exits 0 because it
+# is absent is worse than no linter — so `make setup` now installs actionlint, shellcheck and shfmt.
+lint: lint-repo licence-gate lint-migrations lint-actions lint-shell lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
 # Runs build + vet, then tsc over the SPA. staticcheck is folded into golangci-lint, so it runs
@@ -495,11 +520,20 @@ vet: web-deps
 		(cd web && pnpm run typecheck); \
 	fi
 
-## fmt: gofumpt + goimports over the tree
+## fmt: gofumpt + goimports over the tree, shfmt over the shell scripts
+# The shell half is `scripts/lint-shell.sh --write`, so the flags that FORMAT and the flags that
+# CHECK are one definition in one file. Two copies of a formatter's flags is a `make fmt` that
+# produces a tree `make lint-shell` rejects, which is the worst version of both.
+#
+# A missing formatter WARNS here rather than failing, unlike the lint targets: `make fmt` is a
+# convenience that mutates the tree, and the gate that must not pass without its tool is
+# `make lint-shell`.
 fmt:
 	@bin=$$(command -v gofumpt 2>/dev/null || echo '$(GOTOOLS_BIN)/gofumpt'); \
 	if [ -x "$$bin" ]; then "$$bin" -l -w .; \
 	else printf '\033[33m  gofumpt not installed — run make setup\033[0m\n'; fi
+	@if command -v shfmt >/dev/null 2>&1; then env -u DKP_REPO_ROOT bash scripts/lint-shell.sh --write; \
+	else printf '\033[33m  shfmt not installed — run make setup\033[0m\n'; fi
 
 ## migration: create a migration — make migration NAME=add_bid_hold
 # The `ifndef` stays even though the script also checks NAME: it makes `make migration` with no
@@ -642,7 +676,12 @@ generated-digest:
 # tests in those two packages, so `make test` has already executed all of them at the per-PR count.
 # The separate target and the separate CI job exist so that a property failure names its own category
 # in the checks list and so the nightly lane can re-run just those tests at 20,000 checks.
-check: verify-commands lint vet test test-coverage-floor budget-bundle
+#
+# mod-tidy-check is here because CI runs it (in `lint / go`) and because the property it asserts is
+# invisible until somebody else's PR carries the cleanup. It is offline against a warm module cache,
+# which is the bar `check` is held to. See the target for why a tidy that FAILS is reported as a
+# failed tidy rather than as an untidy tree.
+check: verify-commands mod-tidy-check lint vet test test-coverage-floor budget-bundle
 	@printf '\033[32m  make check complete\033[0m\n'
 
 ## check-fast: the inner loop — the laws, the linters and the type checkers, NO test suite (~25s)
@@ -659,7 +698,12 @@ check: verify-commands lint vet test test-coverage-floor budget-bundle
 #
 # Ordered cheapest-first on purpose: a law violation should be the first thing you read, not the
 # thing you find after waiting for tsc.
-check-fast: lint-repo lint-go vet
+#
+# lint-actions and lint-shell joined the list with issues #121 and #122: together they are under a
+# second, they need no network, and the files they read — the workflows and the shell gates — are
+# exactly the ones whose breakage otherwise surfaces as a CI job failing for a reason that has
+# nothing to do with the change.
+check-fast: lint-repo lint-actions lint-shell lint-go vet
 	@printf '\033[32m  make check-fast complete\033[0m — run \033[36mmake check\033[0m before you call it done\n'
 
 ## status: which targets are still stubbed, and the roadmap phase that fills each in
@@ -675,8 +719,10 @@ status:
 	@printf '  Planned vs implemented: ROADMAP.md and docs/development/first-ten-prs.md\n'
 
 ## clean: remove build output
+# .cache/ is the per-checkout golangci-lint cache (issue #117). It is build output in every sense
+# that matters here — derived, reproducible, and never committed — so `make clean` takes it.
 clean:
-	@rm -rf $(BUILD_DIR) web/dist coverage.out
+	@rm -rf $(BUILD_DIR) web/dist coverage.out .cache
 
 # ---------------------------------------------------------------------------
 # CI-called targets. Deliberately absent from the AGENTS.md canonical table:
@@ -703,6 +749,64 @@ lint-repo:
 # shell would otherwise make `make setup` read a version out of some other tree.
 install-atlas:
 	@env -u DKP_REPO_ROOT bash scripts/install-atlas.sh '$(GOTOOLS_BIN)'
+
+# shellcheck, the second pinned tool that cannot be `go install`ed (it is Haskell). Same shape as
+# install-atlas above, same reasons, same `env -u DKP_REPO_ROOT`: the script honours that variable so
+# a test can point it at a fabricated Makefile/shellcheck.sha256 pair in t.TempDir() and assert that
+# a pin with no checksum row fails before the network is touched.
+install-shellcheck:
+	@env -u DKP_REPO_ROOT bash scripts/install-shellcheck.sh '$(GOTOOLS_BIN)'
+
+# The GitHub Actions workflow gate (issue #121) and the shell gate (issue #122).
+#
+# Both are `lint` prerequisites and both are their own path-filtered CI job — `lint / actions` and
+# `lint / shell` — so a failure names its own category in the checks list rather than arriving inside
+# a lint job about Go. `env -u DKP_REPO_ROOT` for the reason lint-repo gives: the scripts honour that
+# variable so their negative fixtures can run against a tainted tree in t.TempDir(), and a value
+# leaking in from a developer's shell would lint somebody else's directory while reporting success.
+lint-actions:
+	@env -u DKP_REPO_ROOT bash scripts/lint-actions.sh
+
+lint-shell:
+	@env -u DKP_REPO_ROOT bash scripts/lint-shell.sh
+
+# go.mod and go.sum must ALREADY be tidy (issue #149).
+#
+# Nothing asserted this, so tidiness was whoever last happened to run `go mod tidy` — and the cleanup
+# always arrived attached to an unrelated change. Adding one direct requirement in #126 pruned ~100
+# stale `/go.mod` hash lines from go.sum (ClickHouse, docker, gin, antlr — goose's optional-driver
+# graph, none of which this project builds) inside a PR about HTML parsing, where they were pure
+# noise a reviewer had to read past and decide was safe. The other direction matters more: a PR that
+# adds a dependency WITHOUT tidying leaves the graph and the lock disagreeing and nothing says so.
+#
+# THE TWO FAILURES ARE REPORTED SEPARATELY, and that is the whole care in this recipe. `go mod tidy`
+# itself can fail — a module the cache does not hold and no network to fetch it, a broken import — and
+# reporting that as "your go.mod is untidy" would send somebody to run the command that just failed.
+# So its status is checked first, its output is shown, and only then are the files compared.
+#
+# The originals are restored WHATEVER happens, including on the failure path: this target must not be
+# able to leave a developer's tree rewritten. `cp` rather than `git stash` because it has to work on
+# a tree with staged and unstaged edits, which is the normal state of the thing it runs inside.
+# The backups live in a mktemp directory rather than beside their originals: a `go.mod.bak` in the
+# repository root is a file every gate in test/repo would have to learn to ignore, and one that an
+# interrupted run leaves behind for `git status` to report.
+mod-tidy-check:
+	@tmp=$$(mktemp -d); \
+	trap 'cp "$$tmp/go.mod" go.mod; cp "$$tmp/go.sum" go.sum; rm -rf "$$tmp"' EXIT INT TERM; \
+	cp go.mod "$$tmp/go.mod"; cp go.sum "$$tmp/go.sum"; \
+	if ! out=$$($(GO) mod tidy 2>&1); then \
+		printf '\033[31m  go mod tidy FAILED\033[0m — this is not a tidiness failure, and running\n'; \
+		printf '  `go mod tidy` yourself will not fix it. What it said:\n%s\n' "$$out"; \
+		exit 1; \
+	fi; \
+	if cmp -s go.mod "$$tmp/go.mod" && cmp -s go.sum "$$tmp/go.sum"; then \
+		printf '  \033[32mgo.mod and go.sum are tidy\033[0m\n'; \
+		exit 0; \
+	fi; \
+	printf '\033[31m  go.mod or go.sum is not tidy\033[0m — run `go mod tidy` and commit the diff:\n'; \
+	diff -u "$$tmp/go.mod" go.mod || true; \
+	diff -u "$$tmp/go.sum" go.sum | head -40 || true; \
+	exit 1
 
 # The dependency licence gate. Same `env -u` reasoning as lint-repo above: its negative fixtures
 # point DKP_REPO_ROOT at a fabricated module tree in t.TempDir(), and a value leaking in from a
@@ -731,6 +835,31 @@ licence-gate:
 # `golangci-lint run` fails with "make: golangci-lint: No such file or directory" even though the
 # line above just found it. Keeping the lookup and the call in one `$$(...)`-using block forces the
 # shell and makes the export effective. Do not "tidy" this into a bare command.
+#
+# GOLANGCI_LINT_CACHE IS SCOPED TO THIS CHECKOUT (issue #117), and it is a correctness fix rather
+# than a tidy-up. Unset, golangci-lint uses ONE per-user cache — ~/Library/Caches/golangci-lint on
+# macOS — so an analysis result cached by any checkout is reachable from every other one, and the
+# cached entry still carries the ABSOLUTE PATH of the tree that produced it. Delete that tree, which
+# this project's agent worktrees do continuously, and the generated-file-filter pass cannot open the
+# file it is asked about. What it prints is a warning with the whole issue struct inlined:
+#
+#   level=warning msg="[runner] Can't process results by generated_file_filter processor: ...
+#   FromLinter:\"forbidigo\", Text:\"use of `float64` forbidden because \\\"float32/float64 are
+#   banned in internal/ledger and internal/strategy (canonical §1) ...\"
+#   Filename:\"/Users/…/dragonkillparty-8/internal/core/centipoints.go\" ... no such file"
+#
+# — a stale-cache warning that quotes the ledger's float ban and names internal/core/centipoints.go,
+# in a run that ends `0 issues.` on a clean tree. An environment fault wearing a content fault's
+# clothes, which test/repo/python_floor_test.go already names as the most expensive shape a gate
+# failure has. The natural next move is to hunt for a §1 violation that does not exist.
+#
+# $(CURDIR), so two worktrees of this repository cannot serve each other a cached path. CI keeps its
+# hits: every Go job there runs in a fresh checkout whose cache is restored per job by the key in
+# .github/actions/setup-toolchain, and this directory is under the workspace either way. `?=` so a
+# deliberate GOLANGCI_LINT_CACHE from the environment still wins.
+GOLANGCI_LINT_CACHE ?= $(CURDIR)/.cache/golangci-lint
+export GOLANGCI_LINT_CACHE
+
 lint-go:
 	@bin=$$(command -v golangci-lint 2>/dev/null || echo '$(GOTOOLS_BIN)/golangci-lint'); \
 	[ -x "$$bin" ] || { \

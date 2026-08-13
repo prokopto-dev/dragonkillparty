@@ -62,7 +62,7 @@ msg="image-size: ${ref} is $(mb "$compressed") MB (budget $(mb "$budget_bytes") 
 
 # Emit into the CI summary when available, so the number is visible without opening the log.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf '%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+    printf '%s\n' "$msg" >>"$GITHUB_STEP_SUMMARY"
 fi
 
 if [ "$compressed" -gt "$budget_bytes" ]; then

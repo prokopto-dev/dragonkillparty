@@ -20,7 +20,7 @@ set -euo pipefail
 # Honour the same off-switch the PostToolUse formatter uses, so a hostile-terminal or CI checkout
 # can disable it without editing the file.
 if [[ "${DKP_HOOKS:-on}" == "off" ]]; then
-	exit 0
+    exit 0
 fi
 
 root="$(git rev-parse --show-toplevel)"
@@ -30,18 +30,18 @@ cd "$root"
 # way the Makefile resolves GOTOOLS_BIN so the hook and `make fmt` invoke the same binaries.
 gotools_bin="$(go env GOBIN 2>/dev/null || true)"
 if [[ -z "$gotools_bin" ]]; then
-	gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
+    gotools_bin="$(go env GOPATH 2>/dev/null || true)/bin"
 fi
 
 # tool <name> — echo an executable path for the named formatter, or nothing if it is not installed.
 # command -v first (a deliberately chosen system tool wins), then the GOTOOLS_BIN install path.
 tool() {
-	local bin
-	bin="$(command -v "$1" 2>/dev/null || true)"
-	if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
-		bin="$gotools_bin/$1"
-	fi
-	printf '%s' "$bin"
+    local bin
+    bin="$(command -v "$1" 2>/dev/null || true)"
+    if [[ -z "$bin" && -x "$gotools_bin/$1" ]]; then
+        bin="$gotools_bin/$1"
+    fi
+    printf '%s' "$bin"
 }
 
 # --- Go ---------------------------------------------------------------------------------------
@@ -49,35 +49,35 @@ tool() {
 # a while-read loop rather than `mapfile`, which macOS's stock bash 3.2 does not have.
 go_files=()
 while IFS= read -r -d '' f; do go_files+=("$f"); done \
-	< <(git diff --cached --name-only --diff-filter=ACM -z -- '*.go')
+    < <(git diff --cached --name-only --diff-filter=ACM -z -- '*.go')
 
 if [[ ${#go_files[@]} -gt 0 ]]; then
-	goimports="$(tool goimports)"
-	gofumpt="$(tool gofumpt)"
+    goimports="$(tool goimports)"
+    gofumpt="$(tool gofumpt)"
 
-	if [[ -n "$goimports" ]]; then
-		# -local groups this module's imports last, matching the PostToolUse hook.
-		module="$(awk '$1 == "module" { print $2; exit }' go.mod 2>/dev/null || true)"
-		if [[ -n "$module" ]]; then
-			"$goimports" -w -local "$module" -- "${go_files[@]}"
-		else
-			"$goimports" -w -- "${go_files[@]}"
-		fi
-	else
-		printf 'pre-commit: goimports not installed — skipping Go import formatting. Run `make setup`.\n' >&2
-	fi
+    if [[ -n "$goimports" ]]; then
+        # -local groups this module's imports last, matching the PostToolUse hook.
+        module="$(awk '$1 == "module" { print $2; exit }' go.mod 2>/dev/null || true)"
+        if [[ -n "$module" ]]; then
+            "$goimports" -w -local "$module" -- "${go_files[@]}"
+        else
+            "$goimports" -w -- "${go_files[@]}"
+        fi
+    else
+        printf 'pre-commit: goimports not installed — skipping Go import formatting. Run `make setup`.\n' >&2
+    fi
 
-	if [[ -n "$gofumpt" ]]; then
-		"$gofumpt" -w -- "${go_files[@]}"
-	else
-		printf 'pre-commit: gofumpt not installed — skipping Go formatting. Run `make setup`.\n' >&2
-	fi
+    if [[ -n "$gofumpt" ]]; then
+        "$gofumpt" -w -- "${go_files[@]}"
+    else
+        printf 'pre-commit: gofumpt not installed — skipping Go formatting. Run `make setup`.\n' >&2
+    fi
 
-	# Re-stage whatever the formatters rewrote. A file the user deleted between staging and now is
-	# skipped rather than resurrected.
-	for f in "${go_files[@]}"; do
-		[[ -f "$f" ]] && git add -- "$f"
-	done
+    # Re-stage whatever the formatters rewrote. A file the user deleted between staging and now is
+    # skipped rather than resurrected.
+    for f in "${go_files[@]}"; do
+        [[ -f "$f" ]] && git add -- "$f"
+    done
 fi
 
 # --- Web --------------------------------------------------------------------------------------
@@ -86,17 +86,17 @@ fi
 prettier="web/node_modules/.bin/prettier"
 web_files=()
 while IFS= read -r -d '' f; do web_files+=("$f"); done \
-	< <(git diff --cached --name-only --diff-filter=ACM -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
+    < <(git diff --cached --name-only --diff-filter=ACM -z -- 'web/**/*.ts' 'web/**/*.tsx' 'web/**/*.css' 'web/**/*.json' 'web/**/*.html')
 
 if [[ ${#web_files[@]} -gt 0 ]]; then
-	if [[ -x "$prettier" ]]; then
-		"$prettier" --write --log-level warn -- "${web_files[@]}"
-		for f in "${web_files[@]}"; do
-			[[ -f "$f" ]] && git add -- "$f"
-		done
-	else
-		printf 'pre-commit: web/node_modules/.bin/prettier not installed — skipping web formatting.\n' >&2
-	fi
+    if [[ -x "$prettier" ]]; then
+        "$prettier" --write --log-level warn -- "${web_files[@]}"
+        for f in "${web_files[@]}"; do
+            [[ -f "$f" ]] && git add -- "$f"
+        done
+    else
+        printf 'pre-commit: web/node_modules/.bin/prettier not installed — skipping web formatting.\n' >&2
+    fi
 fi
 
 exit 0

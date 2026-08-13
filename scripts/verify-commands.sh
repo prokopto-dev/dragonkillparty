@@ -16,8 +16,14 @@ set -euo pipefail
 # AGENTS.md to the repo. Unset (the CI and local default), behaviour is exactly as before.
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
-[ -f AGENTS.md ] || { echo "AGENTS.md not found"; exit 1; }
-[ -f Makefile ]  || { echo "Makefile not found";  exit 1; }
+[ -f AGENTS.md ] || {
+    echo "AGENTS.md not found"
+    exit 1
+}
+[ -f Makefile ] || {
+    echo "Makefile not found"
+    exit 1
+}
 
 # Rows look like: | dev server (Go :8080 + Vite :5173) | `make dev` | — |
 # No mapfile: macOS ships bash 3.2, and contributors run this locally.

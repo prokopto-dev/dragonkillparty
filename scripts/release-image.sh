@@ -16,13 +16,13 @@ VERSION="${VERSION:?VERSION is required}"
 ARCH="${ARCH:?ARCH is required}"
 
 case "$ARCH" in
-amd64) platform="linux/amd64" ;;
-arm64) platform="linux/arm64" ;;
-armv7) platform="linux/arm/v7" ;;
-*)
-    echo "release-image: unknown ARCH ${ARCH}" >&2
-    exit 1
-    ;;
+    amd64) platform="linux/amd64" ;;
+    arm64) platform="linux/arm64" ;;
+    armv7) platform="linux/arm/v7" ;;
+    *)
+        echo "release-image: unknown ARCH ${ARCH}" >&2
+        exit 1
+        ;;
 esac
 
 # The build stamps, defaulted so a manual invocation still produces a labelled image.

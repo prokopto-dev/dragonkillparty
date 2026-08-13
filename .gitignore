@@ -8,6 +8,12 @@ coverage.html
 *.test
 *.prof
 
+# Per-checkout tool caches. golangci-lint's cache lives here rather than in the shared per-user one
+# (issue #117): a result cached by another worktree carries that worktree's absolute paths, and when
+# that worktree is deleted `make lint` warns about a file it cannot open — quoting, in the case that
+# filed the issue, the ledger's float64 ban against internal/core/centipoints.go on a clean tree.
+/.cache/
+
 # Web build output — produced in CI and embedded in the binary
 /web/dist/
 /web/node_modules/

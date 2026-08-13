@@ -31,7 +31,10 @@ set -euo pipefail
 # strips the variable with `env -u` for the same reason every other gate target does.
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 
-die() { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 dest=${1:-}
 [ -n "$dest" ] || die "usage: install-atlas.sh <dest-dir>   (make install-atlas passes GOTOOLS_BIN)"
@@ -44,13 +47,13 @@ version=$(awk '$1=="ATLAS_VERSION" { print $3; exit }' Makefile)
 
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in
-    linux|darwin) ;;
+    linux | darwin) ;;
     *) die "unsupported OS '$os' — the Atlas community edition publishes linux and darwin only" ;;
 esac
 
 case "$(uname -m)" in
-    x86_64|amd64) arch=amd64 ;;
-    arm64|aarch64) arch=arm64 ;;
+    x86_64 | amd64) arch=amd64 ;;
+    arm64 | aarch64) arch=arm64 ;;
     *) die "unsupported architecture '$(uname -m)'" ;;
 esac
 
@@ -63,8 +66,10 @@ want=$(awk -v a="$asset" '$2==a { print $1; exit }' scripts/atlas.sha256)
 
 # sha256 <file> — macOS ships shasum, Ubuntu ships sha256sum, and CI runs on both.
 sha256() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'
-    elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{ print $1 }'
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{ print $1 }'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{ print $1 }'
     else die "neither sha256sum nor shasum is available"; fi
 }
 

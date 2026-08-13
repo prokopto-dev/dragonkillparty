@@ -43,5 +43,5 @@ fi
 
 echo "release-manifest: ${IMAGE}@${digest}"
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+    echo "digest=${digest}" >>"$GITHUB_OUTPUT"
 fi

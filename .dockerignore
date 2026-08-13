@@ -28,6 +28,9 @@ web/dist
 web/node_modules
 node_modules
 coverage.out
+# The per-checkout golangci-lint cache (issue #117). Hundreds of megabytes of analysis results that
+# no build stage reads, and every `make lint` invalidates the layer that would carry them.
+/.cache
 
 # Docs and design. Served from embed.FS by the binary when they are embedded; the source tree here
 # is not needed to compile, and the mockups are large.

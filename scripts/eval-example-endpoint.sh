@@ -33,9 +33,12 @@ set -euo pipefail
 cd "${DKP_REPO_ROOT:-$(dirname "$0")/..}"
 REPO_ROOT="$(pwd)"
 
-note()  { printf '  \033[36m%s\033[0m\n' "$*"; }
-warn()  { printf '  \033[33m%s\033[0m\n' "$*"; }
-die()   { printf '\033[31m  %s\033[0m\n' "$*" >&2; exit 1; }
+note() { printf '  \033[36m%s\033[0m\n' "$*"; }
+warn() { printf '  \033[33m%s\033[0m\n' "$*"; }
+die() {
+    printf '\033[31m  %s\033[0m\n' "$*" >&2
+    exit 1
+}
 
 # The runner. Default to the `claude` CLI; overridable so any single-prompt agent CLI can drive it.
 RUNNER="${DKP_EVAL_RUNNER:-claude}"
@@ -46,7 +49,7 @@ if ! command -v "$RUNNER_BIN" >/dev/null 2>&1; then
     warn "This eval is LOCAL-ONLY and needs an agent CLI plus its API credentials — neither ships in"
     warn "this repo (decision record §U5). Configure one and set DKP_EVAL_RUNNER, e.g.:"
     warn "    DKP_EVAL_RUNNER='claude -p' make eval-example-endpoint"
-    die  "runner '$RUNNER_BIN' not found — nothing to evaluate against."
+    die "runner '$RUNNER_BIN' not found — nothing to evaluate against."
 fi
 
 # The task. Exactly the instruction the decision record specifies, and NOTHING more: add a read
@@ -86,7 +89,7 @@ git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" HEAD >/dev/null
 
 note "handing the task to: $RUNNER"
 note "the agent gets the two documents and the one instruction, and NO further guidance."
-( cd "$WORKTREE" && $RUNNER "$TASK" ) || die "the agent runner exited non-zero before finishing the task."
+(cd "$WORKTREE" && $RUNNER "$TASK") || die "the agent runner exited non-zero before finishing the task."
 
 # The verdict. Three assertions, all in the resulting tree, all from the acceptance criteria:
 #   1. make check green
@@ -95,14 +98,14 @@ note "the agent gets the two documents and the one instruction, and NO further g
 fail=0
 
 note "asserting: make check"
-if ! ( cd "$WORKTREE" && make check ); then
+if ! (cd "$WORKTREE" && make check); then
     warn "make check is RED in the agent's tree — the documents did not carry the agent to a passing"
     warn "build. File the failure against EXAMPLE_ENDPOINT.md / RECIPES.md, not against the code."
     fail=1
 fi
 
 note "asserting: spec-drift gate (make verify-spec)"
-if ! ( cd "$WORKTREE" && make verify-spec ); then
+if ! (cd "$WORKTREE" && make verify-spec); then
     warn "the spec-drift gate is RED — the agent changed the API without regenerating openapi.json,"
     warn "which means step 6 of EXAMPLE_ENDPOINT.md did not land the agent where it should."
     fail=1

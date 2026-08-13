@@ -134,7 +134,10 @@ FACES=(
 
 # --- Helpers --------------------------------------------------------------------------------------
 
-die() { printf '\033[31mFAIL\033[0m %s\n' "$1" >&2; exit 1; }
+die() {
+    printf '\033[31mFAIL\033[0m %s\n' "$1" >&2
+    exit 1
+}
 note() { printf '  %s\n' "$1"; }
 
 # sha256 of a file, on both the laptops (shasum) and the runners (sha256sum).
@@ -201,7 +204,7 @@ mv "$src/$(basename "$SRC_LICENCE_ZIPPATH")" "$src/OFL.txt"
 expect_sha "$src/OFL.txt" "$SRC_LICENCE_SHA256" "$SRC_LICENCE_ZIPPATH"
 
 for face in "${FACES[@]}"; do
-    IFS='|' read -r name zippath want _out <<< "$face"
+    IFS='|' read -r name zippath want _out <<<"$face"
     unzip -q -o -j "$archive" "$zippath" -d "$src" || die "extracting $zippath failed"
     expect_sha "$src/${name}.woff2" "$want" "$zippath"
 done
@@ -222,7 +225,7 @@ out="$tmp/out"
 mkdir -p "$out"
 
 for face in "${FACES[@]}"; do
-    IFS='|' read -r name _zippath _want outname <<< "$face"
+    IFS='|' read -r name _zippath _want outname <<<"$face"
     # --no-recalc-timestamp is the one that matters for reproducibility: it keeps head.modified from
     # the source face instead of stamping the wall clock. It is pyftsubset's default and pinned here
     # anyway, because a default is not a promise. --no-recalc-bounds keeps the source's glyph bounds

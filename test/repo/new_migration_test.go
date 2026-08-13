@@ -146,9 +146,8 @@ func TestNewMigration_BacktickInStringLiteral_Refuses(t *testing.T) {
 		t.Skip("invokes atlas to generate a real migration; run `make test` or `make check`")
 	}
 
-	if _, err := exec.LookPath("atlas"); err != nil {
-		t.Skip("atlas is not installed; run make setup")
-	}
+	requireTool(t, "atlas", "ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` "+
+		"install it through setup-toolchain's tools: input")
 
 	schema := "schema \"main\" {\n}\ntable \"thing\" {\n  schema = schema.main\n" +
 		"  column \"id\" {\n    null = false\n    type = text\n  }\n" +
@@ -182,9 +181,8 @@ func TestNewMigration_ValidName_WritesTheCommittedForm(t *testing.T) {
 		t.Skip("invokes atlas to generate a real migration; run `make test` or `make check`")
 	}
 
-	if _, err := exec.LookPath("atlas"); err != nil {
-		t.Skip("atlas is not installed; run make setup")
-	}
+	requireTool(t, "atlas", "ci.yml's `test / integration` and nightly-verify.yml's `suite / shuffled` "+
+		"install it through setup-toolchain's tools: input")
 
 	tree := migrationFixture(t, fixtureSchema)
 

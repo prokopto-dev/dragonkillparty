@@ -174,12 +174,24 @@ jobs:
           go: "true"
           # The same tools `test / integration` installs, and for the same reasons: internal/core's
           # TestLintBan_* meta-tests exec golangci-lint, test/repo's githooks_test needs gofumpt to
-          # exercise the hooks, its atlas_lock and new_migration suites need atlas, and
-          # python_floor_test re-parses scripts/*.py at the declared floor. Without them those
-          # suites skip, and a shuffled run that skipped the shell-out gates would be a shuffled run
-          # of the half that was never at issue.
-          tools: "golangci-lint gofumpt atlas"
+          # exercise the hooks, its atlas_lock and new_migration suites need atlas,
+          # python_floor_test re-parses scripts/*.py at the declared floor, and the lint-actions and
+          # lint-shell fixtures drive actionlint, shellcheck and shfmt against tainted trees in
+          # t.TempDir(). Without them those suites skip, and a shuffled run that skipped the
+          # shell-out gates would be a shuffled run of the half that was never at issue.
+          #
+          # KEEP THIS LIST EQUAL TO ci.yml's `test / integration`. Since issue #177 a tool-gated
+          # skip in test/repo FAILS when CI is set rather than skipping, so a tool missing here is
+          # a red nightly rather than a quiet hole — which is the point, and also the reason the
+          # two lists must not drift.
+          tools: "golangci-lint gofumpt atlas actionlint shellcheck shfmt"
           python: "true"
+          # Node, for the pnpm-gated suites this job was skipping exactly as `test / integration`
+          # was (issue #177) — the two shared the omission when #159 gave this job that job's
+          # toolchain.
+          node: "true"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        working-directory: web
       - run: make test-unit
       - run: make test
 

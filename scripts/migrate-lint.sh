@@ -105,7 +105,7 @@ report=$("$atlas" migrate lint --env sqlite "${selection[@]}" --format '{{ json 
 json_status=$?
 set -e
 
-if ! printf '%s' "$report" | grep -qE '^\[' ; then
+if ! printf '%s' "$report" | grep -qE '^\['; then
     cat "$stderr_file" >&2
     printf '%s\n' "$report" >&2
     die "atlas migrate lint could not complete (exit $json_status).
