@@ -176,21 +176,28 @@ evaluated is skipped rather than approximated. Every step that *was* reached is 
 resolution as a named trace entry, alongside the count of eligible bids on each rung. That is what an
 officer reads back months later, and the counts are also what the disclosure below is rendered from.
 
+**Step 2 is whatever the rule ranks by, and nothing runs between it and step 6.** For the two auctions
+it is the amount; for `relative_bid` it is the share of the frozen balance; for `roll` it is the die.
+An equal step 2 therefore falls straight to the bid sequence and then to the roll — in particular, two
+equal *shares* are **not** separated by which bidder committed more points
+([#244](https://github.com/prokopto-dev/dragonkillparty/issues/244)). Committing the same share of a
+larger bank is a larger number of points and the same claim; deciding it on the size of the bank is
+step 4 arriving three rungs early, out of order and under another name, in the one rule written to
+neutralise bank size. When step 4 becomes evaluable it lands where it is numbered, below attendance.
+
 | Trace entry | Written by | Records |
 |---|---|---|
 | `eligibility` | all four | how many of the bids placed cleared the floor that applied |
 | `tier` | all four | which rung took the item, how many bids stood on each, and when the ladder settled nothing |
-| `amount` | the two auctions, `relative_bid` | the highest bid on the winning rung — and in `relative_bid`, the largest commitment among bids that tied on the *share*, which is a rung of the chain below its step 2 |
+| `amount` | the two auctions | the highest bid on the winning rung — their step 2, which is the comparison they rank by |
 | `share` | `relative_bid` | the largest share, in basis points, of a balance frozen at `seq_at_open` |
 | `bid_sequence` | the two auctions, `relative_bid` | which of the bids tied on everything above was placed first |
 | `seeded_roll` | all four | the seed a tie was settled from — and in `roll`, the die itself, which is that rule's step 2 rather than its tie-break |
 | `price` | all four | what the winner pays, and under which rule |
 
 A rule records every step it **reached**, including the ones that ran and tied: a trace showing
-`share` → `amount` → `bid_sequence` is saying that the first two were evaluated and settled nothing.
-That `amount` rung under an equal share is not in the numbered chain above and decides in favour of
-the larger bank; whether it should decide at all is
-[#244](https://github.com/prokopto-dev/dragonkillparty/issues/244).
+`share` → `bid_sequence` is saying that the share was evaluated and settled nothing, and that the
+earliest of the bids tied on it took the item.
 
 **Every settlement writes a trace, including the ones that award nobody** — a rot, a roll-off that
 tied, a session in which no bid was a bidable share. Those stop at `eligibility` or at the step they

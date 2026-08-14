@@ -312,11 +312,30 @@ func (s DecayPercent) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 
 	// The bank's entry closes the batch, so a reader sees who moved before where the points went. The
 	// order is preserved by Canonical and is therefore part of the golden.
-	entries = append(entries, EntryProposal{
-		AccountID:   bank,
-		BalanceKind: BalanceKindDKP,
-		AmountCp:    -total,
-	})
+	//
+	// IT IS OMITTED WHEN THE PERIOD NETS TO ZERO, and this planner is the only one in the package that
+	// can reach that. Its per-account amounts are the only MIXED-SIGN ones here — under `toward_zero` a
+	// debt is CREDITED while a positive balance is DEBITED — so a period whose forgiveness happens to
+	// equal its haircut leaves the bank funding nothing. At 1 bp, debts of −180.14 and −108.93 are
+	// forgiven a centipoint each while a balance of 209.75 is docked two, and `-total` is exactly 0.
+	//
+	// A zero entry is refused by ledger_entry's CHECK (amount_cp <> 0) and by the universal
+	// AmountsNonZero invariant, so writing one here would get the WHOLE batch rejected at commit — the
+	// members' own entries are individually fine and the period's decay is lost for the entire guild
+	// over an arithmetic coincidence, on a planner that returned no error (#245, found by the property
+	// at the nightly count).
+	//
+	// Dropping it is the rule the per-account loop above already follows: an amount of zero gets no
+	// row. The batch still sums to exactly zero, because the members' entries do that between them, so
+	// SumZero and the conservation argument are untouched — and the bank's balance is unchanged
+	// because the bank genuinely did not move.
+	if total != 0 {
+		entries = append(entries, EntryProposal{
+			AccountID:   bank,
+			BalanceKind: BalanceKindDKP,
+			AmountCp:    -total,
+		})
+	}
 
 	// NonNegative is declared even though the clamp above already honours the floor, and the
 	// duplication is the point: the planner reads balances at run.AsOfSeq while the engine checks them

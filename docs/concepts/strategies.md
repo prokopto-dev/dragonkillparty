@@ -256,6 +256,12 @@ Three knobs, and the last two are the settings guilds argue about:
 | `floor_cp` | the balance decay stops at. The run lands **on** the floor rather than crossing it |
 | `negative_balances` | what a debt does: `skip` (default), `toward_zero` (debt forgiveness), `preserve_sign` (the debt grows, and needs a floor below zero) |
 
+**Under `toward_zero` the bank sometimes has no row at all.** It is the only policy that credits and
+debits in the same batch — a debt is forgiven while a positive balance is docked — so a period whose
+forgiveness happens to equal its haircut is funded by the members between themselves. The batch still
+sums to exactly zero; the bank simply did not move, and an entry of zero is not a legal row, for the
+same reason the member whose 0.09 rounds away gets none.
+
 **A re-run of a period is the same batch, not a second haircut.** A percentage decay is not
 idempotent the way a cap trim is — 10% twice is 19% — so what makes the retry safe is that every
 balance is read at the period's own as-of `seq`. Two runs read the same snapshot, propose the same
@@ -409,6 +415,14 @@ more absolute points for the same priority. Every balance is read at the session
 **positionally** — resolving against live balances would let a decay run committed mid-auction rewrite
 everybody's percentage, and the bug only appears on the one night a decay job overlaps a raid. A bid
 that is no longer a share of its frozen balance is ignored, and the resolution says how many were.
+
+**Two equal shares are an equal claim, and the larger bank does not break the tie.** Had Tankguy
+committed 450.00 of his 900.00 against Healbot's 250.00 of 500.00, both stand at 5000 bp: the
+settlement falls through to the earliest bid and then to a seeded roll, exactly as
+[the tie-break chain](../guides/auctions.md#tie-breaks) describes, and never to the 200.00 more that
+the bigger bank put behind the same percentage. Awarding it on that number would hand the item to the
+hoarder for hoarding, one rung below where this rule removed that advantage
+([#244](https://github.com/prokopto-dev/dragonkillparty/issues/244)).
 
 ### `roll` — a seeded die, and a tie is a new round
 
