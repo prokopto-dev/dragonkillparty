@@ -228,7 +228,7 @@ may not use `math/rand`. Enforced by an **import-graph test**, not by review.
 ```go
 // ctx is a read-only façade: pool config, Balance(account, kind, asOfSeq),
 // attendance statistics, roster, item catalogue, Clock, Rng.
-func (s *ZeroSum) PlanAward(ctx strategy.Ctx, ev AwardEvent) (BatchProposal, error)
+func (s ZeroSum) PlanAward(ctx strategy.Ctx, ev AwardEvent) (BatchProposal, error)
 ```
 
 - The **Clock** is injected. `s.clock.Now()`, never `time.Now()`.

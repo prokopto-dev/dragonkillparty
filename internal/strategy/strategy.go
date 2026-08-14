@@ -80,12 +80,19 @@ const (
 	// RuleEarn answers "how are points earned?" — tick, attendance_weighted.
 	RuleEarn RuleKind = "earn"
 
-	// RuleSpend answers "how are points spent?" — fixed_price, the auctions, loot_council, roll.
+	// RuleSpend answers "how are points spent?" — fixed_price, zero_sum, the auctions, loot_council,
+	// roll.
+	//
+	// `zero_sum` is here rather than in the over-time family the guide's catalogue table listed it
+	// under (#196), and the correction is the same rule that puts `start_points` below: THE SLOT
+	// FOLLOWS THE PLANNER. Redistributing the winner's payment happens in PlanAward, at the moment an
+	// item is won, not on the decay_run cadence — a pool that held it over time would never award an
+	// item and never decay one either.
 	RuleSpend RuleKind = "spend"
 
 	// RuleOverTime answers "what happens to points over time?" — decay_percent, decay_window, cap,
-	// start_points, zero_sum. Every member of this family posts on the decay_run cadence
-	// (ADR-0024) rather than in response to a raid-night event.
+	// start_points. Every member of this family posts on the decay_run cadence (ADR-0024) rather than
+	// in response to a raid-night event.
 	RuleOverTime RuleKind = "over_time"
 )
 

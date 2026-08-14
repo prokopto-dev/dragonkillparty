@@ -410,6 +410,62 @@ func checkDistinctAccounts(strategyID string, sorted []AccountRef) error {
 	return nil
 }
 
+// checkBuyer rejects the two buyers no spend planner has a defensible answer for.
+//
+// A SYSTEM ACCOUNT IS NOT A PURCHASER. The four ledger-addressable non-human accounts are
+// counterparties — the bank funds a tick, write_off swallows a rot, residue catches an unallocatable
+// remainder — and debiting one as though it had won an item would produce a balance that means
+// nothing and a statement nobody can read. It is a caller bug rather than a guild's choice, so it is
+// refused here rather than routed.
+//
+// Shared by the spend rules for the reason every helper in this file is: `fixed_price` and `zero_sum`
+// both ask it, the answer is not allowed to differ between them, and a second copy is one edit away
+// from being the copy that forgot the system-account case.
+func checkBuyer(strategyID string, buyer AccountRef) error {
+	if buyer.ID == "" {
+		return fmt.Errorf("%s: award has no buyer: %w", strategyID, ErrInvalidEvent)
+	}
+
+	if buyer.IsSystem() {
+		return fmt.Errorf(
+			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
+				"purchasers: %w", strategyID, buyer.ID, ErrInvalidEvent)
+	}
+
+	return nil
+}
+
+// resolvePrice applies the three-step price resolution and refuses a price that awards nothing.
+//
+// ONE ORDER AND ONLY ONE: the officer's explicit price, then the item's catalogue price, then the
+// pool's default. Each step is a deliberate override of the one below it.
+//
+// It is shared rather than per-strategy for the reason tick.go's header gives for refusing to answer
+// PlanAward at all: a second copy of the price resolution is a copy that can disagree about what an
+// unpriced item costs, and "the officer's price beat the catalogue's on one strategy and not the
+// other" is a defect nobody would think to look for.
+func resolvePrice(
+	strategyID string, defaultPriceCp core.Centipoints, ev AwardEvent,
+) (core.Centipoints, error) {
+	price := defaultPriceCp
+
+	switch {
+	case ev.PriceCp != nil:
+		price = *ev.PriceCp
+	case ev.Item.FixedPriceCp != nil:
+		price = *ev.Item.FixedPriceCp
+	}
+
+	if price <= 0 {
+		return 0, fmt.Errorf(
+			"%s: item %q resolves to a price of %d centipoints; price it in the catalogue, name a "+
+				"price on the award, or set default_price_cp: %w",
+			strategyID, ev.Item.Name, price, ErrInvalidEvent)
+	}
+
+	return price, nil
+}
+
 // checkShare rejects the two share shapes no planner has a defensible answer for.
 func checkShare(strategyID string, s Share) error {
 	if s.AccountID == "" {

@@ -1,7 +1,8 @@
 # Point strategies
 
 **Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
-`tick`, `start_points` and `cap` ship today — see [the worked examples](#the-shipped-strategies)
+`tick`, `start_points`, `cap`, `zero_sum` and `attendance_weighted` ship today — see
+[the worked examples](#the-shipped-strategies)
 below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
 `ConfigSchema` in `internal/strategy/<id>.go`, and a generated per-strategy reference page is Phase 2
 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
@@ -184,18 +185,91 @@ second is a new member; a planner that tested the balance would pay a spent-out 
 opening grant. Eligibility is "has no ledger entry in this pool", so the grant is itself history and a
 re-run — in the same cadence period or any later one — credits nobody.
 
+### `attendance_weighted` — the raid's pot, divided by attendance
+
+The alternative earn rule to `tick`, and the difference is where the fixed number sits. `tick` pays a
+fixed amount **per unit of attendance**, so a forty-strong raid costs the guild's economy twice what a
+twenty-strong one does. This pays a fixed amount **per raid**, so the pot is constant and turning up
+buys a bigger slice of it.
+
+A pot of **1000.00** over a raid whose three attendees were present for 12, 9 and 8 of its ticks:
+
+| Raider | Ticks | Share | Earned |
+|---|---|---|---|
+| Tankguy | 12 | 12⁄29 | 1000.00 × 12 ÷ 29 = **413.79** |
+| Healbot | 9 | 9⁄29 | 1000.00 × 9 ÷ 29 = **310.35** |
+| Druidgal | 8 | 8⁄29 | 1000.00 × 8 ÷ 29 = **275.86** |
+
+```
+debit   guild_bank   −1000.00
+credit  Tankguy       +413.79
+credit  Healbot       +310.35
+credit  Druidgal      +275.86
+        Σ entries   =    0.00
+```
+
+The three quotas floor to 413.79, 310.34 and 275.86, which is **one centipoint short of the pot**. The
+largest remainder — Healbot, at 14⁄29 of a centipoint — takes it, and at equal remainders the tiebreak
+is the account id, ascending. That is the shared allocator, the same one a zero-sum split uses:
+rounding each share independently would mint or destroy a centipoint on every raid, forever.
+
+A raid nobody was credited any attendance for produces **no batch** rather than a pot posted to a
+system account: unlike a price a buyer has already paid, a pot does not exist until the batch creates
+it, so there is nothing in flight that has to land somewhere.
+
+**The ranking score is not here yet.** The guide describes this rule's headline as a standing of
+`balance × attendance %` — a ranking score, not a balance — and that number needs the attendance
+statistics that land in Phase 4
+([#223](https://github.com/prokopto-dev/dragonkillparty/issues/223)). What ships is the earn rule;
+`Priority` ranks by balance until then, and spending has always deducted raw points.
+
 ### `fixed_price` — spend at a published price
 
 Covered with its price table and its zero-sum split in
 [Choosing a DKP system](../guides/choosing-a-dkp-system.md#fixed_price--published-price-list).
 
+### `zero_sum` — spend into the other raiders' pockets
+
+What the winner pays, the other raiders receive: no points enter circulation at loot time and none
+leave it. Tankguy wins a Cloak of Flames at **300.00** on a night eight raiders attended, and the
+default excludes the winner from the split, so seven share it:
+
+```
+debit   Tankguy      −300.00
+credit  6 raiders     +42.86 each
+credit  1 raider      +42.85
+        Σ entries   =   0.00
+```
+
+300.00 ÷ 7 is 42.857…, so five credits round up and two round down — 5 × 42.86 + 2 × 42.85 = 300.00
+exactly. Rounding each credit independently would produce 300.02 and mint two centipoints on every
+item, forever. That is the whole reason the allocator is shared rather than written per strategy.
+
+Three knobs, one per decision the guide tells a guild to take before switching it on:
+
+| Knob | Answers |
+|---|---|
+| `winner_share` | `excluded` (the default: the winner pays 300.00 and gets none back) or `included` (the winner is an attendee like any other and nets 300.00 × 6⁄7) |
+| `solo_policy` | A kill with nobody else on it: `guild_bank`, `write_off`, or `free` — and `free` writes no batch at all rather than a batch that moves zero |
+| `default_price_cp` | The price when the officer names none and the item carries none. Resolution is officer → catalogue → this, the same order `fixed_price` uses and the same code |
+
+Who is in the split is **not** a knob: a pure planner cannot see a raid or a tick, so the beneficiary
+list is the award ingest path's to fill, and tick-weighting is expressed as the weights on it.
+
+**Reversing one reverses the whole split** — the debit and every credit, together, in one batch. What
+it does not do is replay: reversing a six-month-old award leaves every intermediate balance
+arithmetically "wrong" under the new history, and an append-only ledger cannot fix that. One
+compensating batch at today's `seq` is the rule ([The ledger](ledger.md)).
+
 ### What each one refuses
 
-`tick`, `start_points` and `cap` answer one question each, and say so rather than guessing at the
-others: `tick.PlanAward` and `cap.PlanAward` return `ErrUnsupported` (a 501 naming the strategy),
-because an earn rule has no price list and inventing one would be a second copy of `fixed_price`'s
-price resolution that could then disagree with it. That is not a gap — it is what makes a pool need
-three rules rather than one, which is the section below.
+`tick`, `start_points`, `cap` and `attendance_weighted` answer one question each, and say so rather
+than guessing at the others: `tick.PlanAward`, `cap.PlanAward` and
+`attendance_weighted.PlanAward` return `ErrUnsupported` (a 501 naming the strategy), because an earn
+rule has no price list and inventing one would be a second copy of `fixed_price`'s price resolution
+that could then disagree with it. `zero_sum` refuses the mirror image — it has no tick value, so
+`PlanAttendance` names `tick` as what to pair it with. That is not a gap — it is what makes a pool
+need three rules rather than one, which is the section below.
 
 ## A pool composes three rules
 
