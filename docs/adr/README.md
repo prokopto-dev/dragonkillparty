@@ -39,6 +39,7 @@ and one link is cheaper than one argument.
 | [0024](0024-one-run-table-scoped-by-kind.md) | One cadence-run table, scoped by `kind` | accepted | Decay, cap and start-points shared a two-part key and one run table, so the second family's run failed an index built to stop a repeat — and looked exactly like successful deduplication. `kind` goes inside the index |
 | [0025](0025-pure-evaluators-outside-strategy.md) | Pure evaluators outside `internal/strategy` | accepted | A rule evaluator that proposes no batch is its own package and carries its own purity proof; the repo-gate tree list is the upgrade when a third one lands |
 | [0026](0026-three-rules-per-pool.md) | Three rules per pool | accepted | A pool composes an earn, a spend and an over-time rule, each with its own config; `ledger_batch.strategy_id` names which of the three planned the batch, and a reversal routes on it |
+| [0027](0027-type-aware-second-opinion-on-the-laws.md) | A type-aware second opinion on the laws | accepted | `go/types` over `go list -export`, standard library only — no `golang.org/x/tools`. Advisory by construction; `make lint-repo` stays the gate because it reads a tree that does not build |
 
 ## When an ADR is required
 

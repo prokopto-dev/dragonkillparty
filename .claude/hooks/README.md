@@ -17,6 +17,23 @@ A `PostToolUse` hook that takes ten seconds turns every edit into a ten-second s
 the ~25 s integration test loop this architecture exists to protect. Every hook here is under ~1 s
 except the commit-time secret scan.
 
+## These scripts are themselves linted
+
+`make lint-shell` — shellcheck plus `shfmt -d`, the `lint / shell` CI job, and the pre-push hook —
+enumerates `.claude/hooks/**` alongside `scripts/**` and `.githooks/**` (issue #187). It did not
+until then, and this is the tree where that mattered most: **`guard-bash.sh` is fail-open by
+design**, as its own header says — a missing JSON parser or an unparseable payload allows the
+command. A shell defect in a fail-open guard is a guard that stops guarding with nothing going red,
+which is the same defect class the gate was bought for. The first run over this directory found an
+`SC2164` `cd` with no `|| exit` in `test-guard-bash.sh`: a failed `cd` would have left every check
+reporting `block` because the guard path resolved to nothing — a self-test for a fail-open guard,
+passing without running it.
+
+`test/repo/lint_shell_test.go` holds both halves: a negative fixture in `t.TempDir()` carrying that
+exact shape, and an assertion that the gate's enumeration selects the real `guard-bash.sh` in this
+checkout. `make fmt` reformats these files under the same `-i 4 -ci -bn` policy as the rest of the
+shell tree, so obey it rather than hand-formatting.
+
 ## What is wired
 
 | Event | Matcher | Script | Budget | Blocks? |

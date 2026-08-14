@@ -185,7 +185,7 @@ endef
 .PHONY: help setup dev gen test-unit test test-property test-perf test-coverage-floor test-importer \
         test-lanes lint vet migration seed docker check check-fast \
         build clean fmt web-deps verify-generated verify-commands labels-sync \
-        lint-repo lint-go lint-web lint-migrations lint-actions lint-shell licence-gate \
+        lint-repo lint-go lint-web lint-migrations lint-actions lint-shell lint-laws licence-gate \
         govulncheck osv-scan mod-tidy-check \
         bench-clone verify-action-pins \
         install-atlas install-shellcheck generated-digest \
@@ -344,7 +344,8 @@ gen:
 #   internal/core      TestLintBan_* exec golangci-lint over testdata/lintfixtures
 #   internal/api       the snippet-compile gate shells out to go build, sqlc and atlas
 #   internal/licence   RuntimeModules runs `go list` over a module tree
-#   internal/repogate  the ADR and SHIPPED.lock rules run git
+#   internal/repogate  the ADR and SHIPPED.lock rules run git, and typedlaw runs `go list -export`
+#                      over a fabricated module in t.TempDir()
 #   internal/specgate  the operationId-rename check runs git against the base revision
 #
 # Everything else may cache. The cacheable lane is the COMPLEMENT, computed with `go list` rather
@@ -579,9 +580,11 @@ test-e2e:
 
 ## lint: the repo gates, the dependency licence gate, migration lint, golangci-lint and eslint
 # lint-migrations is here rather than in a CI job of its own because it is ~30 ms, needs no network
-# and reads no live database — and because an advisory belongs in the inner loop, where the person
-# who can act on it is still holding the migration. It is ADVISORY: it prints diagnostics and exits
-# 0, so it never blocks a laptop or a merge (issue #131; #136 tracks promoting it).
+# and reads no live database — and because the person who can act on a destructive-change diagnostic
+# is the one still holding the migration. It landed ADVISORY under issue #131 and became a GATE
+# under #136: `make lint-migrations` passes MODE=enforce, so a diagnostic fails here and in
+# `test / migrations` alike. Read a migration set without being blocked by it with
+# `MODE=advise bash scripts/migrate-lint.sh`.
 #
 # It does mean `make lint`, and therefore `make check`, now needs atlas on PATH. `make setup`
 # installs it, and `make gen` has always required it, so this adds no new toolchain obligation —
@@ -592,7 +595,13 @@ test-e2e:
 # expression error or an unquoted expansion is the one still holding the file. Both hard-fail when
 # their tool is missing rather than skipping — see lint-go for why a linter that exits 0 because it
 # is absent is worse than no linter — so `make setup` now installs actionlint, shellcheck and shfmt.
-lint: lint-repo licence-gate lint-migrations lint-actions lint-shell lint-go lint-web
+#
+# lint-laws (issue #172) joined for the inner-loop reason all three above give: it costs one
+# `go list -export` over a warm build cache, and the person who can act on a law they just broke is
+# the one still holding the file. It is the only ADVISORY member of this list — it prints findings
+# and exits 0, the posture lint-migrations landed in under #131 and left under #136. `make lint-repo`
+# above it is the gate on the same laws; issue #241 is where this one's promotion is argued.
+lint: lint-repo licence-gate lint-migrations lint-actions lint-shell lint-laws lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
 # Runs build + vet, then tsc over the SPA. staticcheck is folded into golangci-lint, so it runs
@@ -908,6 +917,32 @@ lint-actions:
 
 lint-shell:
 	@env -u DKP_REPO_ROOT bash scripts/lint-shell.sh
+
+# The architectural laws read against TYPE information, over a tree that BUILDS (issue #172).
+#
+# ADVISORY: scripts/typed-laws.sh prints findings and exits 0 in its default MODE=advise. See that
+# script's header for why it is advisory by construction rather than by `continue-on-error`, and why
+# a BROKEN invocation still hard-fails in both modes. This is the posture `make lint-migrations`
+# landed in under issue #131 and left under #136, and the path is the same one: advisory first while
+# the analyzers are unproven against this tree, promoted on evidence rather than on schedule. Issue
+# #241 carries what has to be true before that happens here.
+#
+# ADDITIVE, never a replacement. Every rule in internal/repogate stays exactly where ADR-0018 put it
+# and `make lint-repo` stays the merge-blocking gate: it needs no build, so it reads a deliberately
+# tainted tree in t.TempDir() and a repository mid-sequence, which is the property that makes it the
+# gate rather than the second opinion. What this pass adds is the three classes a syntax rule cannot
+# have — a dot-imported `. "time"`, a type alias reaching *sql.DB, an untyped `0.15` in the point
+# path. TestTypedLaws_AreAdditive in test/repo says so in code.
+#
+# It is a `lint` prerequisite, and therefore in `make check`, because it costs one `go list -export`
+# over a warm build cache (~0.7 s here) and the person who can act on a law they just broke is the
+# one still holding the file. Deliberately NOT in `check-fast`: that lane runs no build.
+#
+# `env -u DKP_REPO_ROOT` for the reason lint-repo gives: the script honours that variable so its
+# negative fixtures can run against a fabricated module in t.TempDir(), and a value leaking in from a
+# developer's shell would analyse somebody else's tree while reporting success.
+lint-laws:
+	@env -u DKP_REPO_ROOT bash scripts/typed-laws.sh
 
 # go.mod and go.sum must ALREADY be tidy (issue #149).
 #

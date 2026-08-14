@@ -201,10 +201,10 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 |---|---|---|---|
 | `changes` | always, unskippable | 8 s | required |
 | `lint / repo` — architectural gates + licence firewall | always | 15 s | required |
-| `lint / go` — gofumpt, golangci-lint | go changed | 75 s | required |
+| `lint / go` — gofumpt, golangci-lint, `go mod tidy` check, and the type-aware architectural laws (advisory, ADR-0027) | go changed | 75 s | required |
 | `lint / web` — eslint, prettier | web changed | 40 s | required |
 | `lint / actions` — actionlint over the workflows, shellcheck over every `run:` block | workflows changed | 20 s | required |
-| `lint / shell` — shellcheck + `shfmt -d` over `scripts/**` and `.githooks/**` | scripts/hooks changed | 20 s | required |
+| `lint / shell` — shellcheck + `shfmt -d` over `scripts/**`, `.githooks/**` and `.claude/hooks/**` | scripts/hooks changed | 20 s | required |
 | `security / licences` — Go runtime graph + JS production graph, closed allowlist | always | 45 s | required |
 | `security / govulncheck` — REACHABLE Go vulnerabilities (call-graph) | always | 40 s | required |
 | `security / osv` — OSV advisories over `go.mod` **and** `web/pnpm-lock.yaml` | always | 30 s | required |
@@ -475,7 +475,10 @@ but several of its suites read `web/` and `docs/design/`, so a web-only PR skipp
 and `ci-required` counted the skips as success (issue #94). Those inputs — the token and component
 sheets, `/_design`, the Playwright config and axe allowlist, the font files, `NOTICE`,
 `THIRD_PARTY_NOTICES.txt` and the two `.npmrc` files — are pinned to the `go` filter for the same
-reason `scripts/**`, `.githooks/**` and the two worked-example documents already are.
+reason `scripts/**`, `.githooks/**`, `.claude/hooks/**` and the two worked-example documents already
+are. `.claude/hooks/**` is the fifth instance and was found the same way (issue #187): it was in **no**
+filter at all, so a hooks-only PR selected nothing and every job was skipped — over a tree holding the
+two guards that decide whether a tool call runs at all, one of them fail-open by design.
 `TestCIFilters_GoFilter_SelectsEveryTestRepoInput` names each concrete file rather than the pattern,
 so the assertion survives a reformatting of the filter block and fails when a line is deleted.
 

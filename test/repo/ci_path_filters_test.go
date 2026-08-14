@@ -239,6 +239,10 @@ func TestCIFilters_ActionsAndShell_SelectTheirOwnInputs(t *testing.T) {
 				{"scripts/repo-gates.sh", "the tree shellcheck and shfmt read"},
 				{"scripts/lint-shell.sh", "the gate script itself, which this gate also lints"},
 				{".githooks/pre-push", "the hooks are shell too, and they carry no .sh suffix"},
+				{".claude/hooks/guard-bash.sh", "the fail-open command guard — it decides whether a " +
+					"tool call runs at all, its own header says an unparseable payload allows the " +
+					"command, and until issue #187 that tree was in no filter and no enumeration, so " +
+					"a hooks-only PR selected nothing and ci-required counted the skips as success"},
 				{".shellcheckrc", "the file that decides which rules run at all"},
 				{"Makefile", "the pins and the target the job runs"},
 			},

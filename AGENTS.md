@@ -92,7 +92,11 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   a migration through `internal/migrate/sqlscan` and `MIG003` through `internal/migrate/lockmanifest`
   (ADR-0018, ADR-0021). Same terms as `internal/licence`: tooling, not linked into `dkp`. Every rule
   keeps a negative fixture in `test/repo/` — a gate nobody has seen go red is a gate nobody knows
-  works.
+  works. Its subpackage `typedlaw` is the **advisory** twin `make lint-laws` runs: the same laws read
+  against `go/types` over a tree that BUILDS, which sees the three classes a syntax rule cannot — a
+  dot-imported `. "time"`, a type alias reaching `*sql.DB`, an untyped `0.15` in the point path
+  (ADR-0027). It never blocks a merge; `make lint-repo` does, because it is the one that can read a
+  tree that does not compile.
 - `db/schema.hcl` — the single source of schema truth. Atlas generates the migrations. The regions
   you do not edit are the enum CHECKs between the `GENERATED` markers: the `ledger_batch` pair from
   `internal/ledger/kinds`, the `audit_log` pair (`actor_kind`, `outcome`) from `internal/audit/kinds`,
