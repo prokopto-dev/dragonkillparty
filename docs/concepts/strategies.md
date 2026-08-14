@@ -1,12 +1,19 @@
 # Point strategies
 
 **Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
-`tick`, `start_points`, `cap`, `loot_council`, `decay_percent`, `decay_window`, `zero_sum` and
-`attendance_weighted` ship today — see
-[the worked examples](#the-shipped-strategies)
-below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
-`ConfigSchema` in `internal/strategy/<id>.go`, and a generated per-strategy reference page is Phase 2
+`tick`, `start_points`, `cap`, `auction_open`, `auction_sealed`, `relative_bid`, `roll`,
+`loot_council`, `decay_percent`, `decay_window`, `zero_sum` and `attendance_weighted` ship today — see
+[the worked examples](#the-shipped-strategies) below, which is now every rule 1.0 promises. This page
+explains the design; each strategy's knobs are its `ConfigSchema` in `internal/strategy/<id>.go`, and
+a generated per-strategy reference page is Phase 2
 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
+
+The four bidding rules carry the loot **arithmetic** — which bid wins, what it pays, and the batch
+that follows. The bid session itself (the state machine, the anti-snipe window, holds) is Phase 6;
+[Auctions and bid sessions](../guides/auctions.md) is its specification. **Tier-aware resolution** —
+"a 10-point main bid beats a 350-point alt bid" — is arithmetic and is a Phase 1 deliverable of its
+own ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)), so the tie-breaks below
+start at the amount.
 
 A guild's point rules are configurable. The ledger's rules are not. This page is about where that line
 is drawn and why it is drawn there.
@@ -321,6 +328,79 @@ list is the award ingest path's to fill, and tick-weighting is expressed as the 
 it does not do is replay: reversing a six-month-old award leaves every intermediate balance
 arithmetically "wrong" under the new history, and an append-only ledger cannot fix that. One
 compensating batch at today's `seq` is the rule ([The ledger](ledger.md)).
+### `auction_open` — ascending, and the leader pays their own bid
+
+Minimum **100.00**, increment **25.00**. Every accepted bid is the minimum plus a whole number of
+increments, which is what refuses the 160.00 below before anything else looks at it.
+
+| Bid | Outcome |
+|---|---|
+| Tankguy 100.00 | accepted, leader |
+| Healbot 125.00 | accepted, leader |
+| Healbot 160.00 | **refused** — 160.00 is not 100.00 + k × 25.00 |
+| Healbot 175.00 | accepted, leader |
+| Tankguy 200.00 | accepted, leader — and the session closes |
+
+```
+debit   Tankguy      −200.00
+credit  guild_bank   +200.00
+        Σ entries   =   0.00
+```
+
+An ascending auction has already revealed what the item is worth to everyone else, so the winner pays
+their own bid. Two bids equal in amount *and* in the microsecond they were placed are broken by a
+**seeded roll**, and the seed is carried onto the resolution so the flip is replayable.
+
+### `auction_sealed` — hidden bids, first price or second price
+
+Bids of **350.00**, **280.00** and **150.00**, increment **5.00**:
+
+| Pay rule | Winner pays | Why |
+|---|---|---|
+| First price | **350.00** | their own bid |
+| **Second price** (the default) | **285.00** | the runner-up plus one increment |
+| Second price, sole bidder | **the minimum** | there is no runner-up to price against |
+| Second price, bids 350.00 and 349.00 | **350.00** | 349.00 + 5.00 exceeds the winning bid, so the clamp holds |
+
+Two rules the arithmetic will not bend on. **Nobody ever pays more than they bid** — that is the
+promise second price exists to make, and it is why the runner-up's number is clamped rather than
+charged. And **the runner-up is the highest bid from a different account**: bids are append-only and
+a bidder may hold several, so the row below the winner is frequently the winner's own earlier bid.
+
+### `relative_bid` — a share of a bank frozen at the session's open
+
+| Bidder | Balance at open | Commits | Share |
+|---|---|---|---|
+| Tankguy | 900.00 | 360.00 | 4000 bp |
+| Healbot | 500.00 | 275.00 | **5500 bp** |
+
+```
+debit   Healbot      −275.00
+credit  guild_bank   +275.00
+        Σ entries   =   0.00
+```
+
+Healbot wins on the share while paying 85.00 fewer points, which is the whole model: a hoarder pays
+more absolute points for the same priority. Every balance is read at the session's `seq_at_open`,
+**positionally** — resolving against live balances would let a decay run committed mid-auction rewrite
+everybody's percentage, and the bug only appears on the one night a decay job overlaps a raid. A bid
+that is no longer a share of its frozen balance is ignored, and the resolution says how many were.
+
+### `roll` — a seeded die, and a tie is a new round
+
+`/random 1 100` for three entrants, drawn from the injected seeded generator in account order, with
+the seed persisted onto the resolution and onto the batch. The default is a **free** roll: nothing
+moved, so no ledger batch is written at all. Setting a win cost of 1.00 makes it the `+1` system —
+the counter is the balance:
+
+```
+debit   Tankguy       −1.00
+credit  guild_bank    +1.00
+        Σ entries   =  0.00
+```
+
+Two raiders on 97 award **nobody**: "rolls are immutable; a re-roll on a tie is a new round, not an
+edit", so the resolution names the tie and the officer opens another session between them.
 
 ### `loot_council` — spend by officer decision
 
@@ -364,13 +444,17 @@ tables, and a planner may only propose entries —
 
 ### What each one refuses
 
-Every one of them answers one question each, and says so rather than guessing at the others:
-`tick.PlanAward`, `cap.PlanAward` and `attendance_weighted.PlanAward` return `ErrUnsupported` (a 501
-naming the strategy), because an earn rule has no price list and inventing one would be a second copy
-of `fixed_price`'s price resolution that could then disagree with it. `zero_sum` refuses the mirror
-image — it has no tick value, so `PlanAttendance` names `tick` as what to pair it with — and both
-decay rules refuse `PlanAttendance` as well as `PlanAward`, because a haircut is not a tick. That is
-not a gap; it is what makes a pool need three rules rather than one, which is the section below.
+Every rule answers one question, and says so rather than guessing at the others. The earn and
+over-time rules refuse to spend: `tick.PlanAward`, `cap.PlanAward` and
+`attendance_weighted.PlanAward` return `ErrUnsupported` (a 501 naming the strategy), because an earn
+rule has no price list and inventing one would be a second copy of `fixed_price`'s price resolution
+that could then disagree with it. Both decay rules refuse `PlanAttendance` as well as `PlanAward` — a
+haircut is not a tick — and name the kind of rule to pair them with.
+
+The spend rules refuse in the same spirit from the other side: `zero_sum` and the four bidding rules
+return `ErrUnsupported` from `PlanAttendance` and `PlanDecay`, naming the rule to pair with, because a
+spend rule has no tick value and no cadence. That is not a gap; it is what makes a pool need three
+rules rather than one, which is the section below.
 
 `loot_council` refuses one thing extra, and the refusal is the strategy: `Priority` is
 `ErrUnsupported`, because **the council is the ranking**. A rank computed here would be a number the

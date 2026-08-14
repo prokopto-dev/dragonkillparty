@@ -208,22 +208,22 @@ func (FixedPrice) config(ctx Ctx) (fixedPriceConfig, error) {
 	return validateFixedPriceConfig(cfg)
 }
 
+// terms is the part of this config every spend rule shares: where the proceeds go, which system
+// account catches a solo kill, and the floor an award may not take the buyer below. See spend.go.
+func (cfg fixedPriceConfig) terms() spendTerms {
+	return spendTerms{Proceeds: cfg.Proceeds, SoloPolicy: cfg.SoloPolicy, FloorCp: cfg.FloorCp}
+}
+
 // validateFixedPriceConfig applies the bounds the schema declares, to a config that has already
 // parsed. Split from config so that the defaults are validated too — a default that violated its own
 // schema would otherwise be the one config nothing ever checked.
+//
+// The two shared enums are validateSpendTerms', for the reason spend.go gives: `proceeds` and
+// `solo_policy` mean the same thing in five strategies, and five copies of the same switch is five
+// chances for one of them to accept a value the others refuse.
 func validateFixedPriceConfig(cfg fixedPriceConfig) (fixedPriceConfig, error) {
-	switch cfg.Proceeds {
-	case ProceedsGuildBank, ProceedsAttendees:
-	default:
-		return fixedPriceConfig{}, fmt.Errorf("%s: proceeds is %q, want %q or %q: %w",
-			fixedPriceID, cfg.Proceeds, ProceedsGuildBank, ProceedsAttendees, ErrInvalidConfig)
-	}
-
-	switch cfg.SoloPolicy {
-	case SoloPolicyGuildBank, SoloPolicyWriteOff:
-	default:
-		return fixedPriceConfig{}, fmt.Errorf("%s: solo_policy is %q, want %q or %q: %w",
-			fixedPriceID, cfg.SoloPolicy, SoloPolicyGuildBank, SoloPolicyWriteOff, ErrInvalidConfig)
+	if err := validateSpendTerms(fixedPriceID, cfg.terms()); err != nil {
+		return fixedPriceConfig{}, err
 	}
 
 	if cfg.DefaultPriceCp < 0 {
@@ -370,105 +370,16 @@ func (s FixedPrice) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		return BatchProposal{}, err
 	}
 
-	if err := checkBuyer(fixedPriceID, ev.Buyer); err != nil {
-		return BatchProposal{}, err
-	}
-
 	price, err := resolvePrice(fixedPriceID, cfg.DefaultPriceCp, ev)
 	if err != nil {
 		return BatchProposal{}, err
 	}
 
-	itemID := optionalULID(ev.Item.ID)
-
-	entries := []EntryProposal{{
-		AccountID:   ev.Buyer.ID,
-		CharacterID: ev.CharacterID,
-		BalanceKind: BalanceKindDKP,
-		AmountCp:    -price,
-		ItemID:      itemID,
-		ItemAwardID: ev.ItemAwardID,
-		RaidID:      ev.RaidID,
-	}}
-
-	invariants := []Invariant{
-		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
-		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
-	}
-
-	credits, split, err := s.proceeds(ctx, cfg, ev, price)
-	if err != nil {
-		return BatchProposal{}, err
-	}
-
-	if split {
-		// Declared only when a split actually happened. LargestRemainderSumsToDebit and SumZero are
-		// the same arithmetic and deliberately different rules — this one names the mistake of
-		// rounding each credit independently — so claiming it for a batch with a single credit would
-		// be asserting something about an allocation that never ran.
-		invariants = append(invariants,
-			Invariant{Kind: InvariantLargestRemainderSumsToDebit, BalanceKind: BalanceKindDKP})
-	}
-
-	for _, c := range credits {
-		entries = append(entries, EntryProposal{
-			AccountID:   c.AccountID,
-			BalanceKind: BalanceKindDKP,
-			AmountCp:    c.AmountCp,
-			ItemID:      itemID,
-			ItemAwardID: ev.ItemAwardID,
-			RaidID:      ev.RaidID,
-		})
-	}
-
-	return s.propose(ctx, kinds.KindAward, ev.EffectiveAt, ev.Reason, entries, invariants)
-}
-
-// proceeds turns a price into the credits that balance it, and reports whether the allocator ran.
-//
-// The two config paths differ in more than their destination: the guild-bank path is one credit and
-// cannot round, while the attendees path is a largest-remainder split whose credits must sum to
-// exactly the debit. Keeping them in one function is what makes it impossible to add a third
-// destination that forgets to balance.
-func (s FixedPrice) proceeds(
-	ctx Ctx, cfg fixedPriceConfig, ev AwardEvent, price core.Centipoints,
-) (credits []Allocation, split bool, err error) {
-	if cfg.Proceeds == ProceedsGuildBank {
-		bank, err := ctx.SystemAccount(SystemKeyGuildBank)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: resolve the guild bank: %w", fixedPriceID, err)
-		}
-
-		return []Allocation{{AccountID: bank, AmountCp: price}}, false, nil
-	}
-
-	shares := sortedShares(ev.Beneficiaries)
-	if err := checkDistinctShares(fixedPriceID, shares); err != nil {
-		return nil, false, err
-	}
-
-	for _, b := range shares {
-		if err := checkShare(fixedPriceID, b); err != nil {
-			return nil, false, err
-		}
-	}
-
-	// The degenerate case, routed rather than dropped: nobody to split across means the solo policy
-	// picks a system account and the whole price lands there. ledger.Allocate takes the same account
-	// for its all-weights-zero case, which is why it is passed rather than handled here.
-	solo, err := ctx.SystemAccount(cfg.SoloPolicy)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: resolve the solo-policy account %q: %w",
-			fixedPriceID, cfg.SoloPolicy, err)
-	}
-
-	credits, err = ctx.Allocate(price, shares, solo)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: split %d centipoints across %d beneficiaries: %w",
-			fixedPriceID, price, len(shares), err)
-	}
-
-	return credits, true, nil
+	// The buyer checks, the proceeds routing and the invariant set are spendAward's, shared with the
+	// four bidding strategies: what differs between spend rules is how the price is decided, which is
+	// resolvePrice above, and nothing after it (see spend.go). The goldens committed for this
+	// strategy are what prove the extraction moved code without moving behaviour.
+	return spendAward(ctx, fixedPriceID, fixedPriceVersion, cfg.terms(), ev, price)
 }
 
 // PlanAdjustment moves points between an account and a counterparty.

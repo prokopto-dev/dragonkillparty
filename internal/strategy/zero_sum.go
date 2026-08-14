@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
-	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
 // zero_sum — a closed economy: what the winner pays, the other raiders receive. Phase 1, #196.
@@ -257,13 +256,18 @@ func validateZeroSumConfig(cfg zeroSumConfig) (zeroSumConfig, error) {
 // resolvePrice in common.go, shared with `fixed_price` — a second copy of the resolution rules is
 // exactly the drift tick.go's header argues against, and the two spend rules would eventually disagree
 // about what an unpriced item costs.
+//
+// THE BATCH ITSELF IS spendAward's, shared with `fixed_price` and the four bidding rules (spend.go,
+// #195): the buyer's debit, the largest-remainder split, the routing of a degenerate case to a system
+// account, and the invariant set are identical in every spend rule, and what differs between them is
+// how the price is decided. WHAT THIS STRATEGY ADDS is the one thing spendAward deliberately does not
+// do — remove the winner from the list their own payment is split across — which it does by handing
+// spendAward an event whose beneficiaries are already filtered. spendAward's comment ("the buyer is
+// not excluded from the split") states fixed_price's rule; excluding them is a pool CONFIGURATION
+// here, and `winner_share: included` is the same behaviour spendAward describes.
 func (s ZeroSum) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 	cfg, err := s.config(ctx)
 	if err != nil {
-		return BatchProposal{}, err
-	}
-
-	if err := checkBuyer(zeroSumID, ev.Buyer); err != nil {
 		return BatchProposal{}, err
 	}
 
@@ -277,8 +281,8 @@ func (s ZeroSum) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		return BatchProposal{}, err
 	}
 
-	// The solo case, taken before anything is resolved, because `free` has no account to route to and
-	// no batch to write. Every other policy names a system account and falls through to the allocator.
+	// The solo case, taken before anything is routed, because `free` has no account to route to and no
+	// batch to write. Every other policy names a system account and falls through to the split.
 	if len(beneficiaries) == 0 && cfg.SoloPolicy == SoloPolicyFree {
 		return BatchProposal{}, fmt.Errorf(
 			"%s: account %s is the only attendee and solo_policy is %q, so the item costs nothing and "+
@@ -286,63 +290,25 @@ func (s ZeroSum) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 	}
 
 	// The account a solo kill's proceeds land on. With `free` it is unreachable — the branch above has
-	// already returned for the only case that consults it — so the guild bank stands in rather than an
-	// empty id that would mean "nowhere" if the allocator's contract ever changed.
+	// already returned for the only case that consults it — so the guild bank stands in rather than a
+	// value routeProceeds would then fail to resolve.
 	soloKey := cfg.SoloPolicy
 	if soloKey == SoloPolicyFree {
 		soloKey = SoloPolicyGuildBank
 	}
 
-	solo, err := ctx.SystemAccount(soloKey)
-	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: resolve the solo-policy account %q: %w",
-			zeroSumID, soloKey, err)
-	}
+	// Proceeds are ALWAYS the attendees here, which is what the strategy is: there is no guild-bank
+	// path to configure, so `zero_sum` carries no `proceeds` knob and the split always runs. That is
+	// also why LargestRemainderSumsToDebit is declared on every award it writes, where `fixed_price`
+	// declares it only when its proceeds go to the attendees.
+	split := ev
+	split.Beneficiaries = beneficiaries
 
-	credits, err := ctx.Allocate(price, beneficiaries, solo)
-	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: split %d centipoints across %d beneficiaries: %w",
-			zeroSumID, price, len(beneficiaries), err)
-	}
-
-	itemID := optionalULID(ev.Item.ID)
-
-	// The buyer's debit leads, so a reader of the batch sees where the points came from before where
-	// they went. The order is preserved by Canonical and is therefore part of the golden.
-	entries := make([]EntryProposal, 0, len(credits)+1)
-	entries = append(entries, EntryProposal{
-		AccountID:   ev.Buyer.ID,
-		CharacterID: ev.CharacterID,
-		BalanceKind: BalanceKindDKP,
-		AmountCp:    -price,
-		ItemID:      itemID,
-		ItemAwardID: ev.ItemAwardID,
-		RaidID:      ev.RaidID,
-	})
-
-	for _, c := range credits {
-		entries = append(entries, EntryProposal{
-			AccountID:   c.AccountID,
-			BalanceKind: BalanceKindDKP,
-			AmountCp:    c.AmountCp,
-			ItemID:      itemID,
-			ItemAwardID: ev.ItemAwardID,
-			RaidID:      ev.RaidID,
-		})
-	}
-
-	// LargestRemainderSumsToDebit is declared on EVERY award, because every award this strategy writes
-	// goes through the allocator — there is no non-splitting path, which is the difference between this
-	// strategy and `fixed_price`, where the guild-bank proceeds path is a single credit that cannot
-	// round and must not claim an allocation ran. SumZero is the same arithmetic and a deliberately
-	// different rule: it names a different mistake, and an invariant failure should say which mistake
-	// was made.
-	return proposeZeroSum(ctx, zeroSumID, zeroSumVersion, kinds.KindAward, ev.EffectiveAt, ev.Reason,
-		entries, []Invariant{
-			{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
-			{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
-			{Kind: InvariantLargestRemainderSumsToDebit, BalanceKind: BalanceKindDKP},
-		})
+	return spendAward(ctx, zeroSumID, zeroSumVersion, spendTerms{
+		Proceeds:   ProceedsAttendees,
+		SoloPolicy: soloKey,
+		FloorCp:    cfg.FloorCp,
+	}, split, price)
 }
 
 // beneficiaries is the validated, sorted set of accounts the price is split across, with the buyer
