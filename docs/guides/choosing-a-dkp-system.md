@@ -1,15 +1,15 @@
 # Choosing a DKP system
 
-**Status:** eleven are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`,
-`auction_sealed`, `relative_bid`, `roll`, `loot_council`, `decay_percent` and `decay_window`, whose
-worked numbers are in [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest
-land through Phase 1. The four bidding rules ship their **arithmetic** — which bid wins and what it
-pays; the bid session around it (states, anti-snipe, holds) is Phase 6, and tier-aware resolution is a
-Phase 1 deliverable of its own
+**Status:** thirteen are implemented — every rule in the catalogue below that ships in 1.0 —
+whose worked numbers are in
+[Point strategies](../concepts/strategies.md#the-shipped-strategies). The four bidding rules ship
+their **arithmetic** — which bid wins and what it pays; the bid session around it (states, anti-snipe,
+holds) is Phase 6, and tier-aware resolution is a Phase 1 deliverable of its own
 ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)). `decay_window` ships the hard
 cutoff below, not yet the linear taper
-([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)). Numbers for an unshipped rule
-below are worked from the specified arithmetic rather than from a running instance. A rule's normative
+([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)), and `attendance_weighted` ships
+its earn rule, not yet the ranking score
+([#223](https://github.com/prokopto-dev/dragonkillparty/issues/223)). A rule's normative
 knob list is its `ConfigSchema`, which also renders the pool-settings form; a generated per-strategy
 reference page is Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
@@ -22,9 +22,10 @@ rules.
 A **pool** is one named currency — "Velious Main", "Cross-class Rares". A guild can run several, and
 one raid can feed several. Each pool answers:
 
-1. **How are points earned?** Per attendance tick, per kill, per event, or a flat grant.
-2. **How are points spent?** A fixed price, an auction, a council vote, a roll, or a position list.
-3. **What happens to points over time?** Nothing, decay, a cap, or redistribution.
+1. **How are points earned?** Per attendance tick, per share of a raid's pot, per kill, or per event.
+2. **How are points spent?** A fixed price, an auction, a council vote, a roll, a position list, or
+   redistribution to the other raiders.
+3. **What happens to points over time?** Nothing, decay, a cap, or an opening grant for a recruit.
 
 Every shipped rule below answers exactly one of those three questions, and **a pool holds one rule per
 question**, each with its own configuration ([ADR-0026](../adr/0026-three-rules-per-pool.md)). Mixing
@@ -48,11 +49,11 @@ declines to answer: a pool with no over-time rule will not run a decay, and says
 | `relative_bid` | spend | Bids are a percentage of the bidder's balance | Yes |
 | `roll` | spend | `/random`, or a server-side seeded roll | Yes |
 | `loot_council` | spend | Councillors vote; no arithmetic at all | Yes |
-| `zero_sum` | over time | What the winner pays is redistributed to the other raiders | Yes |
+| `zero_sum` | spend | What the winner pays is redistributed to the other raiders | Yes |
 | `decay_percent` | over time | Balances shrink by a percentage on a cadence | Yes |
 | `decay_window` | over time | Earnings older than the window stop counting | Yes |
 | `cap` | over time | Balances cannot exceed a ceiling | Yes |
-| `attendance_weighted` | ranking | Standing is balance scaled by attendance percentage | Yes |
+| `attendance_weighted` | earn | Each raid is worth a fixed pot, divided by who attended it and for how much of it | Yes |
 | `epgp` | earn + spend | Effort and gear points; priority is their ratio | On request |
 | `suicide_kings` (bottom) | spend | Winner drops to last place in a position list | On request |
 | `suicide_kings` (behind last attendee) | spend | Winner drops behind the last person who attended | On request |
@@ -108,13 +109,17 @@ The residue goes to whoever the deterministic tiebreak on account ID selects, so
 planned twice produces byte-identical entries. The `SumZero` invariant rejects any zero-sum batch
 whose entries do not sum to zero — a strategy cannot waive it.
 
-Decide three things before you switch this on:
+Decide three things before you switch this on. Two are knobs; the third is not, and the reason is
+worth a sentence.
 
-| Question | Options |
-|---|---|
-| Does the winner share in the split? | Exclude (winner net −300) or include (winner net −300 × 6/7) |
-| Who is in the split — attendees at the moment of the award, or everyone on the raid? | `attendees_at_award`, `all_raid_attendees`, `tick_weighted` |
-| What if the winner is the only attendee? | Free, or the pot goes to the guild bank account |
+| Question | Knob | Options |
+|---|---|---|
+| Does the winner share in the split? | `winner_share` | `excluded` (the default — winner net −300.00) or `included` (winner net −300.00 × 6/7) |
+| What if the winner is the only attendee? | `solo_policy` | `guild_bank` (the default) or `write_off` — the price still leaves the buyer and lands on that system account — or `free`, which charges nothing and writes no batch at all |
+| Who is in the split — attendees at the moment of the award, or everyone on the raid? | *not a knob* | The award names its beneficiaries, so this is decided when the award is recorded rather than in the pool's settings. Tick-weighting is expressed as the weight on each beneficiary, which the split already honours |
+
+The price itself resolves the same way `fixed_price` resolves it, in the same code: the officer's
+price, then the item's catalogue price, then the pool's `default_price_cp`.
 
 **Zero-sum punishes retroactive edits.** Adding one person to a six-month-old raid changes every split
 after it. The system never replays history; it posts one compensating correction batch today. Expect
@@ -272,7 +277,31 @@ where their opening 200 points came from.
 
 ### `attendance_weighted` — turning up beats hoarding
 
-This is a **ranking score, not a balance.** Spending still deducts raw points.
+**An earn rule, and an alternative to `tick` rather than a companion to it** — a pool holds one earn
+rule, so you run this *or* `tick`. Each raid is worth a fixed pot, divided across the people who
+attended it in proportion to how much of it they attended.
+
+A 1000-point pot over a raid whose three attendees were there for 12, 9 and 8 of its ticks:
+
+| Raider | Ticks | Share | Earned |
+|---|---|---|---|
+| Tankguy | 12 | 12/29 | **413.79** |
+| Healbot | 9 | 9/29 | **310.35** |
+| Druidgal | 8 | 8/29 | **275.86** |
+
+Where `tick` pays a fixed amount **per tick attended**, this pays a fixed amount **per raid**. That is
+the whole difference and it is the reason to choose it: a forty-strong raid costs your economy exactly
+what a twenty-strong one does, so nights nobody could make do not quietly inflate everybody who could.
+The credits sum to exactly the pot — 413.79 + 310.35 + 275.86 = 1000.00 — by the same
+largest-remainder rule the zero-sum split uses.
+
+Configure: the pot per raid, and the weights you send with each attendance event (ticks, minutes, or 1
+for everybody if you score a raid as a whole). There are no per-role multipliers here: halving a
+standby's weight and halving their share are the same operation, and two ways to say it would be two
+places for one number. If you want per-role multipliers on a per-tick value, you want `tick`.
+
+**The ranking score is not implemented yet.** This rule's documented headline is a standing of
+`balance × attendance %` — a **ranking score, not a balance**:
 
 | Member | Balance | 60-day attendance | Priority |
 |---|---|---|---|
@@ -281,10 +310,11 @@ This is a **ranking score, not a balance.** Spending still deducts raw points.
 
 Tankguy outranks Healbot despite having fewer points. Conflating the two — letting attendance scale
 the spendable balance rather than the ranking — produces nonsense: your bank shrinks when you miss a
-raid, so your past purchases were retroactively mispriced.
-
-Common alternative uses of the same number: as a **gate** ("40% on the 30-day window to bid on NToV
-loot") and as a **tie-break**. Both are configured on the pool rather than baked into the strategy.
+raid, so your past purchases were retroactively mispriced. That score needs the attendance statistics
+that land in Phase 4, so it is tracked in
+[#223](https://github.com/prokopto-dev/dragonkillparty/issues/223) and today's priority is the plain
+balance. The same is true of the two common alternative uses of the number — as a **gate** ("40% on
+the 30-day window to bid on NToV loot") and as a **tie-break**.
 
 Read [Attendance and windows](attendance-and-windows.md) for exactly what the percentage counts.
 
@@ -298,7 +328,9 @@ system in disguise; configure them as `roll` with a counter, not as a special ca
 `loot_council` has no arithmetic. It records nominations, each councillor's vote, the decision, the
 rationale and the timestamp, and it flags a conflict of interest when a councillor is a candidate for
 the item under vote. Councils without a published priority score reliably decay into loot-council
-fatigue, so run one next to `attendance_weighted` and show the score.
+fatigue, so run one next to `attendance_weighted` — which earns strictly in proportion to turning up —
+and show the standing. The `balance × attendance %` score itself is
+[#223](https://github.com/prokopto-dev/dragonkillparty/issues/223).
 
 The rule ships today with the decision itself: the winner, the rationale — required unless you turn
 `require_reason` off — and the charge the council named, which may be nothing at all and is never read
@@ -331,7 +363,7 @@ list.
 | Argues constantly about loot prices | `fixed_price` — a published table converts every argument into a policy discussion held once |
 | Has veterans with enormous banks and cannot recruit | `cap` + `start_points`, or switch to `decay_percent` |
 | Wants a closed economy where nothing inflates | `zero_sum` — but read the retroactive-edit warning first |
-| Is small, close-knit, and trusts its officers | `loot_council` next to `attendance_weighted`, so the score is visible even when the council overrides it |
+| Is small, close-knit, and trusts its officers | `loot_council` next to `attendance_weighted`, so a standing built on turning up is visible even when the council overrides it |
 | Has a mature officer corps and a bid bot | `auction_sealed` second price — it removes the incentive to game the auction |
 | Raids in two distinct tiers (main raid + alt/rare runs) | Two pools with different rules; a raid can feed both |
 | Runs open raids with pickups from other guilds | `tick` with a standby percentage, and set your alt policy before the first raid |

@@ -101,14 +101,10 @@ func spendAward(
 	ctx Ctx, strategyID, strategyVersion string, terms spendTerms, ev AwardEvent,
 	price core.Centipoints,
 ) (BatchProposal, error) {
-	if ev.Buyer.ID == "" {
-		return BatchProposal{}, fmt.Errorf("%s: award has no buyer: %w", strategyID, ErrInvalidEvent)
-	}
-
-	if ev.Buyer.IsSystem() {
-		return BatchProposal{}, fmt.Errorf(
-			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
-				"purchasers: %w", strategyID, ev.Buyer.ID, ErrInvalidEvent)
+	// checkBuyer rather than two inline conditions, because a spend rule may legitimately return
+	// before reaching this function and must refuse the same buyers when it does — see its comment.
+	if err := checkBuyer(strategyID, ev.Buyer); err != nil {
+		return BatchProposal{}, err
 	}
 
 	if price <= 0 {
@@ -190,6 +186,14 @@ func routeProceeds(
 		if err := checkShare(strategyID, b); err != nil {
 			return nil, false, err
 		}
+	}
+
+	// A system account may RECEIVE the proceeds as the solo policy's destination below, and may never
+	// be one of the beneficiaries they are split across: the split divides a fixed price, so a share
+	// for the guild bank is a share taken from every raider who was actually there — and the batch
+	// still sums to zero and still passes the invariant engine (review of #228).
+	if err := checkNoSystemAccounts(ctx, strategyID, shares); err != nil {
+		return nil, false, err
 	}
 
 	// The degenerate case, routed rather than dropped: nobody to split across means the solo policy

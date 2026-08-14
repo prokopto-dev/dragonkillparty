@@ -99,6 +99,16 @@ type fakeCtx struct {
 	historyErr error
 	earnedErr  error
 
+	// allocateErr makes the shared allocator fail on demand.
+	//
+	// It is the one façade method a planner can call with arguments it has ALREADY validated — every
+	// allocating strategy here checks the weights and the amount before handing them over — so the
+	// refusal it returns is unreachable through any event a test can construct. That does not make the
+	// planner's handling of it dead: the allocator's contract is internal/ledger's to change, and a
+	// planner that ignored an error from it would build a batch out of a nil credit list. This is how
+	// that branch is watched executing rather than assumed correct.
+	allocateErr error
+
 	// readAtSeq records the seq of every Balance call. Balances are POSITIONAL, and a planner that
 	// read "current" instead of "as of the run's seq" would pass every value assertion while being
 	// wrong the moment a batch commits mid-run.
@@ -211,6 +221,10 @@ func (c *fakeCtx) SystemAccount(systemKey string) (core.ULID, error) {
 func (c *fakeCtx) Allocate(
 	total core.Centipoints, shares []strategy.Share, emptyAccount core.ULID,
 ) ([]strategy.Allocation, error) {
+	if c.allocateErr != nil {
+		return nil, c.allocateErr
+	}
+
 	return ledger.Allocate(total, shares, emptyAccount)
 }
 

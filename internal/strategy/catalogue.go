@@ -51,9 +51,11 @@ func Catalogue() []PointStrategy {
 		RelativeBid{},
 		Roll{},
 		LootCouncil{},
-		Cap{},
+		ZeroSum{},
 		DecayPercent{},
 		DecayWindow{},
+		Cap{},
+		AttendanceWeighted{},
 	}
 }
 

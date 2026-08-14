@@ -70,7 +70,7 @@ presets, each of which is just a starting configuration you can edit:
 |---|---|---|
 | Time and kills | `tick` + `decay_window` | Most P99 guilds. Points per attendance tick, bonus per named, earnings older than the window stop counting. |
 | Zero-sum | `tick` + `zero_sum` | Guilds that want a closed economy: what a winner spends is redistributed to everyone else on the raid. |
-| Attendance-first | `tick` + `attendance_weighted` | Guilds who want standing driven by turning up rather than by hoarding. |
+| Attendance-first | `attendance_weighted` + `fixed_price` | Guilds who want standing driven by turning up rather than by hoarding: each raid is worth a fixed pot, split by how much of it you were there for. It *replaces* `tick` — a pool has one earn rule. |
 
 You can add more pools at any time, and a raid can feed several. Changing an existing pool's rules
 later is allowed and is recorded as a migration event — **it does not rewrite past raids.**

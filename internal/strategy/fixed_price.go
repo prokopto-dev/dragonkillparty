@@ -370,7 +370,7 @@ func (s FixedPrice) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		return BatchProposal{}, err
 	}
 
-	price, err := resolvePrice(cfg, ev)
+	price, err := resolvePrice(fixedPriceID, cfg.DefaultPriceCp, ev)
 	if err != nil {
 		return BatchProposal{}, err
 	}
@@ -380,27 +380,6 @@ func (s FixedPrice) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 	// resolvePrice above, and nothing after it (see spend.go). The goldens committed for this
 	// strategy are what prove the extraction moved code without moving behaviour.
 	return spendAward(ctx, fixedPriceID, fixedPriceVersion, cfg.terms(), ev, price)
-}
-
-// resolvePrice applies the three-step price resolution and refuses a price that awards nothing.
-func resolvePrice(cfg fixedPriceConfig, ev AwardEvent) (core.Centipoints, error) {
-	price := cfg.DefaultPriceCp
-
-	switch {
-	case ev.PriceCp != nil:
-		price = *ev.PriceCp
-	case ev.Item.FixedPriceCp != nil:
-		price = *ev.Item.FixedPriceCp
-	}
-
-	if price <= 0 {
-		return 0, fmt.Errorf(
-			"%s: item %q resolves to a price of %d centipoints; price it in the catalogue, name a "+
-				"price on the award, or set default_price_cp: %w",
-			fixedPriceID, ev.Item.Name, price, ErrInvalidEvent)
-	}
-
-	return price, nil
 }
 
 // PlanAdjustment moves points between an account and a counterparty.

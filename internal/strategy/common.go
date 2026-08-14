@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
@@ -445,6 +446,111 @@ func checkDistinctAccounts(strategyID string, sorted []AccountRef) error {
 	}
 
 	return nil
+}
+
+// checkNoSystemAccounts rejects a share list that names one of the four ledger-addressable non-human
+// accounts as a RECIPIENT of a split.
+//
+// THE DAMAGE IS DILUTION, AND IT IS INVISIBLE TO EVERY OTHER CHECK. A split divides a fixed amount:
+// `attendance_weighted` divides the raid's pot, a zero-sum award divides the price. Adding the guild
+// bank to the list gives it a share of the very amount it funded, so every real attendee is credited
+// LESS — and the batch still sums to exactly zero, still allocates by largest remainder, and passes
+// the invariant engine untouched. Conservation is not the property being violated; the split is
+// simply against the wrong set, and nobody auditing a number that adds up would find it (review of
+// #228).
+//
+// THE FOUR KEYS ARE THE CLOSED SET, resolved through the façade rather than compared against a
+// hard-coded id: `internal/account/kinds` is the one catalogue (canonical §5) and Ctx.SystemAccount is
+// the only thing that turns a key into a row id. A roster read would be the other way to answer this,
+// and it is the wrong one — an attendee legitimately absent from a stale roster is not a system
+// account, and treating "not on the roster" as "invalid" would refuse real raiders.
+//
+// It reports the FIRST offender in the caller's sorted order, so a list naming two names the same one
+// on every run.
+func checkNoSystemAccounts(ctx Ctx, strategyID string, sorted []Share) error {
+	if len(sorted) == 0 {
+		return nil
+	}
+
+	system := make(map[core.ULID]string, len(accountkinds.SystemKeys()))
+
+	for _, key := range accountkinds.SystemKeys() {
+		id, err := ctx.SystemAccount(key)
+		if err != nil {
+			return fmt.Errorf("%s: resolve the %s account: %w", strategyID, key, err)
+		}
+
+		system[id] = key
+	}
+
+	for _, s := range sorted {
+		if key, ok := system[s.AccountID]; ok {
+			return fmt.Errorf(
+				"%s: account %s is the %s system account and cannot receive a share of a split; it is "+
+					"the counterparty that funds one, so a share for it is taken from everybody else: %w",
+				strategyID, s.AccountID, key, ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
+
+// checkBuyer rejects the two buyers no spend planner has a defensible answer for.
+//
+// A SYSTEM ACCOUNT IS NOT A PURCHASER. The four ledger-addressable non-human accounts are
+// counterparties — the bank funds a tick, write_off swallows a rot, residue catches an unallocatable
+// remainder — and debiting one as though it had won an item would produce a balance that means
+// nothing and a statement nobody can read. It is a caller bug rather than a guild's choice, so it is
+// refused rather than routed.
+//
+// IT IS A FUNCTION RATHER THAN TWO LINES INSIDE spendAward because a spend rule can legitimately
+// return BEFORE the shared award assembly runs, and one that does must still refuse a malformed
+// buyer. `zero_sum`'s free solo policy is the case: a kill with nobody to redistribute to writes no
+// batch, and without this check first, an award naming no buyer at all would take that path and be
+// reported as a legitimate free award rather than as the caller bug it is (review of #228).
+func checkBuyer(strategyID string, buyer AccountRef) error {
+	if buyer.ID == "" {
+		return fmt.Errorf("%s: award has no buyer: %w", strategyID, ErrInvalidEvent)
+	}
+
+	if buyer.IsSystem() {
+		return fmt.Errorf(
+			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
+				"purchasers: %w", strategyID, buyer.ID, ErrInvalidEvent)
+	}
+
+	return nil
+}
+
+// resolvePrice applies the three-step price resolution and refuses a price that awards nothing.
+//
+// ONE ORDER AND ONLY ONE: the officer's explicit price, then the item's catalogue price, then the
+// pool's default. Each step is a deliberate override of the one below it.
+//
+// It is shared rather than per-strategy for the reason tick.go's header gives for refusing to answer
+// PlanAward at all: a second copy of the price resolution is a copy that can disagree about what an
+// unpriced item costs, and "the officer's price beat the catalogue's on one strategy and not the
+// other" is a defect nobody would think to look for.
+func resolvePrice(
+	strategyID string, defaultPriceCp core.Centipoints, ev AwardEvent,
+) (core.Centipoints, error) {
+	price := defaultPriceCp
+
+	switch {
+	case ev.PriceCp != nil:
+		price = *ev.PriceCp
+	case ev.Item.FixedPriceCp != nil:
+		price = *ev.Item.FixedPriceCp
+	}
+
+	if price <= 0 {
+		return 0, fmt.Errorf(
+			"%s: item %q resolves to a price of %d centipoints; price it in the catalogue, name a "+
+				"price on the award, or set default_price_cp: %w",
+			strategyID, ev.Item.Name, price, ErrInvalidEvent)
+	}
+
+	return price, nil
 }
 
 // checkShare rejects the two share shapes no planner has a defensible answer for.
