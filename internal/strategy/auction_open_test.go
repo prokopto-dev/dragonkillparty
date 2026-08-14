@@ -189,19 +189,32 @@ func TestAuctionOpen_SettleAuction_BidsBelowTheMinimum_AreIgnored(t *testing.T) 
 	require.Contains(t, res.Reason, "minimum")
 }
 
-// TestAuctionOpen_SettleAuction_TheSessionMinimumOverridesThePool: a session opened with a higher
-// minimum of its own is honoured, in the same direction an officer's explicit price overrides a
-// catalogue.
-func TestAuctionOpen_SettleAuction_TheSessionMinimumOverridesThePool(t *testing.T) {
+// TestAuctionOpen_SettleAuction_ASessionMayRaiseTheFloorAndMayNotLowerIt.
+//
+// The pool's minimum is a GUILD RULE and a session is one instance of it. Raising it is a session's
+// business — an officer opening a session for a raid-wide bonus item may want a higher floor — and
+// LOWERING it is not: that would let whoever opens the session waive the guild's floor for one drop,
+// silently, without the settings changing, and the award would be consistent with itself at a price
+// the guild had voted not to allow.
+func TestAuctionOpen_SettleAuction_ASessionMayRaiseTheFloorAndMayNotLowerIt(t *testing.T) {
 	t.Parallel()
 
-	res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, auctionOpenGoldenConfig),
-		strategy.Session{ID: acct(60), SeqAtOpen: 5, MinAmountCp: 5_000},
-		[]strategy.Bid{{AccountID: acct(0), AmountCp: 1_000, PlacedAt: fixedNow}})
+	s := strategy.AuctionOpen{}
+	bid := []strategy.Bid{{AccountID: acct(0), AmountCp: 1_000, PlacedAt: fixedNow}}
 
+	raised, err := s.SettleAuction(spendCtx(t, auctionOpenGoldenConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, MinAmountCp: 5_000}, bid)
 	require.NoError(t, err)
-	require.Empty(t, res.Winners, "1000 clears the pool's 500 and not the session's 5000")
-	require.Contains(t, res.Reason, "5000")
+	require.Empty(t, raised.Winners, "1000 clears the pool's 500 and not the session's 5000")
+	require.Contains(t, raised.Reason, "5000")
+
+	lowered, err := s.SettleAuction(spendCtx(t, auctionOpenGoldenConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, MinAmountCp: 1},
+		[]strategy.Bid{{AccountID: acct(0), AmountCp: 250, PlacedAt: fixedNow}})
+	require.NoError(t, err)
+	require.Empty(t, lowered.Winners,
+		"a session naming a minimum of 1 must not make a 250 bid eligible in a pool whose floor is 500")
+	require.Contains(t, lowered.Reason, "500", "the refusal names the floor that actually applied")
 }
 
 // TestAuctionOpen_SettleAuction_AGenuineTie_IsBrokenBySeededRoll.

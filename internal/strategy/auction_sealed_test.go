@@ -233,6 +233,33 @@ func TestAuctionSealed_SettleAuction_BelowTheMinimum_Rots(t *testing.T) {
 	require.Contains(t, res.Reason, "minimum")
 }
 
+// TestAuctionSealed_SettleAuction_ASessionMayNotLowerThePoolFloor, and under second price it must not
+// lower what a sole bidder pays either.
+//
+// The second half is the one with a price attached: a lone bidder pays the minimum, so a session that
+// could name a lower one would charge them that instead — a discount granted by whoever opened the
+// session rather than by the settings page. See sessionMinimum for why raising is a session's business
+// and lowering is the guild's.
+func TestAuctionSealed_SettleAuction_ASessionMayNotLowerThePoolFloor(t *testing.T) {
+	t.Parallel()
+
+	s := strategy.AuctionSealed{}
+	session := strategy.Session{ID: acct(60), SeqAtOpen: 5, MinAmountCp: 1}
+
+	rots, err := s.SettleAuction(spendCtx(t, auctionSealedGoldenConfig), session,
+		[]strategy.Bid{{AccountID: acct(0), AmountCp: 250, PlacedAt: fixedNow, Sealed: true}})
+	require.NoError(t, err)
+	require.Empty(t, rots.Winners,
+		"a session naming a minimum of 1 must not make a 250 bid eligible in a pool whose floor is 500")
+
+	sole, err := s.SettleAuction(
+		spendCtx(t, `{"pay_rule":"second_price","min_bid_cp":1000,"increment_cp":500}`), session,
+		[]strategy.Bid{{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true}})
+	require.NoError(t, err)
+	require.Equal(t, core.Centipoints(1_000), sole.Winners[0].AmountCp,
+		"the sole bidder pays the POOL's 1000, not the 1 the session asked for")
+}
+
 // TestAuctionSealed_ValidateBid_RejectsWhatASessionMustNotAccept.
 //
 // The unsealed case is the one that is about confidentiality rather than arithmetic: Bid.Sealed is

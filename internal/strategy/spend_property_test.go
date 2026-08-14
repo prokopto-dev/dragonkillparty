@@ -42,6 +42,36 @@ type spendPropCase struct {
 	IncrementCp core.Centipoints
 	RollMin     int64
 	RollMax     int64
+
+	// SessionMinCp is the minimum the SESSION names, which is drawn unset, above and BELOW the
+	// pool's. The last of those is the one worth generating: a session may raise the floor and may
+	// not lower it, and a settlement that honoured a lowered one would award below a guild rule while
+	// every other assertion — eligible bid, exact split, zero-sum batch — still passed.
+	SessionMinCp core.Centipoints
+
+	// AllBelowFloor puts EVERY bid under the pool's minimum, and it is drawn as its own shape rather
+	// than left to chance. An open auction charges the winner's own bid, so a lowered session minimum
+	// changes its outcome only when no bid clears the pool's floor at all — otherwise the highest bid
+	// of a larger eligible set is the same bid, and the property passes while the bug is present.
+	// Drawing that shape independently is what makes the regression reachable in every run rather
+	// than in the runs where a dozen independent draws happened to agree.
+	AllBelowFloor bool
+}
+
+// session is the bid session a generated case settles in.
+func (c spendPropCase) session() strategy.Session {
+	return strategy.Session{ID: acct(60), SeqAtOpen: 3, MinAmountCp: c.SessionMinCp}
+}
+
+// effectiveMinimum is what the floor must actually be: the higher of the two, restated here rather
+// than taken from the code under test — a floor computed by calling sessionMinimum would agree with
+// it by construction, including when both are wrong.
+func (c spendPropCase) effectiveMinimum() core.Centipoints {
+	if c.SessionMinCp > c.MinBidCp {
+		return c.SessionMinCp
+	}
+
+	return c.MinBidCp
 }
 
 // generateSpendPropCase draws one case from a seeded Rng.
@@ -65,6 +95,19 @@ func generateSpendPropCase(rng strategy.Rng) spendPropCase {
 	}
 
 	c.RollMax = c.RollMin + int64(rng.IntN(1_000)) + 1
+
+	// Unset, raised, and lowered — a third of the cases each. The lowered draw is the regression the
+	// AO reviewer found by reading sessionMinimum: it must change nothing about the outcome.
+	switch rng.IntN(3) {
+	case 0:
+		c.SessionMinCp = 0
+	case 1:
+		c.SessionMinCp = c.MinBidCp * 2
+	default:
+		c.SessionMinCp = c.MinBidCp / 2
+	}
+
+	c.AllBelowFloor = rng.IntN(6) == 0
 
 	switch rng.IntN(4) {
 	case 0:
@@ -101,6 +144,12 @@ func generateSpendPropCase(rng strategy.Rng) spendPropCase {
 			c.Balances[i] = core.Centipoints(rng.IntN(1_000_000) + 1)
 		}
 
+		if c.AllBelowFloor {
+			c.Amounts[i] = c.MinBidCp / 2
+
+			continue
+		}
+
 		switch rng.IntN(6) {
 		case 0:
 			c.Amounts[i] = shared // the tie
@@ -110,6 +159,12 @@ func generateSpendPropCase(rng strategy.Rng) spendPropCase {
 			c.Amounts[i] = c.MinBidCp // exactly at the floor
 		case 3:
 			c.Amounts[i] = c.Balances[i] // the whole bank: a 100% relative bid
+		case 4:
+			// BELOW the pool's floor and at or above a halved session minimum — the one bid a session
+			// that could lower the floor would wrongly make eligible. Without it the lowered draw
+			// changes no outcome, because every other amount clears the pool's floor anyway and the
+			// highest of a larger eligible set is the same bid.
+			c.Amounts[i] = c.MinBidCp / 2
 		default:
 			c.Amounts[i] = c.MinBidCp + core.Centipoints(rng.IntN(200))*c.IncrementCp
 		}
@@ -493,7 +548,11 @@ func TestProperty_P4_SpendStrategies_ValidateBid_NeverAcceptsMoreThanTheBalance(
 }
 
 // TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid: whoever wins holds a bid at least as large as
-// every other eligible one, and pays exactly it.
+// every other eligible one, pays exactly it, and never clears less than the floor that applied.
+//
+// THE FLOOR IS THE HIGHER OF THE POOL'S AND THE SESSION'S, which is where the generated session
+// minimum earns its keep: a settlement that let a session LOWER the pool's floor would award a bid
+// the guild's own settings refuse, and every other assertion in this file would still pass.
 func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 	t.Parallel()
 
@@ -501,9 +560,9 @@ func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 
 	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
 		bids := c.bids(false)
+		floor := c.effectiveMinimum()
 
-		res, err := strategy.AuctionOpen{}.SettleAuction(c.ctx(t, c.openConfigJSON()),
-			strategy.Session{ID: acct(60), SeqAtOpen: 3}, bids)
+		res, err := strategy.AuctionOpen{}.SettleAuction(c.ctx(t, c.openConfigJSON()), c.session(), bids)
 		if err != nil {
 			return err
 		}
@@ -512,9 +571,15 @@ func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 			return nil // every bid was below the minimum: the rot case
 		}
 
+		if res.Winners[0].AmountCp < floor {
+			return fmt.Errorf("the winner pays %d, below the floor of %d (pool %d, session %d); a "+
+				"session may raise the pool's minimum and may not lower it",
+				res.Winners[0].AmountCp, floor, c.MinBidCp, c.SessionMinCp)
+		}
+
 		var top core.Centipoints
 		for _, b := range bids {
-			if b.AmountCp >= c.MinBidCp && b.AmountCp > top {
+			if b.AmountCp >= floor && b.AmountCp > top {
 				top = b.AmountCp
 			}
 		}
@@ -545,10 +610,10 @@ func TestProperty_AuctionSealed_SecondPrice_IsBoundedByTheWinningBidAndTheMinimu
 
 	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
 		bids := c.bids(true)
+		floor := c.effectiveMinimum()
 
 		res, err := strategy.AuctionSealed{}.SettleAuction(
-			c.ctx(t, c.sealedConfigJSON("second_price")),
-			strategy.Session{ID: acct(60), SeqAtOpen: 3}, bids)
+			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), bids)
 		if err != nil {
 			return err
 		}
@@ -572,9 +637,11 @@ func TestProperty_AuctionSealed_SecondPrice_IsBoundedByTheWinningBidAndTheMinimu
 				"than the winning bid", price, winning)
 		}
 
-		if price < c.MinBidCp {
-			return fmt.Errorf("the winner pays %d, below the session's minimum of %d",
-				price, c.MinBidCp)
+		// The lower bound is the FLOOR THAT APPLIED, not the pool's alone: a sole bidder pays the
+		// minimum, so a session that could lower it would hand them a discount nobody configured.
+		if price < floor {
+			return fmt.Errorf("the winner pays %d, below the floor of %d (pool %d, session %d)",
+				price, floor, c.MinBidCp, c.SessionMinCp)
 		}
 
 		settled++

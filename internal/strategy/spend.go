@@ -342,16 +342,23 @@ func eligibleBids(bids []Bid, minAmountCp core.Centipoints) []Bid {
 	return out
 }
 
-// sessionMinimum is the floor a bid must clear: the session's own minimum when it names one, and the
-// pool's configured minimum otherwise.
+// sessionMinimum is the floor a bid must clear: the higher of the session's own minimum and the
+// pool's configured one.
 //
-// THE SESSION OVERRIDES THE POOL, in the same direction and for the same reason an officer's explicit
-// price overrides the catalogue: the pool's minimum is the default a session is opened with, and a
-// session opened for a raid-wide bonus item may deliberately set another. A session minimum of zero
-// is "unset" rather than "free", which is the one ambiguity in the Session shape and is why this
-// function exists rather than a `max` at each call site.
+// A SESSION MAY RAISE THE FLOOR AND MAY NOT LOWER IT, which is what both auction schemas promise
+// ("a session may open with a higher minimum of its own; it may not open with a lower one") and is
+// not the same rule as an officer's explicit price overriding a catalogue. The pool's minimum is a
+// GUILD RULE, written on the settings page by whoever is allowed to write it; a session is one
+// instance of that rule. A session that could lower it would let whoever opens a session waive the
+// guild's floor for one item — silently, per drop, without the settings changing — and the resulting
+// award would be perfectly consistent with itself: eligible bid, correct arithmetic, batch sums to
+// zero, and a price the guild had voted not to allow.
+//
+// A SESSION MINIMUM OF ZERO IS "UNSET" RATHER THAN "FREE". That is the one ambiguity in the Session
+// shape, and taking the maximum resolves it for free: an unset session takes the pool's floor because
+// zero can never be the larger value, so there is no separate case to remember.
 func sessionMinimum(s Session, configuredCp core.Centipoints) core.Centipoints {
-	if s.MinAmountCp > 0 {
+	if s.MinAmountCp > configuredCp {
 		return s.MinAmountCp
 	}
 
