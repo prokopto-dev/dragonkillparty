@@ -1069,10 +1069,17 @@ osv-scan:
 	"$$bin" scan source --config=osv-scanner.toml --lockfile=go.mod --lockfile=web/pnpm-lock.yaml
 
 # Atlas's own migration analyzers over db/migrations-sqlite/ — destructive changes, data-dependent
-# changes and backward-incompatible changes (issue #131). ADVISORY: scripts/migrate-lint.sh prints
-# diagnostics and exits 0 in its default MODE=advise. See that script's header for why it is
-# advisory by construction rather than by `continue-on-error`, and why a BROKEN invocation still
-# hard-fails.
+# changes and backward-incompatible changes (issue #131). A GATE since issue #136: a diagnostic
+# fails, here and in CI, because `make lint` is what `make check` runs and `test / migrations` runs
+# this same target. See the script's header for the evidence the promotion waited on, for the
+# `-- atlas:nolint` waiver, and for why a BROKEN invocation hard-fails in either mode.
+#
+# MODE=enforce is stated HERE as well as defaulted in the script, so which mode CI runs is legible
+# from the target a reader is already looking at. It also means `make check` on a laptop and
+# `test / migrations` reach the same verdict about the same branch — a gate that only fires in CI
+# costs a push, a round trip and a contributor who did exactly what AGENTS.md told them (#166, #183).
+# To read diagnostics without being blocked by them, run the script directly: MODE=advise bash
+# scripts/migrate-lint.sh.
 #
 # ADDITIVE, never a replacement. MIG001 (DDL in a Down block), MIG002 (backtick identifiers), MIG003
 # (SHIPPED.lock), TestMigrate_FreshInstall_MatchesFingerprint and the populated-upgrade suite all
@@ -1085,7 +1092,7 @@ osv-scan:
 # leaking in from a developer's shell would make `make check` analyse some other tree while printing
 # that it passed.
 lint-migrations:
-	@env -u DKP_REPO_ROOT bash scripts/migrate-lint.sh
+	@env -u DKP_REPO_ROOT MODE=enforce bash scripts/migrate-lint.sh
 
 # The template-database clone cost, printed as a p50 in the CI log. This is the measurement behind
 # item V4 of docs/development/verify-before-phase-0.md — "integration tests are nearly free" is the

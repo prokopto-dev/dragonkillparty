@@ -67,7 +67,18 @@ deliberately — `TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues` in
 generator's own fixture — both fail until it is listed. A `check` block in `db/schema.hcl` whose `expr` lists quoted values — in either SQL
 quote form, since SQLite makes a string literal out of `'x'` and out of a double-quoted token that
 matches no column — and does not lie between `BEGIN`/`END GENERATED` markers fails the gate. Boolean
-CHECKs (`x IN (0, 1)`) and index predicates are not string enums and are not caught.
+CHECKs (`x IN (0, 1)`) are not string enums and are not caught.
+
+**An index predicate that lists a whole vocabulary fails it too** (#97), because that is the same
+defect one block over: `where = "state IN ('draft','open','extended','closing','resolved')"` is the
+catalogue written a second time, and adding `settled` rewrites the CHECK while the index goes on
+silently excluding it. The comparison is against the catalogue's **values**, not against the shape of
+the expression — a predicate whose quoted value set *equals* a generated CHECK's is reported, in any
+order. A partial index over a **subset** (`where = "state IN ('open','extended')"`, the live
+sessions) is legitimate, is what most partial indexes are, and stays quiet; so does a predicate over
+a vocabulary that has no catalogue, because the literal CHECK it duplicates is already the finding.
+The two ways out are the same as a CHECK's: narrow the predicate to the subset you actually mean, or
+waive it with `// dkp:enum-literal <reason>` on the line above the `index` block.
 
 **A region is generated when a catalogue owns it, not when the schema says so.** The markers are
 comments, so wrapping a new literal in a balanced pair would otherwise be a self-service exemption —
@@ -106,9 +117,13 @@ naming which case it is:
 | # | Case | Example |
 |---|---|---|
 | 1 | **Append-only triggers** | `CREATE TRIGGER trg_ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'ledger_entry is append-only'); END;` |
-| 2 | **Partial unique indexes** | `CREATE UNIQUE INDEX ux_bid_live ON bid_session(item_instance_id) WHERE state IN ('draft','open','extended','closing','resolved');` |
+| 2 | **Partial unique indexes** | `CREATE UNIQUE INDEX ux_bid_live ON bid_session(item_instance_id) WHERE state IN ('open','extended');` — the live **subset**, never the whole vocabulary (#97) |
 | 3 | **CHECK constraints Atlas drops or cannot infer** | `CHECK (amount_cp <> 0)`, `CHECK (x IN (0,1))`, the guild-singleton check |
 | 4 | **Data backfills** | populating `name_norm` for existing rows after adding the column |
+
+A **comment** is the fifth thing, and it is a hand edit only in the letter: the
+`-- dkp:destructive-approved: #<issue>` / `-- atlas:nolint <analyzer>` pair below adds no statement
+and changes no schema. Re-run `make gen` after adding one so `atlas.sum` matches.
 
 Anything else — renaming a column by hand, "just fixing" a generated `ALTER`, adding a table
 directly — is wrong. Change `db/schema.hcl` and regenerate.
@@ -170,6 +185,36 @@ and no backup discipline.
 - A migration round-trip test applies all migrations to an empty DB and, separately, to a copy of
   the previous release's schema fixture, then asserts both fingerprints match.
 - To change something a shipped migration created, write a **new** migration.
+
+## `atlas migrate lint` is a gate, and how to get past one honestly
+
+`make lint-migrations` — inside `make lint`, so inside `make check`, and the same target
+`test / migrations` runs — puts Atlas's own analyzers over the migrations your branch **adds**
+(`--git-base origin/main`; a shipped migration is frozen, so a diagnostic on one would be
+unactionable). Destructive (`DS1xx`), data-dependent (`MF1xx`) and backward-incompatible (`BC1xx`)
+changes fail the run. It landed advisory in issue #131 and became a gate in #136; the mode is stated
+both as the script's default and in the Makefile recipe, so `make check` and CI agree.
+
+**A 12-step rebuild is not a diagnostic.** Adding a value to a catalogue rewrites a CHECK, which
+SQLite can only apply by rebuilding the table — and Atlas compares schemas rather than statements, so
+the rebuild's `DROP TABLE` is not read as a destructive change while every column survives.
+`TestMigrateLint_TwelveStepRebuild_IsNotADiagnostic` pins that, because the day it stops being true
+this gate blocks the most ordinary schema change in the repository.
+
+**A rebuild that genuinely drops a column is `DS103`, and that is the gate working.** The fix is
+almost always to change `db/schema.hcl` and regenerate — never to hand-edit the SQL. When the drop is
+genuinely intended, the two-release rule applies (release N deprecates, release N+1 drops) and the
+waiver goes in the migration, above the statement the diagnostic names:
+
+```sql
+-- dkp:destructive-approved: #<issue>
+-- atlas:nolint destructive
+ALTER TABLE "thing" DROP COLUMN "old_column";
+```
+
+Atlas reads the second line; a reviewer reads both. Re-run `make gen` afterwards so `atlas.sum`
+matches. `MODE=advise bash scripts/migrate-lint.sh` prints the diagnostics without failing, which is
+for reading, not for landing.
 
 ## SQLite's 12-step table rebuild
 

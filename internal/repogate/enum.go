@@ -39,7 +39,6 @@ import (
 //	caught   expr = "state IN /* set */ ('draft', 'open')"           comments are removed before scanning
 //	ignored  expr = "hide_inactive IN (0, 1)"                        a boolean, not a string enum
 //	ignored  expr = "retry IN (0, -- not 'draft'\n 1)"               a comment is not a vocabulary
-//	ignored  where = "state IN ('open', 'extended')"                 an index predicate, NOT a check
 //
 // BOTH SQL QUOTE FORMS, and that pair is closed rather than an enumeration that might be missing an
 // arm: SQLite produces a string literal from an apostrophe and — through the double-quoted-
@@ -48,9 +47,39 @@ import (
 // quoting and cannot express a value. So a hand-written enum can be spelled exactly two ways and
 // the rule reads both; changing quote style is not a way past it.
 //
-// The index-predicate exclusion is deliberate (#97): a partial index over a SUBSET of a vocabulary
-// is not the vocabulary, so it cannot be rendered from a catalogue as-is and a rule that demanded
-// it would fire on correct work.
+// AND TO `index` PREDICATES THAT REPEAT A WHOLE VOCABULARY (#97), which is a second rule sharing
+// this one's id because it is the same defect: two sources of truth for one list of values.
+//
+//	index "ux_bid_live" {
+//	  where   = "state IN ('draft', 'open', 'extended', 'closing', 'resolved')"
+//	  columns = [column.item_instance_id]
+//	}
+//
+// Add `settled` to the catalogue and `make gen` rewrites the CHECK; the predicate keeps excluding it,
+// and nothing compares the two. What separates that from correct work is the CATALOGUE'S VALUES, not
+// the shape of the expression:
+//
+//	caught   where = "system_key IN ('guild_bank', 'residue', 'write_off', 'import_opening')"
+//	         — the SET EQUALS a generated CHECK's, in any order, so it is that vocabulary written twice
+//	ignored  where = "state IN ('open', 'extended')"
+//	         — a SUBSET is the live-sessions predicate: legitimate, common, and not renderable from a
+//	           catalogue as-is. A rule that fired on it would fire on correct work, and a rule that is
+//	           usually wrong is one people route around
+//	ignored  where = "person_id IS NOT NULL"                          no list, no vocabulary
+//	ignored  where = "flags IN (0, 1)"                                a boolean, as in a CHECK
+//
+// THE VOCABULARIES ARE READ OUT OF THE GENERATED REGIONS, not out of internal/*/kinds. A region's
+// CHECK *is* the catalogue rendered — schemaenum wrote it, `make gen` rewrites it and
+// `make verify-generated` fails when it drifts — so comparing against it compares against the
+// catalogue, in one file, with no Go value extractor to keep in step with however a catalogue
+// happens to declare its constants. It also means the rule stays quiet where it has nothing to
+// compare against: a predicate enumerating a vocabulary that has NO catalogue is not reported here,
+// because the literal CHECK it duplicates is already the finding, and fixing that one makes this one
+// fire.
+//
+// A predicate INSIDE a generated region is exempt for the reason a CHECK there is: the generator
+// wrote it. That is what makes "render the WHERE from the catalogue too" a fix rather than a
+// violation, if internal/schemaenum ever grows a predicate region.
 //
 // The waiver is `// dkp:enum-literal <reason>` on the line above the check, the same in-tree marker
 // idiom as `-- dkp:destructive-approved:`. It lives in the schema rather than in an allowlist here
@@ -127,8 +156,10 @@ func runEnumRule(s *scanner, rep *report) {
 
 	if hits := scanEnums(lines, declaredEnumMarkers(s)); len(hits) > 0 {
 		rep.violation("ENUM001",
-			"hand-written string-enum CHECK in "+enumSchemaRel+" — the values come from a Go catalogue "+
-				"between the BEGIN/END GENERATED markers (canonical §5, .claude/rules/migrations.md)",
+			"hand-written string-enum vocabulary in "+enumSchemaRel+" — the values come from a Go "+
+				"catalogue between the BEGIN/END GENERATED markers, and an index predicate that repeats "+
+				"a whole vocabulary is that list written a second time (canonical §5, "+
+				".claude/rules/migrations.md)",
 			hits)
 	}
 }
@@ -187,12 +218,12 @@ type finding struct {
 // scanEnums returns every ENUM001 finding in a schema, in line order.
 //
 // THREE PASSES, and the split is the rule's whole shape: the markers and the waiver are comments and
-// are read from the source lines, the CHECK blocks are read from the parsed body, and neither pass
-// can do the other's job.
+// are read from the source lines, the CHECK blocks and index predicates are read from the parsed
+// body, and neither pass can do the other's job.
 func scanEnums(lines []string, declared map[string]bool) []string {
 	regions, found := enumRegions(lines, declared)
 	found = append(found, bareWaivers(lines)...)
-	found = append(found, checkFindings(lines, regions)...)
+	found = append(found, blockFindings(lines, regions)...)
 
 	slices.SortStableFunc(found, func(a, b finding) int { return a.line - b.line })
 
@@ -278,20 +309,24 @@ func bareWaivers(lines []string) (found []finding) {
 	return found
 }
 
-// checkFindings parses the schema and reports every `check` block whose expression writes a
-// vocabulary down.
+// blockFindings parses the schema once and reports both halves of the rule: every `check` block
+// whose expression writes a vocabulary down, and every `index` predicate that repeats a whole one.
+//
+// ONE PARSE, because the second half needs what the first half reads — a predicate is compared
+// against the value sets the generated CHECKs carry, and parsing the file twice to answer two
+// questions about the same blocks is how the two answers get out of step.
 //
 // A PARSE FAILURE IS A FINDING. See the package-level note above: the alternative is a rule that
 // reports green on a file nobody could read, which is the failure mode every other rule here is
 // written to avoid.
-func checkFindings(lines []string, regions []region) (found []finding) {
+func blockFindings(lines []string, regions []region) (found []finding) {
 	src := []byte(strings.Join(lines, "\n"))
 
 	file, diags := hclsyntax.ParseConfig(src, enumSchemaRel, hcl.Pos{Line: 1, Column: 1})
 	if diags.HasErrors() {
 		return []finding{{
 			diagLine(diags[0]),
-			"the schema does not parse, so the string-enum CHECK scan did not run — this is a gate " +
+			"the schema does not parse, so the string-enum scan did not run — this is a gate " +
 				"failure, not a pass: " + diags[0].Summary + ": " + diags[0].Detail,
 		}}
 	}
@@ -301,7 +336,18 @@ func checkFindings(lines []string, regions []region) (found []finding) {
 		return []finding{{1, "the schema parsed into a body this rule cannot read — gate failure, not a pass"}}
 	}
 
-	for _, blk := range checkBlocks(body) {
+	checks := blocksOfType(body, "check")
+
+	found = append(found, checkFindings(lines, src, regions, checks)...)
+	found = append(found, predicateFindings(lines, src, regions,
+		blocksOfType(body, "index"), generatedVocabularies(src, regions, checks))...)
+
+	return found
+}
+
+// checkFindings reports every `check` block whose expression writes a vocabulary down.
+func checkFindings(lines []string, src []byte, regions []region, checks []*hclsyntax.Block) (found []finding) {
+	for _, blk := range checks {
 		line := blk.DefRange().Start.Line
 
 		if inRegion(line, regions) || waived(lines, line) {
@@ -326,6 +372,89 @@ func checkFindings(lines []string, regions []region) (found []finding) {
 	return found
 }
 
+// generatedVocabularies maps each generated CHECK's value set to the check that carries it.
+//
+// KEYED BY THE SET, because that is the question a predicate has to be asked: does this list every
+// value the catalogue holds? Order is deliberately not part of the key — canonical §5 makes a
+// CHECK's declaration order semantic, but a `WHERE x IN (…)` is a set membership test and reordering
+// it changes nothing, so an author who wrote the same vocabulary alphabetically has still written it
+// twice.
+func generatedVocabularies(src []byte, regions []region, checks []*hclsyntax.Block) map[string]string {
+	vocab := make(map[string]string)
+
+	for _, blk := range checks {
+		if !inRegion(blk.DefRange().Start.Line, regions) {
+			continue
+		}
+
+		attr, hasExpr := blk.Body.Attributes["expr"]
+		if !hasExpr {
+			continue
+		}
+
+		values := inListValues(stripSQLComments(exprText(attr, src)))
+		if len(values) == 0 {
+			continue
+		}
+
+		// First writer wins, which only matters when two catalogues render the same set — two
+		// vocabularies that happen to agree today. Either name sends the reader to a generated
+		// region, which is where the answer is.
+		if key := valueSetKey(values); vocab[key] == "" {
+			vocab[key] = label(blk)
+		}
+	}
+
+	return vocab
+}
+
+// predicateFindings reports every index predicate that lists exactly the values of a generated
+// vocabulary (#97).
+//
+// The waiver and the generated-region exemption are honoured here for the same reasons they are on a
+// CHECK: an exception has to be visible in the diff a reviewer reads, and a predicate the generator
+// wrote is not a second source of truth.
+func predicateFindings(
+	lines []string, src []byte, regions []region, indexes []*hclsyntax.Block, vocab map[string]string,
+) (found []finding) {
+	if len(vocab) == 0 {
+		return nil
+	}
+
+	for _, blk := range indexes {
+		line := blk.DefRange().Start.Line
+
+		if inRegion(line, regions) || waived(lines, line) {
+			continue
+		}
+
+		attr, hasWhere := blk.Body.Attributes["where"]
+		if !hasWhere {
+			continue
+		}
+
+		values := inListValues(stripSQLComments(exprText(attr, src)))
+		if len(values) == 0 {
+			continue
+		}
+
+		check, duplicated := vocab[valueSetKey(values)]
+		if !duplicated {
+			continue
+		}
+
+		found = append(found, finding{
+			line,
+			fmt.Sprintf("index %q: the predicate lists every value of the generated check %q, so the "+
+				"vocabulary now has two sources of truth — narrow the predicate to the subset it "+
+				"actually means, or render it from the catalogue: %s",
+				label(blk), check, strings.TrimRight(lines[line-1], " \t")),
+		})
+	}
+
+	return found
+}
+
 // diagLine is the line a diagnostic points at, or 1 when it points at nothing.
 //
 // `Subject` is a POINTER and hcl leaves it nil for a diagnostic about the file as a whole, so
@@ -340,19 +469,19 @@ func diagLine(d *hcl.Diagnostic) int {
 	return d.Subject.Start.Line
 }
 
-// checkBlocks returns every `check` block in the file, at any depth.
+// blocksOfType returns every block of one type in the file, at any depth.
 //
-// Depth-independent because the rule is about the CHECK, not about where somebody nested it: Atlas
-// puts them inside `table`, and a schema that grew another container would otherwise silently stop
-// being scanned.
-func checkBlocks(body *hclsyntax.Body) (blocks []*hclsyntax.Block) {
+// Depth-independent because the rule is about the CHECK and the predicate, not about where somebody
+// nested them: Atlas puts both inside `table`, and a schema that grew another container would
+// otherwise silently stop being scanned.
+func blocksOfType(body *hclsyntax.Body, typ string) (blocks []*hclsyntax.Block) {
 	for _, blk := range body.Blocks {
-		if blk.Type == "check" {
+		if blk.Type == typ {
 			blocks = append(blocks, blk)
 		}
 
 		if blk.Body != nil {
-			blocks = append(blocks, checkBlocks(blk.Body)...)
+			blocks = append(blocks, blocksOfType(blk.Body, typ)...)
 		}
 	}
 
@@ -471,33 +600,98 @@ func stripSQLComments(s string) string {
 
 // quotedInList reports whether any `IN (…)` list in the expression holds a quoted value.
 //
-// Character-wise rather than by regex because the question is about the text BETWEEN the
-// parentheses — `IN (0, 1)` is a boolean and must not match, a quote anywhere in a list is a
-// vocabulary — and because nesting has to be counted rather than assumed away.
+// The boolean half of inListValues, and it is that function rather than a second scanner: "is this a
+// vocabulary" and "which values is it" have to answer the same way about the same text, or a CHECK
+// could be a vocabulary to one half of the rule and not to the other.
 func quotedInList(sql string) bool {
+	return len(inListValues(sql)) > 0
+}
+
+// inListValues returns every quoted value inside the expression's `IN (…)` lists, in source order.
+//
+// Character-wise rather than by regex because the question is about the text BETWEEN the
+// parentheses — `IN (0, 1)` is a boolean and yields nothing, a quote anywhere in a list is a
+// vocabulary — and because nesting has to be counted rather than assumed away.
+func inListValues(sql string) (values []string) {
 	for i := 0; i < len(sql); {
 		loc := enumInList.FindStringIndex(sql[i:])
 		if loc == nil {
-			return false
+			return values
 		}
 
 		// Just past the opening parenthesis the match ended on.
 		j := i + loc[1]
 		depth := 1
 
-		for ; j < len(sql) && depth > 0; j++ {
+		for j < len(sql) && depth > 0 {
 			switch sql[j] {
 			case '(':
 				depth++
+				j++
 			case ')':
 				depth--
+				j++
 			case '\'', '"':
-				return true
+				value, next := sqlLiteral(sql, j)
+				values = append(values, value)
+				j = next
+			default:
+				j++
 			}
 		}
 
 		i = j
 	}
 
-	return false
+	return values
+}
+
+// sqlLiteral reads the quoted literal starting at i, and returns its content and the index just past
+// its closing quote.
+//
+// A DOUBLED QUOTE IS AN ESCAPED ONE — SQLite's only escape inside a literal — so a value written
+// with a doubled apostrophe in it is one value and not two. Getting that wrong would split a value in
+// half and make a set comparison against the catalogue come out unequal, which fails in the quiet
+// direction: a duplicated vocabulary that happened to contain an apostrophe would stop being
+// reported.
+//
+// An UNTERMINATED literal ends at the end of the expression. That cannot happen in a schema Atlas
+// accepts; the case exists so the caller's walk terminates on one that does not parse rather than
+// running off the end.
+func sqlLiteral(sql string, i int) (string, int) {
+	quote := sql[i]
+
+	var out strings.Builder
+
+	for j := i + 1; j < len(sql); j++ {
+		if sql[j] != quote {
+			out.WriteByte(sql[j])
+
+			continue
+		}
+
+		if j+1 < len(sql) && sql[j+1] == quote {
+			out.WriteByte(quote)
+			j++
+
+			continue
+		}
+
+		return out.String(), j + 1
+	}
+
+	return out.String(), len(sql)
+}
+
+// valueSetKey is a value list reduced to the SET it denotes: deduplicated, sorted, and joined on a
+// byte no SQL identifier or value in this schema contains.
+//
+// Deduplicated as well as sorted because `IN ('a', 'a', 'b')` is the same set as `IN ('a', 'b')` —
+// a repeated value is a typo, not a different vocabulary, and it must not be a way past the
+// comparison.
+func valueSetKey(values []string) string {
+	unique := slices.Clone(values)
+	slices.Sort(unique)
+
+	return strings.Join(slices.Compact(unique), "\x00")
 }

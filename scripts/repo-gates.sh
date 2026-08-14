@@ -28,7 +28,8 @@
 #   MIG001    DDL inside a goose Down block
 #   MIG002    a backtick-quoted identifier in a migration
 #   MIG003    a migration frozen by db/migrations-sqlite/SHIPPED.lock was modified
-#   ENUM001   a hand-written string-enum CHECK in db/schema.hcl
+#   ENUM001   a hand-written string-enum vocabulary in db/schema.hcl — a literal CHECK, or an
+#             index predicate repeating a whole generated one
 #   ADR001    a change that needs a decision record carries one
 #   GOLD001   '-update' in a command a CI job runs — the golden-file rewrite fence
 #   PIN001    an action not pinned to a 40-char commit SHA
