@@ -46,6 +46,10 @@ func Catalogue() []PointStrategy {
 		Tick{},
 		StartPoints{},
 		FixedPrice{},
+		AuctionOpen{},
+		AuctionSealed{},
+		RelativeBid{},
+		Roll{},
 		Cap{},
 	}
 }
