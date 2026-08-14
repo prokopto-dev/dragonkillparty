@@ -877,8 +877,9 @@ jobs:
           # atlas is absent, and this job never installed it — so the suite proving issue #36's
           # per-invocation dev-url fix has been silently skipping in CI. It also runs
           # migrate_lint_test.go, whose fixtures drive scripts/migrate-lint.sh against a fabricated
-          # migration directory in t.TempDir() to prove MODE=advise exits 0 while MODE=enforce does
-          # not — the negative fixture for the advisory gate added in issue #131.
+          # migration directory in t.TempDir() to prove the enforcing default fails on a diagnostic,
+          # that a 12-step rebuild is not one, and that `-- atlas:nolint` waives one — the negative
+          # fixtures for the gate added in issue #131 and promoted in #136.
           # actionlint, shellcheck and shfmt for the negative fixtures of the two gates added in
           # issues #121 and #122: test/repo drives scripts/lint-actions.sh against a workflow with an
           # undefined `needs:` and scripts/lint-shell.sh against a word-splitting script, both in
@@ -940,31 +941,37 @@ jobs:
       - uses: ./.github/actions/setup-toolchain
         with:
           go: "true"
-          # atlas, for the advisory migration lint below. It is the authoring tool for everything in
+          # atlas, for the migration lint below. It is the authoring tool for everything in
           # db/migrations-sqlite/ and is already installed in `gen / codegen-drift`; this is the
           # second job that needs it on PATH. Without it scripts/migrate-lint.sh hard-fails with
-          # "atlas is not installed" rather than skipping, which is the intended behaviour — an
-          # advisory that exits 0 because the analyser was absent reports "no diagnostics" about
-          # migrations it never read.
+          # "atlas is not installed" rather than skipping, which is the intended behaviour — a gate
+          # that exits 0 because the analyser was absent reports "no diagnostics" about migrations
+          # it never read.
           tools: "atlas"
-      - name: Migration lint (advisory)
+      - name: Migration lint (gate)
         run: make lint-migrations
-        # ADVISORY, and advisory the same way `make image-size` is: the step is NOT
-        # `continue-on-error` (this workflow bans that string and TestCIWorkflow_NoContinueOnError
-        # asserts its absence — it is the quiet way to keep a gate while removing its teeth).
-        # scripts/migrate-lint.sh is advisory BY CONSTRUCTION: in its default MODE=advise it prints
-        # every diagnostic, emits a `::warning::` annotation, and exits 0. MODE=enforce exits
-        # non-zero instead and already works; promoting this call site is tracked in issue #136.
+        # A GATE since issue #136, having landed advisory-first under #131 while the analyzers were
+        # unproven against SQLite's 12-step rebuild. `make lint-migrations` passes MODE=enforce and
+        # the script defaults to it, so a destructive, data-dependent or backward-incompatible
+        # diagnostic fails this job — and fails `make check` on a laptop first, which is the point
+        # of putting the mode in the Makefile rather than only here.
         #
-        # Advisory does not mean it cannot fail. A migration Atlas could not analyse at all, or an
-        # invocation that produced no report, is a hard failure in BOTH modes — because a scan that
-        # never ran must not report as a scan that found nothing.
+        # NOT `continue-on-error` — this workflow bans that string and TestCIWorkflow_NoContinueOnError
+        # asserts its absence, because it is the quiet way to keep a gate while removing its teeth.
+        # The reviewable way past a diagnostic is a `-- atlas:nolint <analyzer>` directive in the
+        # migration beside the `-- dkp:destructive-approved: #<issue>` line the two-release
+        # destructive rule already requires, which puts the exception in the diff.
         #
-        # ADDITIVE to `make test-migrations` below, never a replacement for it. Atlas's analyzers
-        # know about destructive, data-dependent and backward-incompatible changes; they know
-        # nothing about forward-only migrations (MIG001), the SHIPPED.lock history rule (MIG003),
-        # the fresh-install fingerprint, or append-only triggers surviving a 12-step table rebuild.
-        # Issue #131 said so and TestMigrationGates_AtlasLint_IsAdditive holds it.
+        # A migration Atlas could not analyse at all, or an invocation that produced no report, is a
+        # hard failure in EITHER mode — because a scan that never ran must not report as a scan that
+        # found nothing.
+        #
+        # ADDITIVE to `make test-migrations` below, never a replacement for it — and no less so now
+        # that it blocks. Atlas's analyzers know about destructive, data-dependent and
+        # backward-incompatible changes; they know nothing about forward-only migrations (MIG001),
+        # the SHIPPED.lock history rule (MIG003), the fresh-install fingerprint, or append-only
+        # triggers surviving a 12-step table rebuild. Issue #131 said so, #136 restated it, and
+        # TestMigrationGates_AtlasLint_IsAdditive holds it.
         #
         # Deliberately BEFORE `make test-migrations`: it costs ~30 ms and a destructive-change
         # diagnostic is the most useful thing to read first when the suite after it goes red.

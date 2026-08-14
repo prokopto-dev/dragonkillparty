@@ -99,7 +99,8 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   the `account` pair (`kind`, `system_key`) from `internal/account/kinds` and the `decay_run` pair
   (`kind`, `state`) from `internal/decay/kinds`, all written by
   `make gen` (canonical §5). A *new* string-enum CHECK goes in a catalogue too, not in a literal:
-  `ENUM001` fails one written outside the markers.
+  `ENUM001` fails one written outside the markers, and fails an index predicate that lists a whole
+  generated vocabulary — a partial index over a *subset* is the legitimate case and stays quiet.
 - `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach
   upwards, so the directive has to live beside the files.
 - `openapi/openapi.json`, `internal/store/sqlitegen/`, `web/src/api/`, `clients/` — **GENERATED**.
