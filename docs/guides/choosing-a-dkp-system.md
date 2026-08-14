@@ -1,8 +1,10 @@
 # Choosing a DKP system
 
-**Status:** four are implemented — `fixed_price`, `tick`, `start_points` and `cap`, whose worked
-numbers are in [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land
-through Phase 1; auctions in Phase 6. Numbers for an unshipped rule below are worked from the
+**Status:** seven are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `loot_council`,
+`decay_percent` and `decay_window`, whose worked numbers are in
+[Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land through Phase 1;
+auctions in Phase 6. `decay_window` ships the hard cutoff below, not yet the linear taper
+([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)). Numbers for an unshipped rule below are worked from the
 specified arithmetic rather than from a running instance. A rule's normative knob list is its
 `ConfigSchema`, which also renders the pool-settings form; a generated per-strategy reference page is
 Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
@@ -151,8 +153,15 @@ No compounding haircut; earnings simply stop counting once they are older than t
 | 2026-06-01 | 240 | Yes |
 | 2026-04-02 | 310 | **No** — 123 days old |
 
-A linear taper is available instead of a hard cutoff, which avoids the cliff where a member loses 300
-points overnight.
+The 310 leaves in a batch that says so — the run that sees it cross the boundary removes it, so the
+balance is still the total of the statement. A member who has already spent those points is not
+pushed into debt for them: the run takes what is left above the floor and no more.
+
+A linear taper is planned as an alternative to the hard cutoff, avoiding the cliff where a member
+loses 300 points overnight. It is **not shipped**
+([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)) — it needs to know how old each
+earning is rather than which side of the boundary it fell on, and a guessed decay rule is permanent
+in an append-only ledger.
 
 This is the friendlier of the two decays for a P99 guild, because content is finite: a member who
 raided hard for six months and took a break is not punished twice.

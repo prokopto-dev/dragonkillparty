@@ -174,21 +174,8 @@ func (s StartPoints) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 			startPointsID, ErrInvalidEvent)
 	}
 
-	accounts := run.Accounts
-	if len(accounts) == 0 {
-		accounts, err = ctx.Roster()
-		if err != nil {
-			return BatchProposal{}, fmt.Errorf("%s: read the roster to grant: %w", startPointsID, err)
-		}
-	}
-
-	bank, err := ctx.SystemAccount(SystemKeyGuildBank)
+	targets, bank, err := cadenceTargets(ctx, startPointsID, "grant", run)
 	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: resolve the guild bank: %w", startPointsID, err)
-	}
-
-	targets := sortedAccounts(accounts)
-	if err := checkDistinctAccounts(startPointsID, targets); err != nil {
 		return BatchProposal{}, err
 	}
 

@@ -2,7 +2,6 @@ package strategy
 
 import (
 	"fmt"
-	"math/bits"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
@@ -549,25 +548,12 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 			fixedPriceID, ErrInvalidEvent)
 	}
 
-	accounts := run.Accounts
-	if len(accounts) == 0 {
-		accounts, err = ctx.Roster()
-		if err != nil {
-			return BatchProposal{}, fmt.Errorf("%s: read the roster to decay: %w", fixedPriceID, err)
-		}
-	}
-
-	bank, err := ctx.SystemAccount(SystemKeyGuildBank)
+	targets, bank, err := cadenceTargets(ctx, fixedPriceID, "decay", run)
 	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: resolve the guild bank: %w", fixedPriceID, err)
-	}
-
-	debits := make([]EntryProposal, 0, len(accounts)+1)
-
-	targets := sortedAccounts(accounts)
-	if err := checkDistinctAccounts(fixedPriceID, targets); err != nil {
 		return BatchProposal{}, err
 	}
+
+	debits := make([]EntryProposal, 0, len(targets)+1)
 
 	var total core.Centipoints
 
@@ -633,25 +619,6 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
 	})
-}
-
-// decayAmount is balance * bp / 10000, floored, computed exactly in integers.
-//
-// The 128-bit product is the same technique ledger.Allocate uses and for the same reason: `balance *
-// bp` overflows int64 for a large balance, a float would be a lint failure and would lose precision
-// exactly where the invariant lives, and math/big would allocate per account on a run that touches
-// the whole roster. bits.Mul64/Div64 are exact and allocation-free.
-//
-// Div64 panics when the quotient would not fit in 64 bits. It cannot here: bp <= 10000 = the divisor,
-// so the quotient is at most `balance`.
-//
-// FLOORED, never rounded. Rounding a decay to nearest takes a centipoint the configured rate did not
-// ask for, and it takes it from every member every period.
-func decayAmount(balance core.Centipoints, bp int64) core.Centipoints {
-	hi, lo := bits.Mul64(uint64(balance), uint64(bp))
-	q, _ := bits.Div64(hi, lo, basisPointsWhole)
-
-	return core.Centipoints(q)
 }
 
 // PlanReversal negates every entry of the batch being reversed.
