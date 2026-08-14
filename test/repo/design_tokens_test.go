@@ -1,6 +1,7 @@
 package repo_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -943,4 +944,435 @@ func sortedKeys[V any](m map[string]V) []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// The var-resolving fidelity diff, extended to every transcribed sheet (issue #67).
+//
+// Each of these files opens with "transcribed from mockups/nocturne/styles.css", and until #34 that
+// claim was a comment. #34 made it checkable for `.table` and scoped it there deliberately: a check
+// that grew to cover everything in one go would have had to grandfather whatever it found, which is
+// the opposite of what the check is for. This is the extension, with the triage done one sheet at a
+// time — and what it found is two divergences in nine files, both already decided, both now written
+// down where the next reader of a failure will see them.
+//
+// The unit is a SELECTOR THE SOURCE SHEET DECLARES. For each one, the sheet that transcribes its
+// class family must declare it too, and every declaration must RESOLVE to the same value — ours
+// through web/src/styles/tokens.css, the mockup's through its own `:root`. That is the only sense in
+// which one sheet full of tokens can be "the same" as another sheet full of different ones.
+//
+// Both directions of a shared selector are checked. A property the source declares and we do not is
+// a dropped rule; a property we declare and the source does not is an addition to a transcribed
+// rule, which changes the look just as surely. A selector we add that the source never had (the
+// native <dialog> UA resets, `.label-heading`) is neither — it is new work, not a divergence, and is
+// out of scope here.
+//
+// WHAT IS NOT COVERED, and it is a real boundary: the source sheet's element defaults — `body`,
+// `h1`-`h6`, `a`, `figcaption`, `:focus-visible`, `::selection` — which base.css also transcribes.
+// Those are the document half rather than a component sheet, they carry deliberate additions this
+// shape would report as divergences (`-webkit-font-smoothing`, the `html, body, #root { height: 100% }`
+// the SPA needs), and triaging them is the same one-at-a-time job this test just did for the
+// components. Issue #233, filed rather than half-done here.
+
+// transcribedSheet is one shipped stylesheet and the source sheet's class families it transcribes.
+//
+// A family matches a class exactly or as its `family-` prefix, so `card` claims `.card-meta` and
+// `seg` claims `.seg-opt`. `dot` is listed even though every `.dot` rule is also a `.radio` rule:
+// the completeness check below requires every class in the source sheet to be claimed by name, and
+// a family that happens to be redundant today is cheaper than a class nobody noticed going unread.
+type transcribedSheet struct {
+	sheet    string
+	families []string
+}
+
+var transcribedSheets = []transcribedSheet{
+	// .hr and .text-muted are document-level utilities rather than components, which is why they live
+	// in base.css — but they are transcribed classes and the claim is the same one.
+	{sheet: baseCSSRel, families: []string{"hr", "text-muted"}},
+	{sheet: componentsRel + "/Button.css", families: []string{"btn"}},
+	{sheet: componentsRel + "/Card.css", families: []string{"card", "elev"}},
+	{sheet: componentsRel + "/Dialog.css", families: []string{"dialog"}},
+	{sheet: componentsRel + "/Field.css", families: []string{"field", "input"}},
+	{sheet: componentsRel + "/Radio.css", families: []string{"radio", "dot"}},
+	{sheet: componentsRel + "/Seg.css", families: []string{"seg"}},
+	{sheet: componentsRel + "/Table.css", families: []string{"table"}},
+	{sheet: componentsRel + "/Tag.css", families: []string{"tag"}},
+}
+
+// untranscribedFamilies are the source sheet's classes this product does not ship, with the reason.
+//
+// The list exists so the completeness check can be an equality rather than a floor: a class that is
+// neither transcribed nor recorded here fails, which is what stops a new Nocturne component being
+// added to the mockup and quietly going unbuilt and unchecked.
+var untranscribedFamilies = map[string]string{
+	"nav": "docs/design/09 §5 lists the component families this system ships and a top navigation bar " +
+		"is not among them: the SPA's chrome is a route shell, not a `.nav` element. When one is built " +
+		"it is transcribed like the rest and this entry becomes a row above.",
+	"lighten": "a deck utility — `mix-blend-mode: lighten` over a slide background. The mockups are a " +
+		"presentation surface as well as a component reference (docs/design/mockups/README.md) and this " +
+		"class belongs to that half.",
+}
+
+// transcriptionDivergence names one declaration where a shipped sheet disagrees with the source
+// sheet: a value that resolves differently, a property the source declares and we do not, or one we
+// declare and the source does not.
+type transcriptionDivergence struct {
+	sheet    string
+	selector string
+	property string
+}
+
+func (d transcriptionDivergence) String() string {
+	return d.sheet + " `" + d.selector + "` { " + d.property + " }"
+}
+
+// sanctionedDivergence is the reviewed record of one such disagreement.
+type sanctionedDivergence struct {
+	// ours is the declaration the shipped sheet is expected to carry, VERBATIM, and "" when the
+	// sanctioned divergence is that it carries none.
+	//
+	// Pinning it is the difference between recording a decision and issuing a licence. Without it the
+	// entry would read "this property may differ", and `.card-meta` could move from soft(60) to
+	// soft(45) — back under the AA floor the entry exists because of — with the gate still green.
+	ours string
+	why  string
+}
+
+// sanctionedTranscriptionDivergences: every declaration that deliberately disagrees with
+// mockups/nocturne/styles.css, with the decision that made it disagree.
+//
+// Two entries, and they are different KINDS of thing, which is why each carries its own reason
+// rather than a shared one. The first changes what is painted and is recorded as such in the
+// normative document. The second changes nothing that renders — it is the same computed value
+// spelled as a derivation — and is here because the diff compares declarations rather than computed
+// styles, and normalising it away would also normalise away a calc that had genuinely drifted.
+var sanctionedTranscriptionDivergences = map[transcriptionDivergence]sanctionedDivergence{
+	{sheet: componentsRel + "/Card.css", selector: ".card-meta", property: "color"}: {
+		ours: "var(--soft-60)",
+		why: "docs/design/09 §2 \"Which soft() rungs are legal as text\", issue #58: the source sheet " +
+			"paints soft(50), which over --color-surface is ≈4.25:1 and misses the 4.5:1 WCAG AA floor at " +
+			"this 11px size. soft(60) is ≈5.5:1 and an existing rung, so the fix is a step up the same ramp " +
+			"rather than a new colour. §2 calls this \"the one place the shipped sheet deliberately " +
+			"diverges\" — and this test is what makes that an exhaustive claim rather than a hopeful one. " +
+			"The mockup is NOT edited to match: it is vendored byte-exact and its byte count is a " +
+			"fingerprint (docs/design/mockups/README.md).",
+	},
+
+	{sheet: componentsRel + "/Seg.css", selector: ".seg-opt:has(input:focus-visible)", property: "outline-offset"}: {
+		ours: "calc(var(--focus-offset) * -1)",
+		why: "Not a difference in what is painted: this computes to the source sheet's `-2px`. " +
+			"docs/design/09 §4 fixes the focus ring at 2px with an offset of -2px HERE and +2px everywhere " +
+			"else, so the sign is what varies and the magnitude is the token — spelling it as a derivation " +
+			"is what moves this ring when a guild themes --focus-offset, which a literal would not. The " +
+			"source sheet has no token layer to derive from and writes the number. Recorded rather than " +
+			"folded away by the comparison, because a calc-folding diff would equally fold a calc that had " +
+			"genuinely drifted (issue #67).",
+	},
+}
+
+// selectorClassRe matches a class name where a selector uses one. Declaration values are never
+// scanned, so a `1.5px` or a `calc(... * 0.75)` cannot be read as a class.
+var selectorClassRe = regexp.MustCompile(`\.([a-zA-Z][\w-]*)`)
+
+// claimsSelector reports whether one of the families claims a class the selector names.
+func claimsSelector(families []string, selector string) bool {
+	for _, m := range selectorClassRe.FindAllStringSubmatch(selector, -1) {
+		for _, family := range families {
+			if m[1] == family || strings.HasPrefix(m[1], family+"-") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// mergedRules indexes a sheet's rules by selector, merging a selector declared more than once the
+// way the cascade does — later wins, property by property.
+//
+// tableRulesBySelector above keeps the LAST rule whole, which is correct for the six `.table` rules
+// (none repeats) and wrong in general: the source sheet declares `body` twice and `h1` under two
+// selector lists, and a whole-rule overwrite would silently drop the first set of declarations.
+func mergedRules(rules []cssRule) map[string]map[string]string {
+	out := map[string]map[string]string{}
+
+	for _, rule := range rules {
+		if out[rule.selector] == nil {
+			out[rule.selector] = map[string]string{}
+		}
+
+		for property, value := range rule.props {
+			out[rule.selector][property] = value
+		}
+	}
+
+	return out
+}
+
+// transcriptionDiff is one run of the comparison: which sheet owns each source selector, and every
+// declaration on which the two sheets disagree.
+type transcriptionDiff struct {
+	ownerOf  map[string]string                  // source selector -> the sheet that transcribes it
+	observed map[transcriptionDivergence]string // divergence -> the declaration we carry ("" if none)
+	source   map[transcriptionDivergence]string // divergence -> the source's declaration ("" if none)
+	compared int                                // declarations actually compared, for the vacuity floor
+}
+
+// diffTranscribedSheets runs the fidelity comparison and returns what it saw, so the two tests below
+// can assert the two directions — every divergence is sanctioned, and every sanction is a divergence
+// — over the same data rather than over two hand-kept lists.
+func diffTranscribedSheets(t *testing.T) transcriptionDiff {
+	t.Helper()
+
+	ourTokens, _ := cssCustomProperties(readRepoFile(t, tokensCSSRel))
+	mockup := readRepoFile(t, mockupSheetRel)
+	mockupTokens, _ := cssCustomProperties(mockup)
+	source := mergedRules(cssRules("nocturne", mockup))
+
+	require.GreaterOrEqualf(t, len(source), 40,
+		"parsed only %d rules out of %s — the sheet moved or cssRules is broken, and every comparison "+
+			"below would pass over a source sheet it never read", len(source), mockupSheetRel)
+
+	out := transcriptionDiff{
+		ownerOf:  map[string]string{},
+		observed: map[transcriptionDivergence]string{},
+		source:   map[transcriptionDivergence]string{},
+	}
+
+	// A selector claimed by two sheets would be required of both, which is a rule nobody could satisfy.
+	for _, transcribed := range transcribedSheets {
+		for _, selector := range sortedKeys(source) {
+			if !claimsSelector(transcribed.families, selector) {
+				continue
+			}
+
+			require.NotContainsf(t, out.ownerOf, selector,
+				"`%s` is claimed by both %s and %s. A source rule belongs to exactly one sheet: split the "+
+					"families so each class family has one home.", selector, out.ownerOf[selector], transcribed.sheet)
+
+			out.ownerOf[selector] = transcribed.sheet
+		}
+	}
+
+	for _, transcribed := range transcribedSheets {
+		ours := mergedRules(cssRules(transcribed.sheet, readRepoFile(t, transcribed.sheet)))
+		claimed := 0
+
+		for _, selector := range sortedKeys(source) {
+			if out.ownerOf[selector] != transcribed.sheet {
+				continue
+			}
+
+			claimed++
+			theirProps := source[selector]
+
+			ourProps, declared := ours[selector]
+			require.Truef(t, declared,
+				"%s declares no `%s`, which %s does. The classes in this file are transcribed from that "+
+					"sheet: reproduce the rule, or record the omission in docs/design/09 and in "+
+					"sanctionedTranscriptionDivergences.",
+				transcribed.sheet, selector, mockupSheetRel)
+
+			for _, property := range sortedKeys(theirProps) {
+				out.compared++
+
+				key := transcriptionDivergence{sheet: transcribed.sheet, selector: selector, property: property}
+
+				got, present := ourProps[property]
+				if !present {
+					out.observed[key] = ""
+					out.source[key] = theirProps[property]
+
+					continue
+				}
+
+				want := normaliseDeclaration(resolveVars(theirProps[property], mockupTokens))
+				if normaliseDeclaration(resolveVars(got, ourTokens)) != want {
+					out.observed[key] = got
+					out.source[key] = theirProps[property]
+				}
+			}
+
+			// The other direction: a declaration added to a rule the source sheet also has.
+			for _, property := range sortedKeys(ourProps) {
+				if _, inSource := theirProps[property]; inSource {
+					continue
+				}
+
+				out.compared++
+
+				key := transcriptionDivergence{sheet: transcribed.sheet, selector: selector, property: property}
+				out.observed[key] = ourProps[property]
+				out.source[key] = ""
+			}
+		}
+
+		require.NotZerof(t, claimed,
+			"no source rule is claimed by %s — its families match nothing in %s, so the sheet it is about "+
+				"went unread", transcribed.sheet, mockupSheetRel)
+	}
+
+	require.GreaterOrEqualf(t, out.compared, 100,
+		"only %d declarations compared across %d sheets. The source sheet's transcribed classes carry "+
+			"well over a hundred; a number this low means the parse or the family matching stopped seeing "+
+			"most of them and this diff is green over a comparison it did not make.",
+		out.compared, len(transcribedSheets))
+
+	return out
+}
+
+// describeDivergence says which of the three disagreements this is, because the fix differs: a
+// dropped declaration is reproduced, an added one is moved to a selector of its own or recorded, and
+// a changed value is the case the diff exists for.
+func describeDivergence(key transcriptionDivergence, ours, source string) string {
+	switch {
+	case ours == "":
+		return fmt.Sprintf("%s is not declared, and %s sets it to %q. Dropping a declaration changes the "+
+			"look as surely as changing one.", key, mockupSheetRel, source)
+	case source == "":
+		return fmt.Sprintf("%s is declared as %q, and %s does not declare that property at all. Adding a "+
+			"property to a transcribed rule changes the look; a NEW selector is new work and is fine, but "+
+			"this is neither.", key, ours, mockupSheetRel)
+	}
+
+	return fmt.Sprintf("%s does not resolve to what %s paints.\n  ours:   %s\n  source: %s\nThe tokens "+
+		"differ by design; the resolved value must not.", key, mockupSheetRel, ours, source)
+}
+
+func TestDesignSystem_EveryTranscribedSheet_ResolvesToTheSourceSheet(t *testing.T) {
+	t.Parallel()
+
+	diff := diffTranscribedSheets(t)
+
+	keys := make([]transcriptionDivergence, 0, len(diff.observed))
+	for key := range diff.observed {
+		keys = append(keys, key)
+	}
+
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+
+	for _, key := range keys {
+		got := diff.observed[key]
+
+		sanction, ok := sanctionedTranscriptionDivergences[key]
+		require.Truef(t, ok, "%s\n%s", describeDivergence(key, got, diff.source[key]),
+			"If this divergence is intended it belongs in docs/design/09 and in "+
+				"sanctionedTranscriptionDivergences with its reason — a comment saying \"transcribed from\" "+
+				"is exactly what this test replaced.")
+
+		require.Equalf(t, sanction.ours, got,
+			"%s is a sanctioned divergence recorded as %q, and the sheet now declares %q. The entry pins "+
+				"the value on purpose: it records ONE decision, and it is not a licence for the next value "+
+				"of this property. Re-read the reason, then update the entry or the sheet:\n  %s",
+			key, sanction.ours, got, sanction.why)
+	}
+}
+
+// TestDesignSystem_EverySanctionedDivergence_IsStillOne is the shrink-only half, and the reason the
+// list can be trusted as an exhaustive statement rather than a pile.
+//
+// Same rule as web/e2e/axe-allowlist.json and sanctionedTableDivergences: an exception that no
+// longer matches anything is deleted by the change that stops it matching. A row for a divergence
+// that has healed reads as coverage and is not — and docs/design/09 §2's claim that `.card-meta` is
+// "the one place the shipped sheet deliberately diverges" is only true while this holds.
+func TestDesignSystem_EverySanctionedDivergence_IsStillOne(t *testing.T) {
+	t.Parallel()
+
+	diff := diffTranscribedSheets(t)
+
+	keys := make([]transcriptionDivergence, 0, len(sanctionedTranscriptionDivergences))
+	for key := range sanctionedTranscriptionDivergences {
+		keys = append(keys, key)
+	}
+
+	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+
+	for _, key := range keys {
+		sanction := sanctionedTranscriptionDivergences[key]
+
+		require.NotEmptyf(t, sanction.why,
+			"%s: a sanctioned divergence must say WHY. The reason is read by whoever hits the failure "+
+				"next, and \"it was here when I arrived\" is how the second one gets waved through.", key)
+		require.Regexpf(t, issueRefRe, sanction.why,
+			"%s: the reason must cite the issue that decided it, the same rule every other exception "+
+				"register in this repository lives under.", key)
+
+		require.Containsf(t, diff.ownerOf, key.selector,
+			"sanctionedTranscriptionDivergences lists %s, and %s no longer declares that selector at all "+
+				"— so the entry describes a divergence from nothing. Delete it.", key, mockupSheetRel)
+
+		_, observed := diff.observed[key]
+		require.Truef(t, observed,
+			"sanctionedTranscriptionDivergences lists %s, which now resolves to exactly what %s paints. A "+
+				"divergence list that outlives its divergence is how the next one gets waved through: "+
+				"delete the entry, and delete the exception from docs/design/09 if this was the last of it.",
+			key, mockupSheetRel)
+	}
+}
+
+// TestDesignSystem_EveryTranscribedClass_IsAccountedFor turns the diff from a floor into an
+// equality: every class the source sheet declares is either transcribed by a named sheet or recorded
+// as one this product does not ship.
+//
+// Without it the diff covers whatever happens to be listed, and a Nocturne component added to the
+// mockup is silently outside it — which is the state issue #67 was filed about, one level up.
+func TestDesignSystem_EveryTranscribedClass_IsAccountedFor(t *testing.T) {
+	t.Parallel()
+
+	known := map[string]bool{}
+
+	for _, transcribed := range transcribedSheets {
+		for _, family := range transcribed.families {
+			known[family] = true
+		}
+	}
+
+	for family := range untranscribedFamilies {
+		known[family] = true
+	}
+
+	inFamily := func(class, family string) bool {
+		return class == family || strings.HasPrefix(class, family+"-")
+	}
+
+	classes := cssClassSelectors(readRepoFile(t, mockupSheetRel))
+	require.GreaterOrEqualf(t, len(classes), 20,
+		"found only %d classes in %s — this check must not pass vacuously", len(classes), mockupSheetRel)
+
+	for _, class := range classes {
+		covered := false
+
+		for family := range known {
+			if inFamily(class, family) {
+				covered = true
+
+				break
+			}
+		}
+
+		require.Truef(t, covered,
+			"%s declares .%s and no sheet claims it. Either transcribe it and add its family to "+
+				"transcribedSheets, or say in untranscribedFamilies why this product does not ship it — a "+
+				"class that is in neither list is outside the fidelity diff without anyone deciding that.",
+			mockupSheetRel, class)
+	}
+
+	for _, family := range sortedKeys(untranscribedFamilies) {
+		require.NotEmptyf(t, untranscribedFamilies[family],
+			"untranscribedFamilies[%q] must say WHY this product does not ship the class", family)
+
+		found := false
+
+		for _, class := range classes {
+			if inFamily(class, family) {
+				found = true
+
+				break
+			}
+		}
+
+		require.Truef(t, found,
+			"untranscribedFamilies records .%s as a class this product does not ship, and %s no longer "+
+				"declares it. Delete the entry: a list of things that are not there is not coverage.",
+			family, mockupSheetRel)
+	}
 }
