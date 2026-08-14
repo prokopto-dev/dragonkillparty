@@ -1,13 +1,14 @@
 # Choosing a DKP system
 
-**Status:** eight are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`,
-`auction_sealed`, `relative_bid` and `roll`, whose worked numbers are in
+**Status:** nine are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`,
+`auction_sealed`, `relative_bid`, `roll` and `loot_council`, whose worked numbers are in
 [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land through Phase 1.
 The four bidding rules ship their **arithmetic** — which bid wins and what it pays; the bid session
 around it (states, anti-snipe, holds) is Phase 6, and tier-aware resolution is a Phase 1 deliverable
-of its own ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)). Numbers for an unshipped rule below are
-worked from the specified arithmetic rather than from a running instance. A rule's normative knob list
-is its `ConfigSchema`, which also renders the pool-settings form; a generated per-strategy reference
+of its own ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)). Numbers for an
+unshipped rule below are worked from the specified arithmetic rather than from a running instance. A
+rule's normative knob list is its `ConfigSchema`, which also renders the pool-settings form; a
+generated per-strategy reference
 page is Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
 Spend twenty minutes here before your first raid. Changing a point system afterwards is supported and
@@ -289,6 +290,13 @@ system in disguise; configure them as `roll` with a counter, not as a special ca
 rationale and the timestamp, and it flags a conflict of interest when a councillor is a candidate for
 the item under vote. Councils without a published priority score reliably decay into loot-council
 fatigue, so run one next to `attendance_weighted` and show the score.
+
+The rule ships today with the decision itself: the winner, the rationale — required unless you turn
+`require_reason` off — and the charge the council named, which may be nothing at all and is never read
+from an item's price table. The **deliberation** record (nominations, per-councillor votes, the
+conflict-of-interest flag) needs the loot tables and lands with them:
+[#219](https://github.com/prokopto-dev/dragonkillparty/issues/219). Its
+[worked example](../concepts/strategies.md#loot_council--spend-by-officer-decision) has the numbers.
 
 ### `epgp` and `suicide_kings`
 

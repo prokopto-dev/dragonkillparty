@@ -50,6 +50,7 @@ func Catalogue() []PointStrategy {
 		AuctionSealed{},
 		RelativeBid{},
 		Roll{},
+		LootCouncil{},
 		Cap{},
 	}
 }
@@ -66,8 +67,8 @@ var ErrUnknownStrategy = fmt.Errorf("no such point strategy")
 //
 // This is the validation `db/schema.hcl` points at when it explains why the columns carry no CHECK.
 // It answers only "does this strategy exist?"; whether it belongs in the SLOT the pool put it in is
-// PoolConfig.Resolve's question, checked against RuleKind. A linear scan over four entries needs no
-// map, and a map would be a package-level one — see the header.
+// PoolConfig.Resolve's question, checked against RuleKind. A linear scan over a handful of entries
+// needs no map, and a map would be a package-level one — see the header.
 func ByID(id string) (PointStrategy, error) {
 	for _, s := range Catalogue() {
 		if s.ID() == id {

@@ -32,6 +32,8 @@
 //   - auction_sealed.go — hidden bids, first price or second price by config.
 //   - relative_bid.go — bids are a share of the balance frozen at the session's open.
 //   - roll.go — a seeded server-side roll per entrant; a tie awards nobody and calls a new round.
+//   - loot_council.go — spend by officer decision: the charge is the one the council named, recorded
+//     rather than derived from a price, a bid or a balance.
 //
 // The four bidding rules carry the loot ARITHMETIC only. The bid state machine, the anti-snipe
 // window and holds are Phase 6 (docs/guides/auctions.md): each needs a fact the Ctx façade does not
