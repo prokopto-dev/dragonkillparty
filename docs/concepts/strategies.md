@@ -410,6 +410,14 @@ more absolute points for the same priority. Every balance is read at the session
 everybody's percentage, and the bug only appears on the one night a decay job overlaps a raid. A bid
 that is no longer a share of its frozen balance is ignored, and the resolution says how many were.
 
+**Two equal shares are an equal claim, and the larger bank does not break the tie.** Had Tankguy
+committed 450.00 of his 900.00 against Healbot's 250.00 of 500.00, both stand at 5000 bp: the
+settlement falls through to the earliest bid and then to a seeded roll, exactly as
+[the tie-break chain](../guides/auctions.md#tie-breaks) describes, and never to the 200.00 more that
+the bigger bank put behind the same percentage. Awarding it on that number would hand the item to the
+hoarder for hoarding, one rung below where this rule removed that advantage
+([#244](https://github.com/prokopto-dev/dragonkillparty/issues/244)).
+
 ### `roll` — a seeded die, and a tie is a new round
 
 `/random 1 100` for three entrants, drawn from the injected seeded generator in account order, with
