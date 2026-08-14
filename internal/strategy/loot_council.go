@@ -124,8 +124,10 @@ func (LootCouncil) Version() string { return lootCouncilVersion }
 // what people decided rather than by computing anything (ADR-0026).
 //
 // A pool composes it with an earn rule that credits attendance and, usually, an over-time rule that
-// keeps the standings honest — the council is the loot half and nothing else. That is why the three
-// planners outside this slot refuse by name below instead of improvising an answer.
+// keeps the standings honest — the council is the loot half and nothing else. That is why
+// PlanAttendance and PlanDecay refuse by name below instead of improvising an answer: each would
+// have to invent a number beside the rule that owns it. PlanAdjustment is the exception, and the
+// reason is that it invents nothing — see its comment.
 func (LootCouncil) RuleKind() RuleKind { return RuleSpend }
 
 // BalanceKinds is the one balance kind this strategy moves. A single plain quantity, which is what
@@ -310,6 +312,38 @@ func resolveCouncilCharge(cfg lootCouncilConfig, ev AwardEvent) (core.Centipoint
 	return charge, nil
 }
 
+// PlanAdjustment moves points between an account and a counterparty.
+//
+// It is two entries, never one. An officer who could add points without naming where they came from
+// could inflate a guild's economy invisibly, and the counterparty — the guild bank unless the caller
+// names another — is what makes every adjustment answerable with "out of what?".
+//
+// A POOL NEVER ROUTES ONE HERE, and it is implemented anyway. ADR-0026 sends an adjustment to the
+// pool's EARN rule, because the floor a member's balance lives under between purchases is the one
+// they earn against (pool.go argues it at length), so this method is as uncalled in a composed pool
+// as `fixed_price`'s is. What it must not be is a REFUSAL: `PlanAdjustment` is a required planner
+// that every strategy in the catalogue answers with the same shared body, the officer's manual
+// movement of points is "identical in every strategy here" (common.go), and a lone strategy that
+// said no would be a hole in that uniformity for a reader, for a direct caller and for anything
+// later that plans an adjustment without going through a pool's three slots.
+//
+// It also invents nothing, which is why it is not the second copy of a rule the refusals above
+// avoid. PlanAttendance would have to name a per-tick value beside `tick`'s and PlanDecay a cadence
+// beside a decay rule's; an adjustment carries its own amount on the event, so the only thing this
+// strategy contributes is the floor — and that floor is the pool's own `floor_cp`, the same one
+// PlanAward declares, rather than a second, competing one.
+//
+// The body is adjustmentProposal in common.go. What this method still owns is reading THIS
+// strategy's config, because the floor is a loot_council knob.
+func (s LootCouncil) PlanAdjustment(ctx Ctx, ev AdjustmentEvent) (BatchProposal, error) {
+	cfg, err := s.config(ctx)
+	if err != nil {
+		return BatchProposal{}, err
+	}
+
+	return adjustmentProposal(ctx, lootCouncilID, lootCouncilVersion, cfg.FloorCp, ev)
+}
+
 // PlanReversal negates every entry of the batch being reversed.
 //
 // ENTRY-WISE NEGATION IS CORRECT HERE. This strategy's only balance kind is `dkp`, a plain quantity:
@@ -338,29 +372,6 @@ func (LootCouncil) PlanReversal(ctx Ctx, b LedgerBatch) (BatchProposal, error) {
 func (LootCouncil) PlanAttendance(Ctx, AttendanceEvent) (BatchProposal, error) {
 	return BatchProposal{}, Unsupported(lootCouncilID,
 		"credit an attendance tick: it decides loot, so pair it with an earn rule such as tick")
-}
-
-// PlanAdjustment moves points between an account and a counterparty.
-//
-// A COMPOSED POOL NEVER REACHES IT — ADR-0026 routes adjustments to the pool's EARN rule, and pool.go
-// argues why at length: the floor a member's balance lives under between purchases is the one they
-// earn against. An earlier cut of this file refused it for that reason, and the refusal was
-// overruled: every strategy in this package implements the adjustment through one shared helper, and
-// a strategy declining to do something it can obviously do is a worse answer than a method no
-// composition happens to call. A pool that names `loot_council` as its only rule can still take a
-// correction.
-//
-// The body is adjustmentProposal in common.go — two entries and never one, because an officer who
-// could add points without naming where they came from could inflate a guild's economy invisibly.
-// What this method owns is reading THIS strategy's config, because the floor it declares is a
-// loot_council knob.
-func (s LootCouncil) PlanAdjustment(ctx Ctx, ev AdjustmentEvent) (BatchProposal, error) {
-	cfg, err := s.config(ctx)
-	if err != nil {
-		return BatchProposal{}, err
-	}
-
-	return adjustmentProposal(ctx, lootCouncilID, lootCouncilVersion, cfg.FloorCp, ev)
 }
 
 // PlanDecay is unsupported: a council has no cadence. A pool that wants balances to shrink over time

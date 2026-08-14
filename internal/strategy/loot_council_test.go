@@ -402,6 +402,155 @@ func TestLootCouncil_PlanAward_UsesTheClockWhenTheEventNamesNoTime(t *testing.T)
 	require.Equal(t, fixedNow, p.EffectiveAt, "the INJECTED clock, never time.Now")
 }
 
+// --- The adjustment ------------------------------------------------------------------------------
+//
+// No pool routes an adjustment here — ADR-0026 sends it to the earn rule — so these tests pin what a
+// DIRECT caller gets: the same batch every other strategy in the catalogue would have planned, under
+// this pool's own floor. loot_council was the one strategy that refused instead, and #230 is that
+// hole being closed rather than a routing change.
+
+// TestLootCouncil_PlanAdjustment_MovesPointsAgainstACounterparty asserts an adjustment is two entries
+// and never one: the account moves by the officer's number and the counterparty moves by its exact
+// negation, so nothing is minted.
+func TestLootCouncil_PlanAdjustment_MovesPointsAgainstACounterparty(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 1_000, `{"charge_cp": 2500, "floor_cp": -500}`)
+
+	p, err := strategy.LootCouncil{}.PlanAdjustment(ctx, strategy.AdjustmentEvent{
+		Account:     strategy.AccountRef{ID: acct(0), Kind: "person"},
+		AmountCp:    -250,
+		EffectiveAt: fixedNow,
+		Reason:      "double-credited tick on 2024-05-30",
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "adjustment", p.Kind)
+	require.Equal(t, "loot_council", p.StrategyID,
+		"the shared body is handed the caller's id, so a batch planned here must say loot_council — "+
+			"ledger_batch.strategy_id is what routes its reversal back to this strategy")
+	require.Len(t, p.Entries, 2)
+	require.Equal(t, acct(0), p.Entries[0].AccountID)
+	require.Equal(t, core.Centipoints(-250), p.Entries[0].AmountCp)
+	require.Equal(t, ledger.AccountIDGuildBank, p.Entries[1].AccountID,
+		"an adjustment with no named counterparty is funded by the guild bank, never minted")
+	require.Equal(t, core.Centipoints(250), p.Entries[1].AmountCp)
+	require.Equal(t, core.Centipoints(0), sumEntries(p))
+
+	require.Equal(t,
+		[]strategy.InvariantKind{strategy.InvariantSumZero, strategy.InvariantNonNegative},
+		invariantKinds(p))
+	require.Equal(t, core.Centipoints(-500), requireNonNegativeFloor(t, p),
+		"the POOL's floor and not the catalogue's default, and this strategy's own rather than a "+
+			"second, competing one: it is the same floor_cp PlanAward declares")
+	require.Empty(t, ctx.readAtSeq,
+		"an adjustment is a number an officer decided, recorded; a planner that consulted a balance "+
+			"would be deriving it, and whether the account can afford it is the ledger's question")
+}
+
+// TestLootCouncil_PlanAdjustment_NamedCounterparty_IsTheOneMoved: the guild bank is the DEFAULT
+// counterparty, not the only one. A penalty transferred to another member names its own, and the
+// bank must then stay out of the batch entirely.
+func TestLootCouncil_PlanAdjustment_NamedCounterparty_IsTheOneMoved(t *testing.T) {
+	t.Parallel()
+
+	p, err := strategy.LootCouncil{}.PlanAdjustment(
+		newCtx(t, 2, 1_000, `{"charge_cp": 2500}`), strategy.AdjustmentEvent{
+			Account:      strategy.AccountRef{ID: acct(0), Kind: "person"},
+			Counterparty: acct(1),
+			AmountCp:     500,
+			EffectiveAt:  fixedNow,
+			Reason:       "transferred from Raider 1, agreed in officer chat",
+		})
+	require.NoError(t, err)
+
+	require.Len(t, p.Entries, 2, "the guild bank stays out of a batch that named its counterparty")
+	require.Equal(t, acct(0), p.Entries[0].AccountID)
+	require.Equal(t, core.Centipoints(500), p.Entries[0].AmountCp)
+	require.Equal(t, acct(1), p.Entries[1].AccountID)
+	require.Equal(t, core.Centipoints(-500), p.Entries[1].AmountCp)
+	require.Equal(t, core.Centipoints(0), sumEntries(p))
+}
+
+// TestLootCouncil_PlanAdjustment_UsesTheClockWhenTheEventNamesNoTime: a zero EffectiveAt is a caller
+// that did not specify, not a caller that meant 1970.
+func TestLootCouncil_PlanAdjustment_UsesTheClockWhenTheEventNamesNoTime(t *testing.T) {
+	t.Parallel()
+
+	p, err := strategy.LootCouncil{}.PlanAdjustment(
+		newCtx(t, 2, 1_000, ""), strategy.AdjustmentEvent{
+			Account:  strategy.AccountRef{ID: acct(0), Kind: "person"},
+			AmountCp: 250,
+			Reason:   "missed tick on 2024-05-30",
+		})
+	require.NoError(t, err)
+	require.Equal(t, fixedNow, p.EffectiveAt, "the INJECTED clock, never time.Now")
+}
+
+// TestLootCouncil_PlanAdjustment_RejectsWhatMovesNothing is the shared body's refusals asserted
+// through THIS strategy, plus the config half this method owns.
+//
+// The strategy id is a PARAMETER of adjustmentProposal, so a wrong one would be invisible without a
+// per-strategy assertion — and an officer reading the refusal has three rules configured and needs
+// to know which of them said no.
+func TestLootCouncil_PlanAdjustment_RejectsWhatMovesNothing(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		config string
+		ev     strategy.AdjustmentEvent
+		want   error
+		says   string
+	}{
+		{
+			name: "no account",
+			ev:   strategy.AdjustmentEvent{AmountCp: 100},
+			want: strategy.ErrInvalidEvent,
+			says: "no account",
+		},
+		{
+			name: "an adjustment of zero",
+			ev: strategy.AdjustmentEvent{
+				Account: strategy.AccountRef{ID: acct(0), Kind: "person"},
+			},
+			want: strategy.ErrInvalidEvent,
+			says: "0 centipoints",
+		},
+		{
+			name: "an account adjusted against itself",
+			ev: strategy.AdjustmentEvent{
+				Account:      strategy.AccountRef{ID: acct(0), Kind: "person"},
+				Counterparty: acct(0),
+				AmountCp:     100,
+			},
+			want: strategy.ErrInvalidEvent,
+			says: "its own counterparty",
+		},
+		{
+			name:   "a config the schema would have rejected",
+			config: `{"charge_pc": 250}`,
+			ev: strategy.AdjustmentEvent{
+				Account: strategy.AccountRef{ID: acct(0), Kind: "person"}, AmountCp: 100,
+			},
+			want: strategy.ErrInvalidConfig,
+			says: "charge_pc",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ev := tc.ev
+			ev.EffectiveAt = fixedNow
+
+			_, err := strategy.LootCouncil{}.PlanAdjustment(newCtx(t, 2, 1_000, tc.config), ev)
+			require.ErrorIs(t, err, tc.want)
+			require.ErrorContains(t, err, tc.says)
+			require.ErrorContains(t, err, "loot_council")
+		})
+	}
+}
+
 // --- The reversal --------------------------------------------------------------------------------
 
 // TestLootCouncil_PlanReversal_NegatesAndRestampsTheEffectiveTime covers both halves of the default
@@ -520,13 +669,16 @@ func TestLootCouncil_PlanReversal_EmptyBatch_IsRefused(t *testing.T) {
 // TestLootCouncil_UnsupportedOperations_NameTheStrategy covers every method that returns
 // ErrUnsupported, and asserts each says which strategy refused and why.
 //
-// Two of these are planners OUTSIDE this strategy's slot (ADR-0026 routes attendance to the earn rule
-// and cadence runs to the over-time rule), and Priority is inside the slot and refused on purpose: the
-// council IS the ranking, so a rank computed here would be a number the council did not use.
+// Two of these are planners OUTSIDE this strategy's slot (ADR-0026 routes attendance to the earn
+// rule and cadence runs to the over-time rule), and each would have to invent a number beside the
+// rule that owns it — a per-tick value, a cadence. Priority is inside the slot and refused on
+// purpose: the council IS the ranking, so a rank computed here would be a number the council did not
+// use.
 //
-// PlanAdjustment is NOT here, and used to be: the adjustment is the one planner every strategy in this
-// package implements identically, through one shared helper, and refusing it here made the tree carry
-// two conventions for the same method. See LootCouncil.PlanAdjustment.
+// PlanAdjustment is outside the slot too and is deliberately NOT in this table (#230). It invents
+// nothing — the amount is on the event and the only contribution is the pool's own floor — so it
+// answers with the shared body every other strategy in the catalogue answers with, and its
+// assertions are the adjustment section above.
 func TestLootCouncil_UnsupportedOperations_NameTheStrategy(t *testing.T) {
 	t.Parallel()
 
@@ -699,19 +851,6 @@ func TestLootCouncil_Config_RejectsWhatTheSchemaWouldHaveRejected(t *testing.T) 
 			require.ErrorContains(t, err, tc.says)
 		})
 	}
-
-	// The adjustment planner reads the same config for its floor, so it owes the same strictness. A
-	// planner that defaulted a bad document would declare a floor nobody configured.
-	t.Run("the adjustment planner re-validates too", func(t *testing.T) {
-		t.Parallel()
-
-		_, err := strategy.LootCouncil{}.PlanAdjustment(
-			newCtx(t, 1, 10_000, `{"floor_pc": -500}`), strategy.AdjustmentEvent{
-				Account: strategy.AccountRef{ID: acct(0), Kind: "person"}, AmountCp: -750,
-			})
-		require.ErrorIs(t, err, strategy.ErrInvalidConfig)
-		require.ErrorContains(t, err, "floor_pc")
-	})
 }
 
 // TestLootCouncil_ConfigSchema_EveryKnobAgreesWithTheParser derives its cases FROM THE SCHEMA, so a
@@ -765,6 +904,14 @@ func TestLootCouncil_Planners_ConsumeNoRandomness(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	adjustment, err := s.PlanAdjustment(ctx, strategy.AdjustmentEvent{
+		Account:     strategy.AccountRef{ID: acct(1), Kind: "person"},
+		AmountCp:    -750,
+		EffectiveAt: fixedNow,
+		Reason:      "double-credited tick on 2024-05-30",
+	})
+	require.NoError(t, err)
+
 	reversal, err := s.PlanReversal(ctx, strategy.LedgerBatch{
 		ID:              acct(70),
 		Kind:            award.Kind,
@@ -775,7 +922,7 @@ func TestLootCouncil_Planners_ConsumeNoRandomness(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	for _, p := range []strategy.BatchProposal{award, reversal} {
+	for _, p := range []strategy.BatchProposal{award, adjustment, reversal} {
 		require.Nil(t, p.RngSeed,
 			"%s carries a seed it never consumed; a seed asserts that replaying from it reproduces "+
 				"the plan, which would be true here only by irrelevance", p.Kind)
@@ -800,8 +947,8 @@ func TestLootCouncil_EveryPlannerInvariant_IsDeclared(t *testing.T) {
 // as nothing.
 const lootCouncilGoldenConfig = `{"charge_cp":2500,"require_reason":false,"floor_cp":-500}`
 
-// lootCouncilGoldenCases is one case per planner that writes a batch. There are two, because the
-// other five planners refuse by name — a golden for a refusal would be a file recording that a
+// lootCouncilGoldenCases is one case per planner that writes a batch. There are three, because the
+// other four planners refuse by name — a golden for a refusal would be a file recording that a
 // strategy still says no.
 func lootCouncilGoldenCases() []goldenCase {
 	s := strategy.LootCouncil{}
@@ -838,7 +985,7 @@ func lootCouncilGoldenCases() []goldenCase {
 					Account:     strategy.AccountRef{ID: acct(1), Kind: "person"},
 					AmountCp:    -750,
 					EffectiveAt: fixedNow,
-					Reason:      "double-charged for the Cloak on 2024-05-30",
+					Reason:      "double-credited tick on 2024-05-30",
 				})
 				require.NoError(tb, err)
 
@@ -979,6 +1126,19 @@ func (c councilCase) event() strategy.AwardEvent {
 	return ev
 }
 
+// adjustment renders the generated case as the amount an officer moved by hand: the same magnitude
+// the council would have charged, as a debit or a credit depending on the case's other coin flip.
+//
+// BOTH SIGNS, because a correction goes both ways — a penalty and a missed tick are the same planner
+// — and a property that only ever drew one of them would be silent about the other.
+func (c councilCase) adjustment() core.Centipoints {
+	if c.FromEvent {
+		return c.ChargeCp
+	}
+
+	return -c.ChargeCp
+}
+
 // ctx builds the façade the generated case is planned against.
 func (c councilCase) ctx(tb testing.TB) *fakeCtx {
 	tb.Helper()
@@ -1077,6 +1237,80 @@ func councilFloor(p strategy.BatchProposal) *core.Centipoints {
 	}
 
 	return nil
+}
+
+// TestProperty_LootCouncil_Adjustment_MovesExactlyTheOfficersNumber is the adjustment's half of
+// "recorded, not computed", over generated corrections in both directions (#230).
+//
+// The claim is the same one the award owes and it matters for the same reason: the officer's number
+// reaches the ledger unchanged — not clamped to the account's balance, not reduced to the floor, not
+// netted against anything — against a counterparty that makes it answerable with "out of what?". A
+// planner that clamped would pass every zero-sum check ever written and would quietly make a
+// correction advisory, which is the one thing an append-only ledger cannot afford: a correction is
+// its only repair primitive.
+func TestProperty_LootCouncil_Adjustment_MovesExactlyTheOfficersNumber(t *testing.T) {
+	t.Parallel()
+
+	overdrafts := 0
+
+	forEachCouncilCase(t, func(c councilCase) error {
+		ctx := c.ctx(t)
+		amount := c.adjustment()
+
+		p, err := strategy.LootCouncil{}.PlanAdjustment(ctx, strategy.AdjustmentEvent{
+			Account:     strategy.AccountRef{ID: acct(0), Kind: "person"},
+			AmountCp:    amount,
+			EffectiveAt: fixedNow,
+			Reason:      "generated correction",
+		})
+		if err != nil {
+			return err
+		}
+
+		if p.Kind != "adjustment" || p.StrategyID != "loot_council" {
+			return fmt.Errorf("the batch is kind %q planned by %q, want an adjustment by loot_council",
+				p.Kind, p.StrategyID)
+		}
+
+		if len(p.Entries) != 2 {
+			return fmt.Errorf("the adjustment has %d entries; it is two, never one — an officer who "+
+				"could add points without naming where they came from could inflate the economy "+
+				"invisibly", len(p.Entries))
+		}
+
+		if p.Entries[0].AccountID != acct(0) || p.Entries[0].AmountCp != amount {
+			return fmt.Errorf("account %s moves %d, want %s moving exactly the %d the officer named",
+				p.Entries[0].AccountID, p.Entries[0].AmountCp, acct(0), amount)
+		}
+
+		if p.Entries[1].AccountID != ledger.AccountIDGuildBank || p.Entries[1].AmountCp != -amount {
+			return fmt.Errorf("the counterparty is %s at %d, want the guild bank at %d",
+				p.Entries[1].AccountID, p.Entries[1].AmountCp, -amount)
+		}
+
+		if net, ok := p.NetAmountCp(); !ok || net != 0 {
+			return fmt.Errorf("the batch nets to %d (ok=%v), want exactly 0", net, ok)
+		}
+
+		if floor := councilFloor(p); floor == nil || *floor != c.FloorCp {
+			return fmt.Errorf("the proposal declares floor %v, want the pool's %d", floor, c.FloorCp)
+		}
+
+		if len(ctx.readAtSeq) != 0 {
+			return fmt.Errorf("the planner read %d balance(s); whether the account can afford the "+
+				"correction is the ledger's question, answered at commit time", len(ctx.readAtSeq))
+		}
+
+		if c.BalanceCp+amount < c.FloorCp {
+			overdrafts++
+		}
+
+		return nil
+	})
+
+	require.Positive(t, overdrafts,
+		"no generated correction would take its account below the floor, so the property never "+
+			"exercised the case a clamping planner would have silently passed")
 }
 
 // TestProperty_P5_LootCouncilReversal_IsAnExactInverse is P5 at the strategy level: planning a council
