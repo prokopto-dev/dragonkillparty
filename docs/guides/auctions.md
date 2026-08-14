@@ -170,6 +170,12 @@ can paste the reason into chat:
 
 Steps 1–7 are automatic. Step 8 exists so the chain always terminates.
 
+**Step 7 rolls between tied *bidders*, not between tied bid rows.** Bids are append-only and one
+account may hold several — a raise, a retraction and its replacement — so a raider whose duplicate
+bid sits in the tied run would otherwise draw two tickets out of three against a single opponent. One
+account is one entrant, and a tied run that is entirely one account is not a roll at all: they have
+won, and no seed is recorded for a flip that decided nothing.
+
 Steps 1, 2, 6 and 7 are the ones a pure strategy can evaluate, and all four run today; steps 3 to 5
 need attendance and award history the planner façade does not carry, and a step that cannot be
 evaluated is skipped rather than approximated. Every step that *was* reached is written onto the

@@ -500,6 +500,92 @@ func TestAuctionSealed_SettleAuction_ATieIsBetweenBIDDERSRatherThanBids(t *testi
 		"and they pay the minimum, because there is no runner-up on their rung")
 }
 
+// TestAuctionSealed_SettleAuction_ADuplicateTopBid_BuysNoSecondTicket is the AO review's finding on
+// #248, and it is about a raider's ODDS rather than about who is named.
+//
+// One account holding two identical top bids beside a second account holding one is a tie between
+// TWO people, and the settlement says so — but a fallback that rolled over the three ROWS would give
+// the duplicate bidder two chances in three. It returns a legal winner either way, so nothing about
+// the outcome shows it: the only witness is the size of the draw, which is why the fake Rng records
+// it. The reported path and the fallback path must agree about how many parties there are, because
+// they are answering the same question.
+func TestAuctionSealed_SettleAuction_ADuplicateTopBid_BuysNoSecondTicket(t *testing.T) {
+	t.Parallel()
+
+	top := func(id core.ULID) strategy.Bid {
+		return strategy.Bid{
+			AccountID: id, AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true, Tier: strategy.TierMain,
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		bids  []strategy.Bid
+		tied  []core.ULID
+		draws []int
+	}{
+		{
+			name:  "two rows from one bidder and one from another",
+			bids:  []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(1))},
+			tied:  []core.ULID{acct(0), acct(1)},
+			draws: []int{2},
+		},
+		{
+			name:  "three rows and two rows",
+			bids:  []strategy.Bid{top(acct(0)), top(acct(1)), top(acct(0)), top(acct(1)), top(acct(0))},
+			tied:  []core.ULID{acct(0), acct(1)},
+			draws: []int{2},
+		},
+		{
+			name:  "every tied row is the same bidder, so there is nothing to roll for",
+			bids:  []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(0))},
+			tied:  nil,
+			draws: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := strategy.AuctionSealed{}
+
+			reported, err := s.SettleAuction(spendCtx(t, tieredSealedConfig),
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, tc.bids)
+			require.NoError(t, err)
+
+			if tc.tied == nil {
+				require.Nil(t, reported.Tie, "one bidder holding every top row has won, and alone")
+				require.Len(t, reported.Winners, 1)
+			} else {
+				require.NotNil(t, reported.Tie)
+				require.Equal(t, tc.tied, reported.Tie.Accounts)
+			}
+
+			ctx := spendCtx(t, tieredSealedConfig)
+
+			broken, err := s.SettleAuction(ctx,
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow, BreakTies: true},
+				tc.bids)
+			require.NoError(t, err)
+
+			require.Len(t, broken.Winners, 1)
+			require.Equal(t, tc.draws, ctx.rng.draws,
+				"the roll is drawn between the tied BIDDERS: a duplicate row is not a second ticket, "+
+					"and a run that is all one account is not a roll at all")
+
+			if tc.tied != nil {
+				require.Contains(t, tc.tied, broken.Winners[0].AccountID)
+				require.NotNil(t, broken.RngSeed)
+				require.Contains(t, broken.Trace[len(broken.Trace)-2].Detail, "2 bidders are equal",
+					"and the trace reports the draw that was made rather than the rows that existed")
+
+				return
+			}
+
+			require.Nil(t, broken.RngSeed, "no roll was held, so there is no seed to record")
+		})
+	}
+}
+
 // TestAuctionSealed_SettleAuction_TheTieSetIsOrderedAndIndependentOfTheInput: the same session
 // settles to the same named parties whatever order the bids arrive in.
 //

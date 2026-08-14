@@ -433,17 +433,55 @@ func tiedAccounts(ranked []rankedBid) []core.ULID {
 		return nil
 	}
 
-	out := make([]core.ULID, 0, len(ranked))
+	tied := bidPerAccount(ranked[:tiedOnRank(ranked)])
 
-	for _, r := range ranked[:tiedOnRank(ranked)] {
-		if !slices.Contains(out, r.bid.AccountID) {
-			out = append(out, r.bid.AccountID)
-		}
+	out := make([]core.ULID, 0, len(tied))
+	for _, r := range tied {
+		out = append(out, r.bid.AccountID)
 	}
 
 	slices.Sort(out)
 
 	return out
+}
+
+// bidPerAccount collapses a run of ranked bids to ONE row per account, keeping each account's first
+// row in the comparator's order.
+//
+// IT IS THE ONE PLACE THIS PACKAGE TURNS BIDS INTO BIDDERS, which is why both callers go through it.
+// A tie is between people: bids are append-only and one account may hold several — a raise, a
+// retraction and its replacement — so a run of equal rows is not a run of equal bidders. Naming the
+// tied parties and rolling between them are the same question asked twice, and two implementations
+// of it are two chances to answer it differently in the one place a settlement is deciding who owns
+// a raid's best drop.
+//
+// THE ORDER IS THE COMPARATOR'S, not the input's: rankBids has already put the run in a total order
+// whose last key is the account id, so each account's kept row and the order they are kept in are
+// both deterministic. A roll drawn over a list that depended on the input order would be a roll that
+// depended on a query plan.
+func bidPerAccount(ranked []rankedBid) []rankedBid {
+	out := make([]rankedBid, 0, len(ranked))
+
+	for _, r := range ranked {
+		if !slices.ContainsFunc(out, func(kept rankedBid) bool {
+			return kept.bid.AccountID == r.bid.AccountID
+		}) {
+			out = append(out, r)
+		}
+	}
+
+	return out
+}
+
+// tiedBiddersAtTop is how many BIDDERS the roll would be drawn between — tiedAtTop counted in people
+// rather than in rows. It is what the trace reports, so that the sentence describes the draw that
+// actually happened.
+func tiedBiddersAtTop(ranked []rankedBid) int {
+	if len(ranked) == 0 {
+		return 0
+	}
+
+	return len(bidPerAccount(ranked[:tiedAtTop(ranked)]))
 }
 
 // settleHighest returns the winning bid and the seed it consumed, if it consumed one.
@@ -455,17 +493,27 @@ func tiedAccounts(ranked []rankedBid) []core.ULID {
 // is what makes the flip replayable three months later when somebody asks
 // (.claude/rules/ledger-and-strategy.md).
 //
+// THE ROLL IS BETWEEN BIDDERS AND NOT BETWEEN BID ROWS (AO review of #248), and the difference is a
+// raider's odds. Bids are append-only and one account may hold several, so a bidder whose duplicate
+// bid sits in the tied run would draw a second ticket: with A holding two identical top bids and B
+// one, a roll over the rows gives A two chances in three where the rule — and the tie the settlement
+// just reported, which names two PEOPLE — says one in two. It is silent, it is plausible, and it is
+// wrong in the direction of whoever submitted twice.
+//
+// A RUN THAT IS ALL ONE ACCOUNT THEREFORE CONSUMES NO RANDOMNESS. There is one bidder, they have won,
+// and a seed recorded there would claim a coin was flipped to decide something nobody was contesting.
+//
 // The caller guarantees a non-empty list: an auction with no eligible bid is the rot case, and it is
 // answered with a resolution that names no winner rather than by rolling between nobody.
 func settleHighest(ctx Ctx, ranked []rankedBid) (rankedBid, *int64) {
-	tied := tiedAtTop(ranked)
-	if tied == 1 {
-		return ranked[0], nil
+	candidates := bidPerAccount(ranked[:tiedAtTop(ranked)])
+	if len(candidates) == 1 {
+		return candidates[0], nil
 	}
 
 	seed := ctx.Rng().Seed()
 
-	return ranked[ctx.Rng().IntN(tied)], &seed
+	return candidates[ctx.Rng().IntN(len(candidates))], &seed
 }
 
 // auctionTrace is the tie-break chain an auction actually walked, in order, ready to be written onto
@@ -552,12 +600,15 @@ func sequenceOrRoll(ordered []rankedBid, seed *int64) ResolutionStep {
 		}
 	}
 
+	// BIDDERS RATHER THAN BIDS, because that is the draw settleHighest actually made: one ticket per
+	// account, however many rows an account holds in the tied run. A sentence counting rows would
+	// describe odds nobody was given.
 	return ResolutionStep{
 		Kind: ResolutionStepSeededRoll,
 		Detail: fmt.Sprintf(
-			"%d bids are equal on every step above and in the microsecond they were placed; a roll "+
+			"%d bidders are equal on every step above and in the microsecond they bid; a roll "+
 				"from seed %d settled it, and re-running that seed settles it the same way",
-			tiedAtTop(ordered), *seed),
+			tiedBiddersAtTop(ordered), *seed),
 	}
 }
 

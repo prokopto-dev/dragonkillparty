@@ -530,6 +530,57 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 	}
 }
 
+// TestSpendStrategies_SettleAuction_ARepeatedBidder_NeverGetsTwoChances is the family's answer to the
+// AO review of #248, and the four rules answer it four different ways.
+//
+// Bids are append-only and one account may hold several rows, so a settlement that treated rows as
+// contenders would hand a raider who submitted twice a second ticket in the roll-off. Nothing about
+// the outcome shows it — a legal winner comes out either way — so what is asserted is the SIZE of the
+// draw the settlement asked the Rng for, which is the only place the odds are visible.
+//
+// The four mechanisms are deliberately different and all four belong here: the two auctions that roll
+// collapse the tied run to one row per account, `auction_sealed` reports the tie instead of rolling
+// at all, and `roll` refuses the repeated entrant outright because a second entry there is a second
+// die rather than a second row.
+func TestSpendStrategies_SettleAuction_ARepeatedBidder_NeverGetsTwoChances(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := spendCtx(t, tc.config)
+			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(0)), tc.bid(acct(1))}
+
+			res, err := tc.s.SettleAuction(ctx, strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, bids)
+
+			if tc.id == "roll" {
+				require.ErrorIs(t, err, strategy.ErrInvalidEvent,
+					"a repeated entrant is two rolls and twice the chance, and the round refuses it")
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tc.id == "auction_sealed" {
+				require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts,
+					"two people are tied, however many rows one of them holds")
+				require.Empty(t, ctx.rng.draws, "a reported tie rolls for nothing")
+
+				return
+			}
+
+			require.Len(t, res.Winners, 1)
+			require.Equal(t, []int{2}, ctx.rng.draws,
+				"the roll-off is drawn between the two tied BIDDERS; over three rows the duplicate "+
+					"bidder would hold two of the three tickets")
+		})
+	}
+}
+
 // TestSpendStrategies_SettleAuction_TheHigherRungTakesTheItemWithoutARoll is the ladder at the
 // family level, and the shape of the case is what makes it strong: the two bids are IDENTICAL but for
 // the rung.
