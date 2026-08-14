@@ -264,6 +264,46 @@ func TestZeroSum_PlanAward_AllWeightsZero_RoutesToResidue(t *testing.T) {
 	require.Equal(t, core.Centipoints(0), sumEntries(p))
 }
 
+// TestZeroSum_PlanAward_ASystemAccountBeneficiary_IsRefused is the same dilution defect from the
+// spend side: the price is fixed, so a share for the guild bank is a share taken from every raider who
+// was actually there, and the batch still sums to zero either way.
+//
+// The refusal comes from routeProceeds, so it covers every spend rule that splits — `fixed_price` with
+// `proceeds: attendees` and the four bidding rules included, not only this one. A system account is
+// still a legal DESTINATION for the whole price under the solo policy; what it may not be is one of
+// the accounts the price is divided across.
+func TestZeroSum_PlanAward_ASystemAccountBeneficiary_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	price := core.Centipoints(30_000)
+
+	_, err := strategy.ZeroSum{}.PlanAward(newCtx(t, 3, 0, `{}`), strategy.AwardEvent{
+		Buyer:   strategy.AccountRef{ID: acct(0), Kind: "person"},
+		Item:    strategy.ItemRef{ID: acct(90), Name: "Cloak of Flames"},
+		PriceCp: &price,
+		Beneficiaries: []strategy.Share{
+			{AccountID: acct(1), Weight: 1},
+			{AccountID: ledger.AccountIDGuildBank, Weight: 1},
+		},
+		EffectiveAt: fixedNow,
+	})
+	require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+	require.ErrorContains(t, err, "guild_bank")
+
+	// The solo policy still routes the WHOLE price to a system account, which is a different thing and
+	// must keep working: receiving the proceeds is not receiving a share of them.
+	solo, err := strategy.ZeroSum{}.PlanAward(
+		newCtx(t, 1, 0, `{"solo_policy": "write_off"}`), strategy.AwardEvent{
+			Buyer:       strategy.AccountRef{ID: acct(0), Kind: "person"},
+			Item:        strategy.ItemRef{ID: acct(90), Name: "Cloak of Flames"},
+			PriceCp:     &price,
+			EffectiveAt: fixedNow,
+		})
+	require.NoError(t, err)
+	require.Equal(t, ledger.AccountIDWriteOff, solo.Entries[1].AccountID)
+	require.Equal(t, price, solo.Entries[1].AmountCp)
+}
+
 // TestZeroSum_PlanAward_PriceResolution_PrefersTheOfficerThenTheItemThenTheConfig asserts the one
 // resolution order, shared with fixed_price.
 func TestZeroSum_PlanAward_PriceResolution_PrefersTheOfficerThenTheItemThenTheConfig(t *testing.T) {

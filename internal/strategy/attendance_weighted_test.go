@@ -167,6 +167,67 @@ func TestAttendanceWeighted_PlanAttendance_NobodyAttendedAnything_WritesNoBatch(
 			"nobody earned")
 }
 
+// TestAttendanceWeighted_PlanAttendance_ASystemAccountAttendee_IsRefused is the dilution defect, and
+// it is the one a zero-sum check cannot see.
+//
+// The pot is FIXED. Putting the guild bank on the attendee list gives it a share of the very pot it
+// funds, so every real raider is credited less — and the batch still sums to exactly zero, still
+// allocates by largest remainder, and passes the invariant engine untouched. Nobody auditing a number
+// that adds up would find it. Found in review of #228.
+func TestAttendanceWeighted_PlanAttendance_ASystemAccountAttendee_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		id   core.ULID
+		says string
+	}{
+		{"the guild bank, which funds the pot", ledger.AccountIDGuildBank, "guild_bank"},
+		{"residue", ledger.AccountIDResidue, "residue"},
+		{"write_off", ledger.AccountIDWriteOff, "write_off"},
+		{"import_opening", ledger.AccountIDImportOpening, "import_opening"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := strategy.AttendanceWeighted{}.PlanAttendance(
+				newCtx(t, 3, 0, `{"raid_pot_cp": 100000}`), strategy.AttendanceEvent{
+					Attendees: []strategy.Share{
+						{AccountID: acct(0), Weight: 12},
+						{AccountID: acct(1), Weight: 9},
+						{AccountID: tc.id, Weight: 8},
+					},
+					EffectiveAt: fixedNow,
+				})
+			require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+			require.ErrorContains(t, err, tc.says, "the refusal names which system account it was")
+		})
+	}
+
+	// The half that makes the test worth having: without the check the batch is perfectly well-formed,
+	// so a test that only asserted "an error happened" would not show what was at stake.
+	t.Run("the two real raiders would otherwise be short", func(t *testing.T) {
+		t.Parallel()
+
+		clean, err := strategy.AttendanceWeighted{}.PlanAttendance(
+			newCtx(t, 2, 0, `{"raid_pot_cp": 100000}`), strategy.AttendanceEvent{
+				Attendees: []strategy.Share{
+					{AccountID: acct(0), Weight: 12},
+					{AccountID: acct(1), Weight: 9},
+				},
+				EffectiveAt: fixedNow,
+			})
+		require.NoError(t, err)
+
+		// 12/21 and 9/21 of the pot, which is what those two are owed for that raid. With the bank
+		// added at weight 8 the same two would have taken 12/29 and 9/29 — 41379 and 31035 — and the
+		// batch would still have summed to zero.
+		require.Equal(t, core.Centipoints(57_143), clean.Entries[1].AmountCp)
+		require.Equal(t, core.Centipoints(42_857), clean.Entries[2].AmountCp)
+		require.Equal(t, core.Centipoints(0), sumEntries(clean))
+	})
+}
+
 // TestAttendanceWeighted_PlanAdjustment_MovesPointsAgainstACounterparty: an adjustment is two entries,
 // never one.
 func TestAttendanceWeighted_PlanAdjustment_MovesPointsAgainstACounterparty(t *testing.T) {

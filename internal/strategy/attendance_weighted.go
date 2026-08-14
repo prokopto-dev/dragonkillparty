@@ -214,6 +214,14 @@ func (s AttendanceWeighted) PlanAttendance(ctx Ctx, ev AttendanceEvent) (BatchPr
 		return BatchProposal{}, err
 	}
 
+	// BEFORE the weights are totalled, so that a system account on the attendee list is named as
+	// itself rather than reported as whatever its weight happened to make of the run. The pot is
+	// FIXED, so a share for the account that funds it is a share taken from every real attendee — and
+	// the batch would still sum to zero and still pass the invariant engine (review of #228).
+	if err := checkNoSystemAccounts(ctx, attendanceWeightedID, attendees); err != nil {
+		return BatchProposal{}, err
+	}
+
 	if err := checkAttendanceWeights(attendees); err != nil {
 		return BatchProposal{}, err
 	}

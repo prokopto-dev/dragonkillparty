@@ -188,6 +188,14 @@ func routeProceeds(
 		}
 	}
 
+	// A system account may RECEIVE the proceeds as the solo policy's destination below, and may never
+	// be one of the beneficiaries they are split across: the split divides a fixed price, so a share
+	// for the guild bank is a share taken from every raider who was actually there — and the batch
+	// still sums to zero and still passes the invariant engine (review of #228).
+	if err := checkNoSystemAccounts(ctx, strategyID, shares); err != nil {
+		return nil, false, err
+	}
+
 	// The degenerate case, routed rather than dropped: nobody to split across means the solo policy
 	// picks a system account and the whole price lands there. ledger.Allocate takes the same account
 	// for its all-weights-zero case, which is why it is passed rather than handled here.

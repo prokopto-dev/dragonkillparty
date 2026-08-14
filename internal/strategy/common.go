@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
@@ -441,6 +442,53 @@ func checkDistinctAccounts(strategyID string, sorted []AccountRef) error {
 				"%s: account %s appears twice in the run; each balance is read once per period, "+
 					"and a repeat would post the period's entry twice: %w",
 				strategyID, sorted[i].ID, ErrInvalidEvent)
+		}
+	}
+
+	return nil
+}
+
+// checkNoSystemAccounts rejects a share list that names one of the four ledger-addressable non-human
+// accounts as a RECIPIENT of a split.
+//
+// THE DAMAGE IS DILUTION, AND IT IS INVISIBLE TO EVERY OTHER CHECK. A split divides a fixed amount:
+// `attendance_weighted` divides the raid's pot, a zero-sum award divides the price. Adding the guild
+// bank to the list gives it a share of the very amount it funded, so every real attendee is credited
+// LESS — and the batch still sums to exactly zero, still allocates by largest remainder, and passes
+// the invariant engine untouched. Conservation is not the property being violated; the split is
+// simply against the wrong set, and nobody auditing a number that adds up would find it (review of
+// #228).
+//
+// THE FOUR KEYS ARE THE CLOSED SET, resolved through the façade rather than compared against a
+// hard-coded id: `internal/account/kinds` is the one catalogue (canonical §5) and Ctx.SystemAccount is
+// the only thing that turns a key into a row id. A roster read would be the other way to answer this,
+// and it is the wrong one — an attendee legitimately absent from a stale roster is not a system
+// account, and treating "not on the roster" as "invalid" would refuse real raiders.
+//
+// It reports the FIRST offender in the caller's sorted order, so a list naming two names the same one
+// on every run.
+func checkNoSystemAccounts(ctx Ctx, strategyID string, sorted []Share) error {
+	if len(sorted) == 0 {
+		return nil
+	}
+
+	system := make(map[core.ULID]string, len(accountkinds.SystemKeys()))
+
+	for _, key := range accountkinds.SystemKeys() {
+		id, err := ctx.SystemAccount(key)
+		if err != nil {
+			return fmt.Errorf("%s: resolve the %s account: %w", strategyID, key, err)
+		}
+
+		system[id] = key
+	}
+
+	for _, s := range sorted {
+		if key, ok := system[s.AccountID]; ok {
+			return fmt.Errorf(
+				"%s: account %s is the %s system account and cannot receive a share of a split; it is "+
+					"the counterparty that funds one, so a share for it is taken from everybody else: %w",
+				strategyID, s.AccountID, key, ErrInvalidEvent)
 		}
 	}
 
