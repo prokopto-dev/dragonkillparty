@@ -86,6 +86,15 @@ func TestPoolConfig_Resolve_EmptySlot_IsNotAnError(t *testing.T) {
 // TestPoolConfig_Resolve_UnknownStrategy_IsRefused is the operator who downgraded across a release
 // that added a strategy. The message must carry the SLOT as well as the id: "no such strategy" alone
 // leaves an officer reading three dropdowns to find which one it meant.
+//
+// THE UNSHIPPED IDS ARE THE CONDITIONAL ONES, and that is not decoration. This case started out
+// naming `auction_sealed` and `decay_window`, which are 1.0 strategies that had not landed yet — so
+// the PR that shipped one turned a fixture into a false failure (#195 hit it for the spend row).
+// `epgp` and `suicide_kings` are the only ids the catalogue promises will not ship unless a named
+// pilot guild asks (.claude/rules/ledger-and-strategy.md: "conditional, not scheduled"), which makes
+// them the only durable stand-ins for "an id this binary does not have". The SLOT the id sits in is
+// irrelevant to what is being tested: Resolve asks whether a strategy EXISTS before it asks which
+// question it answers, so `epgp` in the over-time slot never reaches the RuleKind check.
 func TestPoolConfig_Resolve_UnknownStrategy_IsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -94,14 +103,16 @@ func TestPoolConfig_Resolve_UnknownStrategy_IsRefused(t *testing.T) {
 		config strategy.PoolConfig
 		slot   string
 	}{
-		// Each id is a strategy this binary does not have: `epgp` and `suicide_kings` are conditional
-		// on a named pilot guild asking, and `auction_sealed` is Phase 3. `decay_window` stood here
-		// until #194 shipped it — a placeholder that becomes real is the one way this test could go
-		// quietly green, which is why the replacements are the two the rules mark as conditional
-		// rather than as scheduled.
+		// Each id is a strategy this binary does not have, and only `epgp` and `suicide_kings` still
+		// qualify: `decay_window` stood here until #194 shipped it and `auction_sealed` until #195
+		// did, each turning this fixture into a false failure on the PR that landed it. A placeholder
+		// that becomes real is the one way this test could go quietly green, so both ids are now ones
+		// the rules mark as CONDITIONAL rather than as scheduled — they ship only if a named pilot
+		// guild asks. `epgp` appears twice for want of a third: there is no conditional over-time
+		// rule, and the slot is irrelevant here anyway (see the doc comment).
 		{"earn", strategy.PoolConfig{EarnStrategyID: "epgp"}, "earn"},
-		{"spend", strategy.PoolConfig{SpendStrategyID: "auction_sealed"}, "spend"},
-		{"over_time", strategy.PoolConfig{OverTimeStrategyID: "suicide_kings"}, "over_time"},
+		{"spend", strategy.PoolConfig{SpendStrategyID: "suicide_kings"}, "spend"},
+		{"over_time", strategy.PoolConfig{OverTimeStrategyID: "epgp"}, "over_time"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -464,6 +475,9 @@ func TestRules_PlanReversal_ForARuleThePoolNoLongerRuns_StillPlans(t *testing.T)
 // downgrade across a release that added a strategy. There is no planner to reverse it with, and
 // guessing would negate committed entries under rules this binary has never seen. That is a
 // startup-shaped refusal naming the id, which is what catalogue.go says ErrUnknownStrategy is for.
+//
+// The id is `suicide_kings` for the reason TestPoolConfig_Resolve_UnknownStrategy_IsRefused's is: it
+// is conditional rather than scheduled, so it stays unshipped while every 1.0 strategy lands.
 func TestRules_PlanReversal_ForAStrategyThisBinaryLacks_IsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -473,7 +487,7 @@ func TestRules_PlanReversal_ForAStrategyThisBinaryLacks_IsRefused(t *testing.T) 
 	_, err := rules.PlanReversal(ctx, strategy.LedgerBatch{
 		ID:         core.ULID("0000000000000000000BATCH03"),
 		Kind:       "award",
-		StrategyID: "auction_sealed",
+		StrategyID: "suicide_kings",
 		Entries: []strategy.EntryProposal{
 			{AccountID: acct(0), BalanceKind: strategy.BalanceKindDKP, AmountCp: 100},
 			{AccountID: acct(1), BalanceKind: strategy.BalanceKindDKP, AmountCp: -100},
@@ -481,7 +495,7 @@ func TestRules_PlanReversal_ForAStrategyThisBinaryLacks_IsRefused(t *testing.T) 
 	})
 
 	require.ErrorIs(t, err, strategy.ErrUnknownStrategy)
-	require.ErrorContains(t, err, "auction_sealed", "the refusal names the rule that planned it")
+	require.ErrorContains(t, err, "suicide_kings", "the refusal names the rule that planned it")
 	require.ErrorContains(t, err, "earn=tick", "and the three this pool does run, for diagnosis")
 }
 

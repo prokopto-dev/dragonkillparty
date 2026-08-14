@@ -3,6 +3,16 @@
 **Status:** bid sessions land in Phase 6. This page is the specification the implementation must
 satisfy. State names, modes and error codes below are the canonical wire values.
 
+The **arithmetic** ships now: `auction_open`, `auction_sealed`, `relative_bid` and `roll` are shipped
+strategies ([Point strategies](../concepts/strategies.md#the-shipped-strategies)) and already decide
+which bid wins, what it pays and what the ledger batch looks like. What Phase 6 adds is everything
+around that number — the state machine, the reveal at `closing`, anti-snipe and holds. The **tier
+phase**, which runs *before* amounts are compared, is arithmetic and lands in Phase 1 as its own
+deliverable ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)); until it does, a
+strategy's tie-break chain starts at the amount, because tier, attendance and items-won are facts a
+pure planner cannot see and approximating them is how a 350-point alt bid would beat a 10-point
+main.
+
 The platform owns the balance, the clock and the rules. Your Discord bot becomes a terminal instead of
 a second source of truth, which is why two bots and the web UI can run the same auction without
 disagreeing about who is winning.

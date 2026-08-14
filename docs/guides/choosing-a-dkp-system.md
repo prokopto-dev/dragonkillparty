@@ -1,13 +1,17 @@
 # Choosing a DKP system
 
-**Status:** seven are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `loot_council`,
-`decay_percent` and `decay_window`, whose worked numbers are in
-[Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land through Phase 1;
-auctions in Phase 6. `decay_window` ships the hard cutoff below, not yet the linear taper
-([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)). Numbers for an unshipped rule below are worked from the
-specified arithmetic rather than from a running instance. A rule's normative knob list is its
-`ConfigSchema`, which also renders the pool-settings form; a generated per-strategy reference page is
-Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
+**Status:** eleven are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`,
+`auction_sealed`, `relative_bid`, `roll`, `loot_council`, `decay_percent` and `decay_window`, whose
+worked numbers are in [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest
+land through Phase 1. The four bidding rules ship their **arithmetic** — which bid wins and what it
+pays; the bid session around it (states, anti-snipe, holds) is Phase 6, and tier-aware resolution is a
+Phase 1 deliverable of its own
+([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)). `decay_window` ships the hard
+cutoff below, not yet the linear taper
+([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)). Numbers for an unshipped rule
+below are worked from the specified arithmetic rather than from a running instance. A rule's normative
+knob list is its `ConfigSchema`, which also renders the pool-settings form; a generated per-strategy
+reference page is Phase 2 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
 Spend twenty minutes here before your first raid. Changing a point system afterwards is supported and
 never rewrites history, but it costs you an argument with every member who was winning under the old

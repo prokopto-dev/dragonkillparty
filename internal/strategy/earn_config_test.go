@@ -49,9 +49,13 @@ func earnConfigCases() []struct {
 	}
 }
 
-// parseEarnSchema decodes a shipped schema into its properties, asserting the document's own shape
+// parseShippedSchema decodes a shipped schema into its properties, asserting the document's own shape
 // first.
-func parseEarnSchema(t *testing.T, schema string) map[string]schemaProperty {
+//
+// It is named for what it parses rather than for the family that first needed it: the spend family's
+// equivalent table (spend_config_test.go, #195) asserts the same three things about the same shape,
+// and a second copy under another name is how the two would drift about what a shipped schema owes.
+func parseShippedSchema(t *testing.T, schema string) map[string]schemaProperty {
 	t.Helper()
 
 	var doc struct {
@@ -81,7 +85,7 @@ func TestEarnStrategies_ConfigSchema_DeclareExactlyTheParsedKnobs(t *testing.T) 
 		t.Run(tc.id, func(t *testing.T) {
 			t.Parallel()
 
-			schema := parseEarnSchema(t, tc.schema)
+			schema := parseShippedSchema(t, tc.schema)
 
 			declared := make([]string, 0, len(schema))
 			for name := range schema {
@@ -126,7 +130,7 @@ func TestEarnStrategies_ConfigSchema_DefaultsMatchTheParserDefaults(t *testing.T
 		t.Run(tc.id, func(t *testing.T) {
 			t.Parallel()
 
-			schema := parseEarnSchema(t, tc.schema)
+			schema := parseShippedSchema(t, tc.schema)
 
 			encoded, err := json.Marshal(tc.defaults)
 			require.NoError(t, err)
@@ -160,7 +164,7 @@ func TestEarnStrategies_ConfigSchema_MoneyKnobsAreIntegers(t *testing.T) {
 		t.Run(tc.id, func(t *testing.T) {
 			t.Parallel()
 
-			for name, prop := range parseEarnSchema(t, tc.schema) {
+			for name, prop := range parseShippedSchema(t, tc.schema) {
 				switch prop.Type {
 				case "string", "array", "object":
 					continue
