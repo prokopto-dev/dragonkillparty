@@ -303,7 +303,10 @@ const (
 	// holding an eligible bid takes the item.
 	ResolutionStepTier ResolutionStepKind = "tier"
 
-	// ResolutionStepAmount — step 2, evaluated only among the bids standing on the winning rung.
+	// ResolutionStepAmount — step 2, evaluated only among the bids standing on the winning rung. It
+	// is the two auctions' step: they rank BY the amount, so this is the comparison that ranked them.
+	// No rule records it as a step BELOW its own rank — a bid that committed more points is not
+	// thereby ahead of one that committed the same share of less (#244).
 	ResolutionStepAmount ResolutionStepKind = "amount"
 
 	// ResolutionStepShare — `relative_bid`'s step 2. It is a distinct kind rather than an `amount`
@@ -313,7 +316,8 @@ const (
 	// bigger fraction of a smaller bank.
 	ResolutionStepShare ResolutionStepKind = "share"
 
-	// ResolutionStepBidSequence — step 6: the earliest bid of those tied on the amount.
+	// ResolutionStepBidSequence — step 6: the earliest of the bids tied on everything above it, which
+	// is the amount in an auction and the share in `relative_bid`.
 	ResolutionStepBidSequence ResolutionStepKind = "bid_sequence"
 
 	// ResolutionStepSeededRoll — step 7, the last automatic one: a roll whose seed is persisted, so

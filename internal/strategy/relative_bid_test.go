@@ -204,12 +204,20 @@ func TestRelativeBid_SettleAuction_TheTraceRecordsTheShareAndTheFrozenSeq(t *tes
 	require.Contains(t, res.Trace[3].Detail, "27500")
 }
 
-// TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt (#224, second AO review).
+// TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt (#224, second AO review; #244).
 //
-// This rule ranks by the SHARE, and rankBids then separates equal shares by what was committed and
-// only then by when — so two of its three deciding steps sit BELOW the share and both settle real
-// items. A trace that jumped from the share to the price would claim completeness while omitting the
-// step that chose the winner, which is worse than no trace: it reads as an answer.
+// This rule ranks by the SHARE, and rankBids then separates equal shares by WHEN they were placed and
+// only then by a seeded roll. Both of those settle real items, so a trace that jumped from the share
+// to the price would claim completeness while omitting the step that chose the winner, which is worse
+// than no trace: it reads as an answer.
+//
+// THE FIRST CASE USED TO ASSERT THAT THE COMMITTED AMOUNT DECIDED IT, and that step is what #244
+// removed: two bidders at the same share are equal under this model, so breaking the tie by the
+// number of points behind the share is breaking it by the size of the bank. The case is kept — the
+// same two bids, the same equal share — and now asserts the opposite outcome: the smaller bank that
+// bid first takes it, and no `amount` step appears in the trace at all. Asserting the WINNER as well
+// as the step is what makes that more than a rename: a trace could record `bid_sequence` while the
+// comparator still ranked by the amount above it.
 //
 // The three cases are the three ways the chain can end below an equal share. Every case holds the
 // share equal at 5000 bp — a bid of half of each balance — so the step under test is the only thing
@@ -222,20 +230,24 @@ func TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt(t *testin
 		balance core.Centipoints
 		amount  core.Centipoints
 		placed  core.Micros
+		winner  core.ULID
 		want    strategy.ResolutionStepKind
 		detail  string
 	}{
 		{
-			// Half of 50000 against half of 90000: the same 5000 bp, different points committed.
-			name:    "the committed amount decided it",
-			balance: 50_000, amount: 25_000, placed: fixedNow,
-			want:   strategy.ResolutionStepAmount,
-			detail: "takes the item",
+			// Half of 50000 against half of 90000: the same 5000 bp, 20000 fewer points committed, and
+			// placed a second earlier. Before #244 the 45000 took it on the amount.
+			name:    "the earlier bid decided it, and the larger bank lost",
+			balance: 50_000, amount: 25_000, placed: fixedNow.Add(-1_000_000_000),
+			winner: acct(1),
+			want:   strategy.ResolutionStepBidSequence,
+			detail: "earliest",
 		},
 		{
 			// The same balance and the same commitment, placed a second later.
 			name:    "the bid sequence decided it",
 			balance: 90_000, amount: 45_000, placed: fixedNow.Add(1_000_000_000),
+			winner: acct(0),
 			want:   strategy.ResolutionStepBidSequence,
 			detail: "earliest",
 		},
@@ -263,17 +275,85 @@ func TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt(t *testin
 			require.NoError(t, err)
 			require.Len(t, res.Winners, 1)
 
+			if tc.winner != "" {
+				require.Equal(t, tc.winner, res.Winners[0].AccountID,
+					"an equal share is settled by the chain, never by which bidder committed more")
+			}
+
 			kinds := traceKinds(res)
 			require.Equal(t, strategy.ResolutionStepShare, kinds[2],
 				"the share is still step 2 of the chain; what follows is what it failed to settle")
-			require.Equal(t, strategy.ResolutionStepAmount, kinds[3],
-				"an equal share reaches the committed amount, and a step that RAN is recorded whether "+
-					"or not it decided")
+			require.NotContains(t, kinds, strategy.ResolutionStepAmount,
+				"the amount is not a rung of the chain below the share (#244), so it is not a step "+
+					"either — a trace naming one would be describing a comparison nothing makes")
 			require.Equal(t, tc.want, kinds[len(kinds)-2],
 				"the step before the price is the one that chose the winner")
 			require.Equal(t, strategy.ResolutionStepPrice, kinds[len(kinds)-1])
 			require.Contains(t, res.Trace[len(kinds)-2].Detail, tc.detail)
 			require.Contains(t, res.Trace[2].Detail, "5000 bp")
+		})
+	}
+}
+
+// TestRelativeBid_SettleAuction_AnEqualShareDoesNotGoToTheLargerBank is #244's own table, run as the
+// issue wrote it.
+//
+// | Bidder  | Balance at open | Commits | Share   |
+// | Tankguy |          900.00 |  450.00 | 5000 bp |
+// | Healbot |          500.00 |  250.00 | 5000 bp |
+//
+// Equal priority under the model, and before this fix Tankguy took it because 45000 > 25000 — "the
+// exact inversion docs/concepts/strategies.md says this rule exists to prevent". Both halves are
+// asserted here rather than one: whoever bid FIRST wins, whichever of them holds the larger bank, so
+// the outcome flips with the placement times and not with the balances. A test that only showed
+// Healbot winning would pass against a comparator that had merely been inverted to favour the
+// smaller bank, which would be the same defect wearing the other sign.
+func TestRelativeBid_SettleAuction_AnEqualShareDoesNotGoToTheLargerBank(t *testing.T) {
+	t.Parallel()
+
+	const (
+		tankguy, healbot = 0, 1
+		second           = core.Micros(1_000_000)
+	)
+
+	for _, tc := range []struct {
+		name                             string
+		tankguyPlacedAt, healbotPlacedAt core.Micros
+		want                             core.ULID
+	}{
+		{
+			name:            "the smaller bank bid first",
+			tankguyPlacedAt: fixedNow + second, healbotPlacedAt: fixedNow,
+			want: acct(healbot),
+		},
+		{
+			name:            "the larger bank bid first",
+			tankguyPlacedAt: fixedNow, healbotPlacedAt: fixedNow + second,
+			want: acct(tankguy),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+			ctx.balances[acct(tankguy)] = 90_000
+			ctx.balances[acct(healbot)] = 50_000
+
+			res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+				[]strategy.Bid{
+					{AccountID: acct(tankguy), AmountCp: 45_000, PlacedAt: tc.tankguyPlacedAt},
+					{AccountID: acct(healbot), AmountCp: 25_000, PlacedAt: tc.healbotPlacedAt},
+				})
+
+			require.NoError(t, err)
+			require.Len(t, res.Winners, 1)
+			require.Equal(t, tc.want, res.Winners[0].AccountID,
+				"5000 bp is 5000 bp; the earliest of the equal shares takes the item and the bank "+
+					"behind it decides nothing")
+			require.Nil(t, res.RngSeed,
+				"the bid sequence separated them, so no roll was needed to")
+			require.Contains(t, res.Reason, "5000 bp")
 		})
 	}
 }
