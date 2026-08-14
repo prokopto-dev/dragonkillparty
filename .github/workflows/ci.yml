@@ -228,6 +228,25 @@ jobs:
               - '.npmrc'
               - 'web/.npmrc'
               - 'deploy/**'
+              # The web manifest, its lockfile and the overrides register: web_overrides_test.go
+              # reads all three (issue #168) and asserts they agree — that every pnpm.overrides entry
+              # has a reviewed row saying why it exists and what removes it, that the lockfile records
+              # the same override set, and that the pin is what the tree actually resolved. Without
+              # these lines an override could be added, changed or left to rot on a PR that selects
+              # only `web`, and the register would be checked by nothing.
+              #
+              # They were in `go` and moved here with issue #186, which is the rule in the header
+              # applied rather than argued with. Three of that suite's checks compare the pin against
+              # the ranges each parent DECLARES, and those ranges live in each parent's own
+              # package.json under node_modules — so they need `pnpm install` to have run, they are
+              # -short-SKIPPED, and only `test / integration` installs web dependencies. Left in
+              # `go`, a PR that edited nothing but web/package.json would run `test / unit`, skip
+              # exactly the three checks that read the manifest it changed, and report green — the
+              # self-concealing omission this whole block exists to prevent, arriving through the
+              # file most likely to carry a new override.
+              - 'web/package.json'
+              - 'web/pnpm-lock.yaml'
+              - 'web/OVERRIDES.md'
               # THE WORKFLOW FILES THEMSELVES, which were in no filter at all (issue #161) — not in
               # *build, not in `go`, and not in `docs`, whose `**/*.md` cannot match a .yml. So a
               # workflow-only PR selected NOTHING, every test job was skipped, ci-required counted the
@@ -301,16 +320,6 @@ jobs:
               # enforcement promise is added by editing exactly this file and nothing else, which is
               # the change that would run none of it.
               - 'CONTRIBUTING.md'
-              # The web manifest, its lockfile and the overrides register: web_overrides_test.go
-              # reads all three (issue #168) and asserts they agree — that every pnpm.overrides entry
-              # has a reviewed row saying why it exists and what removes it, that the lockfile records
-              # the same override set, and that the pin is what the tree actually resolved. Without
-              # these lines an override could be added, changed or left to rot on a PR that selects
-              # only `web`, and the register would be checked by nothing. The suite is pure file
-              # reading and runs under -short, which is what puts it in `go` rather than in `code`.
-              - 'web/package.json'
-              - 'web/pnpm-lock.yaml'
-              - 'web/OVERRIDES.md'
             web:
               - *build
               - 'web/**'

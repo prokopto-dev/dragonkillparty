@@ -146,6 +146,14 @@ floor (issue #58, found by the axe scan the moment `/_design` was first scanned)
 byte-exact and its byte count is a fingerprint (`docs/design/mockups/README.md`), so a divergence
 belongs here and in the sheet's own comment, not in the reference.
 
+"The one place" is a **checked** claim, not a hopeful one. `test/repo/design_tokens_test.go` resolves
+`var()` on both sides and diffs every transcribed class family — `.btn`, `.card`, `.dialog`,
+`.field`/`.input`, `.hr`, `.radio`, `.seg`, `.table`, `.tag`, `.text-muted` — declaration by
+declaration, in both directions, and fails on any disagreement that is not in its list with a reason
+and the issue that decided it (issue #67). The list holds this rung and one other entry, which
+changes no painted value: `.seg-opt`'s focus offset is spelled `calc(var(--focus-offset) * -1)` where
+the source writes `-2px`, so that a themed offset moves the inset ring with it.
+
 Contrast is asserted where it is painted, not where it is declared: `web/e2e/a11y.spec.ts` measures
 the composited foreground against the composited ground in the browser. A rung name in a stylesheet
 cannot tell you what a translucent ink lands on.
@@ -250,8 +258,10 @@ Get these wrong and the result is a generic dark theme.
    makes it narrow enough to sanction, so it is enforced rather than promised —
    `test/repo/design_tokens_test.go` diffs the shipped table against `mockups/nocturne/styles.css`
    with the tokens resolved, and fails on a divergence that is not in its list or not scoped to that
-   viewport. A second sticky-header surface reuses this exception; a *new* place the hairline stops
-   fading is a design decision, not an implementation detail.
+   viewport. Since issue #67 that diff runs over *every* transcribed component sheet, not only the
+   table, so an unrecorded break with the source sheet fails wherever it lands. A second
+   sticky-header surface reuses this exception; a *new* place the hairline stops fading is a design
+   decision, not an implementation detail.
 2. **Buttons are outlined, never filled.** The primary action is a 1px accent border on transparent,
    with a `tint(12)` hover and `tint(22)` active. A filled primary button reads as a different
    product.
