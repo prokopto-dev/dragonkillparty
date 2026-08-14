@@ -195,7 +195,7 @@ func defaultZeroSumConfig() zeroSumConfig {
 	return zeroSumConfig{
 		DefaultPriceCp: 0,
 		WinnerShare:    WinnerShareExcluded,
-		SoloPolicy:     SystemKeyGuildBank,
+		SoloPolicy:     SoloPolicyGuildBank,
 		FloorCp:        0,
 	}
 }
@@ -229,10 +229,10 @@ func validateZeroSumConfig(cfg zeroSumConfig) (zeroSumConfig, error) {
 	}
 
 	switch cfg.SoloPolicy {
-	case SystemKeyGuildBank, SystemKeyWriteOff, SoloPolicyFree:
+	case SoloPolicyGuildBank, SoloPolicyWriteOff, SoloPolicyFree:
 	default:
 		return zeroSumConfig{}, fmt.Errorf("%s: solo_policy is %q, want %q, %q or %q: %w",
-			zeroSumID, cfg.SoloPolicy, SystemKeyGuildBank, SystemKeyWriteOff, SoloPolicyFree,
+			zeroSumID, cfg.SoloPolicy, SoloPolicyGuildBank, SoloPolicyWriteOff, SoloPolicyFree,
 			ErrInvalidConfig)
 	}
 
@@ -290,7 +290,7 @@ func (s ZeroSum) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 	// empty id that would mean "nowhere" if the allocator's contract ever changed.
 	soloKey := cfg.SoloPolicy
 	if soloKey == SoloPolicyFree {
-		soloKey = SystemKeyGuildBank
+		soloKey = SoloPolicyGuildBank
 	}
 
 	solo, err := ctx.SystemAccount(soloKey)
