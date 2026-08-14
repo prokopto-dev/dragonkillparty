@@ -1,7 +1,7 @@
 # Point strategies
 
 **Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
-`tick`, `start_points`, `cap`, `zero_sum` and `attendance_weighted` ship today — see
+`tick`, `start_points`, `cap`, `loot_council`, `zero_sum` and `attendance_weighted` ship today — see
 [the worked examples](#the-shipped-strategies)
 below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
 `ConfigSchema` in `internal/strategy/<id>.go`, and a generated per-strategy reference page is Phase 2
@@ -261,15 +261,61 @@ it does not do is replay: reversing a six-month-old award leaves every intermedi
 arithmetically "wrong" under the new history, and an append-only ledger cannot fix that. One
 compensating batch at today's `seq` is the rule ([The ledger](ledger.md)).
 
+### `loot_council` — spend by officer decision
+
+Councillors decide who gets the drop and write down why. There is no bidding and no price table: the
+charge, if there is one, is **the number the council named**, and the planner's whole job is to record
+it faithfully. A charge of **25.00** decided for a Cloak of Flames:
+
+```
+council: main tank, no CoF yet, unanimous
+        debit   Tankguy      −25.00
+        credit  guild_bank   +25.00
+                Σ entries   =   0.00
+```
+
+| Config | The decision | Debited |
+|---|---|---|
+| `charge_cp: 2500` | the council names no amount | **25.00** — the pool's default |
+| `charge_cp: 2500` | the council names 3.00 | **3.00** — the council's number wins |
+| `charge_cp: 2500` | the item is priced at 99.00 in the catalogue | **25.00** — the catalogue price is *ignored* |
+| `charge_cp: 0` (the default) | any | **—** no ledger batch at all |
+
+The catalogue row is the interesting one. `fixed_price` resolves officer → item → config; a council
+reads the published price and does not use it, because a council that used the price table would be
+`fixed_price` with extra steps. And a council that charges nothing is a real council — the common one
+on P99 — so an award at 0 plans nothing rather than writing an entry of zero, which the ledger would
+refuse (`CHECK (amount_cp <> 0)`, and `BatchNonEmpty` is unwaivable). The item award is still recorded;
+a decision that moved no points simply has nothing to say to the ledger.
+
+Two things follow from "recorded, not computed", and both are asserted in the tests rather than
+promised here: the planner **never reads a balance** — whether the winner can afford it is the
+ledger's question, answered at commit time by the `NonNegative` floor this proposal declares — and
+`require_reason` (on by default) refuses a decision that records no rationale. Every other strategy
+leaves the reason to the API edge because its arithmetic speaks for itself; here there is no
+arithmetic to inspect afterwards, so the sentence an officer wrote *is* the audit trail.
+
+What it does **not** record yet: nominations, each councillor's vote, and the conflict-of-interest
+flag when a councillor is a candidate for the item under vote. Those are facts about a deliberation
+rather than about money, they belong beside `item_award.award_type = 'loot_council'` in the loot
+tables, and a planner may only propose entries —
+[#219](https://github.com/prokopto-dev/dragonkillparty/issues/219).
+
 ### What each one refuses
 
-`tick`, `start_points`, `cap` and `attendance_weighted` answer one question each, and say so rather
-than guessing at the others: `tick.PlanAward`, `cap.PlanAward` and
-`attendance_weighted.PlanAward` return `ErrUnsupported` (a 501 naming the strategy), because an earn
-rule has no price list and inventing one would be a second copy of `fixed_price`'s price resolution
-that could then disagree with it. `zero_sum` refuses the mirror image — it has no tick value, so
-`PlanAttendance` names `tick` as what to pair it with. That is not a gap — it is what makes a pool
-need three rules rather than one, which is the section below.
+Every one of them answers one question and says so rather than guessing at the others.
+`tick.PlanAward`, `cap.PlanAward` and `attendance_weighted.PlanAward` return `ErrUnsupported` (a 501
+naming the strategy), because an earn rule has no price list and inventing one would be a second copy
+of `fixed_price`'s price resolution that could then disagree with it. `zero_sum` refuses the mirror
+image — it has no tick value, so `PlanAttendance` names `tick` as what to pair it with. That is not a
+gap — it is what makes a pool need three rules rather than one, which is the section below.
+
+`loot_council` refuses one thing extra, and the refusal is the strategy: `Priority` is
+`ErrUnsupported`, because **the council is the ranking**. A rank computed here would be a number the
+council did not use, rendered beside a decision it did not inform. Councils should still publish a
+score — [the guide](../guides/choosing-a-dkp-system.md) is emphatic that councils without one decay
+into loot-council fatigue — and that score comes from the rule that computes it, beside this one:
+`attendance_weighted` is the earn rule built for exactly that pairing.
 
 ## A pool composes three rules
 

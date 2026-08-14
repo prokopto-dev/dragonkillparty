@@ -320,6 +320,13 @@ fatigue, so run one next to `attendance_weighted` — which earns strictly in pr
 and show the standing. The `balance × attendance %` score itself is
 [#223](https://github.com/prokopto-dev/dragonkillparty/issues/223).
 
+The rule ships today with the decision itself: the winner, the rationale — required unless you turn
+`require_reason` off — and the charge the council named, which may be nothing at all and is never read
+from an item's price table. The **deliberation** record (nominations, per-councillor votes, the
+conflict-of-interest flag) needs the loot tables and lands with them:
+[#219](https://github.com/prokopto-dev/dragonkillparty/issues/219). Its
+[worked example](../concepts/strategies.md#loot_council--spend-by-officer-decision) has the numbers.
+
 ### `epgp` and `suicide_kings`
 
 Not built unless requested; here is what you would get.

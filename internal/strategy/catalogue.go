@@ -46,6 +46,7 @@ func Catalogue() []PointStrategy {
 		Tick{},
 		StartPoints{},
 		FixedPrice{},
+		LootCouncil{},
 		ZeroSum{},
 		Cap{},
 		AttendanceWeighted{},
