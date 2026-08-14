@@ -38,6 +38,15 @@ import (
 // below is handed the winning rung's bids and nothing else, which is what makes that structural
 // rather than remembered.
 //
+// A BLIND TIE IS AN OUTCOME, NOT A COIN FLIP (#248). Two sealed bids equal in amount on the winning
+// rung are the one case this rule cannot decide from what it collected, and the steps below the
+// amount cannot decide it either: in an auction where nobody saw anybody else's number, submitting
+// first is not evidence of wanting the item more. So the settlement names the tied accounts and asks
+// for a rebid among exactly them — the tied amount becomes that round's floor, and all but one of
+// them may pass, so it ends with a single winner (#247 carries the round; this file carries the
+// arithmetic it starts from). The seeded roll remains as the final fallback and is reached only when
+// a session asks for it, which is Session.BreakTies.
+//
 // IT IS A SPEND RULE AND IT DOES NOT EARN. PlanAttendance and PlanDecay return ErrUnsupported naming
 // this strategy; a pool holds an earn rule and an over-time rule beside it (ADR-0026).
 
@@ -327,9 +336,23 @@ func (s AuctionSealed) ValidateBid(ctx Ctx, acct AccountRef, bid Bid) error {
 	return checkBidAffordable(ctx, auctionSealedID, acct, bid)
 }
 
-// SettleAuction awards the item to the highest bid, at the price the pay rule names.
+// SettleAuction awards the item to the highest bid, at the price the pay rule names — or names the
+// bidders it could not separate and awards nobody.
 //
 // NO ELIGIBLE BID IS THE ROT CASE, not an error — see AuctionOpen.SettleAuction.
+//
+// AN EQUAL-AMOUNT TIE ON THE WINNING RUNG IS REPORTED, NOT BROKEN (#248). Two bidders who named the
+// same number in a BLIND auction are equal in the only fact the auction collected, and every step
+// left in the chain is noise about them: nobody could see anybody else's bid, so who submitted first
+// is not evidence about who wanted the item more, and a coin flip is not evidence about anything. So
+// the resolution stops, names exactly the tied accounts, and asks for a rebid round among them
+// (#247) — which is the answer a guild reaches for anyway when it finds out, except that now it is
+// the platform's answer rather than an officer improvising one at 01:00 while eleven people watch.
+//
+// THE SEEDED ROLL IS STILL THERE AND IT IS STILL LAST. Session.BreakTies runs the rest of the chain —
+// bid sequence, then the roll — and it exists because a chain has to terminate: a rebid that ties
+// again, and again, ends with somebody asking for the deterministic answer. What changed is that
+// reaching it requires asking, so it is the fallback rather than the default.
 //
 // THE MESSAGE NAMES NO LOSING AMOUNT. A resolution is read back by an officer and pasted into chat,
 // and a second-price reason that said "285, the runner-up's 280 plus 5" would publish a losing sealed
@@ -363,10 +386,29 @@ func (s AuctionSealed) SettleAuction(ctx Ctx, session Session, bids []Bid) (Reso
 		return Resolution{}, err
 	}
 
+	// THE TIE IS DETECTED BEFORE ANYTHING IS DECIDED, and before any randomness is consumed: a
+	// settlement that reported a tie having already drawn from the Rng would leave that sequence
+	// advanced by a roll nobody used, and the rebid round it asks for would then settle from
+	// different numbers than the ones this session would have produced (sortedEntrants makes the same
+	// argument for `roll`).
+	tied := tiedAccounts(ordered)
+
+	if len(tied) > 1 && !session.BreakTies {
+		return rebidResolution(len(bids), len(eligible), minimum, phase, ordered, tied), nil
+	}
+
 	winner, seed := settleHighest(ctx, ordered)
 
 	price, reason := cfg.settlePrice(winner, ordered, phase, minimum)
-	if seed != nil {
+
+	switch {
+	case len(tied) > 1 && seed != nil:
+		reason += fmt.Sprintf(", after this session asked for the %d-way tie in tier %s to be broken "+
+			"rather than rebid and a seeded roll settled it", len(tied), phase.tier)
+	case len(tied) > 1:
+		reason += fmt.Sprintf(", after this session asked for the %d-way tie in tier %s to be broken "+
+			"rather than rebid and the earliest of the tied bids took it", len(tied), phase.tier)
+	case seed != nil:
 		reason += ", after a seeded roll between the bids tied at the top"
 	}
 
@@ -381,6 +423,55 @@ func (s AuctionSealed) SettleAuction(ctx Ctx, session Session, bids []Bid) (Reso
 		TierCounts:  phase.counts,
 		Trace:       trace,
 	}, nil
+}
+
+// rebidResolution is the settlement of a sealed auction whose top bids tied: no winner, no price,
+// and the parties a rebid round has to be opened to (#248).
+//
+// IT AWARDS NOBODY AND IS NOT A FAILURE, which is the same shape rotResolution has and for a
+// stronger reason: a rot is an item nobody legally wanted, and this is an item two people wanted
+// equally. Both are outcomes an officer has to be able to read and act on, so both carry a reason and
+// the trace that produced them.
+//
+// IT NAMES NO RUNG AS THE WINNER and no tier counts, exactly as a rot does not: WinningTier is what
+// TOOK the item, and nothing has. The rung is on the Tie, where it belongs — it is the rung the rebid
+// will be decided on, and the round is opened from the tie rather than from the counts.
+//
+// THE ONLY AMOUNT IT NAMES IS THE TIED ONE, which is the winning amount: revealed at `closing`,
+// paid by whoever ends up taking the item, and the floor the rebid opens at. Every losing bid below
+// it stays sealed, as it does on every other path out of this file.
+func rebidResolution(
+	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
+	tied []core.ULID,
+) Resolution {
+	tie := Tie{
+		Tier:          phase.tier,
+		AmountCp:      ordered[0].bid.AmountCp,
+		Accounts:      tied,
+		RebidRequired: true,
+	}
+
+	reason := fmt.Sprintf(
+		"%d bidders in tier %s are tied at %d centipoints; a rebid round among exactly those bidders "+
+			"settles it, opening at that amount as its floor, and every one of them but the last may "+
+			"pass", len(tied), phase.tier, tie.AmountCp)
+
+	trace := append(auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered),
+		ResolutionStep{
+			Kind: ResolutionStepRebidRequired,
+			Detail: fmt.Sprintf(
+				"the bids at the top of tier %s are held by %d different bidders, and in a sealed "+
+					"auction nothing below the amount separates them; the item is settled by a rebid "+
+					"among exactly those %d, opening at %d centipoints, so the bid sequence and the "+
+					"seeded roll were not run",
+				phase.tier, len(tied), len(tied), tie.AmountCp),
+		})
+
+	return Resolution{
+		Reason: phase.explain(reason),
+		Tie:    &tie,
+		Trace:  trace,
+	}
 }
 
 // settlePrice is what the winner pays, and the sentence that explains it.

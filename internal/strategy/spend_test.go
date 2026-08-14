@@ -490,10 +490,13 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 
 			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(1))}
 
-			// The two bids are identical but for the account, so the auctions tie at the top and roll:
-			// the seed must then be reported, because an unrecorded coin flip is the one thing a loot
-			// dispute cannot be settled from. `roll` instead rolls per entrant and can legitimately
-			// tie, which awards nobody — that case is its own file's.
+			// The two bids are identical but for the account, so every rule here ties at the top and
+			// the three answers to that are the three branches below: `auction_open` and
+			// `relative_bid` roll and report the seed, because an unrecorded coin flip is the one
+			// thing a loot dispute cannot be settled from; `roll` rolls per entrant and a tie is a new
+			// round, which awards nobody; and `auction_sealed` reports the tie and asks for a rebid
+			// among exactly the tied bidders (#248), which also awards nobody and is the case its own
+			// file covers in full.
 			res, err := tc.s.SettleAuction(spendCtx(t, tc.config), strategy.Session{
 				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
 			}, bids)
@@ -501,8 +504,20 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 			require.NotEmpty(t, res.Reason)
 
 			if len(res.Winners) == 0 {
-				require.Equal(t, "roll", tc.id,
-					"only a roll-off may award nobody, and only because a re-roll is a new round")
+				require.Contains(t, []string{"roll", "auction_sealed"}, tc.id,
+					"a settlement awards nobody only for a reason its own rule states: a re-roll is a "+
+						"new round, and a blind tie is a rebid")
+
+				if tc.id == "auction_sealed" {
+					require.NotNil(t, res.Tie, "a sealed auction that awards nobody names why")
+					require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts,
+						"the rebid is opened to exactly the tied bidders")
+					require.True(t, res.Tie.RebidRequired)
+					require.Nil(t, res.RngSeed, "a reported tie consumes no randomness")
+
+					return
+				}
+
 				require.NotNil(t, res.RngSeed, "the round is replayable or it is not a round")
 
 				return

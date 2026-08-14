@@ -397,6 +397,22 @@ arithmetic trail that looks correct at every step. Add a second main bidding 9.0
 10.00 — the runner-up *in `main`* plus one increment. See
 [Tier outranks amount](../guides/auctions.md#tier-outranks-amount).
 
+**A tie is reported, not broken.** Two mains who both bid 10.00 are equal in the only fact a blind
+auction collected, so the settlement awards nobody and instead names exactly those two: the item is
+decided by a **rebid round open to the tied bidders and to nobody else**
+([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)). The tied amount becomes that
+round's floor — you may raise or stand, never retreat below what you already committed — and every
+tied bidder may **pass**, except that they may not all pass: the last one standing takes it. The
+seeded roll is still the end of the chain and is reached only when a session asks for it, which is
+what a rebid that ties again eventually does. A resolution that reports a tie names no winner, no
+price and no winning rung, and consumes no randomness. The round itself is Phase 6
+([#247](https://github.com/prokopto-dev/dragonkillparty/issues/247)); what ships here is the
+arithmetic it starts from.
+
+Ties in an *open* auction are a different problem and not this one: bids are visible while the
+session runs, so an equal amount there is two clients submitting in the same instant — a race for the
+session layer, also Phase 6.
+
 ### `relative_bid` — a share of a bank frozen at the session's open
 
 | Bidder | Balance at open | Commits | Share |

@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
@@ -411,6 +412,40 @@ func tiedOnRank(ranked []rankedBid) int {
 	return n
 }
 
+// tiedAccounts is WHO is tied on the rank: the distinct accounts holding the leading bids that share
+// the rung and the rank, ascending by id (#248).
+//
+// IT IS tiedOnRank COUNTED IN BIDDERS RATHER THAN IN BIDS, and the two differ in exactly the case a
+// tie must not be declared in. Bids are append-only and one account may hold several — a raise, a
+// retraction and its replacement — so two rows at the top can be one person who bid the same number
+// twice. That is a settlement with one bidder in it, and calling it a tie would send a guild into a
+// rebid round against nobody. Two entries here is what a tie is; one is a winner.
+//
+// SORTED, so two replays of the same settlement name the parties in the same order. The tie-break
+// chain's determinism argument applies to the artefact that RECORDS a tie exactly as it does to the
+// steps that break one: a set that came back in bid order would be a resolution whose bytes depended
+// on the order a caller happened to collect its bids in.
+//
+// The caller decides what a tie MEANS — a rebid round for a sealed auction, a submission race for an
+// open one, another round of the same kind for a roll. This function only answers who is in it.
+func tiedAccounts(ranked []rankedBid) []core.ULID {
+	if len(ranked) == 0 {
+		return nil
+	}
+
+	out := make([]core.ULID, 0, len(ranked))
+
+	for _, r := range ranked[:tiedOnRank(ranked)] {
+		if !slices.Contains(out, r.bid.AccountID) {
+			out = append(out, r.bid.AccountID)
+		}
+	}
+
+	slices.Sort(out)
+
+	return out
+}
+
 // settleHighest returns the winning bid and the seed it consumed, if it consumed one.
 //
 // THE ROLL IS THE LAST STEP OF THE TIE-BREAK CHAIN AND IT IS SEEDED. Two bids that agree on the rank,
@@ -449,6 +484,24 @@ func auctionTrace(
 	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
 	seed *int64,
 ) []ResolutionStep {
+	trace := auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered)
+	if tiedOnRank(ordered) == 1 {
+		return trace
+	}
+
+	return append(trace, sequenceOrRoll(ordered, seed))
+}
+
+// auctionTraceThroughAmount is the chain as far as step 2 — eligibility, the ladder, the amount — and
+// it stops there because that is where the two ways an auction can end diverge.
+//
+// SPLIT OUT RATHER THAN DUPLICATED (#248). A sealed auction that ties on the amount does not fall to
+// the bid sequence and the roll; it stops and names the tied parties, and the three steps it walked
+// to get there are the same three steps every other settlement walked. Two copies of them would be
+// two wordings of the eligibility count, drifting apart the first time one was improved.
+func auctionTraceThroughAmount(
+	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
+) []ResolutionStep {
 	trace := []ResolutionStep{
 		{
 			Kind: ResolutionStepEligibility,
@@ -471,13 +524,11 @@ func auctionTrace(
 		})
 	}
 
-	trace = append(trace, ResolutionStep{
+	return append(trace, ResolutionStep{
 		Kind: ResolutionStepAmount,
 		Detail: fmt.Sprintf("%d of the %d bids in tier %s stand at %d centipoints, the highest there",
 			atAmount, len(ordered), phase.tier, ordered[0].bid.AmountCp),
 	})
-
-	return append(trace, sequenceOrRoll(ordered, seed))
 }
 
 // sequenceOrRoll is the bottom of the tie-break chain, and it is shared because by the time a rule
