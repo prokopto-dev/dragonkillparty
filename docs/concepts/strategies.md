@@ -11,9 +11,11 @@ a generated per-strategy reference page is Phase 2
 The four bidding rules carry the loot **arithmetic** — which bid wins, what it pays, and the batch
 that follows. The bid session itself (the state machine, the anti-snipe window, holds) is Phase 6;
 [Auctions and bid sessions](../guides/auctions.md) is its specification. **Tier-aware resolution** —
-"a 10-point main bid beats a 350-point alt bid" — is arithmetic and is a Phase 1 deliverable of its
-own ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)), so the tie-breaks below
-start at the amount.
+"a 10-point main bid beats a 350-point alt bid" — is arithmetic and shipped as its own Phase 1
+deliverable ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)), so the tie-breaks
+below start at the **rung** and only then compare the amount. The rung is recorded on the bid when it
+is accepted, which is Phase 6's job: until then no bid records one, every bid stands on `anyone`, and
+the amount decides as it always did.
 
 A guild's point rules are configurable. The ledger's rules are not. This page is about where that line
 is drawn and why it is drawn there.
@@ -351,6 +353,11 @@ An ascending auction has already revealed what the item is worth to everyone els
 their own bid. Two bids equal in amount *and* in the microsecond they were placed are broken by a
 **seeded roll**, and the seed is carried onto the resolution so the flip is replayable.
 
+The example above is one rung bidding against itself — the amounts are the pre-ladder ones, and a
+tiered guild's main-tier bids are single or low double digits. Where the session spans rungs, the
+**highest rung holding an accepted bid takes the item before any amount is compared**: a 10.00 main
+bid beats a 350.00 alt bid, and the alt's number is never compared against the main's.
+
 ### `auction_sealed` — hidden bids, first price or second price
 
 Bids of **350.00**, **280.00** and **150.00**, increment **5.00**:
@@ -366,6 +373,23 @@ Two rules the arithmetic will not bend on. **Nobody ever pays more than they bid
 promise second price exists to make, and it is why the runner-up's number is clamped rather than
 charged. And **the runner-up is the highest bid from a different account**: bids are append-only and
 a bidder may hold several, so the row below the winner is frequently the winner's own earlier bid.
+
+**And the runner-up is on the winning rung.** Those three bids are one tier bidding against itself; at
+three figures it is not `main`, because when mains only compete with mains the numbers are small by
+design — the ladder's minimum is 5.00 and its increment 1.00. Put one main into the same session and
+both halves of the rule change:
+
+| Bidder | Rung | Bid | Outcome |
+|---|---|---|---|
+| Tankguy | `alt` | 350.00 | loses — a lower rung is never compared against the winning one |
+| Sneakyguy | `alt` | 280.00 | loses |
+| Healbot | `main` | 10.00 | **wins, and pays 5.00** — the minimum, being alone on their rung |
+
+Healbot pays the minimum rather than 351.00, and that number is the whole deliverable: a second price
+that reached one row further down the list would overcharge them by a factor of seventy with an
+arithmetic trail that looks correct at every step. Add a second main bidding 9.00 and Healbot pays
+10.00 — the runner-up *in `main`* plus one increment. See
+[Tier outranks amount](../guides/auctions.md#tier-outranks-amount).
 
 ### `relative_bid` — a share of a bank frozen at the session's open
 

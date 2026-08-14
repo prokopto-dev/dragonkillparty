@@ -20,6 +20,9 @@
 //   - spend.go — what every SPEND rule does identically: the award batch, the proceeds routing, the
 //     bid ordering and the seeded tie-break. What differs between spend rules is how the price is
 //     decided; nothing after that differs at all.
+//   - tier.go — the bid tier ladder (main, main_offspec, alt, anyone) and the phase of a settlement
+//     that runs before any amount is compared. The one enum whose declaration ORDER is semantic
+//     (canonical §5), and the reason a 10-point main bid beats a 350-point alt bid (#224).
 //
 // The strategies themselves are one file plus one test file each, which is the shape that lets them
 // be written in parallel with near-zero conflict surface:
@@ -45,8 +48,10 @@
 // The four bidding rules carry the loot ARITHMETIC only. The bid state machine, the anti-snipe
 // window and holds are Phase 6 (docs/guides/auctions.md): each needs a fact the Ctx façade does not
 // carry, and a planner that invented one would be guessing at the rules a guild argues over.
-// Tier-aware resolution is arithmetic and is a Phase 1 deliverable of its own (ROADMAP item 12,
-// #224), because it widens strategy.Bid rather than adding a rule to one strategy.
+// Tier-aware resolution is arithmetic and shipped as a Phase 1 deliverable of its own (ROADMAP item
+// 12, #224) — it widened strategy.Bid rather than adding a rule to one strategy, so the ladder is
+// settled and property-tested before anything transacts on it. What DERIVES the rung from the bidding
+// character is Phase 6's, which is why no bid records one yet.
 //
 // catalogue.go is the registry that turns a pool's strategy_id into one of them. `pool.strategy_id`
 // carries no CHECK constraint on purpose — the set is code-defined and grows per PR — so Catalogue

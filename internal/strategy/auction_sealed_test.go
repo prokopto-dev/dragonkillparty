@@ -9,11 +9,21 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/strategy"
 )
 
-// auction_sealed's arithmetic. Phase 1, #195.
+// auction_sealed's arithmetic. Phase 1, #195 and #224.
 //
 // The family contracts are spend_test.go's table. What is here is the pay rule — the one line of
-// arithmetic that separates first price from second — and the two clamps that make second price
-// honest: a winner never pays more than they bid, and a sole bidder pays the minimum.
+// arithmetic that separates first price from second — the two clamps that make second price honest (a
+// winner never pays more than they bid, and a sole bidder pays the minimum), and the rung the whole
+// rule is computed inside.
+//
+// WHY THE THREE-FIGURE FIXTURES BELOW ARE `alt` SESSIONS. The 350 / 280 / 150 table is the guide's own
+// (docs/guides/choosing-a-dkp-system.md) and its arithmetic is untouched, but a three-figure MAIN-tier
+// price models the scheme tiering replaced: "when mains only compete with mains, bids land in single
+// or low double digits… any screen or fixture showing a three-figure main-tier price is modelling the
+// old scheme" (docs/guides/auctions.md), and that page names the 350.00 as precisely the alt bid a
+// main is never priced against. So the table is modelled as the rung it describes — which also proves
+// second price is computed inside WHICHEVER rung wins, not only inside `main` — and the main-tier
+// cases use the ladder's own numbers: a minimum of 5.00 and an increment of 1.00.
 
 // auctionSealedGoldenDir is where the canonical proposals live.
 const auctionSealedGoldenDir = "../../test/golden/strategy/auction_sealed"
@@ -123,9 +133,18 @@ func TestAuctionSealed_SettleAuction_PayRule(t *testing.T) {
 	t.Parallel()
 
 	bids := []strategy.Bid{
-		{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true},
-		{AccountID: acct(1), AmountCp: 28_000, PlacedAt: fixedNow, Sealed: true},
-		{AccountID: acct(2), AmountCp: 15_000, PlacedAt: fixedNow, Sealed: true},
+		{
+			AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
+		{
+			AccountID: acct(1), AmountCp: 28_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
+		{
+			AccountID: acct(2), AmountCp: 15_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
 	}
 
 	for _, tc := range []struct {
@@ -163,8 +182,14 @@ func TestAuctionSealed_SettleAuction_SecondPrice_NeverExceedsTheWinningBid(t *te
 		spendCtx(t, `{"pay_rule":"second_price","min_bid_cp":1000,"increment_cp":500}`),
 		strategy.Session{ID: acct(60), SeqAtOpen: 5},
 		[]strategy.Bid{
-			{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true},
-			{AccountID: acct(1), AmountCp: 34_900, PlacedAt: fixedNow, Sealed: true},
+			{
+				AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+			{
+				AccountID: acct(1), AmountCp: 34_900, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
 		})
 
 	require.NoError(t, err)
@@ -181,7 +206,10 @@ func TestAuctionSealed_SettleAuction_SecondPrice_ALoneBidderPaysTheMinimum(t *te
 	res, err := strategy.AuctionSealed{}.SettleAuction(
 		spendCtx(t, `{"pay_rule":"second_price","min_bid_cp":1000,"increment_cp":500}`),
 		strategy.Session{ID: acct(60), SeqAtOpen: 5},
-		[]strategy.Bid{{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true}})
+		[]strategy.Bid{{
+			AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		}})
 
 	require.NoError(t, err)
 	require.Equal(t, core.Centipoints(1_000), res.Winners[0].AmountCp)
@@ -202,21 +230,178 @@ func TestAuctionSealed_SettleAuction_SecondPrice_TheRunnerUpIsAnotherAccount(t *
 	session := strategy.Session{ID: acct(60), SeqAtOpen: 5}
 
 	res, err := s.SettleAuction(spendCtx(t, config), session, []strategy.Bid{
-		{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true},
-		{AccountID: acct(0), AmountCp: 30_000, PlacedAt: fixedNow, Sealed: true},
+		{
+			AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
+		{
+			AccountID: acct(0), AmountCp: 30_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, core.Centipoints(1_000), res.Winners[0].AmountCp,
 		"one bidder holding two bids is still a session with one bidder in it, so they pay the minimum")
 
 	res, err = s.SettleAuction(spendCtx(t, config), session, []strategy.Bid{
-		{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true},
-		{AccountID: acct(0), AmountCp: 30_000, PlacedAt: fixedNow, Sealed: true},
-		{AccountID: acct(1), AmountCp: 20_000, PlacedAt: fixedNow, Sealed: true},
+		{
+			AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
+		{
+			AccountID: acct(0), AmountCp: 30_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
+		{
+			AccountID: acct(1), AmountCp: 20_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, core.Centipoints(20_500), res.Winners[0].AmountCp,
 		"the runner-up is the highest bid from a DIFFERENT account, not the row below the winner")
+}
+
+// tieredSealedConfig is the pool a sealed auction with a working ladder runs: second price, a minimum
+// of 5.00 and an increment of 1.00 (docs/guides/auctions.md). See this file's header for why the
+// main-tier numbers are small and the three-figure ones are alts.
+const tieredSealedConfig = `{"pay_rule":"second_price","min_bid_cp":500,"increment_cp":100}`
+
+// TestAuctionSealed_SettleAuction_SecondPrice_ALoneMainPaysTheMinimumOverALargerAlt is the one number
+// a tiered second-price auction must never charge (#224, docs/guides/auctions.md).
+//
+// A main bids 10.00. Below them two alts bid 350.00 and 280.00. The runner-up is the highest bid from
+// another account IN THE WINNING TIER, and there is nobody else in `main` — so this is the sole-bidder
+// case and the main pays the minimum of 5.00. Pricing against the alt would charge them 351.00, an
+// overcharge of seventy times the correct price with an arithmetic trail that looks right at every
+// step, and it is exactly what a settlement that ranked by amount and then filtered by tier would do.
+func TestAuctionSealed_SettleAuction_SecondPrice_ALoneMainPaysTheMinimumOverALargerAlt(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, tieredSealedConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, []strategy.Bid{
+			{
+				AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+			{
+				AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+			{
+				AccountID: acct(2), AmountCp: 28_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 500}}, res.Winners,
+		"the lone main pays the 5.00 minimum, not the 350.00 alt bid plus an increment")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Contains(t, res.Reason, "only bidder in tier main")
+	require.NotContains(t, res.Reason, "35000", "a sealed resolution names no losing amount")
+	require.Equal(t,
+		[]strategy.TierCount{{Tier: strategy.TierMain, Bids: 1}, {Tier: strategy.TierAlt, Bids: 2}},
+		res.TierCounts,
+		"the board renders 'cannot win — 1 bid above you' from these counts and from nothing else")
+}
+
+// TestAuctionSealed_SettleAuction_SecondPrice_TheRunnerUpIsInTheWinningTier: with two mains and an
+// alt, the price comes from the SECOND MAIN and the alt is not in the arithmetic at all.
+//
+// It is the other half of the lone-main case above, and the two together pin the rule: the runner-up
+// is the highest bid from another account on the winning rung, or there is none. 10.00 plus the 1.00
+// increment is 11.00 — a main-tier price, in the single or low double digits the ladder produces.
+func TestAuctionSealed_SettleAuction_SecondPrice_TheRunnerUpIsInTheWinningTier(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, tieredSealedConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, []strategy.Bid{
+			{
+				AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+			{
+				AccountID: acct(1), AmountCp: 1_200, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+			{
+				AccountID: acct(2), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 1_100}}, res.Winners,
+		"the runner-up in `main` is 10.00, so the winner pays 11.00")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Contains(t, res.Reason, "plus one increment")
+}
+
+// TestAuctionSealed_SettleAuction_FirstPrice_StillResolvesTheTierFirst.
+//
+// The pay rule decides what the winner pays and never who wins. First price makes that visible: the
+// main pays their own 10.00, and the 350.00 alt neither wins nor prices anything, so a regression that
+// resolved the tier only inside the second-price branch would show up here.
+func TestAuctionSealed_SettleAuction_FirstPrice_StillResolvesTheTierFirst(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionSealed{}.SettleAuction(
+		spendCtx(t, `{"pay_rule":"first_price","min_bid_cp":500,"increment_cp":100}`),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, []strategy.Bid{
+			{
+				AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+			{
+				AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 1_000}}, res.Winners)
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+}
+
+// TestAuctionSealed_SettleAuction_TheTraceIsWrittenOntoTheResolution: the officer's artefact, on the
+// rule whose outcome is hardest to explain from the bids alone — a winner who paid 5.00 while a 350.00
+// sat below them.
+func TestAuctionSealed_SettleAuction_TheTraceIsWrittenOntoTheResolution(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, tieredSealedConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, []strategy.Bid{
+			{
+				AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierAlt,
+			},
+			{
+				AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+			{
+				AccountID: acct(2), AmountCp: 100, PlacedAt: fixedNow, Sealed: true,
+				Tier: strategy.TierMain,
+			},
+		})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepAmount, strategy.ResolutionStepPrice,
+	}, traceKinds(res))
+
+	require.Contains(t, res.Trace[0].Detail, "2 of the 3 bids placed",
+		"the 1.00 bid is under the 5.00 minimum and is not a bid the board should count")
+	require.Contains(t, res.Trace[1].Detail, "main 1, alt 1")
+	require.Contains(t, res.Trace[2].Detail, "1000", "the winning amount is revealed at close")
+	require.Contains(t, res.Trace[3].Detail, "second price")
+
+	for _, step := range res.Trace {
+		require.NotContains(t, step.Detail, "35000",
+			"no step of a sealed resolution may name a losing bid's amount")
+	}
 }
 
 // TestAuctionSealed_SettleAuction_BelowTheMinimum_Rots: sealed or not, a bid under the floor cannot
@@ -226,7 +411,10 @@ func TestAuctionSealed_SettleAuction_BelowTheMinimum_Rots(t *testing.T) {
 
 	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, auctionSealedGoldenConfig),
 		strategy.Session{ID: acct(60), SeqAtOpen: 5},
-		[]strategy.Bid{{AccountID: acct(0), AmountCp: 100, PlacedAt: fixedNow, Sealed: true}})
+		[]strategy.Bid{{
+			AccountID: acct(0), AmountCp: 100, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		}})
 
 	require.NoError(t, err)
 	require.Empty(t, res.Winners)
@@ -247,14 +435,20 @@ func TestAuctionSealed_SettleAuction_ASessionMayNotLowerThePoolFloor(t *testing.
 	session := strategy.Session{ID: acct(60), SeqAtOpen: 5, MinAmountCp: 1}
 
 	rots, err := s.SettleAuction(spendCtx(t, auctionSealedGoldenConfig), session,
-		[]strategy.Bid{{AccountID: acct(0), AmountCp: 250, PlacedAt: fixedNow, Sealed: true}})
+		[]strategy.Bid{{
+			AccountID: acct(0), AmountCp: 250, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		}})
 	require.NoError(t, err)
 	require.Empty(t, rots.Winners,
 		"a session naming a minimum of 1 must not make a 250 bid eligible in a pool whose floor is 500")
 
 	sole, err := s.SettleAuction(
 		spendCtx(t, `{"pay_rule":"second_price","min_bid_cp":1000,"increment_cp":500}`), session,
-		[]strategy.Bid{{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true}})
+		[]strategy.Bid{{
+			AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierAlt,
+		}})
 	require.NoError(t, err)
 	require.Equal(t, core.Centipoints(1_000), sole.Winners[0].AmountCp,
 		"the sole bidder pays the POOL's 1000, not the 1 the session asked for")
@@ -375,6 +569,10 @@ func TestAuctionSealed_Config_RefusesWhatWouldMakeTheAuctionUnrunnable(t *testin
 
 // TestAuctionSealed_DefaultConfig_IsSecondPrice pins the recommended default: a pool that has set
 // nothing runs the rule that makes bidding your true valuation optimal.
+//
+// UNTIERED ON PURPOSE, unlike the rest of this file: it is also the case every session in production
+// is today, because the field is filled in by the bid FSM in Phase 6. Second price over one implicit
+// rung must settle exactly as it did before the ladder existed.
 func TestAuctionSealed_DefaultConfig_IsSecondPrice(t *testing.T) {
 	t.Parallel()
 
@@ -387,4 +585,7 @@ func TestAuctionSealed_DefaultConfig_IsSecondPrice(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, core.Centipoints(3_100), res.Winners[0].AmountCp,
 		"the runner-up's 3000 plus the default 100 increment")
+	require.Equal(t, strategy.TierAnyone, res.WinningTier)
+	require.NotContains(t, res.Reason, "tier",
+		"nothing was tiered, so the ladder settled nothing and says nothing")
 }

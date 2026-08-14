@@ -139,6 +139,165 @@ func TestRelativeBid_SettleAuction_TheLargerShareWinsWhilePayingLess(t *testing.
 	require.Contains(t, res.Reason, "5500")
 }
 
+// TestRelativeBid_SettleAuction_TheLadderOutranksTheShare (#224): a main who commits a tenth of their
+// bank takes it from an alt who commits all of theirs.
+//
+// This strategy does not partition on the rung the way the two auctions do — a share is not a price
+// and there is no second-price rule to keep inside one — but the ordering it settles by is rankBids',
+// which compares the rung first. So "the largest share" is only ever the largest share ON THE WINNING
+// RUNG, and where a lower rung holds a bid the resolution says which and how many, naming no share
+// and no amount.
+func TestRelativeBid_SettleAuction_TheLadderOutranksTheShare(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 90_000
+	ctx.balances[acct(1)] = 50_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+		[]strategy.Bid{
+			{AccountID: acct(0), AmountCp: 90_000, PlacedAt: fixedNow, Tier: strategy.TierAlt},
+			{AccountID: acct(1), AmountCp: 5_000, PlacedAt: fixedNow, Tier: strategy.TierMain},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 5_000}}, res.Winners,
+		"1000 bp on the winning rung beats the alt's whole bank")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Contains(t, res.Reason, "tier main takes the item ahead of 1 bid(s) on lower rungs")
+	require.NotContains(t, res.Reason, "10000",
+		"the count above a bidder is disclosable and the shares below them are not")
+}
+
+// TestRelativeBid_SettleAuction_TheTraceRecordsTheShareAndTheFrozenSeq (#224, AO review).
+//
+// This rule's step 2 is a SHARE and the trace names it as one, in basis points, against the seq the
+// balance was frozen at. Rendering it as an `amount` would tell a raider they lost to a bigger bid
+// when they lost to a bigger fraction of a smaller bank — which is the whole model, and the thing
+// they will argue about.
+func TestRelativeBid_SettleAuction_TheTraceRecordsTheShareAndTheFrozenSeq(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 90_000
+	ctx.balances[acct(1)] = 50_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+		[]strategy.Bid{
+			{AccountID: acct(0), AmountCp: 36_000, PlacedAt: fixedNow},
+			{AccountID: acct(1), AmountCp: 27_500, PlacedAt: fixedNow},
+		})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepShare, strategy.ResolutionStepPrice,
+	}, traceKinds(res))
+
+	require.Contains(t, res.Trace[0].Detail, "2 of the 2 bids placed")
+	require.Contains(t, res.Trace[1].Detail, "settled nothing", "nothing here was tiered")
+	require.Contains(t, res.Trace[2].Detail, "5500 bp")
+	require.Contains(t, res.Trace[2].Detail, "seq 5",
+		"a share means nothing without the seq the balance under it was frozen at")
+	require.Contains(t, res.Trace[3].Detail, "27500")
+}
+
+// TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt (#224, second AO review).
+//
+// This rule ranks by the SHARE, and rankBids then separates equal shares by what was committed and
+// only then by when — so two of its three deciding steps sit BELOW the share and both settle real
+// items. A trace that jumped from the share to the price would claim completeness while omitting the
+// step that chose the winner, which is worse than no trace: it reads as an answer.
+//
+// The three cases are the three ways the chain can end below an equal share. Every case holds the
+// share equal at 5000 bp — a bid of half of each balance — so the step under test is the only thing
+// that differs.
+func TestRelativeBid_SettleAuction_TheTraceNamesWhicheverStepDecidedIt(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		balance core.Centipoints
+		amount  core.Centipoints
+		placed  core.Micros
+		want    strategy.ResolutionStepKind
+		detail  string
+	}{
+		{
+			// Half of 50000 against half of 90000: the same 5000 bp, different points committed.
+			name:    "the committed amount decided it",
+			balance: 50_000, amount: 25_000, placed: fixedNow,
+			want:   strategy.ResolutionStepAmount,
+			detail: "takes the item",
+		},
+		{
+			// The same balance and the same commitment, placed a second later.
+			name:    "the bid sequence decided it",
+			balance: 90_000, amount: 45_000, placed: fixedNow.Add(1_000_000_000),
+			want:   strategy.ResolutionStepBidSequence,
+			detail: "earliest",
+		},
+		{
+			// Identical in every key the comparator has.
+			name:    "a seeded roll decided it",
+			balance: 90_000, amount: 45_000, placed: fixedNow,
+			want:   strategy.ResolutionStepSeededRoll,
+			detail: "seed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+			ctx.balances[acct(0)] = 90_000
+			ctx.balances[acct(1)] = tc.balance
+
+			res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+				[]strategy.Bid{
+					{AccountID: acct(0), AmountCp: 45_000, PlacedAt: fixedNow},
+					{AccountID: acct(1), AmountCp: tc.amount, PlacedAt: tc.placed},
+				})
+			require.NoError(t, err)
+			require.Len(t, res.Winners, 1)
+
+			kinds := traceKinds(res)
+			require.Equal(t, strategy.ResolutionStepShare, kinds[2],
+				"the share is still step 2 of the chain; what follows is what it failed to settle")
+			require.Equal(t, strategy.ResolutionStepAmount, kinds[3],
+				"an equal share reaches the committed amount, and a step that RAN is recorded whether "+
+					"or not it decided")
+			require.Equal(t, tc.want, kinds[len(kinds)-2],
+				"the step before the price is the one that chose the winner")
+			require.Equal(t, strategy.ResolutionStepPrice, kinds[len(kinds)-1])
+			require.Contains(t, res.Trace[len(kinds)-2].Detail, tc.detail)
+			require.Contains(t, res.Trace[2].Detail, "5000 bp")
+		})
+	}
+}
+
+// TestRelativeBid_SettleAuction_NoBidableShare_StillCarriesATrace: the no-award path, which is the
+// one an officer arrives at asking why a drop went nowhere. The chain stopped at eligibility, and
+// that single step is the answer.
+func TestRelativeBid_SettleAuction_NoBidableShare_StillCarriesATrace(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 1, 0, `{"min_bid_bp":5000,"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 100_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5},
+		[]strategy.Bid{{AccountID: acct(0), AmountCp: 100, PlacedAt: fixedNow}})
+
+	require.NoError(t, err)
+	require.Empty(t, res.Winners)
+	require.Equal(t, []strategy.ResolutionStepKind{strategy.ResolutionStepEligibility},
+		traceKinds(res))
+	require.Contains(t, res.Trace[0].Detail, "bp share")
+}
+
 // TestRelativeBid_SettleAuction_ResolvesAgainstTheFrozenBalance is the rule the strategy exists for.
 //
 // Session.SeqAtOpen is the seq every balance in a settlement is read at, POSITIONALLY. Resolving

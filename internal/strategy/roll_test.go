@@ -201,6 +201,82 @@ func TestRoll_SettleAuction_HighestRollWinsAndIsReplayable(t *testing.T) {
 // The fixture forces the tie by pigeonhole: twelve entrants over a two-value range. It is
 // deterministic rather than probabilistic — the seed is fixed — and the range is narrow enough that
 // it stays a tie whatever the sequence does.
+// TestRoll_SettleAuction_ALowerRungCannotWinWhateverItRolled (#224).
+//
+// Everybody rolls — the draws are per entrant, in account order, which is what makes the round
+// replayable — and the ladder decides who those rolls are compared between. One main against three
+// alts therefore wins on any face at all, and the reason says so: "highest of 1 roll" with a 97
+// sitting in `alt` would otherwise read as a misread die rather than as the guild's own rule.
+func TestRoll_SettleAuction_ALowerRungCannotWinWhateverItRolled(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, []strategy.Bid{
+			{AccountID: acct(0), Tier: strategy.TierAlt},
+			{AccountID: acct(1), Tier: strategy.TierMain},
+			{AccountID: acct(2), Tier: strategy.TierAlt},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, acct(1), res.Winners[0].AccountID,
+		"the only main takes it whatever the three alts rolled")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Equal(t,
+		[]strategy.TierCount{{Tier: strategy.TierMain, Bids: 1}, {Tier: strategy.TierAlt, Bids: 2}},
+		res.TierCounts)
+	require.Contains(t, res.Reason, "highest of 1 rolls",
+		"the roll it was highest of is the winning rung's, not the session's")
+	require.Contains(t, res.Reason, "2 entrant(s) on lower rungs could not win it")
+}
+
+// TestRoll_SettleAuction_ARejectedRound_SpendsNoRandomness is the defect an AO review of #224 found:
+// a round that draws and THEN refuses the entry list spends randomness that a retry can never get
+// back.
+//
+// The injected Rng is a sequence. `roll` draws one number per entrant, in account order, so a
+// settlement that rejected a malformed entry after the loop would leave that sequence advanced by a
+// round nobody ran — and the officer who fixes the entry and retries gets different numbers from the
+// ones the same session would have produced had the bad entry never been there. Nothing explains the
+// difference afterwards, because a rejected round persists no seed: it is exactly the unreproducible
+// flip the whole seeded design exists to prevent, and it would be invisible to every test that gives
+// each settlement a fresh façade.
+//
+// Two assertions, because either alone is weaker than it looks. THE COUNTER proves no draw was taken
+// — a fix that rejected after drawing but re-seeded would pass the second. THE RETRY proves what the
+// counter is a proxy for: the corrected round on the used façade settles identically to the same
+// round on a clean one.
+func TestRoll_SettleAuction_ARejectedRound_SpendsNoRandomness(t *testing.T) {
+	t.Parallel()
+
+	corrected := []strategy.Bid{
+		{AccountID: acct(0), Tier: strategy.TierMain},
+		{AccountID: acct(1), Tier: strategy.TierMain},
+		{AccountID: acct(2), Tier: strategy.TierAlt},
+	}
+
+	malformed := append([]strategy.Bid{{AccountID: acct(3), Tier: "MAIN"}}, corrected...)
+
+	used := spendCtx(t, rollGoldenConfig)
+
+	_, err := strategy.Roll{}.SettleAuction(used, strategy.Session{ID: acct(60)}, malformed)
+	require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+	require.ErrorContains(t, err, "not on the ladder")
+	require.Zero(t, used.rng.calls,
+		"a round that refused its entry list must not have touched the generator, seed included")
+
+	retried, err := strategy.Roll{}.SettleAuction(used, strategy.Session{ID: acct(60)}, corrected)
+	require.NoError(t, err)
+
+	clean, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, corrected)
+	require.NoError(t, err)
+
+	require.Equal(t, clean.Winners, retried.Winners,
+		"the retry after a rejected round must settle exactly as a session that never saw one")
+	require.Equal(t, clean.Reason, retried.Reason)
+	require.Equal(t, *clean.RngSeed, *retried.RngSeed)
+}
+
 func TestRoll_SettleAuction_ATie_AwardsNobody(t *testing.T) {
 	t.Parallel()
 
@@ -218,6 +294,47 @@ func TestRoll_SettleAuction_ATie_AwardsNobody(t *testing.T) {
 	require.Contains(t, res.Reason, "tied on")
 	require.Contains(t, res.Reason, "new round")
 	require.NotNil(t, res.RngSeed, "the tied round is still replayable")
+
+	// The round that awarded nobody still says what it did, and stops where it stopped: no price step,
+	// because nothing was priced. An officer asked to explain a drop that went nowhere has the same
+	// question as one asked about a drop that went somewhere.
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepSeededRoll,
+	}, traceKinds(res))
+	require.Contains(t, res.Trace[2].Detail, "awards nobody")
+	require.Empty(t, res.WinningTier,
+		"the chain evaluated the ladder and then awarded nothing, which is what makes the trace and "+
+			"this field different questions")
+}
+
+// TestRoll_SettleAuction_TheTraceRecordsTheDieAndTheLadder (#224, AO review).
+//
+// `roll`'s step 2 is the die rather than an amount, so its trace says so — and the seed is in the
+// sentence, because a roll an officer cannot re-run is the one thing a loot dispute cannot be settled
+// from. The tier step is written whether or not the ladder decided anything.
+func TestRoll_SettleAuction_TheTraceRecordsTheDieAndTheLadder(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, []strategy.Bid{
+			{AccountID: acct(0), Tier: strategy.TierAlt},
+			{AccountID: acct(1), Tier: strategy.TierMain},
+			{AccountID: acct(2), Tier: strategy.TierAlt},
+		})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepSeededRoll, strategy.ResolutionStepPrice,
+	}, traceKinds(res))
+
+	require.Contains(t, res.Trace[0].Detail, "3 entrants")
+	require.Contains(t, res.Trace[1].Detail, "entrant",
+		"a roll takes entrants rather than bids, and the sentence an officer pastes into chat says so")
+	require.Contains(t, res.Trace[2].Detail, "seed")
+	require.Contains(t, res.Trace[2].Detail, "tier main")
+	require.Contains(t, res.Trace[3].Detail, "250", "the win cost this pool configured")
 }
 
 // TestRoll_SettleAuction_ARepeatedEntrant_IsRefused: two entries for one account is two draws and

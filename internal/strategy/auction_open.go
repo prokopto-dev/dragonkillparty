@@ -21,11 +21,11 @@ import (
 //
 // THE TIE-BREAK IS PARTIAL AND SAYS SO. docs/guides/auctions.md's chain is tier, amount, raid
 // attendance, balance before the bid, items won in the window, bid sequence, then a seeded roll. What
-// runs here is amount, then bid sequence, then the roll, and rankBids in spend.go carries the
-// argument. TIER IS THE STEP ABOVE ALL OF THEM and it is its own Phase 1 deliverable (ROADMAP item
-// 12, #224) rather than an omission: strategy.Bid carries no tier, and approximating "tier outranks
-// amount" is how a 350-point alt bid beats a 10-point main, which is the single most consequential
-// rule in the system and the one it inverts.
+// runs here is TIER (#224), then amount, then bid sequence, then the roll; rankBids in spend.go
+// carries the argument for the three steps in the middle that are still missing, each of which needs
+// a fact the Ctx façade does not carry. The tier phase is not one of them — it is recorded on the bid,
+// so a pure planner reads it — and it runs FIRST: a 10-point main bid beats a 350-point alt bid, and
+// the alt's number is never compared against the main's.
 //
 // IT IS A SPEND RULE AND IT DOES NOT EARN. PlanAttendance and PlanDecay return ErrUnsupported naming
 // this strategy: a pool earns through its earn rule and expires points through its over-time rule, and
@@ -300,10 +300,10 @@ func (s AuctionOpen) PriceHint(ctx Ctx, item ItemRef) (*core.Centipoints, error)
 //
 // WHAT IT CAN CHECK AND WHAT IT CANNOT. The signature carries no Session, so the leader's amount is
 // invisible here and "beat the leader by one increment" cannot be enforced from a planner — that is a
-// session-scoped rule and it lands with the FSM in Phase 6 (#219). What IS checkable without a
-// session is the LATTICE the same rule implies: docs/guides/auctions.md words the increment as
-// `min_bid + k × increment`, which is a property of the bid alone, and it is what catches the 160 in
-// the guide's worked example (minimum 100, increment 25) before anything else looks at it.
+// session-scoped rule and it lands with the FSM in Phase 6 (#225 records the gap). What IS checkable
+// without a session is the LATTICE the same rule implies: docs/guides/auctions.md words the increment
+// as `min_bid + k × increment`, which is a property of the bid alone, and it is what catches the 160
+// in the guide's worked example (minimum 100, increment 25) before anything else looks at it.
 //
 // A SEALED BID IS REFUSED. This strategy is the open auction: bids are visible live, and a caller
 // marking one sealed has either mixed up the session's mode or is expecting a confidentiality this
@@ -344,7 +344,13 @@ func (s AuctionOpen) ValidateBid(ctx Ctx, acct AccountRef, bid Bid) error {
 	return checkBidAffordable(ctx, auctionOpenID, acct, bid)
 }
 
-// SettleAuction awards the item to the highest bid, at that bid.
+// SettleAuction awards the item to the highest bid IN THE HIGHEST TIER THAT HOLDS ONE, at that bid.
+//
+// RESOLUTION IS TWO-PHASE (#224). The first phase is the ladder: the highest rung holding any eligible
+// bid takes the item, whatever is bid below it. Only then is the amount compared, and only among the
+// bids standing on that rung — so a 10-point main bid beats a 350-point alt bid and the alt's number
+// is never compared against the main's. See tier.go for the ladder, and resolveTier for why an
+// unreadable rung stops the settlement rather than being ranked at the bottom.
 //
 // PAYING YOUR OWN BID IS WHAT MAKES IT AN OPEN AUCTION. The ascending format already reveals what the
 // item is worth to everyone else — the leader knows what they had to beat — so there is nothing for a
@@ -365,30 +371,46 @@ func (s AuctionOpen) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 
 	eligible := eligibleBids(bids, minimum)
 	if len(eligible) == 0 {
-		return Resolution{
-			Reason: fmt.Sprintf("no bid of the %d placed reached the minimum of %d centipoints",
-				len(bids), minimum),
-		}, nil
+		return rotResolution(len(bids), minimum), nil
 	}
 
-	ranked := make([]rankedBid, 0, len(eligible))
-	for _, b := range eligible {
+	phase, err := resolveTier(auctionOpenID, eligible)
+	if err != nil {
+		return Resolution{}, err
+	}
+
+	ranked := make([]rankedBid, 0, len(phase.bids))
+	for _, b := range phase.bids {
 		ranked = append(ranked, rankedBid{bid: b, rank: int64(b.AmountCp)})
 	}
 
-	winner, seed := settleHighest(ctx, rankBids(ranked))
+	ordered, err := rankBids(auctionOpenID, ranked)
+	if err != nil {
+		return Resolution{}, err
+	}
+
+	winner, seed := settleHighest(ctx, ordered)
 
 	reason := fmt.Sprintf("highest of %d eligible bids at %d centipoints; the winner pays their bid",
-		len(eligible), winner.bid.AmountCp)
+		len(phase.bids), winner.bid.AmountCp)
 	if seed != nil {
 		reason = fmt.Sprintf("%s, after a seeded roll between the bids tied at that amount and time",
 			reason)
 	}
 
+	trace := append(auctionTrace(len(bids), len(eligible), minimum, phase, ordered, seed),
+		ResolutionStep{
+			Kind:   ResolutionStepPrice,
+			Detail: fmt.Sprintf("the winner pays their own bid of %d centipoints", winner.bid.AmountCp),
+		})
+
 	return Resolution{
-		Winners: []Allocation{{AccountID: winner.bid.AccountID, AmountCp: winner.bid.AmountCp}},
-		Reason:  reason,
-		RngSeed: seed,
+		Winners:     []Allocation{{AccountID: winner.bid.AccountID, AmountCp: winner.bid.AmountCp}},
+		Reason:      phase.explain(reason),
+		RngSeed:     seed,
+		WinningTier: phase.tier,
+		TierCounts:  phase.counts,
+		Trace:       trace,
 	}, nil
 }
 

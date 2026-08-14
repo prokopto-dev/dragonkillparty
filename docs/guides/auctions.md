@@ -7,11 +7,17 @@ The **arithmetic** ships now: `auction_open`, `auction_sealed`, `relative_bid` a
 strategies ([Point strategies](../concepts/strategies.md#the-shipped-strategies)) and already decide
 which bid wins, what it pays and what the ledger batch looks like. What Phase 6 adds is everything
 around that number — the state machine, the reveal at `closing`, anti-snipe and holds. The **tier
-phase**, which runs *before* amounts are compared, is arithmetic and lands in Phase 1 as its own
-deliverable ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)); until it does, a
-strategy's tie-break chain starts at the amount, because tier, attendance and items-won are facts a
-pure planner cannot see and approximating them is how a 350-point alt bid would beat a 10-point
-main.
+phase**, which runs *before* amounts are compared, is arithmetic and shipped in Phase 1 as its own
+deliverable ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)): `strategy.Bid`
+carries the recorded rung, resolution is two-phase, and second price is computed inside the winning
+tier. What a strategy's chain still cannot evaluate is attendance and items-won — facts a pure
+planner cannot see — so those steps land with the records Phase 3 and Phase 6 keep rather than being
+approximated now.
+
+**Nothing fills the rung in yet.** The tier is derived server-side from the bidding character when a
+bid is accepted, which is the bid FSM's job in Phase 6; until then every bid records none, every bid
+therefore stands on `anyone`, and a session settles on the amount exactly as it did before. The
+ladder is in place and property-tested first, which is the whole reason item 12 is scheduled here.
 
 The platform owns the balance, the clock and the rules. Your Discord bot becomes a terminal instead of
 a second source of truth, which is why two bots and the web UI can run the same auction without
@@ -163,6 +169,34 @@ can paste the reason into chat:
 8. Officer decision, reason mandatory
 
 Steps 1–7 are automatic. Step 8 exists so the chain always terminates.
+
+Steps 1, 2, 6 and 7 are the ones a pure strategy can evaluate, and all four run today; steps 3 to 5
+need attendance and award history the planner façade does not carry, and a step that cannot be
+evaluated is skipped rather than approximated. Every step that *was* reached is written onto the
+resolution as a named trace entry, alongside the count of eligible bids on each rung. That is what an
+officer reads back months later, and the counts are also what the disclosure below is rendered from.
+
+| Trace entry | Written by | Records |
+|---|---|---|
+| `eligibility` | all four | how many of the bids placed cleared the floor that applied |
+| `tier` | all four | which rung took the item, how many bids stood on each, and when the ladder settled nothing |
+| `amount` | the two auctions, `relative_bid` | the highest bid on the winning rung — and in `relative_bid`, the largest commitment among bids that tied on the *share*, which is a rung of the chain below its step 2 |
+| `share` | `relative_bid` | the largest share, in basis points, of a balance frozen at `seq_at_open` |
+| `bid_sequence` | the two auctions, `relative_bid` | which of the bids tied on everything above was placed first |
+| `seeded_roll` | all four | the seed a tie was settled from — and in `roll`, the die itself, which is that rule's step 2 rather than its tie-break |
+| `price` | all four | what the winner pays, and under which rule |
+
+A rule records every step it **reached**, including the ones that ran and tied: a trace showing
+`share` → `amount` → `bid_sequence` is saying that the first two were evaluated and settled nothing.
+That `amount` rung under an equal share is not in the numbered chain above and decides in favour of
+the larger bank; whether it should decide at all is
+[#244](https://github.com/prokopto-dev/dragonkillparty/issues/244).
+
+**Every settlement writes a trace, including the ones that award nobody** — a rot, a roll-off that
+tied, a session in which no bid was a bidable share. Those stop at `eligibility` or at the step they
+reached, and that is the answer: nothing below it was ever compared. A no-award resolution therefore
+carries a trace while naming no winning tier, which is not a contradiction — the trace records what
+the chain *evaluated*, the winning tier records what *took the item*.
 
 > Step 1 is new with tiered bidding and inverts the old chain: amount used to be first. Steps 3 and 6
 > also swapped — attendance now outranks bid sequence, so a tie between two mains is settled by who
