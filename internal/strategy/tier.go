@@ -148,6 +148,44 @@ type tierOutcome struct {
 	// tier settled anything at all: zero means one rung held every bid, which is every session until
 	// something fills the field in.
 	below int
+
+	// noun is what the thing on a rung is called in a sentence an officer reads — "bid" for the
+	// three rules that take one, "entrant" for `roll`, which takes a name and rolls for it. Empty
+	// reads as "bid".
+	//
+	// A FIELD RATHER THAN A CONSTANT because a resolution is pasted into guild chat, and "2 bid(s) on
+	// lower rungs" is wrong about a roll-off in the one sentence somebody is reading to find out why
+	// they lost. It is the only thing that varies between the four; the ordering, the counts and the
+	// argument are identical, which is why one type carries all of them.
+	noun string
+}
+
+// tierOutcomeOf derives the same answer from an ALREADY-RANKED slice, for the two rules that rank
+// across the ladder rather than partitioning on it.
+//
+// `relative_bid` and `roll` never call resolveTier — a share is not a price and a die is not a bid,
+// so there is no second-price rule to keep inside a rung and nothing to partition for. They still owe
+// the same account of what the ladder did, and rankBids has already put each rung's entries in one
+// contiguous run, so the whole answer is readable off the head of the slice.
+//
+// The caller guarantees a non-empty slice: a settlement with nothing ranked has no rung and says so
+// with an eligibility step instead.
+func tierOutcomeOf(ranked []rankedBid, noun string) tierOutcome {
+	return tierOutcome{
+		tier:   tierOf(ranked[0].bid),
+		counts: tierCountsOf(ranked),
+		below:  lowerRungs(ranked),
+		noun:   noun,
+	}
+}
+
+// thing is what this outcome's rungs hold, singular, for a sentence.
+func (o tierOutcome) thing() string {
+	if o.noun == "" {
+		return "bid"
+	}
+
+	return o.noun
 }
 
 // resolveTier runs the first phase of a two-phase settlement over the eligible bids.
@@ -222,8 +260,8 @@ func (o tierOutcome) explain(reason string) string {
 		return reason
 	}
 
-	return fmt.Sprintf("tier %s takes the item ahead of %d bid(s) on lower rungs; %s",
-		o.tier, o.below, reason)
+	return fmt.Sprintf("tier %s takes the item ahead of %d %s(s) on lower rungs; %s",
+		o.tier, o.below, o.thing(), reason)
 }
 
 // step is the tier phase's line in the resolution's trace, and unlike explain it is always written:
@@ -239,16 +277,16 @@ func (o tierOutcome) step() ResolutionStep {
 		return ResolutionStep{
 			Kind: ResolutionStepTier,
 			Detail: fmt.Sprintf(
-				"every eligible bid stands in tier %s, so the ladder settled nothing (%s)",
-				o.tier, strings.Join(parts, ", ")),
+				"every eligible %s stands in tier %s, so the ladder settled nothing (%s)",
+				o.thing(), o.tier, strings.Join(parts, ", ")),
 		}
 	}
 
 	return ResolutionStep{
 		Kind: ResolutionStepTier,
 		Detail: fmt.Sprintf(
-			"tier %s is the highest rung holding an eligible bid and takes the item; the %d bid(s) "+
+			"tier %s is the highest rung holding an eligible %s and takes the item; the %d %s(s) "+
 				"below it are never compared against it (%s)",
-			o.tier, o.below, strings.Join(parts, ", ")),
+			o.tier, o.thing(), o.below, o.thing(), strings.Join(parts, ", ")),
 	}
 }

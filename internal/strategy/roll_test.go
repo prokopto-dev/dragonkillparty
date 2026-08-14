@@ -294,6 +294,47 @@ func TestRoll_SettleAuction_ATie_AwardsNobody(t *testing.T) {
 	require.Contains(t, res.Reason, "tied on")
 	require.Contains(t, res.Reason, "new round")
 	require.NotNil(t, res.RngSeed, "the tied round is still replayable")
+
+	// The round that awarded nobody still says what it did, and stops where it stopped: no price step,
+	// because nothing was priced. An officer asked to explain a drop that went nowhere has the same
+	// question as one asked about a drop that went somewhere.
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepSeededRoll,
+	}, traceKinds(res))
+	require.Contains(t, res.Trace[2].Detail, "awards nobody")
+	require.Empty(t, res.WinningTier,
+		"the chain evaluated the ladder and then awarded nothing, which is what makes the trace and "+
+			"this field different questions")
+}
+
+// TestRoll_SettleAuction_TheTraceRecordsTheDieAndTheLadder (#224, AO review).
+//
+// `roll`'s step 2 is the die rather than an amount, so its trace says so — and the seed is in the
+// sentence, because a roll an officer cannot re-run is the one thing a loot dispute cannot be settled
+// from. The tier step is written whether or not the ladder decided anything.
+func TestRoll_SettleAuction_TheTraceRecordsTheDieAndTheLadder(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, []strategy.Bid{
+			{AccountID: acct(0), Tier: strategy.TierAlt},
+			{AccountID: acct(1), Tier: strategy.TierMain},
+			{AccountID: acct(2), Tier: strategy.TierAlt},
+		})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepSeededRoll, strategy.ResolutionStepPrice,
+	}, traceKinds(res))
+
+	require.Contains(t, res.Trace[0].Detail, "3 entrants")
+	require.Contains(t, res.Trace[1].Detail, "entrant",
+		"a roll takes entrants rather than bids, and the sentence an officer pastes into chat says so")
+	require.Contains(t, res.Trace[2].Detail, "seed")
+	require.Contains(t, res.Trace[2].Detail, "tier main")
+	require.Contains(t, res.Trace[3].Detail, "250", "the win cost this pool configured")
 }
 
 // TestRoll_SettleAuction_ARepeatedEntrant_IsRefused: two entries for one account is two draws and

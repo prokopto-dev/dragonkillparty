@@ -170,6 +170,60 @@ func TestRelativeBid_SettleAuction_TheLadderOutranksTheShare(t *testing.T) {
 		"the count above a bidder is disclosable and the shares below them are not")
 }
 
+// TestRelativeBid_SettleAuction_TheTraceRecordsTheShareAndTheFrozenSeq (#224, AO review).
+//
+// This rule's step 2 is a SHARE and the trace names it as one, in basis points, against the seq the
+// balance was frozen at. Rendering it as an `amount` would tell a raider they lost to a bigger bid
+// when they lost to a bigger fraction of a smaller bank — which is the whole model, and the thing
+// they will argue about.
+func TestRelativeBid_SettleAuction_TheTraceRecordsTheShareAndTheFrozenSeq(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 90_000
+	ctx.balances[acct(1)] = 50_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+		[]strategy.Bid{
+			{AccountID: acct(0), AmountCp: 36_000, PlacedAt: fixedNow},
+			{AccountID: acct(1), AmountCp: 27_500, PlacedAt: fixedNow},
+		})
+	require.NoError(t, err)
+
+	require.Equal(t, []strategy.ResolutionStepKind{
+		strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+		strategy.ResolutionStepShare, strategy.ResolutionStepPrice,
+	}, traceKinds(res))
+
+	require.Contains(t, res.Trace[0].Detail, "2 of the 2 bids placed")
+	require.Contains(t, res.Trace[1].Detail, "settled nothing", "nothing here was tiered")
+	require.Contains(t, res.Trace[2].Detail, "5500 bp")
+	require.Contains(t, res.Trace[2].Detail, "seq 5",
+		"a share means nothing without the seq the balance under it was frozen at")
+	require.Contains(t, res.Trace[3].Detail, "27500")
+}
+
+// TestRelativeBid_SettleAuction_NoBidableShare_StillCarriesATrace: the no-award path, which is the
+// one an officer arrives at asking why a drop went nowhere. The chain stopped at eligibility, and
+// that single step is the answer.
+func TestRelativeBid_SettleAuction_NoBidableShare_StillCarriesATrace(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 1, 0, `{"min_bid_bp":5000,"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 100_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5},
+		[]strategy.Bid{{AccountID: acct(0), AmountCp: 100, PlacedAt: fixedNow}})
+
+	require.NoError(t, err)
+	require.Empty(t, res.Winners)
+	require.Equal(t, []strategy.ResolutionStepKind{strategy.ResolutionStepEligibility},
+		traceKinds(res))
+	require.Contains(t, res.Trace[0].Detail, "bp share")
+}
+
 // TestRelativeBid_SettleAuction_ResolvesAgainstTheFrozenBalance is the rule the strategy exists for.
 //
 // Session.SeqAtOpen is the seq every balance in a settlement is read at, POSITIONALLY. Resolving

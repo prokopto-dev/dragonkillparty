@@ -389,7 +389,12 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 	}
 
 	if len(bids) == 0 {
-		return Resolution{Reason: "nobody entered the roll"}, nil
+		const nobody = "nobody entered the roll"
+
+		return Resolution{
+			Reason: nobody,
+			Trace:  []ResolutionStep{{Kind: ResolutionStepEligibility, Detail: nobody}},
+		}, nil
 	}
 
 	// EVERY REFUSAL HAPPENS ABOVE THIS LINE. Below it the round is committed to a sequence of draws,
@@ -417,6 +422,15 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 	// nothing to do with a die. THE RUNG IS STILL PART OF THAT KEY (#224): a main and an alt who both
 	// rolled 97 are not tied, the ladder settled it, and a round that called for a re-roll there would
 	// re-open a question the guild's own rules had already answered.
+	// The ladder ran whatever the round then did with it, so the trace records it on every path out of
+	// here — including the two that award nobody. See Resolution.Trace: what the chain evaluated and
+	// what took the item are different questions, and only the second is empty on a tie.
+	phase := tierOutcomeOf(ordered, "entrant")
+	entered := ResolutionStep{
+		Kind:   ResolutionStepEligibility,
+		Detail: fmt.Sprintf("%d entrants, each rolled once over %d–%d", len(entrants), cfg.RollMin, cfg.RollMax),
+	}
+
 	if tied := tiedOnRank(ordered); tied > 1 {
 		return Resolution{
 			Reason: fmt.Sprintf(
@@ -424,6 +438,13 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 					"this one awards nobody",
 				tied, ordered[0].rank, cfg.RollMin, cfg.RollMax),
 			RngSeed: &seed,
+			Trace: []ResolutionStep{entered, phase.step(), {
+				Kind: ResolutionStepSeededRoll,
+				Detail: fmt.Sprintf(
+					"%d entrants in tier %s rolled %d from seed %d, and a tie is a new round rather "+
+						"than an edit, so this one awards nobody",
+					tied, phase.tier, ordered[0].rank, seed),
+			}},
 		}, nil
 	}
 
@@ -433,17 +454,27 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 	// with a 97 sitting in `alt` would read as a misread die rather than as the ladder.
 	reason := fmt.Sprintf("highest of %d rolls of %d–%d: %d",
 		tiedOnTier(ordered), cfg.RollMin, cfg.RollMax, ordered[0].rank)
-	if below := lowerRungs(ordered); below > 0 {
+	if phase.below > 0 {
 		reason = fmt.Sprintf("%s; %d entrant(s) on lower rungs could not win it whatever they rolled",
-			reason, below)
+			reason, phase.below)
 	}
 
 	return Resolution{
 		Winners:     []Allocation{{AccountID: ordered[0].bid.AccountID, AmountCp: cfg.WinCostCp}},
 		Reason:      reason,
 		RngSeed:     &seed,
-		WinningTier: tierOf(ordered[0].bid),
-		TierCounts:  tierCountsOf(ordered),
+		WinningTier: phase.tier,
+		TierCounts:  phase.counts,
+		Trace: []ResolutionStep{entered, phase.step(), {
+			Kind: ResolutionStepSeededRoll,
+			Detail: fmt.Sprintf(
+				"the highest of the %d rolls in tier %s is %d, drawn from seed %d; re-running that "+
+					"seed over the same entrants in account order draws it again",
+				tiedOnTier(ordered), phase.tier, ordered[0].rank, seed),
+		}, {
+			Kind:   ResolutionStepPrice,
+			Detail: fmt.Sprintf("winning costs the configured %d centipoints", cfg.WinCostCp),
+		}},
 	}, nil
 }
 

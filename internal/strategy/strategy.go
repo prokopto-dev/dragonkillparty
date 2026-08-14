@@ -306,11 +306,19 @@ const (
 	// ResolutionStepAmount — step 2, evaluated only among the bids standing on the winning rung.
 	ResolutionStepAmount ResolutionStepKind = "amount"
 
+	// ResolutionStepShare — `relative_bid`'s step 2. It is a distinct kind rather than an `amount`
+	// carrying basis points because it is a distinct comparison: the largest SHARE of a balance
+	// frozen at the session's open, which is routinely the smaller number of points. A board that
+	// rendered it as an amount would tell a raider they lost to a bigger bid when they lost to a
+	// bigger fraction of a smaller bank.
+	ResolutionStepShare ResolutionStepKind = "share"
+
 	// ResolutionStepBidSequence — step 6: the earliest bid of those tied on the amount.
 	ResolutionStepBidSequence ResolutionStepKind = "bid_sequence"
 
 	// ResolutionStepSeededRoll — step 7, the last automatic one: a roll whose seed is persisted, so
-	// the flip is replayable rather than remembered.
+	// the flip is replayable rather than remembered. It is also `roll`'s step 2, where the die is not
+	// the tie-break but the whole comparison.
 	ResolutionStepSeededRoll ResolutionStepKind = "seeded_roll"
 
 	// ResolutionStepPrice — not a tie-break at all but the answer the chain exists to produce: what
@@ -371,6 +379,17 @@ type Resolution struct {
 	// Trace is the tie-break chain as it was evaluated, in order — the whole basis for the outcome,
 	// written down at the moment it was decided rather than reconstructed later from bids and a
 	// remembered rule.
+	//
+	// EVERY SETTLEMENT WRITES ONE, including the ones that award nobody: a rot, a roll-off that tied,
+	// a session in which no bid was a bidable share. An officer's question about a drop that went
+	// nowhere is the same question as one about a drop that went somewhere, and a resolution that
+	// answered only the second would be a trail with a hole exactly where an argument starts. The
+	// steps recorded are the ones REACHED, so a trace that ends at `eligibility` is itself the
+	// answer — nothing was ranked.
+	//
+	// A no-award outcome therefore has a Trace while WinningTier is empty, and the two are not in
+	// conflict: the trace records what the chain EVALUATED and WinningTier records what took the
+	// item. A tied roll-off evaluated the ladder and then awarded nothing.
 	Trace []ResolutionStep
 }
 

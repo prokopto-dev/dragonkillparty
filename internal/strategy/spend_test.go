@@ -560,6 +560,60 @@ func TestSpendStrategies_SettleAuction_TheHigherRungTakesTheItemWithoutARoll(t *
 	}
 }
 
+// TestSpendStrategies_SettleAuction_EveryResolutionCarriesItsTrace is Resolution.Trace's contract,
+// asserted where the contract is made — on all four rules rather than on the two the tie-break chain
+// was written for (found in AO review of #224).
+//
+// A trace only the auctions wrote would be a documented audit trail with a hole in it exactly where
+// a guild running `roll` or `relative_bid` went looking. The chain differs between them — a die is
+// not an amount and a share is not a price — and the SHAPE does not: what was eligible, what the
+// ladder did, what the rule compared, what the winner pays.
+//
+// BOTH OUTCOMES, because the no-award path is the one an argument starts on. A settlement that
+// awarded nobody stops at `eligibility`, and that single step is itself the answer: nothing was ever
+// ranked. It is also why a trace and an empty WinningTier are not in conflict — the trace records
+// what the chain evaluated, WinningTier records what took the item.
+func TestSpendStrategies_SettleAuction_EveryResolutionCarriesItsTrace(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			session := strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}
+
+			nobody, err := tc.s.SettleAuction(spendCtx(t, tc.config), session, nil)
+			require.NoError(t, err)
+			require.Empty(t, nobody.Winners)
+			require.Equal(t, []strategy.ResolutionStepKind{strategy.ResolutionStepEligibility},
+				traceKinds(nobody),
+				"a settlement with nothing to rank stops at eligibility, and says so rather than "+
+					"returning an outcome with no account of itself")
+
+			alt, main := tc.bid(acct(0)), tc.bid(acct(1))
+			alt.Tier, main.Tier = strategy.TierAlt, strategy.TierMain
+
+			awarded, err := tc.s.SettleAuction(spendCtx(t, tc.config), session,
+				[]strategy.Bid{alt, main})
+			require.NoError(t, err)
+			require.NotEmpty(t, awarded.Winners)
+
+			kinds := traceKinds(awarded)
+			require.GreaterOrEqual(t, len(kinds), 4)
+			require.Equal(t, strategy.ResolutionStepEligibility, kinds[0])
+			require.Equal(t, strategy.ResolutionStepTier, kinds[1],
+				"the ladder is step 1 of the chain and is recorded before whatever the rule compares")
+			require.Equal(t, strategy.ResolutionStepPrice, kinds[len(kinds)-1],
+				"the chain ends at what the winner pays, which is the answer it exists to produce")
+
+			for i, step := range awarded.Trace {
+				require.NotEmpty(t, step.Detail,
+					"step %d (%s) records that it ran and not what it decided", i, step.Kind)
+			}
+		})
+	}
+}
+
 // TestSpendStrategies_ValidateBid_AnUnrankableTier_IsRefused, at bid time, by all four.
 //
 // "main_offpsec" is one transposition from the second rung, and it is the realistic failure: a caller

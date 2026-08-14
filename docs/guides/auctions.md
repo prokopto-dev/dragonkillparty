@@ -173,9 +173,24 @@ Steps 1–7 are automatic. Step 8 exists so the chain always terminates.
 Steps 1, 2, 6 and 7 are the ones a pure strategy can evaluate, and all four run today; steps 3 to 5
 need attendance and award history the planner façade does not carry, and a step that cannot be
 evaluated is skipped rather than approximated. Every step that *was* reached is written onto the
-resolution as a named trace entry — `eligibility`, `tier`, `amount`, `bid_sequence`, `seeded_roll`,
-`price` — alongside the count of eligible bids on each rung. That is what an officer reads back
-months later, and the counts are also what the disclosure below is rendered from.
+resolution as a named trace entry, alongside the count of eligible bids on each rung. That is what an
+officer reads back months later, and the counts are also what the disclosure below is rendered from.
+
+| Trace entry | Written by | Records |
+|---|---|---|
+| `eligibility` | all four | how many of the bids placed cleared the floor that applied |
+| `tier` | all four | which rung took the item, how many bids stood on each, and when the ladder settled nothing |
+| `amount` | `auction_open`, `auction_sealed` | the highest bid on the winning rung |
+| `share` | `relative_bid` | the largest share, in basis points, of a balance frozen at `seq_at_open` |
+| `bid_sequence` | the two auctions | which of the bids tied on the amount was placed first |
+| `seeded_roll` | all four | the seed a tie was settled from — and in `roll`, the die itself, which is that rule's step 2 rather than its tie-break |
+| `price` | all four | what the winner pays, and under which rule |
+
+**Every settlement writes a trace, including the ones that award nobody** — a rot, a roll-off that
+tied, a session in which no bid was a bidable share. Those stop at `eligibility` or at the step they
+reached, and that is the answer: nothing below it was ever compared. A no-award resolution therefore
+carries a trace while naming no winning tier, which is not a contradiction — the trace records what
+the chain *evaluated*, the winning tier records what *took the item*.
 
 > Step 1 is new with tiered bidding and inverts the old chain: amount used to be first. Steps 3 and 6
 > also swapped — attendance now outranks bid sequence, so a tie between two mains is settled by who

@@ -377,10 +377,16 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 	}
 
 	if len(ranked) == 0 {
+		nothing := fmt.Sprintf(
+			"none of the %d bids placed is a %d..%d bp share of its balance frozen at seq %d",
+			len(bids), cfg.MinBidBp, cfg.MaxBidBp, session.SeqAtOpen)
+
+		// A trace with one step, which is itself the answer: the chain stopped at eligibility, so no
+		// rung was ever compared. See Resolution.Trace — a settlement that awards nobody owes the same
+		// account of itself as one that awards somebody.
 		return Resolution{
-			Reason: fmt.Sprintf(
-				"none of the %d bids placed is a %d..%d bp share of its balance frozen at seq %d",
-				len(bids), cfg.MinBidBp, cfg.MaxBidBp, session.SeqAtOpen),
+			Reason: nothing,
+			Trace:  []ResolutionStep{{Kind: ResolutionStepEligibility, Detail: nothing}},
 		}, nil
 	}
 
@@ -400,23 +406,49 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 	}
 
 	// "The largest share" is only true within the rung that took the item, so where a lower one holds
-	// a bid the sentence says which and how many. It names no share and no amount: the count above a
-	// bidder is disclosable and the values below them are not (docs/guides/auctions.md).
-	if below := lowerRungs(ordered); below > 0 {
-		reason = fmt.Sprintf("tier %s takes the item ahead of %d bid(s) on lower rungs; %s",
-			tierOf(winner.bid), below, reason)
-	}
+	// a bid the sentence says which and how many — the shared clause every rule in the family leads
+	// with. It names no share and no amount: the count above a bidder is disclosable and the values
+	// below them are not (docs/guides/auctions.md).
+	phase := tierOutcomeOf(ordered, "bid")
+	reason = phase.explain(reason)
 
 	if seed != nil {
 		reason += ", after a seeded roll between the bids tied at that share"
 	}
 
+	trace := []ResolutionStep{{
+		Kind: ResolutionStepEligibility,
+		Detail: fmt.Sprintf(
+			"%d of the %d bids placed is a %d..%d bp share of its balance frozen at seq %d",
+			len(ranked), len(bids), cfg.MinBidBp, cfg.MaxBidBp, session.SeqAtOpen),
+	}, phase.step(), {
+		Kind: ResolutionStepShare,
+		Detail: fmt.Sprintf("the largest share in tier %s is %d bp of a balance frozen at seq %d",
+			phase.tier, winner.rank, session.SeqAtOpen),
+	}}
+
+	if seed != nil {
+		trace = append(trace, ResolutionStep{
+			Kind: ResolutionStepSeededRoll,
+			Detail: fmt.Sprintf(
+				"%d bids in tier %s committed the same share; a roll from seed %d settled it",
+				tiedOnRank(ordered), phase.tier, *seed),
+		})
+	}
+
+	trace = append(trace, ResolutionStep{
+		Kind: ResolutionStepPrice,
+		Detail: fmt.Sprintf("the winner pays what they committed, %d centipoints",
+			winner.bid.AmountCp),
+	})
+
 	return Resolution{
 		Winners:     []Allocation{{AccountID: winner.bid.AccountID, AmountCp: winner.bid.AmountCp}},
 		Reason:      reason,
 		RngSeed:     seed,
-		WinningTier: tierOf(winner.bid),
-		TierCounts:  tierCountsOf(ordered),
+		WinningTier: phase.tier,
+		TierCounts:  phase.counts,
+		Trace:       trace,
 	}, nil
 }
 
