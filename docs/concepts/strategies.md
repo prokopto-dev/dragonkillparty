@@ -1,8 +1,8 @@
 # Point strategies
 
 **Status:** the strategy engine is Phase 1 and is landing strategy by strategy. `fixed_price`,
-`tick`, `start_points` and `cap` ship today — see [the worked examples](#the-shipped-strategies)
-below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
+`tick`, `start_points`, `cap`, `decay_percent` and `decay_window` ship today — see
+[the worked examples](#the-shipped-strategies) below; the rest of the catalogue follows. This page explains the design; each strategy's knobs are its
 `ConfigSchema` in `internal/strategy/<id>.go`, and a generated per-strategy reference page is Phase 2
 ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)).
 
@@ -184,6 +184,67 @@ second is a new member; a planner that tested the balance would pay a spent-out 
 opening grant. Eligibility is "has no ledger entry in this pool", so the grant is itself history and a
 re-run — in the same cadence period or any later one — credits nobody.
 
+### `decay_percent` — the weekly haircut
+
+A rate of **1000 bp** (10%) a week on a balance of 500.00. Each period is planned against the balance
+the previous one left, so a run that was missed while the box was down is caught up one batch per
+period rather than one batch for the gap:
+
+| Period | Posted batch | Balance after |
+|---|---|---|
+| 2026-W31 | −50.00 | 450.00 |
+| 2026-W32 | −45.00 | 405.00 |
+| 2026-W33 | −40.50 | 364.50 |
+| 2026-W34 | −36.45 | 328.05 |
+
+The amount is **floored**, never rounded: 0.09 at 10% is 0.009, which is nothing at all, and the member
+gets no entry rather than losing a centipoint the rate did not ask for.
+
+Three knobs, and the last two are the settings guilds argue about:
+
+| Knob | What it does |
+|---|---|
+| `decay_bp` | the rate. 0 is refused — a pool that does not decay leaves its over-time slot empty |
+| `floor_cp` | the balance decay stops at. The run lands **on** the floor rather than crossing it |
+| `negative_balances` | what a debt does: `skip` (default), `toward_zero` (debt forgiveness), `preserve_sign` (the debt grows, and needs a floor below zero) |
+
+**A re-run of a period is the same batch, not a second haircut.** A percentage decay is not
+idempotent the way a cap trim is — 10% twice is 19% — so what makes the retry safe is that every
+balance is read at the period's own as-of `seq`. Two runs read the same snapshot, propose the same
+batch, and the `(pool_id, kind, cadence_period)` key collapses them into one.
+
+### `decay_window` — earnings expire
+
+No compounding: an earning simply stops counting once it is older than the window, and it stops
+counting by being **removed**. A 90-day window, with the run that sees the April earnings cross the
+boundary:
+
+| Earned | Amount | Counts on 2026-08-03? |
+|---|---|---|
+| 2026-07-20 | 190.00 | yes |
+| 2026-06-01 | 240.00 | yes |
+| 2026-04-02 | 310.00 | **no** — 123 days old |
+
+```
+2026-W31   the slice holding the 2026-04-02 earning has aged out
+           debit   Tankguy      −310.00
+           credit  guild_bank   +310.00      → Tankguy 430.00
+```
+
+Each run expires one slice of the pool's own history — everything credited between the previous run's
+boundary and this one's — so consecutive runs tile the log and **every earning expires exactly once**.
+The removal is a debit, so it can never be mistaken for an earning by a later run; that is what stops
+a window decay from quietly re-expiring its own batches.
+
+A member who has already spent what the window is about to expire is **not** pushed into debt for it:
+the run takes what is left above `floor_cp` and no more. What it gives up is a carry-forward — the part
+it could not take is forgiven, because the window is a rule about the age of an earning rather than a
+debt the pool collects.
+
+1.0 ships the hard cutoff. The linear taper the guide offers as an alternative needs to know how old
+each earning is rather than which side of the boundary it fell on, and is
+[#221](https://github.com/prokopto-dev/dragonkillparty/issues/221).
+
 ### `fixed_price` — spend at a published price
 
 Covered with its price table and its zero-sum split in
@@ -191,11 +252,13 @@ Covered with its price table and its zero-sum split in
 
 ### What each one refuses
 
-`tick`, `start_points` and `cap` answer one question each, and say so rather than guessing at the
-others: `tick.PlanAward` and `cap.PlanAward` return `ErrUnsupported` (a 501 naming the strategy),
-because an earn rule has no price list and inventing one would be a second copy of `fixed_price`'s
-price resolution that could then disagree with it. That is not a gap — it is what makes a pool need
-three rules rather than one, which is the section below.
+`tick`, `start_points`, `cap`, `decay_percent` and `decay_window` answer one question each, and say so
+rather than guessing at the others: `tick.PlanAward` and `cap.PlanAward` return `ErrUnsupported` (a 501
+naming the strategy), because an earn rule has no price list and inventing one would be a second copy
+of `fixed_price`'s price resolution that could then disagree with it. Both decay rules refuse
+`PlanAttendance` as well as `PlanAward` — a haircut is not a tick — and name the kind of rule to pair
+them with. That is not a gap; it is what makes a pool need three rules rather than one, which is the
+section below.
 
 ## A pool composes three rules
 

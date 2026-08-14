@@ -72,6 +72,20 @@ func (c *poolCtx) HasHistory(core.ULID, string, int64) (bool, error) {
 	return false, nil
 }
 
+// EarnedBetween is DELIBERATELY UNANSWERABLE here, for the same reason HasHistory is.
+//
+// The query behind it is ordinary — the sum of an account's positive entries in a seq range — but it
+// is not one this package exposes yet, and only `decay_window` asks it. A call reaching this is a
+// routing change that needs a real implementation rather than a plausible one: a fake that returned
+// zero would make a window run silently expire nothing, which looks exactly like a run with nothing
+// to expire.
+func (c *poolCtx) EarnedBetween(core.ULID, string, int64, int64) (core.Centipoints, error) {
+	require.FailNow(c.tb, "EarnedBetween reached a façade that cannot answer it",
+		"the composed pool under test has no rule that expires earnings by age")
+
+	return 0, nil
+}
+
 func (c *poolCtx) SystemAccount(systemKey string) (core.ULID, error) {
 	id, ok := ledger.SystemAccountIDs()[systemKey]
 	require.True(c.tb, ok, "no seeded system account for key %q", systemKey)

@@ -47,6 +47,8 @@ func Catalogue() []PointStrategy {
 		StartPoints{},
 		FixedPrice{},
 		Cap{},
+		DecayPercent{},
+		DecayWindow{},
 	}
 }
 
