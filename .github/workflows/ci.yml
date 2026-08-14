@@ -657,9 +657,10 @@ jobs:
         # `docker://ghcr.io/google/osv-scanner-action:v2.5.0` reference is a mutable tag — the pin is
         # weaker than it looks and it is worth saying so rather than implying otherwise. It is still
         # the right trade here: `go install`ing the scanner would couple this repository's Go patch
-        # floor to osv-scanner's (its go.mod requires 1.26.5; ours says `go 1.26` and CI runs
-        # GOTOOLCHAIN=local), so a runner resolving an older patch would fail the scan for a reason
-        # nobody could act on. The container carries its own toolchain.
+        # floor to osv-scanner's (its go.mod requires 1.26.5, and CI runs GOTOOLCHAIN=local), so the
+        # day the scanner asks for a patch newer than ours the scan would fail for a reason nobody
+        # could act on. Ours is `go 1.26.6` — a security floor set by govulncheck, on its own cadence,
+        # which presently clears the scanner's. The container carries its own toolchain.
 
   typecheck:
     name: typecheck
