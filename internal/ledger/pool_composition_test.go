@@ -229,6 +229,135 @@ func TestRules_ComposedPool_EarnsAwardsAndDecaysEndToEnd(t *testing.T) {
 			"event and not a rewrite of the one that already ran")
 }
 
+// TestRules_ComposedPool_AttendancePotAndZeroSumSplit_CommitEndToEnd is the same claim for the two
+// ALLOCATING strategies (#196): that a batch whose every credit came out of the largest-remainder
+// allocator is a batch the ledger accepts.
+//
+// It is not a duplicate of the test above. Those three rules produce credits the planner computed
+// directly — a tick award times a weight, a trim to a ceiling — and each one is exact by construction.
+// These two produce credits that CANNOT be exact individually: 100.00 over weights 12/9/8 and 20.00
+// over 9/8 both leave a remainder, so the batch balances only because the allocator gave the odd
+// centipoints to the largest remainders. That is precisely the arithmetic
+// LargestRemainderSumsToDebit exists to check, and until this test it was checked nowhere against a
+// real commit — the strategy package's own tests stop at the proposal, and the invariant engine had
+// never been handed one of these batches.
+//
+//	attendance_weighted  a raid worth a 100.00 pot, split 12/9/8 across three raiders
+//	zero_sum             one of them buys an item at 20.00, split across the other two
+//	reversal             the award is undone, routed by ledger_batch.strategy_id to zero_sum
+func TestRules_ComposedPool_AttendancePotAndZeroSumSplit_CommitEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	svc, s := newService(t)
+	ctx := t.Context()
+
+	accounts := seedPersonAccounts(t, s, 3)
+
+	rules, err := strategy.PoolConfig{
+		EarnStrategyID: "attendance_weighted",
+		EarnConfigJSON: `{"raid_pot_cp": 10000}`,
+
+		// The winner is excluded from the split by default, which is the guide's worked example: they
+		// pay the whole price and the other raiders share it.
+		SpendStrategyID: "zero_sum",
+		SpendConfigJSON: `{"default_price_cp": 2000}`,
+	}.Resolve()
+	require.NoError(t, err)
+
+	facade := &poolCtx{tb: t, store: s, poolID: ledger.DefaultPoolID}
+	for _, id := range accounts {
+		facade.roster = append(facade.roster, strategy.AccountRef{ID: id, Kind: "person"})
+	}
+
+	attendees := []strategy.Share{
+		{AccountID: accounts[0], Weight: 12},
+		{AccountID: accounts[1], Weight: 9},
+		{AccountID: accounts[2], Weight: 8},
+	}
+
+	// 1. EARN. The pot is 100.00 whatever the turnout, and 12/9/8 of 29 does not divide: the exact
+	// quotas are 4137.93, 3103.44 and 2758.62, so two centipoints are left over and go to the two
+	// largest remainders (raiders 0 and 2). The bank is debited the whole pot, never the sum of what
+	// was credited — those are the same number here only because the allocator makes them so.
+	pot, err := rules.PlanAttendance(facade, strategy.AttendanceEvent{
+		Attendees:   attendees,
+		EffectiveAt: core.FromTime(fixedNow),
+		Reason:      "Vox, 12 ticks",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "attendance_weighted", pot.StrategyID)
+	require.Equal(t, kinds.KindAttendance, pot.Kind)
+
+	commitComposed(t, svc, ctx, pot, "raid-1")
+
+	requireBalance(t, s, accounts[0], 4138)
+	requireBalance(t, s, accounts[1], 3103)
+	requireBalance(t, s, accounts[2], 2759)
+	requireBalance(t, s, ledger.AccountIDGuildBank, -10000,
+		"the bank funded exactly the pot: 4138 + 3103 + 2759 = 10000, which is the property that "+
+			"would fail by one centipoint if each share had been rounded on its own")
+
+	// 2. SPEND. 20.00 across the two raiders who are not the buyer, weights 9 and 8: 1058.82 and
+	// 941.18 exactly, so one centipoint is left over and goes to raider 1's larger remainder.
+	facade.headSeq = headSeq(t, s)
+
+	award, err := rules.PlanAward(facade, strategy.AwardEvent{
+		Buyer:         strategy.AccountRef{ID: accounts[0], Kind: "person"},
+		Item:          strategy.ItemRef{Name: "Cloak of Flames"},
+		Beneficiaries: attendees,
+		EffectiveAt:   core.FromTime(fixedNow),
+		Reason:        "Nagafen, roll 97",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "zero_sum", award.StrategyID)
+	require.Equal(t, kinds.KindAward, award.Kind)
+
+	awardBatchID := commitComposed(t, svc, ctx, award, "award-1")
+
+	requireBalance(t, s, accounts[0], 2138, "the buyer pays the whole price and gets none of it back")
+	requireBalance(t, s, accounts[1], 4162)
+	requireBalance(t, s, accounts[2], 3700)
+	requireBalance(t, s, ledger.AccountIDGuildBank, -10000,
+		"a zero-sum award does not touch the bank at all: the price went to the other raiders, which "+
+			"is the whole difference between this and a fixed_price pool")
+
+	require.Greater(t, currentBalance(t, s, accounts[1]), currentBalance(t, s, accounts[0]),
+		"raider 1 attended LESS of the raid and now leads, because raider 0 spent — which is the "+
+			"closed economy working, not a defect")
+
+	// Conservation over the whole composed run: two rules, two batches, and not one centipoint minted
+	// or destroyed between them despite neither split dividing evenly.
+	var total core.Centipoints
+	for _, id := range append(append([]core.ULID{}, accounts...), ledger.AccountIDGuildBank) {
+		total += currentBalance(t, s, id)
+	}
+
+	require.Zero(t, total)
+
+	// 3. The reversal routes on the column to the rule that planned the original, and undoes the debit
+	// AND both credits together — the guarantee docs/guides/loot-and-reconciliation.md makes to an
+	// officer about a zero-sum award.
+	facade.headSeq = headSeq(t, s)
+
+	reversal, err := rules.PlanReversal(facade, strategy.LedgerBatch{
+		ID:                 awardBatchID,
+		Kind:               award.Kind,
+		StrategyID:         award.StrategyID,
+		StrategyVersion:    award.StrategyVersion,
+		ConfigSnapshotJSON: award.ConfigSnapshotJSON,
+		Entries:            award.Entries,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "zero_sum", reversal.StrategyID)
+	require.Equal(t, kinds.KindReversal, reversal.Kind)
+
+	commitComposed(t, svc, ctx, reversal, "reverse-award-1")
+
+	requireBalance(t, s, accounts[0], 4138, "every account is exactly where the raid left it")
+	requireBalance(t, s, accounts[1], 3103)
+	requireBalance(t, s, accounts[2], 2759)
+}
+
 // commitComposed writes one planned batch, requires it to have landed, and returns its id.
 //
 // Each carries an idempotency key, because that is how the shipped callers commit — the cadence
