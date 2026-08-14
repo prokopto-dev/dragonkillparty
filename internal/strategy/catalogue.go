@@ -48,6 +48,8 @@ func Catalogue() []PointStrategy {
 		FixedPrice{},
 		LootCouncil{},
 		Cap{},
+		DecayPercent{},
+		DecayWindow{},
 	}
 }
 
