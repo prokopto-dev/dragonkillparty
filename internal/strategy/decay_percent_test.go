@@ -236,6 +236,43 @@ func TestDecayPercent_PlanDecay_NegativeBalances(t *testing.T) {
 	}
 }
 
+// TestDecayPercent_PlanDecay_TowardZero_NettingToZero_WritesNoBankEntry pins the nightly property's
+// counterexample as an example (#245).
+//
+// `toward_zero` is the only policy in this package that plans MIXED-SIGN amounts — a debt is credited
+// while a positive balance is debited — so it is the only one whose counterparty can land on zero.
+// These are the generated numbers: at 1 bp two debts are forgiven a centipoint each while the one
+// positive balance is docked two, and the members balance the batch between themselves.
+//
+// The bank's entry would then be −0, which ledger_entry's CHECK (amount_cp <> 0) and the universal
+// AmountsNonZero invariant both refuse — rejecting the WHOLE batch at commit and losing the entire
+// guild's decay for the period over an arithmetic coincidence, from a planner that returned no error.
+func TestDecayPercent_PlanDecay_TowardZero_NettingToZero_WritesNoBankEntry(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 3, 0, `{"decay_bp": 1, "floor_cp": -2480, "negative_balances": "toward_zero"}`)
+	ctx.balances[acct(0)] = -18_014 // forgiven 1
+	ctx.balances[acct(1)] = -10_893 // forgiven 1
+	ctx.balances[acct(2)] = 20_975  // docked 2
+
+	p, err := strategy.DecayPercent{}.PlanDecay(ctx, strategy.DecayRun{
+		PeriodKey: "2026-W31", AsOfSeq: 4, EffectiveAt: fixedNow,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, p.Entries, 3, "the three members moved and the bank did not, so the bank gets no row")
+
+	for i, e := range p.Entries {
+		require.NotEqual(t, core.Centipoints(0), e.AmountCp,
+			"entry %d moves 0 centipoints, which CHECK (amount_cp <> 0) refuses", i)
+		require.NotEqual(t, ledger.AccountIDGuildBank, e.AccountID,
+			"entry %d is the bank, which funded nothing this period", i)
+	}
+
+	require.Equal(t, core.Centipoints(0), sumEntries(p),
+		"the members balance the batch between themselves, so conservation is unaffected")
+}
+
 // TestDecayPercent_PlanDecay_PreserveSign_StopsAtTheFloor: a growing debt stops where the guild said
 // it stops, landing exactly on the floor rather than crossing it.
 func TestDecayPercent_PlanDecay_PreserveSign_StopsAtTheFloor(t *testing.T) {

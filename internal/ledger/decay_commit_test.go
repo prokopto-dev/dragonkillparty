@@ -207,3 +207,76 @@ func TestRules_DecayPercentTowardZero_ForgivesADebtEndToEnd(t *testing.T) {
 	requireBalance(t, s, accounts[0], -4_500, "and no balance moved twice")
 	requireBalance(t, s, accounts[1], 9_000)
 }
+
+// TestRules_DecayPercentTowardZero_APeriodNettingToZero_CommitsWithNoBankEntry is #245, as the run an
+// officer would actually schedule.
+//
+// `toward_zero` is the only policy in the strategy package that plans MIXED-SIGN amounts — a debt is
+// credited while a positive balance is debited — so it is the only one whose counterparty can land on
+// zero. Here 10% of a debt of 50.00 is forgiven and 10% of a credit of 50.00 is taken: the two
+// members balance the batch between themselves and the bank funds nothing.
+//
+// THIS FILE IS WHERE THAT MATTERED, which is the same gap the test above was written for. The planner
+// wrote the bank in regardless, at −0; AmountsNonZero is universal and unwaivable and ledger_entry
+// carries CHECK (amount_cp <> 0), so the zero entry did not spoil one row — it got the WHOLE batch
+// refused. Every member's decay for the period was lost, over an arithmetic coincidence, from a
+// planner that had returned no error and passed every example test. The nightly property found it;
+// this is the commit it was standing in for.
+func TestRules_DecayPercentTowardZero_APeriodNettingToZero_CommitsWithNoBankEntry(t *testing.T) {
+	t.Parallel()
+
+	svc, s := newService(t)
+	ctx := t.Context()
+
+	accounts := seedPersonAccounts(t, s, 2)
+
+	rules, err := strategy.PoolConfig{
+		OverTimeStrategyID: "decay_percent",
+		OverTimeConfigJSON: `{"decay_bp": 1000, "negative_balances": "toward_zero"}`,
+	}.Resolve()
+	require.NoError(t, err)
+
+	facade := &poolCtx{tb: t, store: s, poolID: ledger.DefaultPoolID}
+	for _, id := range accounts {
+		facade.roster = append(facade.roster, strategy.AccountRef{ID: id, Kind: "person"})
+	}
+
+	// Equal and opposite, which is what makes the period net to zero: one member 50.00 in debt, one
+	// holding 50.00. The bank funded the second out of what the first overdrew, so it is back at 0 and
+	// stays there.
+	_, err = svc.Commit(ctx, request(award(accounts[0],
+		[]ledger.Allocation{{AccountID: ledger.AccountIDGuildBank, AmountCp: 5_000}})))
+	require.NoError(t, err)
+
+	_, err = svc.Commit(ctx, request(award(ledger.AccountIDGuildBank,
+		[]ledger.Allocation{{AccountID: accounts[1], AmountCp: 5_000}})))
+	require.NoError(t, err)
+
+	requireBalance(t, s, ledger.AccountIDGuildBank, 0)
+
+	facade.headSeq = headSeq(t, s)
+
+	run, err := rules.PlanDecay(facade, strategy.DecayRun{
+		PeriodKey:   "2026-W31",
+		AsOfSeq:     facade.headSeq,
+		EffectiveAt: core.FromTime(fixedNow),
+	})
+	require.NoError(t, err)
+
+	require.Len(t, run.Entries, 2, "the two members moved and the bank did not, so the bank gets no row")
+
+	for i, e := range run.Entries {
+		require.NotEqual(t, core.Centipoints(0), e.AmountCp,
+			"entry %d moves 0 centipoints, which CHECK (amount_cp <> 0) refuses", i)
+		require.NotEqual(t, ledger.AccountIDGuildBank, e.AccountID,
+			"entry %d is the bank, which funded nothing this period", i)
+	}
+
+	commitComposed(t, svc, ctx, run, "decay:2026-W31")
+
+	requireBalance(t, s, accounts[0], -4_500,
+		"the debt shrank by a tenth, out of what the other member's haircut released")
+	requireBalance(t, s, accounts[1], 4_500)
+	requireBalance(t, s, ledger.AccountIDGuildBank, 0,
+		"the bank is where it started, because it genuinely did not move")
+}
