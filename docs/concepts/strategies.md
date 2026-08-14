@@ -256,6 +256,12 @@ Three knobs, and the last two are the settings guilds argue about:
 | `floor_cp` | the balance decay stops at. The run lands **on** the floor rather than crossing it |
 | `negative_balances` | what a debt does: `skip` (default), `toward_zero` (debt forgiveness), `preserve_sign` (the debt grows, and needs a floor below zero) |
 
+**Under `toward_zero` the bank sometimes has no row at all.** It is the only policy that credits and
+debits in the same batch — a debt is forgiven while a positive balance is docked — so a period whose
+forgiveness happens to equal its haircut is funded by the members between themselves. The batch still
+sums to exactly zero; the bank simply did not move, and an entry of zero is not a legal row, for the
+same reason the member whose 0.09 rounds away gets none.
+
 **A re-run of a period is the same batch, not a second haircut.** A percentage decay is not
 idempotent the way a cap trim is — 10% twice is 19% — so what makes the retry safe is that every
 balance is read at the period's own as-of `seq`. Two runs read the same snapshot, propose the same
