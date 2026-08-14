@@ -1187,6 +1187,278 @@ func TestProperty_RelativeBid_TheWinnerHoldsTheLargestFrozenShare(t *testing.T) 
 	require.Positive(t, settled, "no session settled, so the property held vacuously")
 }
 
+// relativeContender is one bid a `relative_bid` settlement actually ranks, with the share it commits.
+//
+// RESTATED FROM THE RULE RATHER THAN TAKEN FROM IT, like every expectation in this file: a contender
+// list built by calling the strategy would agree with the settlement by construction, including when
+// both are wrong. A bid contends when it commits something, its frozen balance is positive and the
+// commitment is no larger than that balance — the three facts shareBasisPoints refuses on — and when
+// it stands on the highest rung holding such a bid, because the ladder outranks the share (#224).
+type relativeContender struct {
+	account  core.ULID
+	share    int64
+	amountCp core.Centipoints
+	placedAt core.Micros
+}
+
+// relativeContenders is the case's contenders, in the order the bids were generated.
+//
+// The session it describes is one with NO absolute minimum, which is what the two properties below
+// settle under. A session minimum is an amount rather than a share, so it is the one knob under which
+// two sessions holding the same shares are not the same session.
+func (c spendPropCase) relativeContenders() []relativeContender {
+	bidable := func(i int) bool {
+		return c.Amounts[i] > 0 && c.Balances[i] > 0 && c.Amounts[i] <= c.Balances[i]
+	}
+
+	top := 0
+
+	for i, b := range c.bids(false) {
+		if !bidable(i) {
+			continue
+		}
+
+		if rank := ladderRank(b.Tier); rank > top {
+			top = rank
+		}
+	}
+
+	out := make([]relativeContender, 0, len(c.Amounts))
+
+	for i, b := range c.bids(false) {
+		if !bidable(i) || ladderRank(b.Tier) != top {
+			continue
+		}
+
+		out = append(out, relativeContender{
+			account: b.AccountID,
+			// The same integer arithmetic the strategy uses, restated for the reason above.
+			share:    int64(b.AmountCp) * 10_000 / int64(c.Balances[i]),
+			amountCp: b.AmountCp,
+			placedAt: b.PlacedAt,
+		})
+	}
+
+	return out
+}
+
+// topShare is the largest share any contender committed, and -1 when nobody contended.
+func topShare(contenders []relativeContender) int64 {
+	best := int64(-1)
+
+	for _, ct := range contenders {
+		if ct.share > best {
+			best = ct.share
+		}
+	}
+
+	return best
+}
+
+// largestCommitmentAtTopShare is the account that committed the most POINTS among the contenders tied
+// at the largest share — which is to say the account the comparator handed the item to before #244.
+//
+// It exists to make the properties below non-vacuous rather than to assert anything: a run in which
+// this account never changes as the banks are scaled is a run in which the defect was never reachable,
+// and a property that passes only because its interesting case never occurred is not a property.
+func largestCommitmentAtTopShare(contenders []relativeContender) core.ULID {
+	best := topShare(contenders)
+
+	var (
+		account core.ULID
+		most    core.Centipoints
+	)
+
+	for _, ct := range contenders {
+		if ct.share == best && ct.amountCp > most {
+			account, most = ct.account, ct.amountCp
+		}
+	}
+
+	return account
+}
+
+// scaledBanks is the same session at a different scale: every bidder's frozen balance and the amount
+// they committed multiplied by the same small factor, so that every share is EXACTLY what it was.
+//
+// floor(k*a * 10000 / k*b) is floor(a * 10000 / b) for any positive k — the ratio is unchanged, so
+// the flooring is too — which is what makes the settlement of the scaled session the same question as
+// the settlement of the original, asked of banks of a different size. The factors are positional
+// rather than drawn, because the generator's draws are one seeded sequence and taking two more here
+// would renumber every case behind it (see drawTiers).
+func (c spendPropCase) scaledBanks() spendPropCase {
+	out := c
+	out.Balances = make([]core.Centipoints, len(c.Balances))
+	out.Amounts = make([]core.Centipoints, len(c.Amounts))
+
+	for i := range c.Balances {
+		factor := core.Centipoints(i%4) + 1
+		out.Balances[i] = c.Balances[i] * factor
+		out.Amounts[i] = c.Amounts[i] * factor
+	}
+
+	return out
+}
+
+// TestProperty_RelativeBid_ATiedShareGoesToTheEarliestBid, and never to the largest commitment (#244).
+//
+// The rule's own model is that an equal share is an equal claim: a bidder who commits half of 500.00
+// has done exactly what a bidder who commits half of 900.00 did, and the 400.00 between them is the
+// bank that `relative_bid` exists to stop deciding items. So the step below the share is
+// docs/guides/auctions.md's step 6 — the earliest bid — and the property is the exact one that
+// implies: the winner's placement time is the smallest among the bids tied with it at the winning
+// share. It holds where a seeded roll settles the item too, because the roll only ever runs between
+// bids that already share that smallest time.
+//
+// The second counter is what makes the property about #244 rather than about the trace: it counts the
+// sessions in which the winner was OUTBID in points by somebody tied with it at the same share, which
+// is precisely the outcome the old comparator could not produce.
+func TestProperty_RelativeBid_ATiedShareGoesToTheEarliestBid(t *testing.T) {
+	t.Parallel()
+
+	tied, outbid := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		res, err := strategy.RelativeBid{}.SettleAuction(c.ctx(t, c.relativeConfigJSON()),
+			strategy.Session{ID: acct(60), SeqAtOpen: 3}, c.bids(false))
+		if err != nil {
+			return err
+		}
+
+		if len(res.Winners) == 0 {
+			return nil
+		}
+
+		contenders := c.relativeContenders()
+		best := topShare(contenders)
+
+		var (
+			winner   relativeContender
+			earliest core.Micros
+			at       int
+		)
+
+		for _, ct := range contenders {
+			if ct.share != best {
+				continue
+			}
+
+			at++
+
+			if at == 1 || ct.placedAt < earliest {
+				earliest = ct.placedAt
+			}
+
+			if ct.account == res.Winners[0].AccountID {
+				winner = ct
+			}
+		}
+
+		if winner.account == "" {
+			return fmt.Errorf("account %s took the item and is not one of the %d bids at the winning "+
+				"share of %d bp", res.Winners[0].AccountID, at, best)
+		}
+
+		if winner.placedAt != earliest {
+			return fmt.Errorf("the winning bid at %d bp was placed at %d and a bid tied with it at %d; "+
+				"below an equal share the chain is the bid sequence, and the points behind the share "+
+				"are not a rung of it", best, winner.placedAt, earliest)
+		}
+
+		if at > 1 {
+			tied++
+		}
+
+		for _, ct := range contenders {
+			if ct.share == best && ct.amountCp > winner.amountCp {
+				outbid++
+
+				break
+			}
+		}
+
+		return nil
+	})
+
+	require.Positive(t, tied, "no session ever tied on the share, so the step below it is unexercised")
+	require.Positive(t, outbid,
+		"no winner ever committed fewer points than a bid tied with it at the same share, so the "+
+			"inversion #244 names never occurred and the property held vacuously")
+}
+
+// TestProperty_RelativeBid_ScalingEveryBankLeavesTheOutcomeAlone is the same claim from the other
+// side, and it is the one that cannot be satisfied by a comparator that merely swapped its sign
+// (#244).
+//
+// Multiply one bidder's balance and their commitment by the same factor and they have committed the
+// same share of a bigger bank — the same bid under this model, in more points. If the settlement's
+// answer moves, the size of the bank decided it. The whole outcome is compared, not just the winner:
+// the winning rung, whether a roll was needed, and the account it went to, because a rule that quietly
+// started rolling between bids it used to separate would be deciding items by a different means while
+// naming the same account most of the time.
+func TestProperty_RelativeBid_ScalingEveryBankLeavesTheOutcomeAlone(t *testing.T) {
+	t.Parallel()
+
+	settled, reordered := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		session := strategy.Session{ID: acct(60), SeqAtOpen: 3}
+
+		res, err := strategy.RelativeBid{}.SettleAuction(
+			c.ctx(t, c.relativeConfigJSON()), session, c.bids(false))
+		if err != nil {
+			return err
+		}
+
+		grown := c.scaledBanks()
+
+		grownRes, err := strategy.RelativeBid{}.SettleAuction(
+			grown.ctx(t, grown.relativeConfigJSON()), session, grown.bids(false))
+		if err != nil {
+			return err
+		}
+
+		if len(res.Winners) != len(grownRes.Winners) {
+			return fmt.Errorf("the session awarded %d winner(s) and the same shares over larger banks "+
+				"awarded %d", len(res.Winners), len(grownRes.Winners))
+		}
+
+		if len(res.Winners) == 0 {
+			return nil
+		}
+
+		if res.Winners[0].AccountID != grownRes.Winners[0].AccountID {
+			return fmt.Errorf("the item went to %s and, at the same shares over banks of a different "+
+				"size, to %s; a share is a ratio and the points behind it decide nothing",
+				res.Winners[0].AccountID, grownRes.Winners[0].AccountID)
+		}
+
+		if res.WinningTier != grownRes.WinningTier {
+			return fmt.Errorf("the winning rung was %q and became %q as the banks grew",
+				res.WinningTier, grownRes.WinningTier)
+		}
+
+		if (res.RngSeed == nil) != (grownRes.RngSeed == nil) {
+			return fmt.Errorf("one of the two settlements rolled and the other did not: %v against %v",
+				res.RngSeed, grownRes.RngSeed)
+		}
+
+		settled++
+
+		if largestCommitmentAtTopShare(c.relativeContenders()) !=
+			largestCommitmentAtTopShare(grown.relativeContenders()) {
+			reordered++
+		}
+
+		return nil
+	})
+
+	require.Positive(t, settled, "no session settled, so the property held vacuously")
+	require.Positive(t, reordered,
+		"the scaling never changed which of the tied shares committed the most points, so it never "+
+			"asked the question #244 is about")
+}
+
 // TestProperty_Roll_EveryRoundIsInRangeAndReplayable.
 //
 // Three claims. The winning roll is inside the configured range — a die that can come up outside its
