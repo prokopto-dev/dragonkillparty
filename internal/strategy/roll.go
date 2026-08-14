@@ -392,6 +392,9 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 		return Resolution{Reason: "nobody entered the roll"}, nil
 	}
 
+	// EVERY REFUSAL HAPPENS ABOVE THIS LINE. Below it the round is committed to a sequence of draws,
+	// and a round that drew and then failed would spend randomness a retry can never get back — see
+	// sortedEntrants. Nothing between here and the seed may reject an entry.
 	entrants, err := sortedEntrants(bids)
 	if err != nil {
 		return Resolution{}, err
@@ -444,12 +447,23 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 	}, nil
 }
 
-// sortedEntrants copies the entries into account order and refuses a repeat.
+// sortedEntrants copies the entries into account order and refuses the ones no round has an answer
+// for: an entry naming nobody, an account entered twice, and a rung this package cannot rank.
 //
 // A COPY, so a settlement never reorders its caller's slice, and SORTED, because the roll each
 // entrant receives is the draw at their position in this list — see SettleAuction. The duplicate
 // check rides along because the list is already ordered, which is the same shape checkDistinctShares
 // uses for the same reason.
+//
+// EVERY CHECK IS HERE BECAUSE EVERY CHECK MUST RUN BEFORE THE FIRST DRAW. This function is the last
+// thing SettleAuction does before it takes the seed, and that ordering is load-bearing rather than
+// tidy: the injected Rng is a sequence, so a settlement that consumed draws and then refused the
+// round would leave that sequence advanced by a round nobody ran. The officer fixes the malformed
+// entry, retries, and gets different numbers from the ones the same session would have produced had
+// the bad entry never been there — with nothing to explain the difference, because a rejected round
+// persists no seed. The rung check in particular has to be repeated here rather than left to
+// rankBids (found in AO review of #224): rankBids runs after the draws, which for every other spend
+// rule is still before any randomness and for this one is not.
 func sortedEntrants(bids []Bid) ([]Bid, error) {
 	out := make([]Bid, len(bids))
 	copy(out, bids)
@@ -465,6 +479,10 @@ func sortedEntrants(bids []Bid) ([]Bid, error) {
 			return nil, fmt.Errorf(
 				"%s: account %s is entered twice, which is two rolls and twice the chance; a repeated "+
 					"entrant is a list that was built twice: %w", rollID, b.AccountID, ErrInvalidEvent)
+		}
+
+		if _, err := checkTier(rollID, b); err != nil {
+			return nil, err
 		}
 	}
 

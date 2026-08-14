@@ -604,7 +604,9 @@ func TestSpendStrategies_SettleAuction_AnUnrankableTier_StopsTheSettlement(t *te
 			good, bad := tc.bid(acct(0)), tc.bid(acct(1))
 			bad.Tier = "MAIN"
 
-			_, err := tc.s.SettleAuction(spendCtx(t, tc.config), strategy.Session{
+			ctx := spendCtx(t, tc.config)
+
+			_, err := tc.s.SettleAuction(ctx, strategy.Session{
 				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
 			}, []strategy.Bid{good, bad})
 
@@ -612,6 +614,16 @@ func TestSpendStrategies_SettleAuction_AnUnrankableTier_StopsTheSettlement(t *te
 			require.ErrorContains(t, err, "not on the ladder",
 				"the vocabulary is lowercase snake_case everywhere (canonical §5), so an uppercase "+
 					"spelling is a different value and not a synonym")
+
+			// AND IT SPENT NO RANDOMNESS DOING IT (found in AO review of #224, on `roll`). The
+			// injected Rng is a sequence: a settlement that drew and then refused its input would
+			// leave it advanced by a round nobody ran, so the officer who corrects the entry and
+			// retries gets different numbers from the ones the same session would have produced —
+			// with no seed persisted to explain them, because a rejected settlement persists nothing.
+			// Asserted for the whole family rather than for the one rule that had the defect, because
+			// "validate before you draw" is an ordering the next spend rule has to inherit.
+			require.Zero(t, ctx.rng.calls,
+				"a settlement that refused its input must leave the generator exactly where it was")
 		})
 	}
 }

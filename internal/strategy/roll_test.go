@@ -229,6 +229,54 @@ func TestRoll_SettleAuction_ALowerRungCannotWinWhateverItRolled(t *testing.T) {
 	require.Contains(t, res.Reason, "2 entrant(s) on lower rungs could not win it")
 }
 
+// TestRoll_SettleAuction_ARejectedRound_SpendsNoRandomness is the defect an AO review of #224 found:
+// a round that draws and THEN refuses the entry list spends randomness that a retry can never get
+// back.
+//
+// The injected Rng is a sequence. `roll` draws one number per entrant, in account order, so a
+// settlement that rejected a malformed entry after the loop would leave that sequence advanced by a
+// round nobody ran — and the officer who fixes the entry and retries gets different numbers from the
+// ones the same session would have produced had the bad entry never been there. Nothing explains the
+// difference afterwards, because a rejected round persists no seed: it is exactly the unreproducible
+// flip the whole seeded design exists to prevent, and it would be invisible to every test that gives
+// each settlement a fresh façade.
+//
+// Two assertions, because either alone is weaker than it looks. THE COUNTER proves no draw was taken
+// — a fix that rejected after drawing but re-seeded would pass the second. THE RETRY proves what the
+// counter is a proxy for: the corrected round on the used façade settles identically to the same
+// round on a clean one.
+func TestRoll_SettleAuction_ARejectedRound_SpendsNoRandomness(t *testing.T) {
+	t.Parallel()
+
+	corrected := []strategy.Bid{
+		{AccountID: acct(0), Tier: strategy.TierMain},
+		{AccountID: acct(1), Tier: strategy.TierMain},
+		{AccountID: acct(2), Tier: strategy.TierAlt},
+	}
+
+	malformed := append([]strategy.Bid{{AccountID: acct(3), Tier: "MAIN"}}, corrected...)
+
+	used := spendCtx(t, rollGoldenConfig)
+
+	_, err := strategy.Roll{}.SettleAuction(used, strategy.Session{ID: acct(60)}, malformed)
+	require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+	require.ErrorContains(t, err, "not on the ladder")
+	require.Zero(t, used.rng.calls,
+		"a round that refused its entry list must not have touched the generator, seed included")
+
+	retried, err := strategy.Roll{}.SettleAuction(used, strategy.Session{ID: acct(60)}, corrected)
+	require.NoError(t, err)
+
+	clean, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, corrected)
+	require.NoError(t, err)
+
+	require.Equal(t, clean.Winners, retried.Winners,
+		"the retry after a rejected round must settle exactly as a session that never saw one")
+	require.Equal(t, clean.Reason, retried.Reason)
+	require.Equal(t, *clean.RngSeed, *retried.RngSeed)
+}
+
 func TestRoll_SettleAuction_ATie_AwardsNobody(t *testing.T) {
 	t.Parallel()
 
