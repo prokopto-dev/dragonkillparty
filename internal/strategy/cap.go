@@ -444,21 +444,8 @@ func (s Cap) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 			capID, ErrInvalidEvent)
 	}
 
-	accounts := run.Accounts
-	if len(accounts) == 0 {
-		accounts, err = ctx.Roster()
-		if err != nil {
-			return BatchProposal{}, fmt.Errorf("%s: read the roster to trim: %w", capID, err)
-		}
-	}
-
-	bank, err := ctx.SystemAccount(SystemKeyGuildBank)
+	targets, bank, err := cadenceTargets(ctx, capID, "trim", run)
 	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: resolve the guild bank: %w", capID, err)
-	}
-
-	targets := sortedAccounts(accounts)
-	if err := checkDistinctAccounts(capID, targets); err != nil {
 		return BatchProposal{}, err
 	}
 

@@ -34,6 +34,13 @@
 //   - roll.go — a seeded server-side roll per entrant; a tie awards nobody and calls a new round.
 //   - loot_council.go — spend by officer decision: the charge is the one the council named, recorded
 //     rather than derived from a price, a bid or a balance.
+//   - decay_percent.go — the weekly haircut: a rate, a floor it stops at, and a policy for debts.
+//   - decay_window.go — earnings expire: the slice of the log that has aged out is removed.
+//
+// start_points, cap and the two decay rules are the CADENCE FAMILY. They post on the decay_run
+// schedule keyed (pool_id, kind, cadence_period) rather than in response to a raid-night event, and
+// every read they make is positional — which is what makes a re-run of a period propose the batch
+// that already committed instead of a second one (.claude/rules/decay-and-jobs.md).
 //
 // The four bidding rules carry the loot ARITHMETIC only. The bid state machine, the anti-snipe
 // window and holds are Phase 6 (docs/guides/auctions.md): each needs a fact the Ctx façade does not

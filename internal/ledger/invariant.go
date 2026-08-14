@@ -341,7 +341,11 @@ func checkSumsToZero(p strategy.BatchProposal, inv strategy.Invariant, name, for
 }
 
 // checkNonNegative reads each affected account's balance at the pool head and adds this batch's
-// delta, requiring the result to stay at or above the declared floor.
+// delta, requiring that no account this batch DEDUCTS FROM is left below the declared floor.
+//
+// "Deducts from" is the whole of the rule and the argument for it is at the comparison below: a
+// floor constrains a deduction rather than a balance, so a batch that improves an account already
+// under the floor is legal and a batch that pushes one further down is not.
 //
 // It reads at headSeq, not at this batch's seq: the batch has not been written yet, so a read at
 // seq would return the same number and the delta would be double-counted the moment the ordering of
@@ -397,7 +401,31 @@ func checkNonNegative(
 				k.accountID, k.balanceKind, current, deltas[k])
 		}
 
-		if after < floor {
+		// A FLOOR CONSTRAINS A DEDUCTION, NOT A BALANCE, so the comparison fires only for an account
+		// this batch moves DOWN. That is what the invariant has said it means everywhere it is
+		// described — proposal.go: "no account's balance may drop below FloorCp AS A RESULT OF THIS
+		// BATCH"; `.claude/rules/ledger-and-strategy.md` and the add-strategy skill: "Balance may not
+		// drop below floor after this batch" — and the absolute reading this replaces was stricter
+		// than all three.
+		//
+		// The difference is invisible until a batch tries to IMPROVE an account that is already below
+		// the floor, and then it rejects the whole batch. `decay_percent`'s `toward_zero` policy is
+		// the first to hit it (#194): forgiving a debt of 45.00 at 10% credits 4.50 and leaves the
+		// member at −40.50, still under a floor of zero, so a run in which every affected member ended
+		// up better off could never commit — the documented policy was unreachable. The same defect is
+		// latent in every zero-sum award: an attendee left in debt by a reversal could not be credited
+		// their share of a split, on a batch that only pays them.
+		//
+		// Nothing a floor exists for is lost. A spend that overdraws is still refused, a decay that
+		// would take an account past the guild's floor is still refused, and — the case that
+		// distinguishes this from dropping the rule for credits — an account ALREADY below the floor
+		// that this batch pushes further down is still refused, because its delta is negative.
+		// TestCommit_NonNegative_MovementNotAbsolute covers all three sides.
+		//
+		// The overflow check above stays unconditional: a balance near the top of int64 being credited
+		// is an arithmetic failure whichever direction the money moved, and it is the one thing a
+		// credit can still get wrong.
+		if deltas[k] < 0 && after < floor {
 			return violation("NonNegative",
 				"account %s kind %q would go to %d, below the floor of %d "+
 					"(balance %d, this batch %+d)",

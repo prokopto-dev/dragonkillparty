@@ -52,6 +52,8 @@ func Catalogue() []PointStrategy {
 		Roll{},
 		LootCouncil{},
 		Cap{},
+		DecayPercent{},
+		DecayWindow{},
 	}
 }
 

@@ -103,6 +103,13 @@ func TestPoolConfig_Resolve_UnknownStrategy_IsRefused(t *testing.T) {
 		config strategy.PoolConfig
 		slot   string
 	}{
+		// Each id is a strategy this binary does not have, and only `epgp` and `suicide_kings` still
+		// qualify: `decay_window` stood here until #194 shipped it and `auction_sealed` until #195
+		// did, each turning this fixture into a false failure on the PR that landed it. A placeholder
+		// that becomes real is the one way this test could go quietly green, so both ids are now ones
+		// the rules mark as CONDITIONAL rather than as scheduled — they ship only if a named pilot
+		// guild asks. `epgp` appears twice for want of a third: there is no conditional over-time
+		// rule, and the slot is irrelevant here anyway (see the doc comment).
 		{"earn", strategy.PoolConfig{EarnStrategyID: "epgp"}, "earn"},
 		{"spend", strategy.PoolConfig{SpendStrategyID: "suicide_kings"}, "spend"},
 		{"over_time", strategy.PoolConfig{OverTimeStrategyID: "epgp"}, "over_time"},

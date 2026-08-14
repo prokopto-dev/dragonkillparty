@@ -51,7 +51,7 @@ explains them properly.
 | **Zero-sum residue** | The few centipoints left over when a price does not divide evenly among the recipients; allocated by largest remainder or routed to the guild bank, never rounded away. |
 | **Largest-remainder allocation** | The split method that guarantees credits sum to exactly the debit, instead of rounding each credit independently. |
 | **Decay (percentage)** | A recurring haircut — 10% a week — posted as explicit ledger batches. |
-| **Decay (window)** | Earnings older than N days stop counting, by a hard cutoff or a linear taper. |
+| **Decay (window)** | Earnings older than N days stop counting — removed by an explicit batch, never filtered out of a balance. A hard cutoff today; a linear taper is [#221](https://github.com/prokopto-dev/dragonkillparty/issues/221). |
 | **Cap** | A ceiling on a balance, or a reduced earn rate above a soft ceiling. |
 | **Start points** | An opening balance granted once to a new member so recruits can bid on something. |
 | **Attendance percentage** | Ticks you attended ÷ qualifying ticks held, over a window. |

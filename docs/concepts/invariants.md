@@ -34,7 +34,7 @@ Checked on every proposed batch before it commits. The first four cannot be waiv
 | `SeqMonotonic` | Per-pool sequence numbers only increase |
 | `EntriesReferenceLiveAccounts` | No entries against deleted accounts |
 | `SumZero(kind, batch)` | Zero-sum award entries sum to exactly zero. Checked as a column comparison against the precomputed batch total, not as an aggregate. |
-| `NonNegative(kind, floor)` | A balance may not fall below the pool's floor |
+| `NonNegative(kind, floor)` | A batch may not **take** an account below the pool's floor. It constrains a deduction, not a balance: a batch that leaves an account below the floor but better off than it started — debt forgiveness, or a split crediting a member a reversal left in debt — is legal, and one that pushes an account already below the floor further down is not. |
 | `MonotoneNonDecreasing(kind)` | EPGP gear points never decrease except by reversal |
 | `Permutation(sk_position)` | Suicide Kings positions remain a bijection |
 | `RatioPreserved(ep, gp, tol)` | An EPGP decay batch scales both kinds identically |
