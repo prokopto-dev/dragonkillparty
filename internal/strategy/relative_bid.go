@@ -421,19 +421,38 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 		Detail: fmt.Sprintf(
 			"%d of the %d bids placed is a %d..%d bp share of its balance frozen at seq %d",
 			len(ranked), len(bids), cfg.MinBidBp, cfg.MaxBidBp, session.SeqAtOpen),
-	}, phase.step(), {
-		Kind: ResolutionStepShare,
-		Detail: fmt.Sprintf("the largest share in tier %s is %d bp of a balance frozen at seq %d",
-			phase.tier, winner.rank, session.SeqAtOpen),
-	}}
+	}, phase.step()}
 
-	if seed != nil {
+	// THE CHAIN BELOW THE SHARE IS LONGER HERE THAN IN AN AUCTION, and every step of it that ran gets
+	// written down (found in AO review of #224). An auction ranks BY the amount, so its share of the
+	// chain and its amount step are one comparison; this rule ranks by the SHARE, so two bids at the
+	// same share are then separated by what they committed, and only then by when. Both of those
+	// decide real outcomes — a trace that jumped from the share to the price would be claiming
+	// completeness while omitting the step that actually chose the winner, which is worse than no
+	// trace at all because it looks like an answer.
+	atShare := tiedOnRank(ordered)
+	if atShare == 1 {
 		trace = append(trace, ResolutionStep{
-			Kind: ResolutionStepSeededRoll,
+			Kind: ResolutionStepShare,
 			Detail: fmt.Sprintf(
-				"%d bids in tier %s committed the same share; a roll from seed %d settled it",
-				tiedOnRank(ordered), phase.tier, *seed),
+				"the largest share in tier %s is %d bp of a balance frozen at seq %d, and no other "+
+					"bid there matches it", phase.tier, winner.rank, session.SeqAtOpen),
 		})
+	} else {
+		trace = append(trace, ResolutionStep{
+			Kind: ResolutionStepShare,
+			Detail: fmt.Sprintf(
+				"%d of the %d bids in tier %s committed the same %d bp of a balance frozen at seq %d, "+
+					"the largest share there",
+				atShare, len(ordered), phase.tier, winner.rank, session.SeqAtOpen),
+		}, ResolutionStep{
+			Kind:   ResolutionStepAmount,
+			Detail: equalSharesDetail(ordered),
+		})
+
+		if tiedOnAmount(ordered) > 1 {
+			trace = append(trace, sequenceOrRoll(ordered, seed))
+		}
 	}
 
 	trace = append(trace, ResolutionStep{
@@ -465,6 +484,27 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 // amount <= balance bounds it at 10000. A balance of zero or less has no shares at all, which is a
 // different fact from a share of zero and is why this returns ok=false rather than 0.
 //
+// equalSharesDetail is what the amount step of the chain decided among bids that committed the same
+// share, and it is the one sentence in this file worth reading twice.
+//
+// THE LARGER ABSOLUTE COMMITMENT TAKES IT, which is what the shared comparator does today and is a
+// rule this strategy's own model argues with: `relative_bid` exists so that a hoarder pays MORE
+// points for the same priority, and at equal priority this hands the item to the hoarder. It is
+// recorded plainly rather than smoothed over, because the trace is where a raider who lost this way
+// will come looking — and #244 is where the question of whether it should decide at all is being
+// settled, rather than in a PR about tiers.
+func equalSharesDetail(ordered []rankedBid) string {
+	if tiedOnAmount(ordered) == 1 {
+		return fmt.Sprintf(
+			"the largest commitment among the bids at that share is %d centipoints, and it takes the "+
+				"item — an equal share of a larger balance is a larger number of points",
+			ordered[0].bid.AmountCp)
+	}
+
+	return fmt.Sprintf("%d of those bids also committed the same %d centipoints",
+		tiedOnAmount(ordered), ordered[0].bid.AmountCp)
+}
+
 // FLOORED, never rounded. Rounding a share up would let a 39.996% bid rank as 40%, which is the
 // difference between winning and losing an item in a strategy whose whole ordering is this number.
 func shareBasisPoints(amount, balance core.Centipoints) (int64, bool) {

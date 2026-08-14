@@ -180,11 +180,17 @@ officer reads back months later, and the counts are also what the disclosure bel
 |---|---|---|
 | `eligibility` | all four | how many of the bids placed cleared the floor that applied |
 | `tier` | all four | which rung took the item, how many bids stood on each, and when the ladder settled nothing |
-| `amount` | `auction_open`, `auction_sealed` | the highest bid on the winning rung |
+| `amount` | the two auctions, `relative_bid` | the highest bid on the winning rung — and in `relative_bid`, the largest commitment among bids that tied on the *share*, which is a rung of the chain below its step 2 |
 | `share` | `relative_bid` | the largest share, in basis points, of a balance frozen at `seq_at_open` |
-| `bid_sequence` | the two auctions | which of the bids tied on the amount was placed first |
+| `bid_sequence` | the two auctions, `relative_bid` | which of the bids tied on everything above was placed first |
 | `seeded_roll` | all four | the seed a tie was settled from — and in `roll`, the die itself, which is that rule's step 2 rather than its tie-break |
 | `price` | all four | what the winner pays, and under which rule |
+
+A rule records every step it **reached**, including the ones that ran and tied: a trace showing
+`share` → `amount` → `bid_sequence` is saying that the first two were evaluated and settled nothing.
+That `amount` rung under an equal share is not in the numbered chain above and decides in favour of
+the larger bank; whether it should decide at all is
+[#244](https://github.com/prokopto-dev/dragonkillparty/issues/244).
 
 **Every settlement writes a trace, including the ones that award nobody** — a rot, a roll-off that
 tied, a session in which no bid was a bidable share. Those stop at `eligibility` or at the step they

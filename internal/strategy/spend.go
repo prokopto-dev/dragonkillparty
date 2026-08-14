@@ -472,20 +472,37 @@ func auctionTrace(
 			atAmount, len(ordered), phase.tier, ordered[0].bid.AmountCp),
 	})
 
+	return append(trace, sequenceOrRoll(ordered, seed))
+}
+
+// sequenceOrRoll is the bottom of the tie-break chain, and it is shared because by the time a rule
+// reaches it every rule is asking the same question: with everything above tied, the EARLIEST bid
+// takes the item, and when the microsecond ties too a seeded roll does.
+//
+// THE SEED IS IN THE SENTENCE. A roll an officer cannot re-run is the one thing a loot dispute cannot
+// be settled from (.claude/rules/ledger-and-strategy.md), and the trace is what they read three
+// months later — so the number that reproduces it goes in the line rather than only in the field
+// beside it.
+//
+// The caller guarantees it was reached: the steps above are recorded as tied before this runs, so
+// "every step above" in the wording is a claim the trace itself has already made.
+func sequenceOrRoll(ordered []rankedBid, seed *int64) ResolutionStep {
 	if seed == nil {
-		return append(trace, ResolutionStep{
-			Kind:   ResolutionStepBidSequence,
-			Detail: fmt.Sprintf("one of those %d bids was placed first and takes the item", atAmount),
-		})
+		return ResolutionStep{
+			Kind: ResolutionStepBidSequence,
+			Detail: fmt.Sprintf(
+				"%d bids are tied on every step above; the earliest of them takes the item",
+				tiedOnAmount(ordered)),
+		}
 	}
 
-	return append(trace, ResolutionStep{
+	return ResolutionStep{
 		Kind: ResolutionStepSeededRoll,
 		Detail: fmt.Sprintf(
-			"%d bids are equal in tier, amount and the microsecond they were placed; a roll from "+
-				"seed %d settled it, and re-running that seed settles it the same way",
+			"%d bids are equal on every step above and in the microsecond they were placed; a roll "+
+				"from seed %d settled it, and re-running that seed settles it the same way",
 			tiedAtTop(ordered), *seed),
-	})
+	}
 }
 
 // rotResolution is the settlement of an item nobody legally bid on: no winner, no tier, and the one
