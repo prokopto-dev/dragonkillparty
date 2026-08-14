@@ -25,6 +25,8 @@
 //   - tick.go — earn per attendance snapshot, scaled by a per-role multiplier.
 //   - start_points.go — grant a recruit an opening balance, once, on a cadence.
 //   - cap.go — a ceiling: reduce or clamp what is earned, and trim what is already above it.
+//   - loot_council.go — spend by officer decision: the charge is the one the council named, recorded
+//     rather than derived from a price, a bid or a balance.
 //
 // catalogue.go is the registry that turns a pool's strategy_id into one of them. `pool.strategy_id`
 // carries no CHECK constraint on purpose — the set is code-defined and grows per PR — so Catalogue
