@@ -46,6 +46,11 @@
  *
  * It ends up one rung LIGHTER than .text-muted's soft(55), which is the right way round: this is the
  * smallest text in the system at 11px, and smaller text needs more contrast, not less.
+ *
+ * "The only one in this file" is checked: test/repo/design_tokens_test.go resolves var() on both
+ * sides and diffs every declaration of every transcribed sheet against the source, and this rung is
+ * one of the two entries in its sanctioned list — pinned to var(--soft-60), so a later step back
+ * DOWN the ramp fails rather than inheriting the exception (issue #67).
  */
 .card-meta {
   display: flex;

@@ -24,14 +24,35 @@ confirm the resolved version is at or above the pin, delete the row.
 
 | Package | Pinned | Why it exists | Parent that forces it | Removed when |
 |---|---|---|---|---|
-| `esbuild` | `0.28.2` | GHSA-67mh-4wv8-2f99 — the dev server answers any origin's request and returns the response, so any website could read files from a developer's machine. Fixed in 0.25.0. Issue #134. | `vite` (7.3.6 declares `^0.27.0 \|\| ^0.28.0`) | Vite's declared range starts at or above 0.28.2, which is already true of 7.3.6 — this row goes when a Vite bump makes the pin redundant rather than merely satisfied. |
+| `esbuild` | `0.28.2` | GHSA-67mh-4wv8-2f99 — the dev server answers any origin's request and returns the response, so any website could read files from a developer's machine. Fixed in 0.25.0. Issue #134. | `vite` (7.3.6 declares `^0.27.0 \|\| ^0.28.0`) | Vite's declared range floors at or above 0.28.2. It does not today — 7.3.6's floor is 0.27.0, so the pin is *satisfied* by the range while still being the only thing keeping 0.27.x out. This row goes when a Vite bump makes it redundant rather than merely satisfied, and `TestWebOverrides_EveryOverride_StillForcesAResolution` is what notices. |
 | `js-yaml` | `4.3.1` | GHSA-8rgc-vjgv-hhqv — quadratic CPU on a crafted document. Fixed in 4.3.1. Issue #135. | `@redocly/openapi-core` (1.34.18 depends on **exactly** `4.3.0`), reached through `openapi-typescript` | `openapi-typescript` is bumped to a release whose Redocly already depends on ≥ 4.3.1. |
 
 `js-yaml` is deliberately **outside** its parent's declared range: forcing a patch release over an
 exact pin is the standard use of an override, and 4.3.1 is a patch of the same major. It is recorded
 here rather than waived silently, because "outside the parent's range" is exactly the state the first
 rot mode above describes, and the difference between this row and that failure is that somebody
-decided it.
+decided it. Its row in the next table is what says so to the gate.
+
+## Sanctioned range exceptions
+
+The pin normally sits **inside** every range its parents declare, and
+`TestWebOverrides_EveryPin_SatisfiesItsParentsDeclaredRange` fails when it does not. Each row here
+waives one `(package, parent)` pair — a break somebody decided, rather than one an unrelated bump
+arrived at.
+
+The **declared range is part of the waiver**, not a note about it. A parent that moves to a different
+range is a different decision, and the row stops matching until someone re-reads it; that is what
+keeps this table from becoming a list of package names nobody has revisited. The reverse holds too:
+`TestWebOverrides_EveryRangeException_IsStillBroken` fails on a row whose break has healed, so a row
+cannot outlive the thing it waives. Same shrink-only rule as `web/e2e/axe-allowlist.json` and
+`osv-scanner.toml`. Parents are keyed by name, without a version: versions churn on every unrelated
+bump and a waiver keyed to one would need re-approving by whoever happened to run `pnpm update`.
+
+Reasons must not contain a `|`, and must cite an issue.
+
+| Package | Parent | Parent's declared range | Why the break is deliberate |
+|---|---|---|---|
+| `js-yaml` | `@redocly/openapi-core` | `4.3.0` | Forcing a patch release over an exact pin is the standard use of an override: 4.3.1 is a patch of the same major, carries the GHSA-8rgc-vjgv-hhqv fix, and Redocly's exact `4.3.0` is a pin rather than a statement that 4.3.1 is incompatible. Decided in issue #135; the exception clears when `openapi-typescript` reaches a Redocly that already wants ≥ 4.3.1. |
 
 ## What does not belong here
 
@@ -41,7 +62,7 @@ pnpm will tell you when a parent disagrees.
 
 ## What the gate checks
 
-`test/repo/web_overrides_test.go`, offline, in `make test`:
+`test/repo/web_overrides_test.go`, in `make test`. Four checks read files only:
 
 - every override in `web/package.json` has a row here, and every row has an override — a stale row is
   as bad as a missing one, since it is the row that carries the removal condition;
@@ -52,6 +73,21 @@ pnpm will tell you when a parent disagrees.
   that only partly took effect leaves a second version in the tree, which is the shape a pin quietly
   stops covering anything.
 
-What it does **not** check is that a pin sits inside the range its parent declares. That needs the
-parents' own manifests, which live in `node_modules` rather than in the lockfile, so it is a gate
-with a dependency install behind it — filed separately rather than half-built here.
+Three more read the **installed tree** (issue #186), because the lockfile records resolved versions
+and not the ranges each parent declares — those live in each parent's own `package.json` under
+`node_modules`:
+
+- the pin satisfies every range its parents declare, unless the pair has a row in "Sanctioned range
+  exceptions" that also records the range it breaks;
+- no waiver row outlives its break;
+- the override still forces something: some parent's declared range would otherwise admit a version
+  *below* the pin. When none would, the override is redundant — and a redundant exact pin is not
+  inert, it is what blocks the package's next patch.
+
+These three need `pnpm install` to have run. They skip on a laptop that has not installed web
+dependencies and **fail** under CI, where `test / integration` and `suite / shuffled` both install
+them; locally `make check` reaches them through `web-deps`.
+
+The redundancy check is sufficient, not necessary: it fires when redundancy is provable from the
+declared ranges alone. Proving that a re-resolution *without* the override would land at or above the
+pin needs the registry, and that is a network test this repository does not have.
