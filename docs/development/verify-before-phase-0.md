@@ -567,12 +567,20 @@ deliberately off the queue, so the blast radius of getting this wrong is bounded
       version the design named.
 
 **The Go half is answered, and it holds (asked by Courtney, 2026-08-04, in PR 1):** `go.mod` declares
-`go 1.26`, and the toolchain actually installed and exercised locally is **Go 1.26.5**
-(darwin/arm64, Homebrew). CI does not pin a version of its own — `.github/actions/setup-toolchain`
-resolves Go from `go-version-file: go.mod`, so it installs some 1.26.x patch release; **which one is
-not yet known, and the first CI run on this PR is what records it.** One consequence worth writing
-down: the action's `1.24` pre-Phase-0 fallback branch is now unreachable, because it is gated on
-`go.mod` not existing and `go.mod` exists.
+the version, and CI does not pin one of its own — `.github/actions/setup-toolchain` resolves Go from
+`go-version-file: go.mod`. One consequence worth writing down: the action's `1.24` pre-Phase-0
+fallback branch is now unreachable, because it is gated on `go.mod` not existing and `go.mod` exists.
+
+**And the open half closed itself, the expensive way (2026-08-14).** The declaration was `go 1.26` —
+a MINOR pin — so setup-go resolved "some 1.26.x", which is exactly the thing this row said was not
+yet known. It turned out to be 1.26.5, and five reachable standard-library advisories were published
+against it (GO-2026-6218, -6090, -6089, -5972, -5026), which turned `security / govulncheck` red on
+every open PR at once with nothing in the tree having changed
+([#222](https://github.com/prokopto-dev/dragonkillparty/issues/222)). The declaration is now
+`go 1.26.6` — a PATCH pin, and a security floor rather than a preference — so the version CI resolves
+is the version this file names, and a future advisory moves one line in one place. setup-go falls
+back to the Go distribution site for a patch its own manifest has not caught up with yet, which is
+what makes pinning a fresh patch viable at all.
 
 **Still open, because nothing here has been exercised yet:** `testing/synctest`, `os.Root`, Vite 7,
 Huma v2, and the OpenAPI validator — including the stale-claim question below, which is the part of
@@ -643,7 +651,7 @@ Tick the checkbox in the item above; record the outcome and the date here.
 | V12 | Guilds want server-side auctions | before Phase 6 | bid UX emphasis | open |
 | V13 | 250 KB gzipped initial route | PR 6 | the bundle budget | **resolved (2026-08-10): the shell measures 99 032 bytes gzipped, 39% of the ceiling. `web/bundle-budget.json` set to 128 000 from that measurement, replacing the unmeasured 256 000, and re-measured on every PR because `/_design` is a static import** |
 | V14 | `riversqlite` maturity | Phase 1 | the job queue | **resolved: early preview, not production ready — spike the alternative** |
-| V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | **partially resolved (2026-08-04): Go 1.26 pinned via `go.mod`, 1.26.5 exercised locally; CI's resolved patch, `testing/synctest`, `os.Root`, Vite 7, Huma v2 and the validator all still open** |
+| V15 | Pinned versions and "verified" labels | Phase 0 | `make setup`, the validator choice | **partially resolved (2026-08-14): the Go half is closed — `go.mod` pins the PATCH, `go 1.26.6`, after the unpinned patch resolved to a 1.26.5 with five reachable stdlib advisories and turned a required job red tree-wide ([#222](https://github.com/prokopto-dev/dragonkillparty/issues/222)). `testing/synctest`, `os.Root`, Vite 7, Huma v2 and the validator all still open** |
 
 Nothing on this list is a blocker to *starting*. V2 is a blocker to entering Phase 4, and V1 is a
 blocker to publishing the stack decision as settled. V6 was a blocker to merging PR 9 and is now
