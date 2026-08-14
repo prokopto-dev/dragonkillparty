@@ -113,11 +113,13 @@ ATLAS_VERSION          ?= v1.3.0
 # two and the complementary one.
 #
 # Not installed by `make setup` and not `go install`ed by the CI action, unlike every pin above it.
-# osv-scanner's own go.mod requires a Go PATCH version (1.26.5 for v2.5.0) newer than the `go 1.26`
-# line in this repository's go.mod, and CI runs GOTOOLCHAIN=local — so `go install` would couple
-# this project's compiler floor to the scanner's release cadence and break on a runner that resolved
-# a slightly older patch. CI runs the upstream action instead, which carries the scanner in a
-# container with its own toolchain. This pin is what `make osv-scan` reports when the binary is
+# osv-scanner's own go.mod requires a Go PATCH version (1.26.5 for v2.5.0), and CI runs
+# GOTOOLCHAIN=local — so `go install` would couple this project's compiler floor to the scanner's
+# release cadence and break the day the scanner asks for a patch newer than ours. This repository now
+# pins a patch of its own (`go 1.26.6`, a security floor rather than a preference), which happens to
+# clear v2.5.0's — that is a coincidence of two independent cadences and not a reason to couple them.
+# CI runs the upstream action instead, which carries the scanner in a container with its own
+# toolchain. This pin is what `make osv-scan` reports when the binary is
 # missing, and TestOSV_ActionPin_MatchesTheMakefilePin keeps it equal to the version ci.yml runs.
 # renovate: datasource=github-releases depName=google/osv-scanner
 OSV_SCANNER_VERSION    ?= v2.5.0

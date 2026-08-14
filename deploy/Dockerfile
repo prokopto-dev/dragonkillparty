@@ -56,7 +56,13 @@ RUN bash scripts/build-web.sh
 # --- build stage: compile the static binary --------------------------------------------------
 # Pinned by digest as well as tag: docker:pinDigests in renovate.json5 maintains it, and an
 # unpinned base is the supply-chain equivalent of an unpinned action.
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 AS build
+#
+# THE DIGEST IS ALSO A SECURITY FLOOR, which is why it moves with go.mod's `go` directive rather than
+# only when Renovate notices. This one is `golang:1.26.6-bookworm`: the five reachable stdlib
+# advisories in 1.26.5 (GO-2026-6218, -6090, -6089, -5972, -5026) are fixed there, and a builder image
+# older than go.mod's floor would either fail the build or quietly download the fixed toolchain into
+# an image that still claims the vulnerable one.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS build
 
 # The cross-compilation targets, injected by buildx (or defaulted to the host by plain docker build).
 ARG TARGETOS=linux

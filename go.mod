@@ -1,6 +1,6 @@
 module github.com/prokopto-dev/dragonkillparty
 
-go 1.26
+go 1.26.6
 
 require (
 	github.com/danielgtaylor/huma/v2 v2.39.1
