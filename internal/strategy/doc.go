@@ -25,6 +25,13 @@
 //   - tick.go — earn per attendance snapshot, scaled by a per-role multiplier.
 //   - start_points.go — grant a recruit an opening balance, once, on a cadence.
 //   - cap.go — a ceiling: reduce or clamp what is earned, and trim what is already above it.
+//   - decay_percent.go — the weekly haircut: a rate, a floor it stops at, and a policy for debts.
+//   - decay_window.go — earnings expire: the slice of the log that has aged out is removed.
+//
+// The last three are the cadence family. They post on the decay_run schedule keyed
+// (pool_id, kind, cadence_period) rather than in response to a raid-night event, and every read they
+// make is positional — which is what makes a re-run of a period propose the batch that already
+// committed instead of a second one (.claude/rules/decay-and-jobs.md).
 //
 // catalogue.go is the registry that turns a pool's strategy_id into one of them. `pool.strategy_id`
 // carries no CHECK constraint on purpose — the set is code-defined and grows per PR — so Catalogue
