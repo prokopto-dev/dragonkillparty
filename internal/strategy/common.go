@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/bits"
 	"sort"
 	"strings"
 
@@ -332,6 +333,42 @@ func adjustmentProposal(
 		})
 }
 
+// cadenceTargets resolves the accounts a cadence run touches and the guild bank that balances it.
+//
+// The four members of the cadence family — decay_percent, decay_window, cap and start_points — open
+// their run identically, and the four steps are each load-bearing rather than ceremony: an empty
+// account list means the whole roster, the accounts are SORTED because the entry order is hashed into
+// the batch, a repeat is REFUSED because a run that named an account twice would read the same as-of
+// balance twice and post the period's entry twice, and the bank is resolved before any arithmetic so
+// a run that has nowhere to put the points fails before it computes any.
+//
+// `verb` is what the roster is being read FOR — "decay", "trim", "grant" — so the error names the run
+// an officer is looking at rather than the function they cannot see.
+func cadenceTargets(
+	ctx Ctx, strategyID, verb string, run DecayRun,
+) (targets []AccountRef, bank core.ULID, err error) {
+	accounts := run.Accounts
+
+	if len(accounts) == 0 {
+		accounts, err = ctx.Roster()
+		if err != nil {
+			return nil, "", fmt.Errorf("%s: read the roster to %s: %w", strategyID, verb, err)
+		}
+	}
+
+	bank, err = ctx.SystemAccount(SystemKeyGuildBank)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s: resolve the guild bank: %w", strategyID, err)
+	}
+
+	targets = sortedAccounts(accounts)
+	if err := checkDistinctAccounts(strategyID, targets); err != nil {
+		return nil, "", err
+	}
+
+	return targets, bank, nil
+}
+
 // spendableBalance is the account's balance at the pool head.
 //
 // NO COMPUTED DECAY, NO CAP AND NO WEIGHTING. Decay and cap trims are POSTED as explicit batches, so
@@ -565,6 +602,34 @@ func mulCentipoints(amount core.Centipoints, factor int64) (product core.Centipo
 	}
 
 	return product, true
+}
+
+// decayAmount is balance * bp / 10000, floored, computed exactly in integers. `balance` and `bp` are
+// both non-negative and `bp` is at or below 10000 — every caller either validates them or negates a
+// debt into a magnitude first.
+//
+// It lives here rather than beside the first strategy that needed it because three now do —
+// fixed_price's built-in haircut, decay_percent's rate and decay_percent's debt forgiveness — and a
+// second copy in one package is a name collision that forces a rename and then drifts (see this
+// file's header).
+//
+// The 128-bit product is the same technique ledger.Allocate uses and for the same reason: `balance *
+// bp` overflows int64 for a large balance, a float would be a lint failure and would lose precision
+// exactly where the invariant lives, and math/big would allocate per account on a run that touches
+// the whole roster. bits.Mul64/Div64 are exact and allocation-free.
+//
+// Div64 panics when the quotient would not fit in 64 bits. It cannot here: bp <= 10000 = the divisor,
+// so the quotient is at most `balance`. scaleByBasisPoints is the sibling for the amounts that must
+// REFUSE rather than saturate — it reports overflow instead of widening, because a reduced earning
+// that does not fit in an int64 has no entry to write.
+//
+// FLOORED, never rounded. Rounding a decay to nearest takes a centipoint the configured rate did not
+// ask for, and it takes it from every member every period.
+func decayAmount(balance core.Centipoints, bp int64) core.Centipoints {
+	hi, lo := bits.Mul64(uint64(balance), uint64(bp))
+	q, _ := bits.Div64(hi, lo, basisPointsWhole)
+
+	return core.Centipoints(q)
 }
 
 // scaleByBasisPoints multiplies an amount by a ratio in basis points, FLOORED, in integers only.

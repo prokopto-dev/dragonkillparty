@@ -69,6 +69,20 @@ type fakeCtx struct {
 	balances   map[core.ULID]core.Centipoints
 	roster     []strategy.AccountRef
 
+	// earned is what Ctx.EarnedBetween reports each account was CREDITED, for the tests that need one
+	// number rather than a history. It is SEPARATE from balances for the reason the façade method
+	// exists: what an account earned in a slice of the log and what it holds now are different facts,
+	// and a fake that derived one from the other could not express the member who earned 500 last
+	// year and has spent every point of it — the account `decay_window` must not push into debt.
+	//
+	// decay_window_test.go's ledgerCtx answers both from a real entry log instead, which is what the
+	// no-double-expiry property needs; this map is the simpler half, for tests about one run.
+	earned map[core.ULID]core.Centipoints
+
+	// earnedSlices records the (from, to] bounds of every EarnedBetween call, so a test can assert
+	// that the slice a run expired is the one the scheduler resolved and not the whole of history.
+	earnedSlices [][2]int64
+
 	// history is the accounts Ctx.HasHistory reports a ledger for. It is SEPARATE from balances, and
 	// deliberately not derived from them, because the whole point of the façade method is that a zero
 	// balance and an empty history are different facts — a fake that derived one from the other could
@@ -76,12 +90,14 @@ type fakeCtx struct {
 	// never grant to (P7).
 	history map[core.ULID]bool
 
-	// balanceErr, rosterErr, systemErr and historyErr make each façade read fail on demand, so the
-	// planners' error paths are exercised against a façade that fails the way a database does.
+	// balanceErr, rosterErr, systemErr, historyErr and earnedErr make each façade read fail on
+	// demand, so the planners' error paths are exercised against a façade that fails the way a
+	// database does.
 	balanceErr error
 	rosterErr  error
 	systemErr  error
 	historyErr error
+	earnedErr  error
 
 	// allocateErr makes the shared allocator fail on demand.
 	//
@@ -112,6 +128,7 @@ func newCtx(tb testing.TB, n int, opening core.Centipoints, configJSON string) *
 		headSeq:    7,
 		configJSON: configJSON,
 		balances:   map[core.ULID]core.Centipoints{},
+		earned:     map[core.ULID]core.Centipoints{},
 		history:    map[core.ULID]bool{},
 		rng:        &countingRng{inner: ledger.NewRng(42)},
 	}
@@ -156,6 +173,22 @@ func (c *fakeCtx) Balance(account core.ULID, balanceKind string, asOfSeq int64) 
 	}
 
 	return c.balances[account], nil
+}
+
+func (c *fakeCtx) EarnedBetween(
+	account core.ULID, balanceKind string, fromSeq, toSeq int64,
+) (core.Centipoints, error) {
+	c.earnedSlices = append(c.earnedSlices, [2]int64{fromSeq, toSeq})
+
+	if c.earnedErr != nil {
+		return 0, c.earnedErr
+	}
+
+	if balanceKind != strategy.BalanceKindDKP {
+		return 0, fmt.Errorf("fake ctx: unknown balance kind %q", balanceKind)
+	}
+
+	return c.earned[account], nil
 }
 
 func (c *fakeCtx) HasHistory(account core.ULID, balanceKind string, asOfSeq int64) (bool, error) {

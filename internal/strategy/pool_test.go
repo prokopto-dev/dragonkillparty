@@ -94,9 +94,14 @@ func TestPoolConfig_Resolve_UnknownStrategy_IsRefused(t *testing.T) {
 		config strategy.PoolConfig
 		slot   string
 	}{
+		// Each id is a strategy this binary does not have: `epgp` and `suicide_kings` are conditional
+		// on a named pilot guild asking, and `auction_sealed` is Phase 3. `decay_window` stood here
+		// until #194 shipped it — a placeholder that becomes real is the one way this test could go
+		// quietly green, which is why the replacements are the two the rules mark as conditional
+		// rather than as scheduled.
 		{"earn", strategy.PoolConfig{EarnStrategyID: "epgp"}, "earn"},
 		{"spend", strategy.PoolConfig{SpendStrategyID: "auction_sealed"}, "spend"},
-		{"over_time", strategy.PoolConfig{OverTimeStrategyID: "decay_window"}, "over_time"},
+		{"over_time", strategy.PoolConfig{OverTimeStrategyID: "suicide_kings"}, "over_time"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

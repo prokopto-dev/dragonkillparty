@@ -387,8 +387,43 @@ type DecayRun struct {
 	// resolves through Ctx.Roster.
 	Accounts []AccountRef
 
+	// Window is the slice of the pool's history that has aged out since the previous run. It is
+	// `decay_window`'s input and nil for every other family, which is why it is a POINTER: a zero
+	// value would be a slice bounded at seq 0, and "the caller resolved no window" and "the window
+	// opens at the beginning of history" are different facts.
+	Window *ExpiryWindow
+
 	// EffectiveAt is when the decay takes effect.
 	EffectiveAt core.Micros
+}
+
+// ExpiryWindow is the part of a pool's history that has just stopped counting: the guild's window
+// setting, and the SEQ SLICE the scheduler resolved it into.
+//
+// WHY THE SLICE IS AN INPUT RATHER THAN SOMETHING THE PLANNER DERIVES. "Earnings older than 90 days"
+// is a question about wall-clock time, and mapping it onto a position in the log is a query — which a
+// pure planner may not run (law 3). The scheduler resolves it once, when the run is created, and the
+// planner reads the ledger POSITIONALLY at the boundaries it was handed. That is the same rule
+// AsOfSeq follows and for the same reason: a batch committed while the run is planning, or one
+// backdated afterwards, must not change what this run expired.
+//
+// THE SLICE IS HALF-OPEN — `FromSeq` exclusive, `ToSeq` inclusive — so consecutive runs tile the log
+// without overlapping. Run k's FromSeq is run k−1's ToSeq, and the first run a pool ever makes opens
+// at 0 because nothing before it has expired.
+type ExpiryWindow struct {
+	// Days is the window the scheduler resolved this slice from, and it must equal the pool's
+	// configured window. It is carried so the planner can REFUSE a slice resolved from a config that
+	// is no longer in force: a run planned against yesterday's 90 days and committed under today's 30
+	// would expire the wrong earnings, permanently, in a table that has no UPDATE
+	// (.claude/rules/decay-and-jobs.md §7).
+	Days int64
+
+	// FromSeq is the position the previous run expired up to, exclusive. 0 for a pool's first run.
+	FromSeq int64
+
+	// ToSeq is the position this run expires up to, inclusive. It is at or below the run's AsOfSeq:
+	// a slice that reached past the snapshot the run reads would expire earnings the run cannot see.
+	ToSeq int64
 }
 
 // LedgerBatch is a COMMITTED batch, projected into the shape a reversal planner needs.
@@ -522,6 +557,28 @@ type Ctx interface {
 	// "fewer than three entries" is a rule about the shape of the log rather than about the guild,
 	// and it would silently change meaning the day the ledger writes an extra entry per event.
 	HasHistory(account core.ULID, balanceKind string, asOfSeq int64) (bool, error)
+
+	// EarnedBetween is what an account was CREDITED for a balance kind between two positions in the
+	// pool's history — the sum of its positive entries after fromSeq and at or before toSeq.
+	// POSITIONAL, exactly like Balance, and for the same reason.
+	//
+	// IT IS NOT A BALANCE OVER A RANGE, and the difference is the whole reason the method exists.
+	// `decay_window` expires the earnings that have aged out, and a balance delta over the same slice
+	// would include the strategy's OWN expiry batches: run k debits an account, that debit ages into
+	// run k+n's slice, the slice nets to nothing, and earnings that should have expired never do —
+	// silently, compounding, in a table nothing can correct but another batch. A credit-only sum
+	// cannot make that mistake, because an expiry is a debit and can never appear in one.
+	//
+	// WHY THE FAÇADE GREW FOR THIS. `.claude/rules/ledger-and-strategy.md` requires the question
+	// "what does a planner get to see?" to be a design decision taken in review rather than an import
+	// somebody added, and this is that decision: "earnings older than the window stop counting" is not
+	// answerable from a balance, and the alternative shapes are worse. Filtering the balance query is
+	// the failure `.claude/rules/decay-and-jobs.md` §1 is built around; having the caller hand the
+	// planner the amounts would move the rule that decides what "old" means out of the pure, tested,
+	// invariant-declaring layer and into a job.
+	EarnedBetween(
+		account core.ULID, balanceKind string, fromSeq, toSeq int64,
+	) (core.Centipoints, error)
 
 	// Roster is every account in the pool, system accounts included and flagged as such. A decay
 	// run with no explicit account list resolves it here.
