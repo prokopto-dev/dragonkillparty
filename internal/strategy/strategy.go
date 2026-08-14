@@ -283,24 +283,6 @@ type Session struct {
 	OpenedAt    core.Micros
 	ClosesAt    core.Micros
 	MinAmountCp core.Centipoints
-
-	// BreakTies asks the settlement to DECIDE a tie it would otherwise report, by running the rest
-	// of the tie-break chain — the bid sequence, then the seeded roll (#248).
-	//
-	// IT IS THE EXPLICIT ASK, AND THAT IS THE WHOLE OF ITS DESIGN. `auction_sealed` reports an
-	// equal-amount tie on the winning rung rather than settling it, because in a blind auction the
-	// steps below the amount are noise: nobody could see the other bids, so who happened to submit
-	// first is not a fact about who wanted the item more. The round that settles it is a REBID among
-	// exactly the tied parties (#247, Phase 6). This flag is how the last round of that says "there
-	// is nothing left to ask them" and takes the deterministic answer — so the roll stays the final
-	// fallback rather than the first one, and a session cannot reach it without somebody choosing to.
-	//
-	// A SETTLEMENT THAT WAS NOT TIED IS UNAFFECTED, which is what makes the flag safe to set: it
-	// enables a fallback, it does not change a price, a winner or a rung. The other three spend
-	// rules do not read it — an open auction's bids are visible while it runs, so an equal amount
-	// there is a submission race for the session layer rather than a blind tie (#247), and a roll's
-	// tie is a new round of the same kind rather than a rebid.
-	BreakTies bool
 }
 
 // ResolutionStepKind names one step of the tie-break chain, as the chain is written in
@@ -380,6 +362,13 @@ type ResolutionStep struct {
 
 // Tie is a settlement that could not separate two or more bidders, and exactly who they are (#248).
 //
+// A TIE IS NEVER AUTO-RESOLVED. Not by a roll, not by who submitted first, not by the size of
+// anybody's bank: a tied item is decided BY HAND, by one of the tied bidders bidding MORE than the
+// tie value or by the others passing. That is the guild's rule and it is the reason this type exists
+// rather than a coin flip — the platform's job at a tie is to state it precisely enough for people to
+// settle it, not to settle it for them. A settlement that reports a Tie has therefore awarded nobody
+// and consumed no randomness, and there is no flag anywhere that makes it decide instead.
+//
 // IT NAMES THE PARTIES BECAUSE THE ROUND THAT SETTLES IT IS OPEN TO THEM AND TO NOBODY ELSE. A
 // sealed auction whose top two bids are equal has not produced a winner, and the guild's answer is a
 // REBID among the tied bidders (#247) — so the settlement's job is to say who they are, once, in a
@@ -389,20 +378,16 @@ type ResolutionStep struct {
 //
 // IT IS THE TIE ITSELF AND NOT THE ROUND. The FSM, the rebid window, the passes it collects and what
 // it does when a rebid ties again are Phase 6 (#247); what a pure planner owes is the arithmetic
-// those all start from — the rung, the amount, the parties and the floor the next round opens at.
+// those all start from — the rung, the amount, the parties, the floor a rebid must clear and how many
+// of them may stand aside.
 type Tie struct {
 	// Tier is the rung the tie stands on: the highest one holding an eligible bid, which is the only
 	// rung a tie can be on, because everything below it lost to the ladder before amounts were
 	// compared.
 	Tier string
 
-	// AmountCp is what every tied bid named — and therefore THE FLOOR THE REBID ROUND OPENS AT.
-	//
-	// The two are one number on purpose. A bidder who committed 10.00 and is asked to bid again may
-	// go up or stand where they are; they may not go down, because the amount is already committed
-	// and a round that let them retreat below it would turn a tie into a way of bidding less than you
-	// offered. So a Phase-6 rebid session opens with Session.MinAmountCp set to this, and
-	// sessionMinimum's "a session may raise the pool's floor and may not lower it" does the rest.
+	// AmountCp is what every tied bid named: the value the tie stands at, and what the last bidder
+	// standing pays if the others pass.
 	//
 	// It is safe to publish: it is the winning amount, revealed at `closing` and paid by whoever
 	// takes the item. Every OTHER bid in the session stays sealed (docs/guides/auctions.md).
@@ -431,6 +416,33 @@ type Tie struct {
 	RebidRequired bool
 }
 
+// MinRebidCp is the smallest bid that WINS the rebid round: one centipoint above the tie.
+//
+// A REBID BEATS THE TIE OR IT IS NOT A REBID. The two moves open to a tied bidder are to bid more
+// than the tie value or to pass; standing on the same number again is what everybody already did and
+// would produce the same tie for ever. So the floor of the round that settles a tie is strictly
+// ABOVE AmountCp, and a Phase-6 rebid session opens with Session.MinAmountCp set to this — where
+// sessionMinimum's "a session may raise the pool's floor and may not lower it" keeps it.
+//
+// ONE CENTIPOINT, NOT ONE INCREMENT. `increment_cp` is a SETTLEMENT rule in this family — what a
+// second-price winner pays above the runner-up — and a sealed auction deliberately has no bid
+// lattice: you name what the item is worth to you, 2.85 and not 3.00, because quantising bids
+// quantises exactly the valuations sealed bidding exists to elicit (AuctionSealed.ValidateBid). The
+// smallest representable raise is therefore the honest floor, and a guild wanting bigger steps has
+// said so in a rule that is about price rather than about bids.
+//
+// SATURATING RATHER THAN WRAPPING at the top of the range: an unrepresentable raise means no rebid
+// can clear the floor and the tie is settled by passes alone, which is a legal outcome. Wrapping
+// would make the floor smaller than the tie and let a rebid win by bidding less.
+func (t Tie) MinRebidCp() core.Centipoints {
+	next, ok := addCentipoints(t.AmountCp, 1)
+	if !ok {
+		return t.AmountCp
+	}
+
+	return next
+}
+
 // MaxPasses is how many of the tied bidders may decline to rebid: all but one.
 //
 // EVERY TIED PARTY IS OFFERED THE PASS, AND THEY MAY NOT ALL TAKE IT. A raider who bid 10.00 blind
@@ -438,6 +450,11 @@ type Tie struct {
 // rebid is a round rather than an auto-escalation. But a round in which everybody passes has settled
 // nothing and left the item exactly where it started, so the last bidder standing takes it at
 // AmountCp: the pass is a withdrawal from the rebid, not from the tie.
+//
+// IT IS ALSO WHAT MAKES THE CHAIN TERMINATE WITHOUT A COIN FLIP. Every rebid round either produces a
+// higher bid — which decides it — or reduces the number of contenders by at least one, and a tie of
+// one is not a tie. That is the whole argument for a tie never being auto-resolved: the hand-resolved
+// round provably ends, so nothing has to be decided by a roll nobody chose.
 //
 // Derived rather than stored, so it cannot disagree with Accounts. It is 0 for a tie of one, which
 // is not a tie — see Accounts.

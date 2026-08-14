@@ -185,34 +185,39 @@ officer reads back months later, and the counts are also what the disclosure bel
 **Step 2 is whatever the rule ranks by, and nothing runs between it and step 6.** For the two auctions
 it is the amount; for `relative_bid` it is the share of the frozen balance; for `roll` it is the die.
 An equal step 2 therefore falls straight to the bid sequence and then to the roll — except in a
-sealed auction, which stops there and asks for a rebid instead (below) — in particular, two
+sealed auction, which stops there and is settled by hand (below) — in particular, two
 equal *shares* are **not** separated by which bidder committed more points
 ([#244](https://github.com/prokopto-dev/dragonkillparty/issues/244)). Committing the same share of a
 larger bank is a larger number of points and the same claim; deciding it on the size of the bank is
 step 4 arriving three rungs early, out of order and under another name, in the one rule written to
 neutralise bank size. When step 4 becomes evaluable it lands where it is numbered, below attendance.
 
-**A sealed auction stops at step 2 instead of walking past it.** Two or more bidders equal on the
-amount *within the winning tier* are tied, and in a blind auction the steps below the amount decide
-nothing worth deciding: nobody could see anybody else's number, so submitting first is not evidence
-of wanting the item more, and a coin flip is not evidence of anything. So `auction_sealed` reports
-the tie — naming **exactly** the tied accounts — and awards nobody
-([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)). The item is settled by a
-**rebid round open to those bidders and to nobody else**:
+**A sealed auction stops at step 2, and a tie there is never resolved automatically.** Two or more
+bidders equal on the amount *within the winning tier* are tied, and in a blind auction the steps
+below the amount decide nothing worth deciding: nobody could see anybody else's number, so submitting
+first is not evidence of wanting the item more, and a coin flip is not evidence of anything. So
+`auction_sealed` reports the tie — naming **exactly** the tied accounts — and awards nobody
+([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)).
 
-- the amount they tied on is the **floor** of the rebid — raise or stand, never retreat below what
-  you already committed;
-- every tied bidder may **pass**, and at most all-but-one of them may: the last one standing takes
-  the item at the tie amount, so the round ends with a single winner;
-- steps 6 and 7 are still there, still in that order, and are reached only when a session **asks**
-  for the tie to be broken — which is what a rebid that ties again eventually does. The roll is the
-  final fallback rather than the first answer.
+**A tied item is settled by hand**, by a **rebid round open to those bidders and to nobody else**,
+and each of them has exactly two moves:
+
+- **bid more than the tie value.** The floor of the rebid is strictly above what they tied on — one
+  centipoint above, because a sealed auction has no bid lattice and `increment_cp` is a rule about
+  what a second-price winner *pays*. Standing on the same number again is what everybody already did.
+- **pass**, and at most all-but-one of them may: the last bidder still standing takes the item at the
+  tie amount.
+
+That is why nothing has to be rolled for. Every round either produces a higher bid, which decides it,
+or removes a contender, and a tie of one is not a tie — so the hand-resolved round provably ends.
+**Steps 6 and 7 are not reached for a sealed tie at all**, and there is no flag, knob or officer
+button that runs them: settling a sealed auction touches the seeded Rng on no path.
 
 The round, its window and its passes are Phase 6
 ([#247](https://github.com/prokopto-dev/dragonkillparty/issues/247)); the detection, the named
-parties and the floor are arithmetic and ship in Phase 1. An **open** auction is unaffected: its bids
-are visible while it runs, so two equal amounts there are a submission race for the session layer
-rather than a blind tie.
+parties, the floor a rebid must clear and the pass budget are arithmetic and ship in Phase 1. An
+**open** auction is unaffected: its bids are visible while it runs, so two equal amounts there are a
+submission race for the session layer rather than a blind tie.
 
 | Trace entry | Written by | Records |
 |---|---|---|
@@ -222,7 +227,7 @@ rather than a blind tie.
 | `share` | `relative_bid` | the largest share, in basis points, of a balance frozen at `seq_at_open` |
 | `bid_sequence` | the two auctions, `relative_bid` | which of the bids tied on everything above was placed first |
 | `seeded_roll` | all four | the seed a tie was settled from — and in `roll`, the die itself, which is that rule's step 2 rather than its tie-break |
-| `rebid_required` | `auction_sealed` | the bidders a blind tie could not separate, and the floor the rebid round among them opens at |
+| `rebid_required` | `auction_sealed` | the bidders a blind tie could not separate, and the number a rebid among them has to beat |
 | `price` | all four | what the winner pays, and under which rule |
 
 A rule records every step it **reached**, including the ones that ran and tied: a trace showing

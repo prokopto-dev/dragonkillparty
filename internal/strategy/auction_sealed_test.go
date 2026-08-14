@@ -1,6 +1,7 @@
 package strategy_test
 
 import (
+	"math"
 	"slices"
 	"testing"
 
@@ -456,10 +457,11 @@ func TestAuctionSealed_SettleAuction_AWithinTierTie_NamesThePartiesAndAsksForARe
 	require.Empty(t, res.WinningTier, "nothing took the item; the rung the rebid runs on is on the tie")
 	require.Empty(t, res.TierCounts)
 
+	require.Contains(t, res.Reason, "nothing settles it automatically",
+		"the officer's sentence has to say that the platform is not going to decide this")
 	require.Contains(t, res.Reason, "rebid round among exactly those bidders")
-	require.Contains(t, res.Reason, "opening at that amount as its floor",
-		"the tied amount is the floor of the round that settles it: nobody rebids below what they "+
-			"already committed")
+	require.Contains(t, res.Reason, "1001 centipoints or more",
+		"a rebid beats the tie value; standing on it again is what everybody already did")
 	require.Contains(t, res.Reason, "but the last may pass")
 
 	require.Equal(t, []strategy.ResolutionStepKind{
@@ -500,16 +502,16 @@ func TestAuctionSealed_SettleAuction_ATieIsBetweenBIDDERSRatherThanBids(t *testi
 		"and they pay the minimum, because there is no runner-up on their rung")
 }
 
-// TestAuctionSealed_SettleAuction_ADuplicateTopBid_BuysNoSecondTicket is the AO review's finding on
-// #248, and it is about a raider's ODDS rather than about who is named.
+// TestAuctionSealed_SettleAuction_ADuplicateTopBid_IsStillOneBidder is the AO review's finding on
+// #248, and it is about WHO IS COUNTED rather than about who wins.
 //
 // One account holding two identical top bids beside a second account holding one is a tie between
-// TWO people, and the settlement says so — but a fallback that rolled over the three ROWS would give
-// the duplicate bidder two chances in three. It returns a legal winner either way, so nothing about
-// the outcome shows it: the only witness is the size of the draw, which is why the fake Rng records
-// it. The reported path and the fallback path must agree about how many parties there are, because
-// they are answering the same question.
-func TestAuctionSealed_SettleAuction_ADuplicateTopBid_BuysNoSecondTicket(t *testing.T) {
+// TWO people, and every count the settlement makes has to say two: the named set, the pass budget,
+// and — for the rules that still roll — the size of the draw. Nothing about a resolved outcome shows
+// a miscount, which is why the draw is asserted from the fake Rng rather than inferred from a winner.
+// Here the draw must be EMPTY, because a sealed tie is never resolved automatically at all; the
+// family test in spend_test.go is where the two rules that do roll are held to the same count.
+func TestAuctionSealed_SettleAuction_ADuplicateTopBid_IsStillOneBidder(t *testing.T) {
 	t.Parallel()
 
 	top := func(id core.ULID) strategy.Bid {
@@ -519,69 +521,52 @@ func TestAuctionSealed_SettleAuction_ADuplicateTopBid_BuysNoSecondTicket(t *test
 	}
 
 	for _, tc := range []struct {
-		name  string
-		bids  []strategy.Bid
-		tied  []core.ULID
-		draws []int
+		name string
+		bids []strategy.Bid
+		tied []core.ULID
 	}{
 		{
-			name:  "two rows from one bidder and one from another",
-			bids:  []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(1))},
-			tied:  []core.ULID{acct(0), acct(1)},
-			draws: []int{2},
+			name: "two rows from one bidder and one from another",
+			bids: []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(1))},
+			tied: []core.ULID{acct(0), acct(1)},
 		},
 		{
-			name:  "three rows and two rows",
-			bids:  []strategy.Bid{top(acct(0)), top(acct(1)), top(acct(0)), top(acct(1)), top(acct(0))},
-			tied:  []core.ULID{acct(0), acct(1)},
-			draws: []int{2},
+			name: "three rows and two rows",
+			bids: []strategy.Bid{top(acct(0)), top(acct(1)), top(acct(0)), top(acct(1)), top(acct(0))},
+			tied: []core.ULID{acct(0), acct(1)},
 		},
 		{
-			name:  "every tied row is the same bidder, so there is nothing to roll for",
-			bids:  []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(0))},
-			tied:  nil,
-			draws: nil,
+			name: "every tied row is the same bidder, so there is nobody to be tied with",
+			bids: []strategy.Bid{top(acct(0)), top(acct(0)), top(acct(0))},
+			tied: nil,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			s := strategy.AuctionSealed{}
+			ctx := spendCtx(t, tieredSealedConfig)
 
-			reported, err := s.SettleAuction(spendCtx(t, tieredSealedConfig),
+			res, err := strategy.AuctionSealed{}.SettleAuction(ctx,
 				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, tc.bids)
 			require.NoError(t, err)
 
+			require.Empty(t, ctx.rng.draws,
+				"a sealed settlement never rolls: the case a roll would have decided is the case it "+
+					"reports, and a duplicate row is not a second ticket in a round that never happens")
+			require.Nil(t, res.RngSeed)
+
 			if tc.tied == nil {
-				require.Nil(t, reported.Tie, "one bidder holding every top row has won, and alone")
-				require.Len(t, reported.Winners, 1)
-			} else {
-				require.NotNil(t, reported.Tie)
-				require.Equal(t, tc.tied, reported.Tie.Accounts)
-			}
-
-			ctx := spendCtx(t, tieredSealedConfig)
-
-			broken, err := s.SettleAuction(ctx,
-				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow, BreakTies: true},
-				tc.bids)
-			require.NoError(t, err)
-
-			require.Len(t, broken.Winners, 1)
-			require.Equal(t, tc.draws, ctx.rng.draws,
-				"the roll is drawn between the tied BIDDERS: a duplicate row is not a second ticket, "+
-					"and a run that is all one account is not a roll at all")
-
-			if tc.tied != nil {
-				require.Contains(t, tc.tied, broken.Winners[0].AccountID)
-				require.NotNil(t, broken.RngSeed)
-				require.Contains(t, broken.Trace[len(broken.Trace)-2].Detail, "2 bidders are equal",
-					"and the trace reports the draw that was made rather than the rows that existed")
+				require.Nil(t, res.Tie, "one bidder holding every top row has won, and alone")
+				require.Len(t, res.Winners, 1)
+				require.Equal(t, acct(0), res.Winners[0].AccountID)
 
 				return
 			}
 
-			require.Nil(t, broken.RngSeed, "no roll was held, so there is no seed to record")
+			require.Empty(t, res.Winners)
+			require.Equal(t, tc.tied, res.Tie.Accounts,
+				"two people are tied however many rows one of them holds")
+			require.Equal(t, 1, res.Tie.MaxPasses())
 		})
 	}
 }
@@ -631,94 +616,87 @@ func TestAuctionSealed_SettleAuction_AThreeWayTie_LeavesOnePartyUnableToPass(t *
 	require.Equal(t, []core.ULID{acct(0), acct(2), acct(4)}, res.Tie.Accounts)
 	require.Equal(t, 2, res.Tie.MaxPasses(), "all but one of the three")
 	require.Equal(t, core.Centipoints(1_000), res.Tie.AmountCp,
-		"and the round they are called back into opens at what they tied on")
+		"and the last of the three to still be standing pays what they all tied on")
+	require.Equal(t, core.Centipoints(1_001), res.Tie.MinRebidCp(),
+		"while any of them takes it outright by beating that number")
 }
 
-// TestAuctionSealed_SettleAuction_BreakTies_SettlesTheTieDeterministically is the fallback, and the
-// half of #248 that keeps the chain terminating: a session that asks for the tie to be broken gets
-// the same single winner it always got, from a seed it can re-run.
+// TestAuctionSealed_SettleAuction_ATie_IsNeverResolvedAutomatically is the rule this whole outcome
+// exists to serve, stated where a future change would have to delete it to break it.
 //
-// The seed is what makes this a fallback rather than an arbitrary decision — the settlement is
-// replayable, so a bidder who lost a rebid that ended in a roll can be shown the roll.
-func TestAuctionSealed_SettleAuction_BreakTies_SettlesTheTieDeterministically(t *testing.T) {
+// A tie is settled BY HAND — a rebid above the tie value, or a pass — and there is no argument, no
+// config knob and no session flag that makes the settlement pick a winner instead. The two shapes
+// below are the two the automatic chain would have decided: bids placed in the same microsecond,
+// which the seeded roll used to take, and bids a microsecond apart, which the bid sequence used to
+// take. Both are now the same outcome, because in a blind auction neither step knows anything.
+func TestAuctionSealed_SettleAuction_ATie_IsNeverResolvedAutomatically(t *testing.T) {
 	t.Parallel()
 
-	s := strategy.AuctionSealed{}
-	session := strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow, BreakTies: true}
+	for _, tc := range []struct {
+		name   string
+		placed [2]core.Micros
+	}{
+		{name: "placed in the same microsecond, which the roll used to take", placed: [2]core.Micros{fixedNow, fixedNow}},
+		{name: "placed a microsecond apart, which the sequence used to take", placed: [2]core.Micros{fixedNow + 1, fixedNow}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	res, err := s.SettleAuction(spendCtx(t, tieredSealedConfig), session, sealedTieBids())
-	require.NoError(t, err)
+			ctx := spendCtx(t, tieredSealedConfig)
 
-	require.Nil(t, res.Tie, "a tie that was broken is a decided auction")
-	require.Len(t, res.Winners, 1)
-	require.Contains(t, []core.ULID{acct(0), acct(2)}, res.Winners[0].AccountID,
-		"the winner is one of the bidders who were tied, and never the alt below them")
-	require.Equal(t, strategy.TierMain, res.WinningTier)
-	require.NotNil(t, res.RngSeed, "an unrecorded coin flip is the one thing a dispute cannot settle")
-	require.Contains(t, res.Reason, "asked for the 2-way tie in tier main to be broken",
-		"the resolution says the tie was broken because somebody asked, not because nobody noticed")
+			res, err := strategy.AuctionSealed{}.SettleAuction(ctx,
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, []strategy.Bid{
+					{
+						AccountID: acct(0), AmountCp: 1_000, PlacedAt: tc.placed[0], Sealed: true,
+						Tier: strategy.TierMain,
+					},
+					{
+						AccountID: acct(1), AmountCp: 1_000, PlacedAt: tc.placed[1], Sealed: true,
+						Tier: strategy.TierMain,
+					},
+				})
 
-	again, err := s.SettleAuction(spendCtx(t, tieredSealedConfig), session, sealedTieBids())
-	require.NoError(t, err)
-	require.Equal(t, res, again, "same bids, same seed, same answer")
+			require.NoError(t, err)
+			require.Empty(t, res.Winners, "nobody won it; two people are still equal")
+			require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts)
+			require.Nil(t, res.RngSeed)
+			require.Zero(t, ctx.rng.calls,
+				"a sealed settlement touches the Rng on no path at all: the seed is not merely unused, "+
+					"it is never taken, so the pool's randomness is exactly where the next round finds it")
+			require.NotContains(t, res.Reason, "roll")
+			require.NotContains(t, res.Reason, "earliest")
+		})
+	}
 }
 
-// TestAuctionSealed_SettleAuction_BreakTies_WalksTheChainBeforeItRolls: the roll is step 7 and the
-// bid sequence is step 6, and asking for a tie to be broken does not skip to the bottom.
+// TestAuctionSealed_SettleAuction_ARebidMustBeatTheTie: the floor of the round that settles a tie is
+// strictly ABOVE the tie value.
 //
-// The two bids differ only in the microsecond they were placed, so the sequence step separates them
-// and no randomness is consumed at all.
-func TestAuctionSealed_SettleAuction_BreakTies_WalksTheChainBeforeItRolls(t *testing.T) {
+// "A tie must be hand resolved either by someone choosing to rebid more than the tie value or
+// passing" — so standing on the same number again is not a rebid, it is what everybody already did,
+// and a round that accepted it would reproduce the same tie for ever. One centipoint above, not one
+// increment: a sealed auction has no bid lattice on purpose, and `increment_cp` is a rule about what
+// a second-price winner PAYS.
+func TestAuctionSealed_SettleAuction_ARebidMustBeatTheTie(t *testing.T) {
 	t.Parallel()
 
 	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, tieredSealedConfig),
-		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow, BreakTies: true},
-		[]strategy.Bid{
-			{
-				AccountID: acct(0), AmountCp: 1_000, PlacedAt: fixedNow + 1, Sealed: true,
-				Tier: strategy.TierMain,
-			},
-			{
-				AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
-				Tier: strategy.TierMain,
-			},
-		})
-
-	require.NoError(t, err)
-	require.Equal(t, acct(1), res.Winners[0].AccountID, "the earlier of the two tied bids")
-	require.Nil(t, res.RngSeed, "the sequence settled it, so the roll below it never ran")
-	require.Contains(t, res.Reason, "the earliest of the tied bids took it")
-	require.Equal(t, strategy.ResolutionStepBidSequence, res.Trace[len(res.Trace)-2].Kind)
-}
-
-// TestAuctionSealed_SettleAuction_BreakTies_ChangesNothingAboutAnUntiedSettlement. The flag enables a
-// fallback; it may not move a price, a winner or a rung — which is what makes it safe for a session
-// layer to set without knowing whether the session tied.
-func TestAuctionSealed_SettleAuction_BreakTies_ChangesNothingAboutAnUntiedSettlement(t *testing.T) {
-	t.Parallel()
-
-	s := strategy.AuctionSealed{}
-	bids := []strategy.Bid{
-		{
-			AccountID: acct(0), AmountCp: 1_200, PlacedAt: fixedNow, Sealed: true,
-			Tier: strategy.TierMain,
-		},
-		{
-			AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow, Sealed: true,
-			Tier: strategy.TierMain,
-		},
-	}
-
-	plain, err := s.SettleAuction(spendCtx(t, tieredSealedConfig),
-		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, bids)
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, sealedTieBids())
 	require.NoError(t, err)
 
-	asked, err := s.SettleAuction(spendCtx(t, tieredSealedConfig),
-		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow, BreakTies: true}, bids)
-	require.NoError(t, err)
+	require.Equal(t, core.Centipoints(1_000), res.Tie.AmountCp)
+	require.Equal(t, core.Centipoints(1_001), res.Tie.MinRebidCp(),
+		"the smallest bid that WINS the rebid is one centipoint above the tie")
+	require.Equal(t, core.Centipoints(1_000), strategy.Tie{AmountCp: 1_000}.AmountCp,
+		"and the tie value itself is what the last bidder standing pays if the others pass")
 
-	require.Equal(t, plain, asked)
-	require.Equal(t, []strategy.Allocation{{AccountID: acct(0), AmountCp: 1_100}}, plain.Winners)
+	require.Contains(t, res.Reason, "nothing settles it automatically")
+	require.Contains(t, res.Reason, "1001 centipoints or more")
+
+	// Saturating rather than wrapping: an unrepresentable raise leaves passing as the only move, and
+	// a floor that wrapped below the tie would let a rebid win by bidding LESS than the tie.
+	require.Equal(t, core.Centipoints(math.MaxInt64),
+		strategy.Tie{AmountCp: math.MaxInt64}.MinRebidCp())
 }
 
 // TestAuctionSealed_SettleAuction_BelowTheMinimum_Rots: sealed or not, a bid under the floor cannot
