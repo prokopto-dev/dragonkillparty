@@ -46,8 +46,14 @@ func Catalogue() []PointStrategy {
 		Tick{},
 		StartPoints{},
 		FixedPrice{},
+		AuctionOpen{},
+		AuctionSealed{},
+		RelativeBid{},
+		Roll{},
 		LootCouncil{},
 		Cap{},
+		DecayPercent{},
+		DecayWindow{},
 	}
 }
 

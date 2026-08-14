@@ -2,7 +2,6 @@ package strategy
 
 import (
 	"fmt"
-	"math/bits"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
@@ -209,22 +208,22 @@ func (FixedPrice) config(ctx Ctx) (fixedPriceConfig, error) {
 	return validateFixedPriceConfig(cfg)
 }
 
+// terms is the part of this config every spend rule shares: where the proceeds go, which system
+// account catches a solo kill, and the floor an award may not take the buyer below. See spend.go.
+func (cfg fixedPriceConfig) terms() spendTerms {
+	return spendTerms{Proceeds: cfg.Proceeds, SoloPolicy: cfg.SoloPolicy, FloorCp: cfg.FloorCp}
+}
+
 // validateFixedPriceConfig applies the bounds the schema declares, to a config that has already
 // parsed. Split from config so that the defaults are validated too — a default that violated its own
 // schema would otherwise be the one config nothing ever checked.
+//
+// The two shared enums are validateSpendTerms', for the reason spend.go gives: `proceeds` and
+// `solo_policy` mean the same thing in five strategies, and five copies of the same switch is five
+// chances for one of them to accept a value the others refuse.
 func validateFixedPriceConfig(cfg fixedPriceConfig) (fixedPriceConfig, error) {
-	switch cfg.Proceeds {
-	case ProceedsGuildBank, ProceedsAttendees:
-	default:
-		return fixedPriceConfig{}, fmt.Errorf("%s: proceeds is %q, want %q or %q: %w",
-			fixedPriceID, cfg.Proceeds, ProceedsGuildBank, ProceedsAttendees, ErrInvalidConfig)
-	}
-
-	switch cfg.SoloPolicy {
-	case SoloPolicyGuildBank, SoloPolicyWriteOff:
-	default:
-		return fixedPriceConfig{}, fmt.Errorf("%s: solo_policy is %q, want %q or %q: %w",
-			fixedPriceID, cfg.SoloPolicy, SoloPolicyGuildBank, SoloPolicyWriteOff, ErrInvalidConfig)
+	if err := validateSpendTerms(fixedPriceID, cfg.terms()); err != nil {
+		return fixedPriceConfig{}, err
 	}
 
 	if cfg.DefaultPriceCp < 0 {
@@ -371,111 +370,16 @@ func (s FixedPrice) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		return BatchProposal{}, err
 	}
 
-	if ev.Buyer.ID == "" {
-		return BatchProposal{}, fmt.Errorf("%s: award has no buyer: %w", fixedPriceID, ErrInvalidEvent)
-	}
-
-	if ev.Buyer.IsSystem() {
-		return BatchProposal{}, fmt.Errorf(
-			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
-				"purchasers: %w", fixedPriceID, ev.Buyer.ID, ErrInvalidEvent)
-	}
-
 	price, err := resolvePrice(cfg, ev)
 	if err != nil {
 		return BatchProposal{}, err
 	}
 
-	itemID := optionalULID(ev.Item.ID)
-
-	entries := []EntryProposal{{
-		AccountID:   ev.Buyer.ID,
-		CharacterID: ev.CharacterID,
-		BalanceKind: BalanceKindDKP,
-		AmountCp:    -price,
-		ItemID:      itemID,
-		ItemAwardID: ev.ItemAwardID,
-		RaidID:      ev.RaidID,
-	}}
-
-	invariants := []Invariant{
-		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
-		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
-	}
-
-	credits, split, err := s.proceeds(ctx, cfg, ev, price)
-	if err != nil {
-		return BatchProposal{}, err
-	}
-
-	if split {
-		// Declared only when a split actually happened. LargestRemainderSumsToDebit and SumZero are
-		// the same arithmetic and deliberately different rules — this one names the mistake of
-		// rounding each credit independently — so claiming it for a batch with a single credit would
-		// be asserting something about an allocation that never ran.
-		invariants = append(invariants,
-			Invariant{Kind: InvariantLargestRemainderSumsToDebit, BalanceKind: BalanceKindDKP})
-	}
-
-	for _, c := range credits {
-		entries = append(entries, EntryProposal{
-			AccountID:   c.AccountID,
-			BalanceKind: BalanceKindDKP,
-			AmountCp:    c.AmountCp,
-			ItemID:      itemID,
-			ItemAwardID: ev.ItemAwardID,
-			RaidID:      ev.RaidID,
-		})
-	}
-
-	return s.propose(ctx, kinds.KindAward, ev.EffectiveAt, ev.Reason, entries, invariants)
-}
-
-// proceeds turns a price into the credits that balance it, and reports whether the allocator ran.
-//
-// The two config paths differ in more than their destination: the guild-bank path is one credit and
-// cannot round, while the attendees path is a largest-remainder split whose credits must sum to
-// exactly the debit. Keeping them in one function is what makes it impossible to add a third
-// destination that forgets to balance.
-func (s FixedPrice) proceeds(
-	ctx Ctx, cfg fixedPriceConfig, ev AwardEvent, price core.Centipoints,
-) (credits []Allocation, split bool, err error) {
-	if cfg.Proceeds == ProceedsGuildBank {
-		bank, err := ctx.SystemAccount(SystemKeyGuildBank)
-		if err != nil {
-			return nil, false, fmt.Errorf("%s: resolve the guild bank: %w", fixedPriceID, err)
-		}
-
-		return []Allocation{{AccountID: bank, AmountCp: price}}, false, nil
-	}
-
-	shares := sortedShares(ev.Beneficiaries)
-	if err := checkDistinctShares(fixedPriceID, shares); err != nil {
-		return nil, false, err
-	}
-
-	for _, b := range shares {
-		if err := checkShare(fixedPriceID, b); err != nil {
-			return nil, false, err
-		}
-	}
-
-	// The degenerate case, routed rather than dropped: nobody to split across means the solo policy
-	// picks a system account and the whole price lands there. ledger.Allocate takes the same account
-	// for its all-weights-zero case, which is why it is passed rather than handled here.
-	solo, err := ctx.SystemAccount(cfg.SoloPolicy)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: resolve the solo-policy account %q: %w",
-			fixedPriceID, cfg.SoloPolicy, err)
-	}
-
-	credits, err = ctx.Allocate(price, shares, solo)
-	if err != nil {
-		return nil, false, fmt.Errorf("%s: split %d centipoints across %d beneficiaries: %w",
-			fixedPriceID, price, len(shares), err)
-	}
-
-	return credits, true, nil
+	// The buyer checks, the proceeds routing and the invariant set are spendAward's, shared with the
+	// four bidding strategies: what differs between spend rules is how the price is decided, which is
+	// resolvePrice above, and nothing after it (see spend.go). The goldens committed for this
+	// strategy are what prove the extraction moved code without moving behaviour.
+	return spendAward(ctx, fixedPriceID, fixedPriceVersion, cfg.terms(), ev, price)
 }
 
 // resolvePrice applies the three-step price resolution and refuses a price that awards nothing.
@@ -549,25 +453,12 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 			fixedPriceID, ErrInvalidEvent)
 	}
 
-	accounts := run.Accounts
-	if len(accounts) == 0 {
-		accounts, err = ctx.Roster()
-		if err != nil {
-			return BatchProposal{}, fmt.Errorf("%s: read the roster to decay: %w", fixedPriceID, err)
-		}
-	}
-
-	bank, err := ctx.SystemAccount(SystemKeyGuildBank)
+	targets, bank, err := cadenceTargets(ctx, fixedPriceID, "decay", run)
 	if err != nil {
-		return BatchProposal{}, fmt.Errorf("%s: resolve the guild bank: %w", fixedPriceID, err)
-	}
-
-	debits := make([]EntryProposal, 0, len(accounts)+1)
-
-	targets := sortedAccounts(accounts)
-	if err := checkDistinctAccounts(fixedPriceID, targets); err != nil {
 		return BatchProposal{}, err
 	}
+
+	debits := make([]EntryProposal, 0, len(targets)+1)
 
 	var total core.Centipoints
 
@@ -633,25 +524,6 @@ func (s FixedPrice) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 		{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
 		{Kind: InvariantNonNegative, BalanceKind: BalanceKindDKP, FloorCp: &cfg.FloorCp},
 	})
-}
-
-// decayAmount is balance * bp / 10000, floored, computed exactly in integers.
-//
-// The 128-bit product is the same technique ledger.Allocate uses and for the same reason: `balance *
-// bp` overflows int64 for a large balance, a float would be a lint failure and would lose precision
-// exactly where the invariant lives, and math/big would allocate per account on a run that touches
-// the whole roster. bits.Mul64/Div64 are exact and allocation-free.
-//
-// Div64 panics when the quotient would not fit in 64 bits. It cannot here: bp <= 10000 = the divisor,
-// so the quotient is at most `balance`.
-//
-// FLOORED, never rounded. Rounding a decay to nearest takes a centipoint the configured rate did not
-// ask for, and it takes it from every member every period.
-func decayAmount(balance core.Centipoints, bp int64) core.Centipoints {
-	hi, lo := bits.Mul64(uint64(balance), uint64(bp))
-	q, _ := bits.Div64(hi, lo, basisPointsWhole)
-
-	return core.Centipoints(q)
 }
 
 // PlanReversal negates every entry of the batch being reversed.
