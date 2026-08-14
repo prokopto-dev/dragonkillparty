@@ -389,9 +389,17 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 	}
 
 	if len(bids) == 0 {
-		return Resolution{Reason: "nobody entered the roll"}, nil
+		const nobody = "nobody entered the roll"
+
+		return Resolution{
+			Reason: nobody,
+			Trace:  []ResolutionStep{{Kind: ResolutionStepEligibility, Detail: nobody}},
+		}, nil
 	}
 
+	// EVERY REFUSAL HAPPENS ABOVE THIS LINE. Below it the round is committed to a sequence of draws,
+	// and a round that drew and then failed would spend randomness a retry can never get back — see
+	// sortedEntrants. Nothing between here and the seed may reject an entry.
 	entrants, err := sortedEntrants(bids)
 	if err != nil {
 		return Resolution{}, err
@@ -404,11 +412,25 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 		rolled = append(rolled, rankedBid{bid: b, rank: cfg.RollMin + int64(ctx.Rng().IntN(cfg.faces()))})
 	}
 
-	ordered := rankBids(rolled)
+	ordered, err := rankBids(rollID, rolled)
+	if err != nil {
+		return Resolution{}, err
+	}
 
 	// tiedOnRank rather than tiedAtTop: two entrants who rolled the same number are tied, whatever
 	// else differs between their entries. An entry carries no amount and its placement time has
-	// nothing to do with a die.
+	// nothing to do with a die. THE RUNG IS STILL PART OF THAT KEY (#224): a main and an alt who both
+	// rolled 97 are not tied, the ladder settled it, and a round that called for a re-roll there would
+	// re-open a question the guild's own rules had already answered.
+	// The ladder ran whatever the round then did with it, so the trace records it on every path out of
+	// here — including the two that award nobody. See Resolution.Trace: what the chain evaluated and
+	// what took the item are different questions, and only the second is empty on a tie.
+	phase := tierOutcomeOf(ordered, "entrant")
+	entered := ResolutionStep{
+		Kind:   ResolutionStepEligibility,
+		Detail: fmt.Sprintf("%d entrants, each rolled once over %d–%d", len(entrants), cfg.RollMin, cfg.RollMax),
+	}
+
 	if tied := tiedOnRank(ordered); tied > 1 {
 		return Resolution{
 			Reason: fmt.Sprintf(
@@ -416,23 +438,63 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 					"this one awards nobody",
 				tied, ordered[0].rank, cfg.RollMin, cfg.RollMax),
 			RngSeed: &seed,
+			Trace: []ResolutionStep{entered, phase.step(), {
+				Kind: ResolutionStepSeededRoll,
+				Detail: fmt.Sprintf(
+					"%d entrants in tier %s rolled %d from seed %d, and a tie is a new round rather "+
+						"than an edit, so this one awards nobody",
+					tied, phase.tier, ordered[0].rank, seed),
+			}},
 		}, nil
 	}
 
+	// THE ROLL THAT WON IS THE HIGHEST ON THE WINNING RUNG, and the sentence has to say so. Everybody
+	// entered rolls — the draws are per entrant, in account order, which is what makes the round
+	// replayable — but a lower rung cannot take the item whatever it rolled. "Highest of 6 rolls: 5"
+	// with a 97 sitting in `alt` would read as a misread die rather than as the ladder.
+	reason := fmt.Sprintf("highest of %d rolls of %d–%d: %d",
+		tiedOnTier(ordered), cfg.RollMin, cfg.RollMax, ordered[0].rank)
+	if phase.below > 0 {
+		reason = fmt.Sprintf("%s; %d entrant(s) on lower rungs could not win it whatever they rolled",
+			reason, phase.below)
+	}
+
 	return Resolution{
-		Winners: []Allocation{{AccountID: ordered[0].bid.AccountID, AmountCp: cfg.WinCostCp}},
-		Reason: fmt.Sprintf("highest of %d rolls of %d–%d: %d",
-			len(entrants), cfg.RollMin, cfg.RollMax, ordered[0].rank),
-		RngSeed: &seed,
+		Winners:     []Allocation{{AccountID: ordered[0].bid.AccountID, AmountCp: cfg.WinCostCp}},
+		Reason:      reason,
+		RngSeed:     &seed,
+		WinningTier: phase.tier,
+		TierCounts:  phase.counts,
+		Trace: []ResolutionStep{entered, phase.step(), {
+			Kind: ResolutionStepSeededRoll,
+			Detail: fmt.Sprintf(
+				"the highest of the %d rolls in tier %s is %d, drawn from seed %d; re-running that "+
+					"seed over the same entrants in account order draws it again",
+				tiedOnTier(ordered), phase.tier, ordered[0].rank, seed),
+		}, {
+			Kind:   ResolutionStepPrice,
+			Detail: fmt.Sprintf("winning costs the configured %d centipoints", cfg.WinCostCp),
+		}},
 	}, nil
 }
 
-// sortedEntrants copies the entries into account order and refuses a repeat.
+// sortedEntrants copies the entries into account order and refuses the ones no round has an answer
+// for: an entry naming nobody, an account entered twice, and a rung this package cannot rank.
 //
 // A COPY, so a settlement never reorders its caller's slice, and SORTED, because the roll each
 // entrant receives is the draw at their position in this list — see SettleAuction. The duplicate
 // check rides along because the list is already ordered, which is the same shape checkDistinctShares
 // uses for the same reason.
+//
+// EVERY CHECK IS HERE BECAUSE EVERY CHECK MUST RUN BEFORE THE FIRST DRAW. This function is the last
+// thing SettleAuction does before it takes the seed, and that ordering is load-bearing rather than
+// tidy: the injected Rng is a sequence, so a settlement that consumed draws and then refused the
+// round would leave that sequence advanced by a round nobody ran. The officer fixes the malformed
+// entry, retries, and gets different numbers from the ones the same session would have produced had
+// the bad entry never been there — with nothing to explain the difference, because a rejected round
+// persists no seed. The rung check in particular has to be repeated here rather than left to
+// rankBids (found in AO review of #224): rankBids runs after the draws, which for every other spend
+// rule is still before any randomness and for this one is not.
 func sortedEntrants(bids []Bid) ([]Bid, error) {
 	out := make([]Bid, len(bids))
 	copy(out, bids)
@@ -448,6 +510,10 @@ func sortedEntrants(bids []Bid) ([]Bid, error) {
 			return nil, fmt.Errorf(
 				"%s: account %s is entered twice, which is two rolls and twice the chance; a repeated "+
 					"entrant is a list that was built twice: %w", rollID, b.AccountID, ErrInvalidEvent)
+		}
+
+		if _, err := checkTier(rollID, b); err != nil {
+			return nil, err
 		}
 	}
 

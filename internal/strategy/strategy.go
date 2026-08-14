@@ -252,6 +252,22 @@ type Bid struct {
 	// Sealed reports that this bid's amount must not be logged or shown before the reveal
 	// (.claude/rules/go-idioms.md: "no bid amounts before reveal").
 	Sealed bool
+
+	// Tier is the rung of the ladder this bid was placed from: TierMain, TierMainOffspec, TierAlt or
+	// TierAnyone, and it outranks the amount (docs/guides/auctions.md, canonical §5). See tier.go for
+	// the ladder and the two-phase resolution that reads it.
+	//
+	// IT IS A RECORDED FACT, NOT A DERIVED ONE, and that is the entire reason it is a field on the bid
+	// rather than a lookup at settlement. The tier is derived server-side from the bidding CHARACTER
+	// at bid time — never accepted from a client — and written down; a settlement reads what was
+	// written. Re-deriving it from the character's CURRENT main flag would silently re-decide every
+	// past loot argument the first time a raider swapped their main, and it would re-decide them in
+	// the ledger's history rather than on a screen.
+	//
+	// EMPTY IS `anyone`, the bottom rung: a bid recording no claim to standing has none. That is what
+	// keeps a session nobody has tiered settling on the amount alone, which is every session until the
+	// bid FSM fills this in (Phase 6). A value that is not on the ladder is REFUSED — see checkTier.
+	Tier string
 }
 
 // Session is one auction: the item, the window, and the seq every balance in it resolves against.
@@ -269,6 +285,67 @@ type Session struct {
 	MinAmountCp core.Centipoints
 }
 
+// ResolutionStepKind names one step of the tie-break chain, as the chain is written in
+// docs/guides/auctions.md.
+//
+// The steps a PURE PLANNER can evaluate are the ones declared here. Raid attendance, the balance
+// before the bid and items won in the window are steps 3 to 5 of that chain and are facts the Ctx
+// façade does not carry; they land with the records Phase 3 and Phase 6 keep, ABOVE the steps below
+// and never as an approximation of them.
+type ResolutionStepKind string
+
+const (
+	// ResolutionStepEligibility — how many placed bids cleared the floor that applied. The step
+	// before the chain: a bid under the minimum is not ranked, it is not there.
+	ResolutionStepEligibility ResolutionStepKind = "eligibility"
+
+	// ResolutionStepTier — step 1, and the one that outranks every step below it: the highest rung
+	// holding an eligible bid takes the item.
+	ResolutionStepTier ResolutionStepKind = "tier"
+
+	// ResolutionStepAmount — step 2, evaluated only among the bids standing on the winning rung.
+	ResolutionStepAmount ResolutionStepKind = "amount"
+
+	// ResolutionStepShare — `relative_bid`'s step 2. It is a distinct kind rather than an `amount`
+	// carrying basis points because it is a distinct comparison: the largest SHARE of a balance
+	// frozen at the session's open, which is routinely the smaller number of points. A board that
+	// rendered it as an amount would tell a raider they lost to a bigger bid when they lost to a
+	// bigger fraction of a smaller bank.
+	ResolutionStepShare ResolutionStepKind = "share"
+
+	// ResolutionStepBidSequence — step 6: the earliest bid of those tied on the amount.
+	ResolutionStepBidSequence ResolutionStepKind = "bid_sequence"
+
+	// ResolutionStepSeededRoll — step 7, the last automatic one: a roll whose seed is persisted, so
+	// the flip is replayable rather than remembered. It is also `roll`'s step 2, where the die is not
+	// the tie-break but the whole comparison.
+	ResolutionStepSeededRoll ResolutionStepKind = "seeded_roll"
+
+	// ResolutionStepPrice — not a tie-break at all but the answer the chain exists to produce: what
+	// the winner pays, and under which rule.
+	ResolutionStepPrice ResolutionStepKind = "price"
+)
+
+// ResolutionStep is one step of the tie-break chain as it was ACTUALLY evaluated, with what it
+// decided.
+//
+// It is the executable form of the same argument the Invariant vocabulary makes: a rule recorded as a
+// structured step is one a board can render and a test can assert, and a rule recorded as prose is
+// one nobody runs. A settlement writes the steps it reached, in order, so an officer three months
+// later can answer "why did that drop go there?" from the resolution instead of re-deriving it from
+// bids that have since been argued over.
+//
+// NO STEP EVER NAMES A LOSING BID'S AMOUNT. The winning amount is revealed at `closing` and is what
+// the winner pays; the numbers underneath it are not the guild's business, and a resolution is a
+// thing officers paste into chat (docs/guides/auctions.md).
+type ResolutionStep struct {
+	// Kind is which step of the chain this is.
+	Kind ResolutionStepKind
+
+	// Detail is what it decided, in a sentence. The UI formats; this explains.
+	Detail string
+}
+
 // Resolution is an auction's outcome: who won, at what price, and why.
 //
 // Winners is a slice because a session may award several copies of the same drop, and because a
@@ -284,6 +361,36 @@ type Resolution struct {
 	// carried onto the batch so the roll-off is replayable — an unrecorded coin flip is the one
 	// thing a loot dispute cannot be settled from.
 	RngSeed *int64
+
+	// WinningTier is the rung that took the item — the highest one holding an eligible bid. Empty
+	// when nothing was awarded, which is the rot case and the deliberate roll-off tie.
+	WinningTier string
+
+	// TierCounts is every rung holding at least one eligible bid, HIGHEST FIRST, with the number of
+	// bids that stood on it and never their values.
+	//
+	// IT IS WHAT THE DISCLOSURE RULE IS RENDERED FROM. A bidder who cannot win is told that a higher
+	// tier holds bids and how many — by summing the rungs above their own — and is told neither the
+	// values nor the count in their own tier (docs/guides/auctions.md). Both halves matter: "no bids
+	// in Main yet" would tell a main they win at the floor, which is exactly what sealed second-price
+	// bidding exists to prevent.
+	TierCounts []TierCount
+
+	// Trace is the tie-break chain as it was evaluated, in order — the whole basis for the outcome,
+	// written down at the moment it was decided rather than reconstructed later from bids and a
+	// remembered rule.
+	//
+	// EVERY SETTLEMENT WRITES ONE, including the ones that award nobody: a rot, a roll-off that tied,
+	// a session in which no bid was a bidable share. An officer's question about a drop that went
+	// nowhere is the same question as one about a drop that went somewhere, and a resolution that
+	// answered only the second would be a trail with a hole exactly where an argument starts. The
+	// steps recorded are the ones REACHED, so a trace that ends at `eligibility` is itself the
+	// answer — nothing was ranked.
+	//
+	// A no-award outcome therefore has a Trace while WinningTier is empty, and the two are not in
+	// conflict: the trace records what the chain EVALUATED and WinningTier records what took the
+	// item. A tied roll-off evaluated the ladder and then awarded nothing.
+	Trace []ResolutionStep
 }
 
 // AttendanceEvent is "these characters were present for this tick": the raid-night event that earns

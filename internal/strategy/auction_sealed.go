@@ -29,10 +29,14 @@ import (
 // WHAT LANDS HERE IS THE ARITHMETIC, NOT THE AUCTION. The state machine, the reveal at `closing`, the
 // anti-snipe window and holds are Phase 6, and so is the enforcement that keeps a sealed amount out of
 // every read path — that is a property of the API and the logger, not of a pure planner, and this
-// file's one contribution to it is refusing a bid that is not marked sealed. Second price WITHIN THE
-// WINNING TIER is arithmetic and is still missing: it lands with tier-aware resolution, which is a
-// Phase 1 deliverable of its own (ROADMAP item 12, #224). settlePrice below prices against every
-// eligible bid, which is the same answer whenever one tier holds them all.
+// file's one contribution to it is refusing a bid that is not marked sealed.
+//
+// SECOND PRICE IS COMPUTED WITHIN THE WINNING TIER (#224), which is the half of the pay rule the
+// ladder changes. The runner-up is the highest bid from another account STANDING ON THE SAME RUNG,
+// and a bidder alone on their rung pays the minimum however large the bids below them are: the 350.00
+// an alt put in is not a price a main is ever charged against (docs/guides/auctions.md). settlePrice
+// below is handed the winning rung's bids and nothing else, which is what makes that structural
+// rather than remembered.
 //
 // IT IS A SPEND RULE AND IT DOES NOT EARN. PlanAttendance and PlanDecay return ErrUnsupported naming
 // this strategy; a pool holds an earn rule and an over-time rule beside it (ADR-0026).
@@ -341,29 +345,41 @@ func (s AuctionSealed) SettleAuction(ctx Ctx, session Session, bids []Bid) (Reso
 
 	eligible := eligibleBids(bids, minimum)
 	if len(eligible) == 0 {
-		return Resolution{
-			Reason: fmt.Sprintf("no bid of the %d placed reached the minimum of %d centipoints",
-				len(bids), minimum),
-		}, nil
+		return rotResolution(len(bids), minimum), nil
 	}
 
-	ranked := make([]rankedBid, 0, len(eligible))
-	for _, b := range eligible {
+	phase, err := resolveTier(auctionSealedID, eligible)
+	if err != nil {
+		return Resolution{}, err
+	}
+
+	ranked := make([]rankedBid, 0, len(phase.bids))
+	for _, b := range phase.bids {
 		ranked = append(ranked, rankedBid{bid: b, rank: int64(b.AmountCp)})
 	}
 
-	ordered := rankBids(ranked)
+	ordered, err := rankBids(auctionSealedID, ranked)
+	if err != nil {
+		return Resolution{}, err
+	}
+
 	winner, seed := settleHighest(ctx, ordered)
 
-	price, reason := cfg.settlePrice(winner, ordered, minimum)
+	price, reason := cfg.settlePrice(winner, ordered, phase, minimum)
 	if seed != nil {
 		reason += ", after a seeded roll between the bids tied at the top"
 	}
 
+	trace := append(auctionTrace(len(bids), len(eligible), minimum, phase, ordered, seed),
+		ResolutionStep{Kind: ResolutionStepPrice, Detail: reason})
+
 	return Resolution{
-		Winners: []Allocation{{AccountID: winner.bid.AccountID, AmountCp: price}},
-		Reason:  reason,
-		RngSeed: seed,
+		Winners:     []Allocation{{AccountID: winner.bid.AccountID, AmountCp: price}},
+		Reason:      phase.explain(reason),
+		RngSeed:     seed,
+		WinningTier: phase.tier,
+		TierCounts:  phase.counts,
+		Trace:       trace,
 	}, nil
 }
 
@@ -388,8 +404,14 @@ func (s AuctionSealed) SettleAuction(ctx Ctx, session Session, bids []Bid) (Reso
 // below the winner is frequently the winner's own earlier bid, and pricing against it would charge a
 // bidder their own number plus an increment. That is a real overcharge with a plausible-looking
 // arithmetic trail, and it is why this loop skips on the account rather than on the index.
+//
+// AND IT IS THE HIGHEST SUCH BID ON THE WINNING RUNG (#224), which is structural rather than
+// remembered: `ordered` is the winning tier's bids and nothing else, so a lower-tier number cannot be
+// reached by a loop that ran one row too far. A main alone in their tier therefore falls through to
+// the minimum with a 350.00 alt bid sitting below them — which is the rule, and is the one number a
+// tiered second-price auction must never charge.
 func (cfg auctionSealedConfig) settlePrice(
-	winner rankedBid, ordered []rankedBid, minimum core.Centipoints,
+	winner rankedBid, ordered []rankedBid, phase tierOutcome, minimum core.Centipoints,
 ) (core.Centipoints, string) {
 	if cfg.PayRule == PayRuleFirstPrice {
 		return winner.bid.AmountCp, fmt.Sprintf(
@@ -414,6 +436,12 @@ func (cfg auctionSealedConfig) settlePrice(
 
 		return raised, fmt.Sprintf(
 			"second price: the runner-up's bid plus one increment of %d centipoints", cfg.IncrementCp)
+	}
+
+	if phase.below > 0 {
+		return minimum, fmt.Sprintf(
+			"second price: the only bidder in tier %s pays the minimum of %d centipoints; the %d bid(s) "+
+				"on lower rungs are never priced against", phase.tier, minimum, phase.below)
 	}
 
 	return minimum, fmt.Sprintf(

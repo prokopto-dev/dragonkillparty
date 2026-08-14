@@ -37,6 +37,14 @@ type spendPropCase struct {
 	PlacedAt []core.Micros
 	Weights  []int64
 
+	// Tiers is the rung each bid was placed from, and its distribution is drawn as a SHAPE per case
+	// rather than per bid: a third of cases record no tier at all — which is every session in
+	// production until the bid FSM fills the field in — a third put every bid on one named rung, and a
+	// third mix them. Only the third shape lets the ladder decide anything, and it is also the only
+	// one in which the largest bid in the session is regularly on a rung that cannot win, which is the
+	// case the tier properties below exist to reach.
+	Tiers []string
+
 	PriceCp     core.Centipoints
 	MinBidCp    core.Centipoints
 	IncrementCp core.Centipoints
@@ -89,6 +97,7 @@ func generateSpendPropCase(rng strategy.Rng) spendPropCase {
 		Amounts:     make([]core.Centipoints, n),
 		PlacedAt:    make([]core.Micros, n),
 		Weights:     make([]int64, n),
+		Tiers:       make([]string, n),
 		MinBidCp:    core.Centipoints((rng.IntN(20) + 1) * 100),
 		IncrementCp: core.Centipoints((rng.IntN(8) + 1) * 25),
 		RollMin:     int64(rng.IntN(5)),
@@ -170,7 +179,55 @@ func generateSpendPropCase(rng strategy.Rng) spendPropCase {
 		}
 	}
 
+	drawTiers(rng, &c)
+
 	return c
+}
+
+// drawTiers fills in the rung each bid was placed from — see the Tiers field for the three shapes.
+//
+// DRAWN AFTER EVERY OTHER FIELD, and that is not tidiness. The draws are a single seeded sequence, so
+// taking two of them in the middle of the loop above renumbered every balance, amount and placement
+// time behind it: the pre-#224 properties would then be running different cases under the same seed,
+// and `roll`'s tie — two entrants landing on the same face, which the whole awards-nobody branch
+// depends on — stopped occurring in a 200-case run. Appending here leaves every existing case exactly
+// as it was and adds the ladder on top of it.
+func drawTiers(rng strategy.Rng, c *spendPropCase) {
+	ladder := strategy.Tiers()
+	shape := rng.IntN(3)
+	oneRung := ladder[rng.IntN(len(ladder))]
+
+	for i := range c.Tiers {
+		switch shape {
+		case 0: // every session in production today: nothing records a tier at all
+		case 1:
+			c.Tiers[i] = oneRung
+		default:
+			// The empty string is drawn alongside the four rungs rather than excluded: `anyone` and
+			// "no tier recorded" must settle identically, and a session mixing the two is where a
+			// normalisation that ran in only one of the two paths would show up.
+			if pick := rng.IntN(len(ladder) + 1); pick < len(ladder) {
+				c.Tiers[i] = ladder[pick]
+			}
+		}
+	}
+}
+
+// ladderRank is where a rung stands, higher first, RESTATED from canonical §5 rather than taken from
+// the code under test: the order is the rule, and a test that asked the package for it would be
+// asserting the package against itself.
+func ladderRank(tier string) int {
+	if tier == "" {
+		tier = strategy.TierAnyone
+	}
+
+	for i, rung := range strategy.Tiers() {
+		if rung == tier {
+			return len(strategy.Tiers()) - i
+		}
+	}
+
+	return 0
 }
 
 // bids turns a generated case into the session's bids. `sealed` is what auction_sealed requires and
@@ -180,6 +237,57 @@ func (c spendPropCase) bids(sealed bool) []strategy.Bid {
 	for i := range c.Amounts {
 		out[i] = strategy.Bid{
 			AccountID: acct(i), AmountCp: c.Amounts[i], PlacedAt: c.PlacedAt[i], Sealed: sealed,
+			Tier: c.Tiers[i],
+		}
+	}
+
+	return out
+}
+
+// winningTier is the rung a settlement must award on: the highest one holding a bid at or above the
+// floor that applied.
+//
+// RESTATED HERE RATHER THAN TAKEN FROM THE CODE UNDER TEST, like every other expectation in this
+// file: a winning tier computed by calling resolveTier would agree with the settlement by
+// construction, including when both are wrong. Empty when nothing is eligible, which is the rot case.
+func (c spendPropCase) winningTier() string {
+	best := ""
+	bestRank := 0
+	floor := c.effectiveMinimum()
+
+	for i, tier := range c.Tiers {
+		if c.Amounts[i] < floor || c.Amounts[i] <= 0 {
+			continue
+		}
+
+		if tier == "" {
+			tier = strategy.TierAnyone
+		}
+
+		if rank := ladderRank(tier); rank > bestRank {
+			best, bestRank = tier, rank
+		}
+	}
+
+	return best
+}
+
+// inWinningTier is the eligible bids standing on the rung that takes the item, with their index in
+// the generated case.
+func (c spendPropCase) inWinningTier(bids []strategy.Bid) []strategy.Bid {
+	winning := c.winningTier()
+	floor := c.effectiveMinimum()
+
+	out := make([]strategy.Bid, 0, len(bids))
+
+	for _, b := range bids {
+		tier := b.Tier
+		if tier == "" {
+			tier = strategy.TierAnyone
+		}
+
+		if tier == winning && b.AmountCp >= floor && b.AmountCp > 0 {
+			out = append(out, b)
 		}
 	}
 
@@ -548,11 +656,17 @@ func TestProperty_P4_SpendStrategies_ValidateBid_NeverAcceptsMoreThanTheBalance(
 }
 
 // TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid: whoever wins holds a bid at least as large as
-// every other eligible one, pays exactly it, and never clears less than the floor that applied.
+// every other eligible one ON THE WINNING RUNG, pays exactly it, and never clears less than the floor
+// that applied.
 //
 // THE FLOOR IS THE HIGHER OF THE POOL'S AND THE SESSION'S, which is where the generated session
 // minimum earns its keep: a settlement that let a session LOWER the pool's floor would award a bid
 // the guild's own settings refuse, and every other assertion in this file would still pass.
+//
+// "MAXIMAL" IS SCOPED TO THE TIER since #224, and the scoping is the property rather than a weakening
+// of it: the bid it is maximal among is decided by the ladder first, and
+// TestProperty_Auctions_AMaximalBidInALowerTierNeverWins is the other half — it proves the larger
+// number below the winning rung was there to be wrongly awarded.
 func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 	t.Parallel()
 
@@ -578,15 +692,16 @@ func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 		}
 
 		var top core.Centipoints
-		for _, b := range bids {
-			if b.AmountCp >= floor && b.AmountCp > top {
+		for _, b := range c.inWinningTier(bids) {
+			if b.AmountCp > top {
 				top = b.AmountCp
 			}
 		}
 
 		if res.Winners[0].AmountCp != top {
-			return fmt.Errorf("the winner pays %d and the highest eligible bid is %d; an open auction "+
-				"charges the leader their own bid", res.Winners[0].AmountCp, top)
+			return fmt.Errorf("the winner pays %d and the highest eligible bid in tier %s is %d; an "+
+				"open auction charges the leader their own bid",
+				res.Winners[0].AmountCp, c.winningTier(), top)
 		}
 
 		settled++
@@ -595,6 +710,338 @@ func TestProperty_AuctionOpen_TheWinnerHoldsAMaximalBid(t *testing.T) {
 	})
 
 	require.Positive(t, settled, "no auction settled, so the property held vacuously")
+}
+
+// TestProperty_Auctions_AMaximalBidInALowerTierNeverWins is the ladder's own property, and the one
+// this deliverable exists for: a bid larger than every bid on the winning rung, standing below it,
+// loses (#224).
+//
+// TWO COUNTERS, and the second is what stops the property passing vacuously. `settled` counts
+// resolutions; `outranked` counts the ones in which the largest eligible bid in the whole session was
+// NOT on the winning rung — the shape a session has to have before "tier outranks amount" can be
+// wrong. A generator that stopped producing that shape would leave this test green over a settlement
+// that ranked by amount alone.
+func TestProperty_Auctions_AMaximalBidInALowerTierNeverWins(t *testing.T) {
+	t.Parallel()
+
+	settled, outranked := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		for _, p := range []struct {
+			name   string
+			s      strategy.PointStrategy
+			config string
+			sealed bool
+		}{
+			{"auction_open", strategy.AuctionOpen{}, c.openConfigJSON(), false},
+			{"auction_sealed", strategy.AuctionSealed{}, c.sealedConfigJSON("second_price"), true},
+		} {
+			bids := c.bids(p.sealed)
+
+			res, err := p.s.SettleAuction(c.ctx(t, p.config), c.session(), bids)
+			if err != nil {
+				return fmt.Errorf("%s: %w", p.name, err)
+			}
+
+			if len(res.Winners) == 0 {
+				continue
+			}
+
+			winning := c.winningTier()
+			if res.WinningTier != winning {
+				return fmt.Errorf("%s: the item went to tier %q and the highest rung holding an "+
+					"eligible bid is %q", p.name, res.WinningTier, winning)
+			}
+
+			var inTier, anywhere core.Centipoints
+
+			for _, b := range c.inWinningTier(bids) {
+				if b.AmountCp > inTier {
+					inTier = b.AmountCp
+				}
+			}
+
+			for i, b := range bids {
+				if b.AmountCp >= c.effectiveMinimum() && b.AmountCp > anywhere && c.Balances[i] >= 0 {
+					anywhere = b.AmountCp
+				}
+			}
+
+			if anywhere > inTier {
+				outranked++
+			}
+
+			// The winner has to be somebody who actually bid on the winning rung. Checked by account
+			// rather than by amount, because a second-price winner does not pay their own bid.
+			found := false
+
+			for _, b := range c.inWinningTier(bids) {
+				if b.AccountID == res.Winners[0].AccountID {
+					found = true
+
+					break
+				}
+			}
+
+			if !found {
+				return fmt.Errorf("%s: account %s won without holding an eligible bid in tier %s",
+					p.name, res.Winners[0].AccountID, winning)
+			}
+
+			settled++
+		}
+
+		return nil
+	})
+
+	require.Positive(t, settled, "no auction settled, so the property held vacuously")
+	require.Positive(t, outranked,
+		"no generated session ever had its largest bid on a losing rung, so the ladder was never "+
+			"actually tested")
+}
+
+// TestProperty_AuctionSealed_SecondPrice_NeverLeavesTheWinningTier recomputes the price from the
+// winning rung's bids alone and requires the settlement to agree, exactly.
+//
+// The bound properties above (never more than your own bid, never below the minimum) are both
+// satisfied by a settlement that priced against a lower-tier bid — 351 is under a 1000-point bid and
+// over a 500 minimum — so neither of them would catch the failure this deliverable is about. An
+// independent recomputation does, and it is written from docs/guides/auctions.md's rule rather than
+// from the code: the runner-up is the highest bid from another account ON THE WINNING RUNG, plus one
+// increment, clamped to the winner's own bid, and the minimum when there is nobody else on it.
+func TestProperty_AuctionSealed_SecondPrice_NeverLeavesTheWinningTier(t *testing.T) {
+	t.Parallel()
+
+	settled, alone := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		bids := c.bids(true)
+
+		res, err := strategy.AuctionSealed{}.SettleAuction(
+			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), bids)
+		if err != nil {
+			return err
+		}
+
+		if len(res.Winners) == 0 {
+			return nil
+		}
+
+		winner := res.Winners[0].AccountID
+		inTier := c.inWinningTier(bids)
+
+		var own, runnerUp core.Centipoints
+
+		for _, b := range inTier {
+			if b.AccountID == winner && b.AmountCp > own {
+				own = b.AmountCp
+			}
+
+			if b.AccountID != winner && b.AmountCp > runnerUp {
+				runnerUp = b.AmountCp
+			}
+		}
+
+		want := c.effectiveMinimum()
+
+		switch {
+		case runnerUp == 0:
+			alone++
+		case runnerUp+c.IncrementCp > own:
+			want = own
+		default:
+			want = runnerUp + c.IncrementCp
+		}
+
+		if res.Winners[0].AmountCp != want {
+			return fmt.Errorf(
+				"the winner pays %d; priced inside tier %s it is %d (own %d, runner-up %d, increment "+
+					"%d, minimum %d) — a price computed from a bid below the winning rung is the 350.00 "+
+					"a main must never be charged against",
+				res.Winners[0].AmountCp, c.winningTier(), want, own, runnerUp, c.IncrementCp,
+				c.effectiveMinimum())
+		}
+
+		settled++
+
+		return nil
+	})
+
+	require.Positive(t, settled, "no auction settled, so the property held vacuously")
+	require.Positive(t, alone,
+		"no winner was ever alone on their rung, which is the case that pays the minimum with larger "+
+			"bids sitting below it")
+}
+
+// TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution.
+//
+// "The whole trace is written onto the resolution, so an officer can explain an outcome months later
+// without re-deriving it" (docs/guides/auctions.md). Three claims: the chain is recorded in order and
+// starts where a chain starts; the tier counts add up to the eligible bids and are ordered by the
+// ladder; and no step and no reason ever names a losing bid's amount — checked on the SEALED auction,
+// where publishing one is a leak rather than a redundancy.
+func TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution(t *testing.T) {
+	t.Parallel()
+
+	traced, rotted := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		bids := c.bids(true)
+
+		res, err := strategy.AuctionSealed{}.SettleAuction(
+			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), bids)
+		if err != nil {
+			return err
+		}
+
+		if len(res.Trace) == 0 {
+			return errors.New("a resolution with no trace is one nobody can explain in three months")
+		}
+
+		if res.Trace[0].Kind != strategy.ResolutionStepEligibility {
+			return fmt.Errorf("the trace starts at %q; a bid under the floor was never in the chain",
+				res.Trace[0].Kind)
+		}
+
+		if len(res.Winners) == 0 {
+			if res.WinningTier != "" || len(res.TierCounts) > 0 {
+				return fmt.Errorf("a rot named tier %q with %d rung(s) counted; nothing was awarded",
+					res.WinningTier, len(res.TierCounts))
+			}
+
+			rotted++
+
+			return nil
+		}
+
+		if res.Trace[1].Kind != strategy.ResolutionStepTier {
+			return fmt.Errorf("step 2 of the chain is %q and the ladder runs before the amount",
+				res.Trace[1].Kind)
+		}
+
+		if last := res.Trace[len(res.Trace)-1]; last.Kind != strategy.ResolutionStepPrice {
+			return fmt.Errorf("the trace ends at %q rather than at what the winner pays", last.Kind)
+		}
+
+		eligible, seen := 0, 0
+		below := len(strategy.Tiers()) + 1
+
+		for _, b := range bids {
+			if b.AmountCp >= c.effectiveMinimum() && b.AmountCp > 0 {
+				eligible++
+			}
+		}
+
+		for _, tc := range res.TierCounts {
+			seen += tc.Bids
+
+			rank := ladderRank(tc.Tier)
+			if rank >= below {
+				return fmt.Errorf("the tier counts are ordered %v; the disclosure reads the rungs "+
+					"ABOVE the caller's, so they are ordered highest first", res.TierCounts)
+			}
+
+			below = rank
+
+			if tc.Bids <= 0 {
+				return fmt.Errorf("tier %s is counted with %d bids; a rung nobody bid on is absent",
+					tc.Tier, tc.Bids)
+			}
+		}
+
+		if seen != eligible {
+			return fmt.Errorf("the tier counts total %d and %d bids were eligible", seen, eligible)
+		}
+
+		if res.TierCounts[0].Tier != res.WinningTier {
+			return fmt.Errorf("the counts lead with tier %s and the item went to %s",
+				res.TierCounts[0].Tier, res.WinningTier)
+		}
+
+		traced++
+
+		return nil
+	})
+
+	require.Positive(t, traced, "no resolution carried a trace, so the property held vacuously")
+	require.Positive(t, rotted, "no session ever rotted, so the trace on a rot is unexercised")
+}
+
+// TestProperty_TieredSettlement_AwardsAndReversesExactly extends the invariant suite over the whole
+// path the ladder changed: settle, award at the resolved price, reverse.
+//
+// P2 and P5 above plan an award at a GENERATED price, which is the right way to exercise the
+// allocator and is silent about the number a tiered auction actually resolves to. This walks the real
+// sequence — the settlement decides the winner and the price, the award debits that winner exactly
+// that price, and the reversal returns every balance to where it started — so a price that left the
+// winning tier, or a winner the ladder did not choose, is caught as a conservation failure on a real
+// batch rather than as an assertion about a struct.
+func TestProperty_TieredSettlement_AwardsAndReversesExactly(t *testing.T) {
+	t.Parallel()
+
+	awarded := 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		s := strategy.AuctionSealed{}
+		config := c.sealedConfigJSON("second_price")
+
+		res, err := s.SettleAuction(c.ctx(t, config), c.session(), c.bids(true))
+		if err != nil {
+			return err
+		}
+
+		if len(res.Winners) == 0 {
+			return nil
+		}
+
+		price := res.Winners[0].AmountCp
+		ev := c.awardEvent()
+		ev.Buyer = strategy.AccountRef{ID: res.Winners[0].AccountID, Kind: "person"}
+		ev.PriceCp = &price
+		ev.Reason = res.Reason
+
+		award, err := s.PlanAward(c.ctx(t, config), ev)
+		if err != nil {
+			return fmt.Errorf("award the %s winner at %d: %w", res.WinningTier, price, err)
+		}
+
+		if award.Entries[0].AccountID != res.Winners[0].AccountID ||
+			award.Entries[0].AmountCp != -price {
+			return fmt.Errorf("the batch debits %s %d and the settlement awarded %s at %d",
+				award.Entries[0].AccountID, -award.Entries[0].AmountCp, res.Winners[0].AccountID, price)
+		}
+
+		delta := map[core.ULID]core.Centipoints{}
+		for _, e := range award.Entries {
+			delta[e.AccountID] += e.AmountCp
+		}
+
+		reversal, err := s.PlanReversal(c.ctx(t, ""), strategy.LedgerBatch{
+			ID: acct(70), Kind: award.Kind, StrategyID: award.StrategyID,
+			StrategyVersion: award.StrategyVersion, EffectiveAt: award.EffectiveAt,
+			Entries: award.Entries,
+		})
+		if err != nil {
+			return fmt.Errorf("reverse: %w", err)
+		}
+
+		for _, e := range reversal.Entries {
+			delta[e.AccountID] += e.AmountCp
+		}
+
+		for id, v := range delta {
+			if v != 0 {
+				return fmt.Errorf("account %s is %d centipoints from where it started after a tiered "+
+					"award and its reversal", id, v)
+			}
+		}
+
+		awarded++
+
+		return nil
+	})
+
+	require.Positive(t, awarded, "no tiered settlement was ever awarded, so the property held vacuously")
 }
 
 // TestProperty_AuctionSealed_SecondPrice_IsBoundedByTheWinningBidAndTheMinimum.
@@ -686,12 +1133,32 @@ func TestProperty_RelativeBid_TheWinnerHoldsTheLargestFrozenShare(t *testing.T) 
 			return nil
 		}
 
+		// THE LADDER RUNS FIRST HERE TOO (#224). `relative_bid` does not partition on the rung the way
+		// the two auctions do, but the ordering it settles by comes from the same rankBids — so the
+		// largest share it may award is the largest share ON THE HIGHEST RUNG that holds a bidable
+		// bid, and a hoarder's whole bank on an alt loses to a main's tenth of one.
+		top := 0
+
+		for i, b := range c.bids(false) {
+			if b.AmountCp <= 0 || c.Balances[i] <= 0 || b.AmountCp > c.Balances[i] {
+				continue
+			}
+
+			if rank := ladderRank(b.Tier); rank > top {
+				top = rank
+			}
+		}
+
 		best := int64(-1)
 
 		var winnerShare int64
 
 		for i, b := range c.bids(false) {
 			if b.AmountCp <= 0 || c.Balances[i] <= 0 || b.AmountCp > c.Balances[i] {
+				continue
+			}
+
+			if ladderRank(b.Tier) != top {
 				continue
 			}
 
@@ -708,8 +1175,8 @@ func TestProperty_RelativeBid_TheWinnerHoldsTheLargestFrozenShare(t *testing.T) 
 		}
 
 		if winnerShare != best {
-			return fmt.Errorf("the winner committed %d bp and the largest bidable share was %d bp",
-				winnerShare, best)
+			return fmt.Errorf("the winner committed %d bp and the largest bidable share on the "+
+				"winning rung was %d bp", winnerShare, best)
 		}
 
 		settled++

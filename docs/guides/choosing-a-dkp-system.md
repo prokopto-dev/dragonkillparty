@@ -3,9 +3,11 @@
 **Status:** thirteen are implemented — every rule in the catalogue below that ships in 1.0 —
 whose worked numbers are in
 [Point strategies](../concepts/strategies.md#the-shipped-strategies). The four bidding rules ship
-their **arithmetic** — which bid wins and what it pays; the bid session around it (states, anti-snipe,
-holds) is Phase 6, and tier-aware resolution is a Phase 1 deliverable of its own
-([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)). `decay_window` ships the hard
+their **arithmetic** — which bid wins and what it pays, including the
+[tier ladder](auctions.md#tier-outranks-amount) that decides the winner before any amount is compared
+([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)); the bid session around it
+(states, anti-snipe, holds) is Phase 6, and so is filling the rung in, so every session today settles
+on the amount alone. `decay_window` ships the hard
 cutoff below, not yet the linear taper
 ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)), and `attendance_weighted` ships
 its earn rule, not yet the ranking score
@@ -225,6 +227,11 @@ audit-logged.
 |---|---|
 | First price | 350 — their own bid |
 | **Second price** (delta 5) | **285** — the runner-up plus one increment |
+
+Those three are one **tier** bidding against itself, and at three figures it is not `main`: under the
+ladder, mains only compete with mains and their bids land in single or low double digits. The
+runner-up is always the one on the winner's own rung — a main alone in `main` pays the minimum, never
+the 350 sitting below them. See [Tier outranks amount](auctions.md#tier-outranks-amount).
 
 Second price is the best default for a bot-driven guild. Under first price the rational move is to bid
 your entire bank, so everyone does, and the auction becomes a bank-size contest. Under second price
