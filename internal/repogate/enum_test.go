@@ -333,11 +333,34 @@ func TestEnumScan_IndexPredicate_RepeatingAVocabulary_IsReported(t *testing.T) {
 			why:   "a repeated value is a typo, not a different vocabulary",
 		},
 		{
+			name:  "every value, ANDed with a second IN list",
+			where: `"system_key IN ('guild_bank', 'residue', 'write_off') AND tier IN ('main')"`,
+			want:  true,
+			why: "each IN list is compared ON ITS OWN. Flattening the expression into one set would " +
+				"make the finding disappear the moment somebody ANDed a clause on — a rule whose " +
+				"escape hatch is 'add a condition' is not a rule, and nothing would say it stopped " +
+				"applying",
+		},
+		{
+			name:  "every value, in the SECOND IN list",
+			where: `"tier IN ('main') AND system_key IN ('guild_bank', 'residue', 'write_off')"`,
+			want:  true,
+			why:   "order of the clauses is not a way past it either",
+		},
+		{
 			name:  "a subset",
 			where: `"system_key IN ('guild_bank', 'residue')"`,
 			want:  false,
 			why: "the legitimate partial index. This is the case that keeps the rule usable, and the " +
 				"reason #72 left index predicates out rather than fire on correct work",
+		},
+		{
+			name:  "two subsets, ANDed",
+			where: `"system_key IN ('guild_bank', 'residue') AND tier IN ('main', 'alt')"`,
+			want:  false,
+			why: "comparing each list on its own must not turn a compound predicate into a hit — the " +
+				"per-list split has to be the thing that catches a whole vocabulary, not the thing " +
+				"that widens what counts as one",
 		},
 		{
 			name:  "the vocabulary plus a value no catalogue holds",

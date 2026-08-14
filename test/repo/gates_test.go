@@ -1572,6 +1572,11 @@ table "account" {
     columns = [column.system_key]
   }
 
+  index "ux_account_compound" {
+    where   = "system_key IN ('guild_bank', 'residue') AND tier IN ('main')"
+    columns = [column.system_key]
+  }
+
   index "ux_account_person" {
     where   = "person_id IS NOT NULL"
     columns = [column.person_id]
@@ -1756,6 +1761,11 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.Contains(t, out, "account_system_key_enum",
 		"the predicate finding must name the generated CHECK it duplicates, or the reader has to "+
 			"search the schema for whichever vocabulary matched\n%s", out)
+	require.Contains(t, out, "ux_account_compound",
+		"ENUM001 must compare each IN list ON ITS OWN. A predicate whose first list is the whole "+
+			"vocabulary has duplicated it whatever else it goes on to test — flattening the "+
+			"expression into one set would make the finding vanish the moment somebody ANDed a "+
+			"clause on, which is an escape hatch nothing would ever report\n%s", out)
 
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)

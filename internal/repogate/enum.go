@@ -61,6 +61,10 @@ import (
 //
 //	caught   where = "system_key IN ('guild_bank', 'residue', 'write_off', 'import_opening')"
 //	         — the SET EQUALS a generated CHECK's, in any order, so it is that vocabulary written twice
+//	caught   where = "system_key IN (…every value…) AND tier IN ('main')"
+//	         — EACH LIST IS COMPARED ON ITS OWN: a whole vocabulary is still a whole vocabulary with
+//	           a second condition ANDed on, and flattening the expression would make "add a clause"
+//	           a way past the rule that nothing would ever report
 //	ignored  where = "state IN ('open', 'extended')"
 //	         — a SUBSET is the live-sessions predicate: legitimate, common, and not renderable from a
 //	           catalogue as-is. A rule that fired on it would fire on correct work, and a rule that is
@@ -392,16 +396,16 @@ func generatedVocabularies(src []byte, regions []region, checks []*hclsyntax.Blo
 			continue
 		}
 
-		values := inListValues(stripSQLComments(exprText(attr, src)))
-		if len(values) == 0 {
-			continue
-		}
-
-		// First writer wins, which only matters when two catalogues render the same set — two
-		// vocabularies that happen to agree today. Either name sends the reader to a generated
-		// region, which is where the answer is.
-		if key := valueSetKey(values); vocab[key] == "" {
-			vocab[key] = label(blk)
+		// Every list the CHECK holds, because both rendered forms carry exactly one — `x IN (…)` and
+		// `x IS NULL OR x IN (…)` — and a region that ever carried two would be two vocabularies
+		// rather than a reason to pick one of them.
+		for _, values := range inListSets(stripSQLComments(exprText(attr, src))) {
+			// First writer wins, which only matters when two catalogues render the same set — two
+			// vocabularies that happen to agree today. Either name sends the reader to a generated
+			// region, which is where the answer is.
+			if key := valueSetKey(values); vocab[key] == "" {
+				vocab[key] = label(blk)
+			}
 		}
 	}
 
@@ -433,23 +437,25 @@ func predicateFindings(
 			continue
 		}
 
-		values := inListValues(stripSQLComments(exprText(attr, src)))
-		if len(values) == 0 {
-			continue
-		}
+		// EACH LIST ON ITS OWN, and at most one finding per index: a predicate whose FIRST list is a
+		// whole vocabulary has duplicated it whatever else it goes on to test, and reporting the
+		// same block twice would only make the fix look like two.
+		for _, values := range inListSets(stripSQLComments(exprText(attr, src))) {
+			check, duplicated := vocab[valueSetKey(values)]
+			if !duplicated {
+				continue
+			}
 
-		check, duplicated := vocab[valueSetKey(values)]
-		if !duplicated {
-			continue
-		}
+			found = append(found, finding{
+				line,
+				fmt.Sprintf("index %q: the predicate lists every value of the generated check %q, so the "+
+					"vocabulary now has two sources of truth — narrow the predicate to the subset it "+
+					"actually means, or render it from the catalogue: %s",
+					label(blk), check, strings.TrimRight(lines[line-1], " \t")),
+			})
 
-		found = append(found, finding{
-			line,
-			fmt.Sprintf("index %q: the predicate lists every value of the generated check %q, so the "+
-				"vocabulary now has two sources of truth — narrow the predicate to the subset it "+
-				"actually means, or render it from the catalogue: %s",
-				label(blk), check, strings.TrimRight(lines[line-1], " \t")),
-		})
+			break
+		}
 	}
 
 	return found
@@ -600,28 +606,42 @@ func stripSQLComments(s string) string {
 
 // quotedInList reports whether any `IN (…)` list in the expression holds a quoted value.
 //
-// The boolean half of inListValues, and it is that function rather than a second scanner: "is this a
+// The boolean half of inListSets, and it is that function rather than a second scanner: "is this a
 // vocabulary" and "which values is it" have to answer the same way about the same text, or a CHECK
 // could be a vocabulary to one half of the rule and not to the other.
 func quotedInList(sql string) bool {
-	return len(inListValues(sql)) > 0
+	return len(inListSets(sql)) > 0
 }
 
-// inListValues returns every quoted value inside the expression's `IN (…)` lists, in source order.
+// inListSets returns the quoted values of each `IN (…)` list in the expression, ONE SLICE PER LIST
+// and in source order, skipping any list that holds no quoted value.
+//
+// PER LIST, not one flat set for the whole expression, and that separation is the rule rather than
+// tidiness. A predicate can hold more than one list:
+//
+//	where = "system_key IN ('guild_bank', 'residue', 'write_off', 'import_opening') AND tier IN ('main')"
+//
+// The first list is the whole vocabulary — exactly the duplication #97 is about — and flattening the
+// two together yields a five-value set that equals no catalogue, so the finding would disappear the
+// moment somebody ANDed a second condition on. A rule whose escape hatch is "add a clause" is not a
+// rule, and this is the quiet direction of wrong: nothing anywhere would say the check stopped
+// applying.
 //
 // Character-wise rather than by regex because the question is about the text BETWEEN the
 // parentheses — `IN (0, 1)` is a boolean and yields nothing, a quote anywhere in a list is a
 // vocabulary — and because nesting has to be counted rather than assumed away.
-func inListValues(sql string) (values []string) {
+func inListSets(sql string) (sets [][]string) {
 	for i := 0; i < len(sql); {
 		loc := enumInList.FindStringIndex(sql[i:])
 		if loc == nil {
-			return values
+			return sets
 		}
 
 		// Just past the opening parenthesis the match ended on.
 		j := i + loc[1]
 		depth := 1
+
+		var values []string
 
 		for j < len(sql) && depth > 0 {
 			switch sql[j] {
@@ -640,10 +660,14 @@ func inListValues(sql string) (values []string) {
 			}
 		}
 
+		if len(values) > 0 {
+			sets = append(sets, values)
+		}
+
 		i = j
 	}
 
-	return values
+	return sets
 }
 
 // sqlLiteral reads the quoted literal starting at i, and returns its content and the index just past

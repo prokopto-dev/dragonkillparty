@@ -73,8 +73,10 @@ CHECKs (`x IN (0, 1)`) are not string enums and are not caught.
 defect one block over: `where = "state IN ('draft','open','extended','closing','resolved')"` is the
 catalogue written a second time, and adding `settled` rewrites the CHECK while the index goes on
 silently excluding it. The comparison is against the catalogue's **values**, not against the shape of
-the expression — a predicate whose quoted value set *equals* a generated CHECK's is reported, in any
-order. A partial index over a **subset** (`where = "state IN ('open','extended')"`, the live
+the expression — a predicate is reported when the values of any one of its `IN` lists *equal* a
+generated CHECK's, in any order. Each list is compared on its own, so ANDing a second condition on
+(`… AND tier IN ('main')`) is not a way past it. A partial index over a **subset**
+(`where = "state IN ('open','extended')"`, the live
 sessions) is legitimate, is what most partial indexes are, and stays quiet; so does a predicate over
 a vocabulary that has no catalogue, because the literal CHECK it duplicates is already the finding.
 The two ways out are the same as a CHECK's: narrow the predicate to the subset you actually mean, or
