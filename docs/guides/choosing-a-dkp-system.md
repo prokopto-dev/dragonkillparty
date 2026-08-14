@@ -1,7 +1,7 @@
 # Choosing a DKP system
 
-**Status:** six are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `decay_percent` and
-`decay_window`, whose worked numbers are in
+**Status:** seven are implemented — `fixed_price`, `tick`, `start_points`, `cap`, `loot_council`,
+`decay_percent` and `decay_window`, whose worked numbers are in
 [Point strategies](../concepts/strategies.md#the-shipped-strategies). The rest land through Phase 1;
 auctions in Phase 6. `decay_window` ships the hard cutoff below, not yet the linear taper
 ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)). Numbers for an unshipped rule below are worked from the
@@ -295,6 +295,13 @@ system in disguise; configure them as `roll` with a counter, not as a special ca
 rationale and the timestamp, and it flags a conflict of interest when a councillor is a candidate for
 the item under vote. Councils without a published priority score reliably decay into loot-council
 fatigue, so run one next to `attendance_weighted` and show the score.
+
+The rule ships today with the decision itself: the winner, the rationale — required unless you turn
+`require_reason` off — and the charge the council named, which may be nothing at all and is never read
+from an item's price table. The **deliberation** record (nominations, per-councillor votes, the
+conflict-of-interest flag) needs the loot tables and lands with them:
+[#219](https://github.com/prokopto-dev/dragonkillparty/issues/219). Its
+[worked example](../concepts/strategies.md#loot_council--spend-by-officer-decision) has the numbers.
 
 ### `epgp` and `suicide_kings`
 
