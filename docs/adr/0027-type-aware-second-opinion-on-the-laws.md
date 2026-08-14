@@ -67,13 +67,14 @@ type information.
   and `TestCIWorkflow_NoContinueOnError` asserts the absence of). `MODE=advise` prints every finding,
   emits a `::warning::` annotation and exits 0. `MODE=enforce` exits 1 instead — it works today, and
   it is what `test/repo` drives, because an advisory can only be **tested** through the mode that
-  has a verdict. Whether the CI call site is ever promoted to it is issue #241, the same way #136
-  tracks `atlas migrate lint`'s.
+  has a verdict. Whether the CI call site is ever promoted to it is issue #241 — the same path
+  `atlas migrate lint` walked, advisory under #131 and a gate under #136, promoted on evidence about
+  this tree rather than on schedule.
 - Advisory does not mean it cannot fail. A **broken invocation** — no Go, the analyzers did not
   compile, the inspected tree does not build, a package did not type-check — exits 2 in both modes.
-  That is the line `scripts/migrate-lint.sh` draws for atlas and `make govulncheck` draws for its
-  binary: a pass that reports "no findings" about code it never read is strictly worse than an
-  absent job.
+  That is the line `scripts/migrate-lint.sh` still draws for atlas in either mode, and
+  `make govulncheck` draws for its binary: a pass that reports "no findings" about code it never
+  read is strictly worse than an absent job.
 
 The catalogue carries the same ids as `internal/repogate`, with one addition. **`SQL004`** — a
 `database/sql` handle type held outside `internal/store` — is law 2 as AGENTS.md states it rather
@@ -111,6 +112,10 @@ already runs.
 
 - ADR-0016 — the bespoke licence classifier, and the "run the third-party tool as a second opinion,
   never as the gate" posture this copies.
+- Issues #131 and #136 — `atlas migrate lint`, which landed advisory-first for the same reason and
+  was promoted to a gate once its analyzers had been observed against this tree's real migrations.
+  That is the precedent for the mode split here, and for #241 being an open question rather than a
+  foregone one.
 - ADR-0018 — repo gates as a Go engine, and the argument for `go/parser` over `go/analysis`.
 - ADR-0022 — a Go-implemented gate is compiled and run, never `go run`, which is why
   `scripts/typed-laws.sh` builds `dkpvet` before invoking it: exit 1 (a law fired) and exit 2 (the

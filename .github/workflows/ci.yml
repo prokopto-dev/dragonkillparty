@@ -499,13 +499,15 @@ jobs:
       - run: make lint-go # gofumpt -l, goimports, golangci-lint
       - name: Architectural laws, type-aware (advisory)
         run: make lint-laws
-        # ADVISORY, and advisory the same way `make lint-migrations` and `make image-size` are: the
-        # step is NOT `continue-on-error` (this workflow bans that string and
-        # TestCIWorkflow_NoContinueOnError asserts its absence — it is the quiet way to keep a gate
-        # in the checks list while removing its teeth). scripts/typed-laws.sh is advisory BY
-        # CONSTRUCTION: in its default MODE=advise it prints every finding, emits a `::warning::`
-        # annotation, and exits 0. MODE=enforce exits non-zero instead and already works; test/repo
-        # drives that path so the analyzers are tested rather than trusted.
+        # ADVISORY, and advisory the way `make image-size` is — and the way `Migration lint` was
+        # under issue #131, before #136 promoted it on evidence. The step is NOT
+        # `continue-on-error` (this workflow bans that string and TestCIWorkflow_NoContinueOnError
+        # asserts its absence — it is the quiet way to keep a gate in the checks list while removing
+        # its teeth). scripts/typed-laws.sh is advisory BY CONSTRUCTION: in its default MODE=advise
+        # it prints every finding, emits a `::warning::` annotation, and exits 0. MODE=enforce exits
+        # non-zero instead and already works; test/repo drives that path so the analyzers are tested
+        # rather than trusted. Issue #241 carries what has to be true before this call site flips,
+        # in the shape #136 answered for the migration linter.
         #
         # Advisory does not mean it cannot fail. A tree that does not build, or a package that does
         # not type-check, is a hard failure in BOTH modes — a pass that reports "no findings" about

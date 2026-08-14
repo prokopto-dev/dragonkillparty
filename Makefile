@@ -580,9 +580,11 @@ test-e2e:
 
 ## lint: the repo gates, the dependency licence gate, migration lint, golangci-lint and eslint
 # lint-migrations is here rather than in a CI job of its own because it is ~30 ms, needs no network
-# and reads no live database — and because an advisory belongs in the inner loop, where the person
-# who can act on it is still holding the migration. It is ADVISORY: it prints diagnostics and exits
-# 0, so it never blocks a laptop or a merge (issue #131; #136 tracks promoting it).
+# and reads no live database — and because the person who can act on a destructive-change diagnostic
+# is the one still holding the migration. It landed ADVISORY under issue #131 and became a GATE
+# under #136: `make lint-migrations` passes MODE=enforce, so a diagnostic fails here and in
+# `test / migrations` alike. Read a migration set without being blocked by it with
+# `MODE=advise bash scripts/migrate-lint.sh`.
 #
 # It does mean `make lint`, and therefore `make check`, now needs atlas on PATH. `make setup`
 # installs it, and `make gen` has always required it, so this adds no new toolchain obligation —
@@ -594,9 +596,11 @@ test-e2e:
 # their tool is missing rather than skipping — see lint-go for why a linter that exits 0 because it
 # is absent is worse than no linter — so `make setup` now installs actionlint, shellcheck and shfmt.
 #
-# lint-laws (issue #172) joined for the same reason as lint-migrations: it is advisory by
-# construction, it costs one `go list -export` over a warm build cache, and it reports the classes a
-# syntax rule cannot see. `make lint-repo` above it is still the gate.
+# lint-laws (issue #172) joined for the inner-loop reason all three above give: it costs one
+# `go list -export` over a warm build cache, and the person who can act on a law they just broke is
+# the one still holding the file. It is the only ADVISORY member of this list — it prints findings
+# and exits 0, the posture lint-migrations landed in under #131 and left under #136. `make lint-repo`
+# above it is the gate on the same laws; issue #241 is where this one's promotion is argued.
 lint: lint-repo licence-gate lint-migrations lint-actions lint-shell lint-laws lint-go lint-web
 
 ## vet: build + go vet + staticcheck + tsc
@@ -918,7 +922,10 @@ lint-shell:
 #
 # ADVISORY: scripts/typed-laws.sh prints findings and exits 0 in its default MODE=advise. See that
 # script's header for why it is advisory by construction rather than by `continue-on-error`, and why
-# a BROKEN invocation still hard-fails in both modes.
+# a BROKEN invocation still hard-fails in both modes. This is the posture `make lint-migrations`
+# landed in under issue #131 and left under #136, and the path is the same one: advisory first while
+# the analyzers are unproven against this tree, promoted on evidence rather than on schedule. Issue
+# #241 carries what has to be true before that happens here.
 #
 # ADDITIVE, never a replacement. Every rule in internal/repogate stays exactly where ADR-0018 put it
 # and `make lint-repo` stays the merge-blocking gate: it needs no build, so it reads a deliberately

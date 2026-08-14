@@ -44,7 +44,12 @@
 // Advisory does NOT mean it cannot fail. A pass that exits 0 because it never ran is worse than no
 // pass at all, so a BROKEN INVOCATION — `go list` failing, no export data, a package that will not
 // type-check — is a hard failure in both modes. That is the same line scripts/migrate-lint.sh draws
-// (issue #131), and the same one `make govulncheck` draws when its binary is missing.
+// whatever its own MODE says, and the same one `make govulncheck` draws when its binary is missing.
+//
+// The mode split itself is that script's precedent too: it landed advisory under issue #131, while
+// its analyzers were unproven against SQLite's 12-step rebuild, and became a gate under #136 once
+// they had been observed against this tree's real migrations. Same path, same reason, and issue
+// #241 is where the equivalent evidence for these laws is gathered.
 //
 // # No new dependency: go/types over `go list -export`
 //
