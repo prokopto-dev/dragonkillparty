@@ -1566,6 +1566,21 @@ table "account" {
   check "account_person_shape" {
     expr = "((kind = 'person') = (person_id IS NOT NULL))"
   }
+
+  index "ux_account_system" {
+    where   = "system_key IN ('residue', 'guild_bank')"
+    columns = [column.system_key]
+  }
+
+  index "ux_account_compound" {
+    where   = "system_key IN ('guild_bank', 'residue') AND tier IN ('main')"
+    columns = [column.system_key]
+  }
+
+  index "ux_account_person" {
+    where   = "person_id IS NOT NULL"
+    columns = [column.person_id]
+  }
 }
 
 table "bid_session" {
@@ -1671,10 +1686,17 @@ table "bid_session" {
 // would let the second be forgotten, and the nullable form is the one a person account's
 // system_key uses.
 //
+// AN INDEX PREDICATE THAT REPEATS A WHOLE VOCABULARY is the second half (#97), and it is the same
+// defect: two sources of truth for one list of values. `where = "system_key IN (…)"` naming every
+// value the catalogue holds keeps excluding whatever gets added next, silently, because nothing
+// compares the two. What tells that apart from correct work is the catalogue's VALUES, not the shape
+// of the expression — so the fixture carries a full-vocabulary predicate that must fire, in a
+// different order from the CHECK, alongside a subset predicate and a null test that must not.
+//
 // The must-NOT-fire half is the larger one and it is what keeps the gate usable: a generated
-// region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, an index predicate, and
-// the file's own prose all have to stay quiet, or the first author to hit a false positive reaches
-// for --no-verify rather than for the rule id.
+// region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, a partial index over a
+// SUBSET of a vocabulary, and the file's own prose all have to stay quiet, or the first author to
+// hit a false positive reaches for --no-verify rather than for the rule id.
 // writeEnumCatalogue writes the fixture's Go catalogue — the package that OWNS the generated region
 // in enumFixtureSchema, in the shape internal/account/kinds keeps its markers in.
 //
@@ -1730,13 +1752,31 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 	require.Contains(t, out, "bid_session_outcome_enum",
 		"nor does a line comment on its own line between the two — the keyword has to survive a "+
 			"line that strips to nothing\n%s", out)
+	require.Contains(t, out, "ux_account_system",
+		"ENUM001 must fire on an INDEX PREDICATE that lists every value of a generated vocabulary "+
+			"(#97). Add a value to the catalogue and `make gen` rewrites the CHECK; the predicate "+
+			"keeps excluding it, and nothing compares the two. The fixture's predicate is in a "+
+			"different ORDER from the CHECK, because a WHERE is a set-membership test and sorting "+
+			"the values must not be a way past the gate\n%s", out)
+	require.Contains(t, out, "account_system_key_enum",
+		"the predicate finding must name the generated CHECK it duplicates, or the reader has to "+
+			"search the schema for whichever vocabulary matched\n%s", out)
+	require.Contains(t, out, "ux_account_compound",
+		"ENUM001 must compare each IN list ON ITS OWN. A predicate whose first list is the whole "+
+			"vocabulary has duplicated it whatever else it goes on to test — flattening the "+
+			"expression into one set would make the finding vanish the moment somebody ANDed a "+
+			"clause on, which is an escape hatch nothing would ever report\n%s", out)
+
 	require.Contains(t, out, "db/schema.hcl:",
 		"ENUM001 must name the offending file and line, repo-root-relative\n%s", out)
 
-	require.NotContains(t, out, "account_kind_enum",
+	// The `check "…"` prefix, not the bare name: the generated vocabulary IS named in the predicate
+	// finding above — as the thing ux_account_system duplicates — and a bare NotContains would make
+	// these two assertions contradict that one rather than say what they mean.
+	require.NotContains(t, out, `check "account_kind_enum"`,
 		"a CHECK between the BEGIN/END GENERATED markers is generated from a catalogue — that is "+
 			"the sanctioned form and the whole point of the rule\n%s", out)
-	require.NotContains(t, out, "account_system_key_enum",
+	require.NotContains(t, out, `check "account_system_key_enum":`,
 		"the nullable form INSIDE a generated region is equally sanctioned\n%s", out)
 	require.NotContains(t, out, "account_person_shape",
 		"a shape CHECK quoting one value is not a vocabulary; ENUM001 must not fire on it\n%s", out)
@@ -1753,8 +1793,12 @@ func TestRepoGates_HandWrittenEnumCheck_FailsGate(t *testing.T) {
 			"enum values is still a boolean. Without this the fix could have been \"ignore the "+
 			"comment delimiters\" and every documented CHECK would read as a vocabulary\n%s", out)
 	require.NotContains(t, out, "ux_bid_live",
-		"an index predicate is not a CHECK: a partial index over a SUBSET of a vocabulary cannot "+
-			"be rendered from a catalogue as-is, so ENUM001 is scoped to check blocks (#97)\n%s", out)
+		"a partial index over a SUBSET of a vocabulary is not the vocabulary: it cannot be rendered "+
+			"from a catalogue as-is, and a gate that fired on it would fire on correct work (#97). "+
+			"This is the must-NOT-fire half of the predicate rule and it is the larger one\n%s", out)
+	require.NotContains(t, out, "ux_account_person",
+		"`where = \"person_id IS NOT NULL\"` holds no list at all — every predicate in the real "+
+			"db/schema.hcl is this shape, so firing on one would fail the repository's own gate\n%s", out)
 	require.NotContains(t, out, "lowercase snake_case",
 		"ENUM001 fired on the schema's own header prose — comment lines are stripped\n%s", out)
 	require.NotContains(t, out, "legacy_status_enum",

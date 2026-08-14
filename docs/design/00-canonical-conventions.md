@@ -119,9 +119,12 @@ check their own region against their own catalogue and say nothing about a vocab
 catalogue at all, so **`ENUM001` in `scripts/repo-gates.sh`** is the half that covers the *next* one:
 a string-enum `CHECK` in `db/schema.hcl` outside the `BEGIN`/`END GENERATED` markers fails the
 `lint / repo` job, in either SQL quote form. Boolean `CHECK`s (`x IN (0, 1)`) are not string enums
-and are not caught. A region counts as generated only when a catalogue declares its marker line in
-Go, so a fabricated marker pair exempts nothing; the waiver is a `// dkp:enum-literal <reason>`
-comment above the check, which puts the exception in the schema diff a reviewer reads.
+and are not caught. An **index predicate** listing every value of a generated vocabulary fails it too
+(#97) — that is the same list with two sources of truth — while a partial index over a *subset*
+(`where = "state IN ('open','extended')"`) is the ordinary, legitimate case and stays quiet. A region
+counts as generated only when a catalogue declares its marker line in Go, so a fabricated marker pair
+exempts nothing; the waiver is a `// dkp:enum-literal <reason>` comment above the check or index,
+which puts the exception in the schema diff a reviewer reads.
 
 ## 6. Permissions and scopes — one catalogue, generated
 

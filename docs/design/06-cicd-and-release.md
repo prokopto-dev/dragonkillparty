@@ -216,7 +216,7 @@ a warm cache, `ubuntu-24.04`, 4 vCPU **[assumption — measured after Phase 0, n
 | `test / coverage-floor` — `internal/ledger` + `internal/strategy` ≥ 95% | pointmath changed | 60 s | required |
 | `test / golden` — plus a non-decreasing fixture count | go changed | 45 s | required |
 | `test / integration` — real SQLite, real triggers, goleak | code/db changed | 130 s | required |
-| `test / migrations` — fresh install, N-1, row invariants, auto-restore; plus `atlas migrate lint`, **advisory** | db changed | 110 s | required |
+| `test / migrations` — fresh install, N-1, row invariants, auto-restore; plus `atlas migrate lint`, **enforcing** | db changed | 110 s | required |
 | `test / authz-matrix` — every operation × every principal | authz changed | 60 s | required |
 | `api / breaking-change` — oasdiff + sticky changelog comment | api changed | 45 s | required |
 | `build / binary` — uploads the artifact everything reuses | always | 165 s | required |
@@ -271,15 +271,31 @@ decision instead of a drift.
 **The corollary that stops this list metastasising: any advisory check nobody has acted on in 90 days
 gets deleted.** `ci-budget.yml` reports advisory-check action rates alongside the wall-clock numbers.
 
-**`atlas migrate lint` is the one advisory step inside a required job**, and it is advisory *by
-construction* rather than by `continue-on-error` — which this workflow bans, and which
+**`atlas migrate lint` blocks**, and it does so *by construction* rather than by a required-check
+list — the step is not `continue-on-error`, which this workflow bans and
 `TestCIWorkflow_NoContinueOnError` asserts the absence of. `scripts/migrate-lint.sh` prints Atlas's
-destructive / data-dependent / backward-incompatible diagnostics, emits a `::warning::`, and exits 0
-in its default `MODE=advise`; `MODE=enforce` fails instead and is already exercised by
-`test/repo/migrate_lint_test.go`. Introduced advisory-first (issue #131) because SQLite's 12-step
-table rebuild is where Atlas's analyzers are least predictable, and a linter that blocks merges
-before it is trusted gets disabled rather than tuned. Promotion is tracked in issue #136, and it is a
-one-word change at the call site.
+destructive / data-dependent / backward-incompatible diagnostics and exits non-zero in its default
+`MODE=enforce`, which `make lint-migrations` also passes explicitly; `MODE=advise` prints the same
+diagnostics with a `::warning::` and exits 0, and is how to read a migration set without being
+blocked by it. Because the mode lives in the Makefile target, `make check` on a laptop and
+`test / migrations` reach the same verdict — a gate that only fired in CI would cost a push and a
+round trip (issues #166, #183).
+
+It was introduced **advisory-first** (issue #131) because SQLite's 12-step table rebuild is where
+Atlas's analyzers are least predictable, and a linter that blocks merges before it is trusted gets
+disabled rather than tuned. Issue #136 promoted it once the three things advisory-first was buying
+were answered, each of them now a fixture in `test/repo/migrate_lint_test.go` rather than a claim:
+
+- **The rebuild is not a false positive.** Atlas reports *no* diagnostic on the rebuild
+  `make migration` emits for a CHECK change — the shape every catalogue edit produces. A rebuild that
+  genuinely drops a column still reports `DS103`, which is the two-release destructive rule working.
+- **The hand-append allowlist is unaffected.** Atlas community cannot see triggers at all, so it
+  neither asks for the re-created append-only triggers `.claude/rules/migrations.md` case 1 requires
+  nor contradicts them.
+- **The waiver is Atlas's own `-- atlas:nolint <analyzer>` directive**, on the line above the
+  statement the diagnostic fires on, beside the `-- dkp:destructive-approved: #<issue>` line §8's
+  two-release destructive rule already requires. Both live in the migration, so a silenced analyzer
+  is visible in the diff a reviewer reads rather than in a PR conversation.
 
 It is **additive**. `atlas migrate lint` knows nothing about forward-only migrations (MIG001),
 backtick identifiers (MIG002), the `SHIPPED.lock` frozen-migration rule (MIG003), the fresh-install

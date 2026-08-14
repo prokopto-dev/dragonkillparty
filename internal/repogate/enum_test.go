@@ -35,9 +35,9 @@ func scanSchema(t *testing.T, body string, declared ...string) []string {
 // apart, one case at a time.
 //
 // The must-NOT-fire half is the larger one and it is what keeps the rule usable: a generated
-// region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, an index predicate and
-// the file's own prose all have to stay quiet, or the first author to hit a false positive reaches
-// for --no-verify rather than for the rule id.
+// region, a shape CHECK that merely quotes a value, a boolean `IN (0, 1)`, a partial index over a
+// subset of a vocabulary and the file's own prose all have to stay quiet, or the first author to hit
+// a false positive reaches for --no-verify rather than for the rule id.
 func TestEnumScan_Vocabularies_AreReportedAndBooleansAreNot(t *testing.T) {
 	t.Parallel()
 
@@ -279,15 +279,192 @@ func TestEnumScan_UnparseableSchema_IsAFinding(t *testing.T) {
 			"position would make the finding unactionable")
 }
 
-// TestEnumScan_IndexPredicate_IsNotACheck is #97: a partial index over a SUBSET of a vocabulary is
-// not the vocabulary, so it cannot be rendered from a catalogue as-is and a rule that demanded it
-// would fire on correct work.
-func TestEnumScan_IndexPredicate_IsNotACheck(t *testing.T) {
+// The generated region the predicate cases below are compared against: one catalogue, one
+// vocabulary, in the nullable form account.system_key actually uses.
+const (
+	predicateBegin = "  // BEGIN GENERATED — account enum CHECKs, from internal/account/kinds. Run make gen."
+	predicateEnd   = "  // END GENERATED — account enum CHECKs."
+	predicateVocab = "  check \"account_system_key_enum\" {\n" +
+		"    expr = \"system_key IS NULL OR system_key IN ('guild_bank', 'residue', 'write_off')\"\n  }\n"
+)
+
+// predicateSchema wraps an index block in a table whose generated region owns the vocabulary above.
+func predicateSchema(index string) string {
+	return "table \"account\" {\n" + predicateBegin + "\n" + predicateVocab + predicateEnd + "\n" +
+		index + "}\n"
+}
+
+// TestEnumScan_IndexPredicate_RepeatingAVocabulary_IsReported is #97.
+//
+// The defect ENUM001 exists to prevent is two sources of truth for one vocabulary, drifting a release
+// apart, and a predicate listing every value of a catalogue is exactly that: add a value, `make gen`
+// rewrites the CHECK, and the index silently keeps excluding it.
+//
+// The must-NOT-fire half is why this compares against the CATALOGUE'S VALUES rather than against the
+// shape of the expression. A partial index over a SUBSET — the live-sessions predicate — is
+// legitimate, common, and cannot be rendered from a catalogue as-is; a gate that fired on it would
+// fire on correct work, and one that is usually wrong is one people route around.
+func TestEnumScan_IndexPredicate_RepeatingAVocabulary_IsReported(t *testing.T) {
 	t.Parallel()
 
-	hits := scanSchema(t, "table \"t\" {\n  index \"ux_live\" {\n"+
-		"    where   = \"state IN ('open', 'extended')\"\n"+
+	for _, tc := range []struct {
+		name  string
+		where string
+		want  bool
+		why   string
+	}{
+		{
+			name:  "every value of the catalogue",
+			where: `"system_key IN ('guild_bank', 'residue', 'write_off')"`,
+			want:  true,
+			why:   "the predicate IS the vocabulary, written a second time where nothing regenerates it",
+		},
+		{
+			name:  "every value, reordered",
+			where: `"system_key IN ('write_off', 'guild_bank', 'residue')"`,
+			want:  true,
+			why: "a WHERE is a set-membership test, so reordering it changes nothing — sorting the " +
+				"catalogue's values alphabetically must not be a way past the rule",
+		},
+		{
+			name:  "every value, one of them repeated",
+			where: `"system_key IN ('guild_bank', 'guild_bank', 'residue', 'write_off')"`,
+			want:  true,
+			why:   "a repeated value is a typo, not a different vocabulary",
+		},
+		{
+			name:  "every value, ANDed with a second IN list",
+			where: `"system_key IN ('guild_bank', 'residue', 'write_off') AND tier IN ('main')"`,
+			want:  true,
+			why: "each IN list is compared ON ITS OWN. Flattening the expression into one set would " +
+				"make the finding disappear the moment somebody ANDed a clause on — a rule whose " +
+				"escape hatch is 'add a condition' is not a rule, and nothing would say it stopped " +
+				"applying",
+		},
+		{
+			name:  "every value, in the SECOND IN list",
+			where: `"tier IN ('main') AND system_key IN ('guild_bank', 'residue', 'write_off')"`,
+			want:  true,
+			why:   "order of the clauses is not a way past it either",
+		},
+		{
+			name:  "a subset",
+			where: `"system_key IN ('guild_bank', 'residue')"`,
+			want:  false,
+			why: "the legitimate partial index. This is the case that keeps the rule usable, and the " +
+				"reason #72 left index predicates out rather than fire on correct work",
+		},
+		{
+			name:  "two subsets, ANDed",
+			where: `"system_key IN ('guild_bank', 'residue') AND tier IN ('main', 'alt')"`,
+			want:  false,
+			why: "comparing each list on its own must not turn a compound predicate into a hit — the " +
+				"per-list split has to be the thing that catches a whole vocabulary, not the thing " +
+				"that widens what counts as one",
+		},
+		{
+			name:  "the vocabulary plus a value no catalogue holds",
+			where: `"system_key IN ('guild_bank', 'residue', 'write_off', 'vendor_only')"`,
+			want:  false,
+			why: "a value outside the catalogue means this is not that vocabulary; equality is the " +
+				"comparison #97 specified, and widening it to 'contains' would fire on a predicate " +
+				"nobody could render from the catalogue anyway",
+		},
+		{
+			name:  "a boolean",
+			where: `"flags IN (0, 1)"`,
+			want:  false,
+			why:   "no catalogue could generate a boolean — the same case a CHECK has",
+		},
+		{
+			name:  "a null test",
+			where: `"person_id IS NOT NULL"`,
+			want:  false,
+			why:   "no list, no vocabulary; every predicate in db/schema.hcl today is this shape",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			hits := scanSchema(t, predicateSchema("  index \"ux_account_system\" {\n"+
+				"    where   = "+tc.where+"\n    columns = [column.system_key]\n  }\n"),
+				predicateBegin, predicateEnd)
+
+			if !tc.want {
+				require.Empty(t, hits, "%s", tc.why)
+
+				return
+			}
+
+			require.Len(t, hits, 1, "%s\n%v", tc.why, hits)
+			require.Contains(t, hits[0], `index "ux_account_system"`,
+				"the finding must name the index — that is the block to narrow or waive")
+			require.Contains(t, hits[0], `"account_system_key_enum"`,
+				"the finding must name the generated CHECK the predicate duplicates, or the reader "+
+					"has to search the schema for whichever vocabulary matched")
+		})
+	}
+}
+
+// TestEnumScan_IndexPredicate_WithoutACatalogue_IsQuiet is the deliberate quiet case.
+//
+// A predicate enumerating a vocabulary that has NO generated region has nothing to be compared
+// against — and the literal CHECK it duplicates is already reported, which is the finding that
+// matters. Fixing that one (moving the vocabulary into a catalogue) is what makes this one fire.
+func TestEnumScan_IndexPredicate_WithoutACatalogue_IsQuiet(t *testing.T) {
+	t.Parallel()
+
+	hits := scanSchema(t, "table \"bid_session\" {\n"+
+		"  check \"bid_session_state_enum\" {\n    expr = \"state IN ('draft', 'open')\"\n  }\n\n"+
+		"  index \"ux_bid_live\" {\n    where   = \"state IN ('draft', 'open')\"\n"+
 		"    columns = [column.item_instance_id]\n  }\n}\n")
 
-	require.Empty(t, hits, "%v", hits)
+	require.Len(t, hits, 1, "%v", hits)
+	require.Contains(t, hits[0], `check "bid_session_state_enum"`,
+		"the literal CHECK is the finding here; reporting the predicate too would send the author "+
+			"editing the index when the vocabulary is what has no catalogue\n%v", hits)
+}
+
+// TestEnumScan_IndexPredicate_EscapedQuote_IsOneValue pins the literal reader.
+//
+// A value written with a doubled apostrophe inside it is ONE value, not two — that doubling is
+// SQLite's only escape. Splitting it would make the set comparison come out unequal, which fails
+// QUIETLY: a duplicated vocabulary containing an apostrophe would simply stop being reported, and
+// nothing anywhere would say so.
+func TestEnumScan_IndexPredicate_EscapedQuote_IsOneValue(t *testing.T) {
+	t.Parallel()
+
+	body := "table \"t\" {\n" + predicateBegin + "\n" +
+		"  check \"tone_enum\" {\n    expr = \"tone IN ('it''s', 'plain')\"\n  }\n" + predicateEnd + "\n" +
+		"  index \"ux_tone\" {\n    where   = \"tone IN ('it''s', 'plain')\"\n" +
+		"    columns = [column.tone]\n  }\n}\n"
+
+	hits := scanSchema(t, body, predicateBegin, predicateEnd)
+
+	require.Len(t, hits, 1, "%v", hits)
+	require.Contains(t, hits[0], `index "ux_tone"`, "%v", hits)
+}
+
+// TestEnumScan_IndexPredicate_ExemptionsMatchACheck asserts the two escape hatches a CHECK has apply
+// to a predicate as well.
+//
+// A predicate the GENERATOR wrote is not a second source of truth, which is what leaves the door open
+// to rendering the WHERE from the catalogue too — the alternative fix #97 records. And the waiver
+// keys to the block below it exactly as it does on a check, so an exception is visible in the diff a
+// reviewer reads rather than in an allowlist somewhere else.
+func TestEnumScan_IndexPredicate_ExemptionsMatchACheck(t *testing.T) {
+	t.Parallel()
+
+	const duplicate = "  index \"ux_account_system\" {\n" +
+		"    where   = \"system_key IN ('guild_bank', 'residue', 'write_off')\"\n" +
+		"    columns = [column.system_key]\n  }\n"
+
+	waived := scanSchema(t, predicateSchema(
+		"  // dkp:enum-literal — the predicate is pinned to today's values on purpose, see #123.\n"+duplicate),
+		predicateBegin, predicateEnd)
+	require.Empty(t, waived, "a waiver WITH a reason is the documented exception and must be honoured")
+
+	generated := scanSchema(t, "table \"account\" {\n"+predicateBegin+"\n"+predicateVocab+duplicate+
+		predicateEnd+"\n}\n", predicateBegin, predicateEnd)
+	require.Empty(t, generated, "a predicate INSIDE a generated region was written by the generator")
 }

@@ -1,20 +1,23 @@
-// Negative fixture tests for scripts/migrate-lint.sh — the advisory migration linter (issue #131).
+// Negative fixture tests for scripts/migrate-lint.sh — the migration linter added advisory-first in
+// issue #131 and promoted to a gate in #136.
 //
-// The property under test is unusual enough to be worth stating plainly: this gate is ADVISORY, so
-// "it fires" is only half of it. The other half is that firing does NOT fail the build. A test that
-// only checked for a non-zero exit would pass just as happily if somebody promoted the gate by
-// accident, and the whole reason #131 asked for advisory-first is that SQLite's 12-step table
-// rebuild is where Atlas's analyzers are least predictable — a linter that blocks merges before it
-// is trusted gets disabled rather than tuned.
+// WHAT THE PROMOTION HAD TO BUY, and it is why this file grew rather than shrank. Advisory-first was
+// the right way in: SQLite's 12-step table rebuild is where Atlas's analyzers are least predictable,
+// and a linter that blocks merges before it is trusted gets disabled rather than tuned. Flipping it
+// therefore rests on three claims, and each is a test here rather than a sentence in a PR:
 //
-// So each fixture is run through BOTH modes and the difference is the assertion:
+//	the rebuild is not a false positive   TestMigrateLint_TwelveStepRebuild_IsNotADiagnostic
+//	a diagnostic can be waived, in-diff   TestMigrateLint_NolintDirective_WaivesTheDiagnostic
+//	the default blocks                    TestMigrateLint_DestructiveChange_UnderTheDefault_Fails
 //
-//	MODE=advise    diagnostic printed, `::warning::` emitted, exit 0
-//	MODE=enforce   diagnostic printed, exit non-zero
+// Both modes are still exercised, because the difference between them is the gate:
+//
+//	MODE=enforce (default)   diagnostic printed, exit non-zero
+//	MODE=advise              diagnostic printed, `::warning::` emitted, exit 0
 //
 // and separately, that a BROKEN invocation is a hard failure in both — because a scan that never
-// ran must never report as a scan that found nothing. That distinction is the one thing an advisory
-// gate can get wrong in a way nobody notices.
+// ran must never report as a scan that found nothing. That distinction is the one thing a linter
+// can get wrong in a way nobody notices.
 //
 // The fixtures follow gates_test.go's two rules: t.TempDir() only, and assert on the message rather
 // than on the exit code alone. They reuse migrationFixture from new_migration_test.go, which copies
@@ -27,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -110,6 +114,10 @@ func hashMigrationDir(t *testing.T, tree string) {
 
 // runMigrateLint invokes scripts/migrate-lint.sh against a fixture tree in the given mode.
 //
+// An EMPTY mode leaves MODE unset, which is how the default is tested — and the inherited
+// environment is stripped of it first, so a MODE exported in whoever's shell ran `make test` cannot
+// turn the default case into a copy of one of the explicit ones.
+//
 // Environment built explicitly rather than with t.Setenv, for gates_test.go's reason: t.Setenv makes
 // t.Parallel() panic.
 func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode int) {
@@ -117,12 +125,20 @@ func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode in
 
 	require.True(t, filepath.IsAbs(tree), "DKP_REPO_ROOT must be absolute, got %q", tree)
 
+	env := []string{"DKP_REPO_ROOT=" + tree, "DKP_MIGRATE_LINT_BASE=" + absentBaseRef}
+
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "MODE=") {
+			env = append(env, kv)
+		}
+	}
+
+	if mode != "" {
+		env = append(env, "MODE="+mode)
+	}
+
 	cmd := exec.Command("bash", scriptPath(t, "migrate-lint.sh"))
-	cmd.Env = append(os.Environ(),
-		"DKP_REPO_ROOT="+tree,
-		"DKP_MIGRATE_LINT_BASE="+absentBaseRef,
-		"MODE="+mode,
-	)
+	cmd.Env = env
 
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -137,6 +153,23 @@ func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode in
 	t.Fatalf("run migrate-lint.sh: %v\n%s", err, out)
 
 	return "", 0
+}
+
+// runAtlas runs the real Atlas against a fixture tree, the way `make migration` does.
+//
+// The fixtures that need it are the ones about what ATLAS says, not about what a hand-written
+// migration looks like: a 12-step rebuild has to be authored by the tool whose output the gate will
+// be reading, or the test proves something about a string in this file instead.
+func runAtlas(t *testing.T, tree string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("atlas", args...)
+	cmd.Dir = tree
+
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "atlas %s in the fixture tree:\n%s", strings.Join(args, " "), out)
+
+	return string(out)
 }
 
 // requireAtlas skips when Atlas is absent, matching TestAtlas_ConcurrentInvocations_DoNotShareALock.
@@ -155,32 +188,62 @@ func requireAtlas(t *testing.T) {
 		"install it through setup-toolchain's tools: input")
 }
 
-// TestMigrateLint_DestructiveChange_UnderAdvise_WarnsWithoutFailing is the headline property.
+// destructiveFixturePair is the migration pair every destructive-change case here shares: a table,
+// then a migration that drops one of its columns. DS103 is the analyzer this gate exists for.
+func destructiveFixturePair(nolint string) []string {
+	return []string{
+		"000001_init.sql", "-- +goose Up\n" +
+			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, \"label\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n" +
+			gooseDownStub,
+		"000002_drop_label.sql", "-- +goose Up\n" + nolint +
+			"ALTER TABLE \"fixture_widget\" DROP COLUMN \"label\";\n" +
+			gooseDownStub,
+	}
+}
+
+// TestMigrateLint_DestructiveChange_UnderTheDefault_Fails is the headline property since issue #136.
 //
-// A dropped column IS reported — with the analyzer code, so the reader can look it up — and the
-// script still exits 0. Both halves are the point: the finding is not swallowed, and it does not
-// block the merge. Issue #136 tracks flipping the second half once the analyzers have been seen
-// against a real 12-step rebuild.
+// MODE unset is MODE=enforce, so a call site that forgets to say fails CLOSED. That matters more
+// than it looks: `make lint-migrations` states the mode too, and the two together mean neither the
+// Makefile nor this script can quietly downgrade the gate on its own.
+func TestMigrateLint_DestructiveChange_UnderTheDefault_Fails(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+
+	tree := migrationLintFixture(t, destructiveFixturePair("")...)
+
+	out, code := runMigrateLint(t, tree, "")
+
+	require.NotEqualf(t, 0, code,
+		"with no MODE set, scripts/migrate-lint.sh must FAIL on a diagnostic. Issue #136 promoted "+
+			"this gate; a default that advised instead would leave every invocation that does not "+
+			"name a mode — including any future call site — reporting a green run over a "+
+			"destructive migration.\n%s", out)
+	require.Containsf(t, out, "DS103", "the failure must name the analyzer that fired\n%s", out)
+	require.Containsf(t, out, "atlas:nolint",
+		"the failure must name the waiver. A blocking gate with no reviewable way past it is a gate "+
+			"people route around, which is the condition issue #136 set for promoting this one.\n%s", out)
+}
+
+// TestMigrateLint_DestructiveChange_UnderAdvise_WarnsWithoutFailing keeps the advisory path honest.
+//
+// MODE=advise is no longer how CI runs the gate (#136) — it is how somebody reads the diagnostics
+// over a migration set without being blocked by them. The path still has to work: a dropped column
+// IS reported, with the analyzer code so the reader can look it up, the run says the finding did not
+// fail IT, and it says that enforce is what CI runs — because a reader who sees a diagnostic and a
+// green local run must not conclude the merge will be green too.
 func TestMigrateLint_DestructiveChange_UnderAdvise_WarnsWithoutFailing(t *testing.T) {
 	t.Parallel()
 	requireAtlas(t)
 
-	tree := migrationLintFixture(t,
-		"000001_init.sql", "-- +goose Up\n"+
-			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, \"label\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
-			gooseDownStub,
-		"000002_drop_label.sql", "-- +goose Up\n"+
-			"ALTER TABLE \"fixture_widget\" DROP COLUMN \"label\";\n"+
-			gooseDownStub,
-	)
+	tree := migrationLintFixture(t, destructiveFixturePair("")...)
 
 	out, code := runMigrateLint(t, tree, "advise")
 
 	require.Equalf(t, 0, code,
-		"MODE=advise must NOT fail the build on a diagnostic — that is what 'advisory-first' means "+
-			"in issue #131, and .github/workflows/ci.yml runs this script without MODE set. If this "+
-			"is now non-zero the gate was promoted; do that deliberately via issue #136, and flip "+
-			"this test rather than deleting it.\n%s", out)
+		"MODE=advise must not fail on a diagnostic — it is the deliberate look-without-blocking "+
+			"mode, and TestMigrateLint_UnanalysableMigration_FailsLoud is what keeps that from "+
+			"meaning 'cannot fail'.\n%s", out)
 
 	require.Containsf(t, out, "DS103",
 		"the destructive-change analyzer must NAME itself. A warning that does not identify the "+
@@ -192,26 +255,24 @@ func TestMigrateLint_DestructiveChange_UnderAdvise_WarnsWithoutFailing(t *testin
 		"a diagnostic must emit a GitHub Actions warning annotation, or an advisory finding is "+
 			"visible only to whoever opens the raw log.\n%s", out)
 	require.Containsf(t, out, "advisory",
-		"the output must say the finding did not fail the build, or a reader who sees a diagnostic "+
-			"and a green check has to guess which one is wrong.\n%s", out)
+		"the output must say the finding did not fail this run, or a reader who sees a diagnostic "+
+			"and a green run has to guess which one is wrong.\n%s", out)
+	require.Containsf(t, out, "enforce",
+		"MODE=advise must say that enforce is what CI runs. Otherwise the one mode that does not "+
+			"block is also the one that looks like the whole story, and the merge goes red on a "+
+			"diagnostic its author was told did not matter.\n%s", out)
 }
 
-// TestMigrateLint_DestructiveChange_UnderEnforce_Fails proves the enforcing half already works.
+// TestMigrateLint_DestructiveChange_UnderEnforce_Fails pins the explicit mode.
 //
-// This is what makes issue #136 a one-word change at the call site rather than new machinery, and
-// it is what stops "advisory" from meaning "the failing path was never written".
+// The default is enforce (above), and `make lint-migrations` names it anyway; this is the assertion
+// that the named mode still means what it says, so the Makefile's belt-and-braces `MODE=enforce` is
+// not decoration.
 func TestMigrateLint_DestructiveChange_UnderEnforce_Fails(t *testing.T) {
 	t.Parallel()
 	requireAtlas(t)
 
-	tree := migrationLintFixture(t,
-		"000001_init.sql", "-- +goose Up\n"+
-			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, \"label\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
-			gooseDownStub,
-		"000002_drop_label.sql", "-- +goose Up\n"+
-			"ALTER TABLE \"fixture_widget\" DROP COLUMN \"label\";\n"+
-			gooseDownStub,
-	)
+	tree := migrationLintFixture(t, destructiveFixturePair("")...)
 
 	out, code := runMigrateLint(t, tree, "enforce")
 
@@ -222,6 +283,107 @@ func TestMigrateLint_DestructiveChange_UnderEnforce_Fails(t *testing.T) {
 	require.Containsf(t, out, "MODE=enforce",
 		"the failure must say WHICH mode failed it, so an unexpected red is traceable to the call "+
 			"site rather than to the migration.\n%s", out)
+}
+
+// TestMigrateLint_NolintDirective_WaivesTheDiagnostic is precondition 3 of issue #136: a blocking
+// gate needs a reviewable way past it, or it is a gate people route around.
+//
+// The waiver is ATLAS'S OWN `-- atlas:nolint <analyzer>` directive, on the line above the statement
+// the diagnostic fires on, rather than a marker this repository invented and would have to teach the
+// analyzer about. It sits beside the `-- dkp:destructive-approved: #<issue>` line the two-release
+// destructive rule already requires — Atlas reads one and ignores the other, and a reviewer reads
+// both in the diff, which is the property that matters: the exception is in the migration, not in
+// the PR conversation.
+//
+// A hand-edit of a generated migration, and a legitimate one: it adds comments, changes no
+// statement, and .claude/rules/migrations.md's allowlist is where that is recorded.
+func TestMigrateLint_NolintDirective_WaivesTheDiagnostic(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+
+	tree := migrationLintFixture(t, destructiveFixturePair(
+		"-- dkp:destructive-approved: #1234\n-- atlas:nolint destructive\n")...)
+
+	out, code := runMigrateLint(t, tree, "enforce")
+
+	require.Equalf(t, 0, code,
+		"`-- atlas:nolint destructive` above the statement must silence the analyzer even under "+
+			"MODE=enforce. If this has gone red, the waiver documented in scripts/migrate-lint.sh, "+
+			"the CI step and .claude/rules/migrations.md no longer exists — and every reviewed, "+
+			"intentional destructive migration is now unlandable.\n%s", out)
+	require.Containsf(t, out, "no diagnostics",
+		"a waived diagnostic must report as a clean run, not as a silent one\n%s", out)
+}
+
+// TestMigrateLint_TwelveStepRebuild_IsNotADiagnostic is precondition 1 of issue #136, and the reason
+// #131 landed this linter advisory-first rather than as a gate.
+//
+// SQLite cannot alter a CHECK in place, so every catalogue edit — adding a ledger_batch kind, a
+// decay_run state — becomes the 12-step rebuild: CREATE new, INSERT SELECT, DROP old, RENAME. If
+// Atlas read that DROP as a destructive change, promoting the gate would have blocked the most
+// ordinary schema change this repository makes, and the fix people would reach for is disabling the
+// linter. It does not: the rebuild preserves every column, and Atlas compares the schemas rather than
+// the statements.
+//
+// So the migration under test is authored by ATLAS, not written here. A hand-written approximation
+// would be asserting something about a string in this file; what has to hold is what the tool the
+// gate reads actually emits, and what it emits is what `make migration` will put in a PR.
+func TestMigrateLint_TwelveStepRebuild_IsNotADiagnostic(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+
+	// The first migration is written rather than diffed, and the ordering is why: Atlas names a
+	// generated file by TIMESTAMP TO THE SECOND, so two diffs in one test land in the same second
+	// and their order becomes alphabetical — `add_label_check` before `init`, a directory that does
+	// not replay. A hand-written `000001_` sorts before any timestamp, whatever second this runs in.
+	//
+	// The Down block Atlas writes for the rebuild carries DDL that MIG001 would refuse. That is fine
+	// and deliberate: `make migration` rewrites it, and this fixture is about the analyzer's verdict
+	// on the Up block, not about the file this repository would commit.
+	tree := migrationLintFixture(t,
+		"000001_init.sql", "-- +goose Up\n"+
+			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, \"label\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
+			gooseDownStub,
+	)
+
+	require.NoError(t, os.WriteFile(filepath.Join(tree, "db", "schema.hcl"),
+		[]byte(strings.Replace(lintFixtureSchema, "  strict = true\n",
+			"  check \"fixture_widget_label_enum\" {\n    expr = \"label IN ('a', 'b')\"\n  }\n  strict = true\n",
+			1)), 0o644))
+
+	runAtlas(t, tree, "migrate", "diff", "add_label_check", "--env", "sqlite")
+
+	rebuild := latestMigration(t, tree)
+	require.Containsf(t, rebuild, "new_fixture_widget",
+		"this fixture is only meaningful if Atlas emitted the 12-step rebuild. It did not, so the "+
+			"test is no longer about the pattern it names:\n%s", rebuild)
+	require.Containsf(t, rebuild, "DROP TABLE",
+		"the rebuild must contain the DROP that makes the false-positive question real\n%s", rebuild)
+
+	out, code := runMigrateLint(t, tree, "")
+
+	require.Equalf(t, 0, code,
+		"a 12-step table rebuild that preserves every column must NOT be a diagnostic. If this has "+
+			"gone red, Atlas's analyzers changed their mind about the pattern `make migration` "+
+			"emits for a CHECK change — read the diagnostic before touching this test, because the "+
+			"gate is now blocking every catalogue edit (issue #136, precondition 1).\n%s", out)
+	require.Containsf(t, out, "no diagnostics", "%s", out)
+}
+
+// latestMigration returns the body of the highest-sorting migration in a fixture tree.
+func latestMigration(t *testing.T, tree string) string {
+	t.Helper()
+
+	files, err := filepath.Glob(filepath.Join(tree, "db", "migrations-sqlite", "*.sql"))
+	require.NoError(t, err, "list the fixture's migrations")
+	require.NotEmpty(t, files, "the fixture tree has no migrations")
+
+	sort.Strings(files)
+
+	body, err := os.ReadFile(files[len(files)-1])
+	require.NoError(t, err, "read the newest migration")
+
+	return string(body)
 }
 
 // TestMigrateLint_CleanMigration_ReportsNoDiagnostics is the positive control.
@@ -364,13 +526,19 @@ func TestMigrateLint_MissingAtlas_FailsLoud(t *testing.T) {
 		"the failure must name the missing tool and how to get it\n%s", out)
 }
 
-// TestMigrateLint_CI_IsAdvisory pins the call site.
+// TestMigrateLint_CallSites_Enforce pins the promotion (issue #136), which is a property of the CALL
+// SITES rather than of the script: MODE=enforce is the script's default AND what the Makefile passes,
+// and CI reaches both through `make lint-migrations`.
 //
-// `make lint-migrations` runs the script with no MODE, which is MODE=advise. The assertion is
-// deliberately in the "is still advisory" direction: promoting the gate is a decision to take in
-// issue #136 with the evidence #131 asked for, not a change to make in passing while editing a
-// nearby step.
-func TestMigrateLint_CI_IsAdvisory(t *testing.T) {
+// BOTH COPIES ARE ASSERTED, because either one alone would let the gate be downgraded silently — a
+// Makefile that passed MODE=advise would beat a fail-closed default, and a default of advise would
+// mean any future call site that forgets the variable stops gating. Two statements of the same
+// intent is the cheapest way to make a downgrade visible in a diff.
+//
+// It also pins that LOCAL AND CI AGREE. `make lint-migrations` is in `make lint`, which is in
+// `make check`; a gate that only enforced in CI would cost a push, a round trip and a contributor
+// who did exactly what AGENTS.md told them (issues #166, #183).
+func TestMigrateLint_CallSites_Enforce(t *testing.T) {
 	t.Parallel()
 
 	workflow := readCIWorkflow(t)
@@ -378,19 +546,54 @@ func TestMigrateLint_CI_IsAdvisory(t *testing.T) {
 	require.Contains(t, workflow, "run: make lint-migrations",
 		"ci.yml must run the migration lint; issue #131 asked for it in CI, not only in `make lint`")
 
-	for _, line := range strings.Split(workflow, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") || !strings.Contains(trimmed, "lint-migrations") {
-			continue
+	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "migrate-lint.sh"))
+	require.NoError(t, err, "read scripts/migrate-lint.sh")
+
+	require.Containsf(t, string(script), `MODE="${MODE:-enforce}"`,
+		"scripts/migrate-lint.sh no longer DEFAULTS to enforce. Issue #136 promoted this gate: an "+
+			"invocation that does not name a mode must fail closed, or a call site that forgets the "+
+			"variable reports a green run over a destructive migration.")
+
+	makefile, err := os.ReadFile(filepath.Join(repoRoot(t), "Makefile"))
+	require.NoError(t, err, "read the Makefile")
+
+	recipe := makefileRecipe(t, string(makefile), "lint-migrations")
+
+	require.Containsf(t, recipe, "MODE=enforce",
+		"`make lint-migrations` no longer passes MODE=enforce:\n%s\nThat is the call site ci.yml "+
+			"and `make check` both reach, so this is where a downgrade would land. If the gate is "+
+			"genuinely too noisy, say so in an issue and flip it deliberately — do not let the "+
+			"mode drift out of the recipe.", recipe)
+	require.NotContainsf(t, recipe, "MODE=advise",
+		"`make lint-migrations` runs the linter in advisory mode:\n%s\nA diagnostic would then pass "+
+			"`make check` on a laptop and fail `test / migrations` in CI, which is the split issue "+
+			"#136 was promoted to close.", recipe)
+}
+
+// makefileRecipe returns the recipe lines of one Makefile target — the lines after `target:` that
+// begin with a tab.
+func makefileRecipe(t *testing.T, makefile, target string) string {
+	t.Helper()
+
+	start := strings.Index(makefile, "\n"+target+":")
+	require.NotEqualf(t, -1, start, "the Makefile has no %s target", target)
+
+	body := makefile[start+1:]
+	body = body[strings.Index(body, "\n")+1:]
+
+	var recipe []string
+
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "\t") {
+			break
 		}
 
-		require.NotContainsf(t, trimmed, "MODE=enforce",
-			"ci.yml runs the migration lint in enforce mode:\n\t%s\nThat is a real promotion and a "+
-				"good one — but do it through issue #136, updating "+
-				"docs/design/06-cicd-and-release.md and inverting "+
-				"TestMigrateLint_DestructiveChange_UnderAdvise_WarnsWithoutFailing in the same "+
-				"change, so the docs and the tests describe the gate that runs.", line)
+		recipe = append(recipe, line)
 	}
+
+	require.NotEmptyf(t, recipe, "the %s target has no recipe", target)
+
+	return strings.Join(recipe, "\n")
 }
 
 // TestCI_MigrationLintStep_FetchesFullHistory pins fetch-depth: 0 on `test / migrations`.
@@ -502,11 +705,12 @@ func TestMigrationGates_AtlasLint_IsAdditive(t *testing.T) {
 
 	workflow := readCIWorkflow(t)
 	require.Contains(t, workflow, "run: make test-migrations",
-		"ci.yml no longer runs `make test-migrations`. The advisory Atlas lint added for issue #131 "+
-			"is ADDITIVE — it does not cover the fresh-install fingerprint, the append-only-trigger "+
-			"survival check, or the protected-table row-count assertions.")
+		"ci.yml no longer runs `make test-migrations`. The Atlas lint added for issue #131 and "+
+			"promoted in #136 is ADDITIVE — it does not cover the fresh-install fingerprint, the "+
+			"append-only-trigger survival check, or the protected-table row-count assertions, and "+
+			"it covers them no better for blocking.")
 
 	require.Contains(t, workflow, "run: make lint-migrations",
-		"ci.yml no longer runs the advisory migration lint either — this test would then be "+
-			"asserting the absence of both.")
+		"ci.yml no longer runs the migration lint either — this test would then be asserting the "+
+			"absence of both.")
 }
