@@ -374,10 +374,13 @@ func TestCIFilters_GoOnlyPatterns_HaveAShortRunningReader(t *testing.T) {
 		"THIRD_PARTY_NOTICES.txt":                      "test/repo/third_party_notices_test.go",
 		".dockerignore":                                "test/repo/spa_pipeline_test.go",
 		"CONTRIBUTING.md":                              "test/repo/contributing_claims_test.go",
-		"web/package.json":                             "test/repo/web_overrides_test.go",
-		"web/pnpm-lock.yaml":                           "test/repo/web_overrides_test.go",
-		"web/OVERRIDES.md":                             "test/repo/web_overrides_test.go",
 	}
+
+	// web/package.json, web/pnpm-lock.yaml and web/OVERRIDES.md were rows here until issue #186 gave
+	// web_overrides_test.go three checks that read the installed node_modules for each parent's
+	// DECLARED ranges. Those skip under -short, so `test / unit` stopped being enough and the three
+	// patterns moved into `code`. That is this table's rule taking effect rather than being argued
+	// with, and it is why the rule is a check and not a paragraph.
 
 	workflow := readCIWorkflow(t)
 

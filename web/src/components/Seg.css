@@ -11,7 +11,11 @@
  * tab order and still an arrow-key-navigable radio group.
  *
  * Focus offset is -2px so the ring sits INSIDE the segmented control's own border rather than
- * floating off it.
+ * floating off it. It is written as `calc(var(--focus-offset) * -1)` rather than as a literal: §4
+ * fixes the ring's magnitude as the token and lets only the SIGN vary by control, so a guild that
+ * themes --focus-offset moves this inset ring with the rest. The source sheet has no token layer to
+ * derive from and writes the number, which makes this a recorded divergence-of-zero in
+ * test/repo/design_tokens_test.go — the same computed value, a different spelling (issue #67).
  */
 
 .seg {
