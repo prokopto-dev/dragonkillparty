@@ -202,6 +202,11 @@ jobs:
               # The skills' verify scripts: gate_cache_test.go scans .claude/skills for `go test`
               # invocations that dropped -count=1, and that suite runs under `make test`.
               - '.claude/skills/**'
+              # The agent-session hooks, in `code` for the same reason as `.githooks/**` above:
+              # test/repo's lint_shell_test reads the real .claude/hooks/ tree — it asserts the
+              # gate's enumeration actually selects the fail-open command guard — and that suite
+              # runs under `make test` (issue #187).
+              - '.claude/hooks/**'
               # The golden files themselves, which were in no filter but `db`'s migrations subset:
               # `test / golden` asserts the fixture count is non-decreasing versus origin/main and
               # the parser suite reads them, so a PR that deleted a golden case selected nothing and
@@ -383,10 +388,17 @@ jobs:
               - 'scripts/lint-actions.sh'
             # `.githooks/**` is in `shell` because the hooks ARE shell scripts this gate lints, and
             # .shellcheckrc because it is the file that decides which rules run at all.
+            #
+            # `.claude/hooks/**` joined with issue #187, and it was in NO filter before that — so a
+            # hooks-only PR selected nothing, every job was skipped, and ci-required counted the
+            # skips as success. The fifth instance of the omission this block's own header warns
+            # about, and the one with the worst blast radius: two of those files decide whether a
+            # tool call runs at all, and guard-bash.sh is fail-open by design.
             shell:
               - *build
               - 'scripts/**'
               - '.githooks/**'
+              - '.claude/hooks/**'
               - '.shellcheckrc'
 
   # ---------------------------------------------------------------------------------------------
@@ -476,6 +488,29 @@ jobs:
           go: "true"
           tools: "gofumpt golangci-lint"
       - run: make lint-go # gofumpt -l, goimports, golangci-lint
+      - name: Architectural laws, type-aware (advisory)
+        run: make lint-laws
+        # ADVISORY, and advisory the same way `make lint-migrations` and `make image-size` are: the
+        # step is NOT `continue-on-error` (this workflow bans that string and
+        # TestCIWorkflow_NoContinueOnError asserts its absence — it is the quiet way to keep a gate
+        # in the checks list while removing its teeth). scripts/typed-laws.sh is advisory BY
+        # CONSTRUCTION: in its default MODE=advise it prints every finding, emits a `::warning::`
+        # annotation, and exits 0. MODE=enforce exits non-zero instead and already works; test/repo
+        # drives that path so the analyzers are tested rather than trusted.
+        #
+        # Advisory does not mean it cannot fail. A tree that does not build, or a package that does
+        # not type-check, is a hard failure in BOTH modes — a pass that reports "no findings" about
+        # code it never read is strictly worse than an absent job.
+        #
+        # ADDITIVE to `lint / repo` above, never a replacement for it. internal/repogate holds the
+        # laws and blocks the merge: it needs no build, so it reads a deliberately tainted tree in
+        # t.TempDir() and a repository mid-sequence. What this pass adds is what a syntax rule cannot
+        # have — a dot-imported `. "time"`, a type alias reaching *sql.DB, an untyped `0.15` in the
+        # point path (issue #172). TestTypedLaws_AreAdditive holds that boundary.
+        #
+        # IN THIS JOB rather than one of its own: it reads Go sources and nothing else can change its
+        # verdict, which is exactly the `code` filter this job already gates on — and the module is
+        # already built and cached here by `make lint-go`.
       - run: make mod-tidy-check
         # go.mod and go.sum must ALREADY be tidy (issue #149). Nothing asserted this, so the cleanup
         # arrived attached to whichever PR next happened to run `go mod tidy` — #126 pruned ~100

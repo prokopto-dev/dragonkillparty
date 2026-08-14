@@ -6,7 +6,11 @@
 # Run: bash .claude/hooks/test-guard-bash.sh
 
 set -uo pipefail
-cd "$(dirname "$0")/../.."
+# `|| exit` is not ceremony here (SC2164, issue #187). Without it a failed cd leaves the script in
+# whatever directory it was invoked from, where the relative GUARD path below resolves to nothing —
+# and every `check` then reports `block`, because the guard that "blocked" the command was a shell
+# that could not find a file. A self-test for a fail-open guard, passing without running it.
+cd "$(dirname "$0")/../.." || exit 1
 GUARD=.claude/hooks/guard-bash.sh
 
 pass=0

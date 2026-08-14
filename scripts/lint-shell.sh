@@ -70,8 +70,19 @@ fi
 # Every tracked shell script, found by shebang rather than by extension: .githooks/pre-commit and
 # .githooks/pre-push have no .sh suffix and are exactly the files a formatting-drift bug hides in,
 # since git will not run a hook that fails and nobody reads one that works.
+#
+# .claude/hooks/ joined the enumeration with issue #187, and it is the tree where a shell defect
+# costs most. Those five files are the agent-session hooks, and two of them DECIDE WHETHER A TOOL
+# CALL RUNS AT ALL: guard-bash.sh blocks the unrecoverable, publishing and destructive commands, and
+# guard-protected-paths.sh blocks edits to protected paths. guard-bash.sh is FAIL-OPEN by design —
+# its own header says "a missing JSON parser or an unparseable payload allows the command" — so a
+# shell defect there is a guard that stops guarding without anything going red. That is the same
+# defect class this gate was bought for (#111, an unquoted expansion), in the one place where
+# nothing else would notice. Running the gate over them at the time reported an SC2164 `cd` with no
+# `|| exit` in the guard's own self-test: the shape where a failed `cd` runs the rest of the script
+# against whatever directory it happened to be in.
 files=()
-for f in scripts/*.sh .githooks/*; do
+for f in scripts/*.sh .githooks/* .claude/hooks/*; do
     [ -f "$f" ] || continue
     # One pattern, not two: `#!/usr/bin/env bash` ends in `sh` as surely as `#!/bin/sh` does, and
     # SC2221/SC2222 said so about the second, unreachable arm this used to carry — a small
@@ -84,7 +95,7 @@ done
 # NO VACUOUS PASS, the rule this repository applies to every gate: an empty list means the
 # invocation is broken (a wrong DKP_REPO_ROOT, a moved directory), not that every script is clean.
 [ ${#files[@]} -gt 0 ] \
-    || die "no shell scripts found under scripts/ or .githooks/ — nothing was linted.
+    || die "no shell scripts found under scripts/, .githooks/ or .claude/hooks/ — nothing was linted.
   A gate that checked nothing must not report success."
 
 if [ "$write" -eq 1 ]; then
