@@ -101,14 +101,10 @@ func spendAward(
 	ctx Ctx, strategyID, strategyVersion string, terms spendTerms, ev AwardEvent,
 	price core.Centipoints,
 ) (BatchProposal, error) {
-	if ev.Buyer.ID == "" {
-		return BatchProposal{}, fmt.Errorf("%s: award has no buyer: %w", strategyID, ErrInvalidEvent)
-	}
-
-	if ev.Buyer.IsSystem() {
-		return BatchProposal{}, fmt.Errorf(
-			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
-				"purchasers: %w", strategyID, ev.Buyer.ID, ErrInvalidEvent)
+	// checkBuyer rather than two inline conditions, because a spend rule may legitimately return
+	// before reaching this function and must refuse the same buyers when it does — see its comment.
+	if err := checkBuyer(strategyID, ev.Buyer); err != nil {
+		return BatchProposal{}, err
 	}
 
 	if price <= 0 {

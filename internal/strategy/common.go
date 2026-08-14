@@ -447,6 +447,33 @@ func checkDistinctAccounts(strategyID string, sorted []AccountRef) error {
 	return nil
 }
 
+// checkBuyer rejects the two buyers no spend planner has a defensible answer for.
+//
+// A SYSTEM ACCOUNT IS NOT A PURCHASER. The four ledger-addressable non-human accounts are
+// counterparties — the bank funds a tick, write_off swallows a rot, residue catches an unallocatable
+// remainder — and debiting one as though it had won an item would produce a balance that means
+// nothing and a statement nobody can read. It is a caller bug rather than a guild's choice, so it is
+// refused rather than routed.
+//
+// IT IS A FUNCTION RATHER THAN TWO LINES INSIDE spendAward because a spend rule can legitimately
+// return BEFORE the shared award assembly runs, and one that does must still refuse a malformed
+// buyer. `zero_sum`'s free solo policy is the case: a kill with nobody to redistribute to writes no
+// batch, and without this check first, an award naming no buyer at all would take that path and be
+// reported as a legitimate free award rather than as the caller bug it is (review of #228).
+func checkBuyer(strategyID string, buyer AccountRef) error {
+	if buyer.ID == "" {
+		return fmt.Errorf("%s: award has no buyer: %w", strategyID, ErrInvalidEvent)
+	}
+
+	if buyer.IsSystem() {
+		return fmt.Errorf(
+			"%s: buyer %s is a system account; the four system accounts are counterparties, never "+
+				"purchasers: %w", strategyID, buyer.ID, ErrInvalidEvent)
+	}
+
+	return nil
+}
+
 // resolvePrice applies the three-step price resolution and refuses a price that awards nothing.
 //
 // ONE ORDER AND ONLY ONE: the officer's explicit price, then the item's catalogue price, then the

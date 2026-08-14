@@ -271,6 +271,14 @@ func (s ZeroSum) PlanAward(ctx Ctx, ev AwardEvent) (BatchProposal, error) {
 		return BatchProposal{}, err
 	}
 
+	// BEFORE the free-solo branch below, not left to spendAward. That branch returns without ever
+	// reaching the shared assembly, so a check that only happened there would let an award naming no
+	// buyer — or naming a system account — be reported as a legitimate free solo award, and the caller
+	// would record the loot with no ledger batch and no error (review of #228).
+	if err := checkBuyer(zeroSumID, ev.Buyer); err != nil {
+		return BatchProposal{}, err
+	}
+
 	price, err := resolvePrice(zeroSumID, cfg.DefaultPriceCp, ev)
 	if err != nil {
 		return BatchProposal{}, err

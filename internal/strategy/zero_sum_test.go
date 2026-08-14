@@ -180,6 +180,42 @@ func TestZeroSum_PlanAward_SoloKill_RoutesByTheSoloPolicy(t *testing.T) {
 			"ErrNothingToPlan wraps ErrInvalidEvent, so a caller that handles neither still sees one")
 	})
 
+	// The free-solo path returns before the shared award assembly runs, so it is the one branch where
+	// a malformed award could be reported as a legitimate one. ErrNothingToPlan means "this event was
+	// legal and produced no entries", and a caller acts on it by recording the loot with no batch — so
+	// an award naming no buyer must never reach it. Found in review of #228, after the refactor onto
+	// spendAward moved the buyer checks downstream of this branch.
+	t.Run("a malformed buyer is refused rather than reported as a free award", func(t *testing.T) {
+		t.Parallel()
+
+		for _, tc := range []struct {
+			name  string
+			buyer strategy.AccountRef
+		}{
+			{"no buyer at all", strategy.AccountRef{}},
+			{
+				"a system account as the buyer",
+				strategy.AccountRef{ID: ledger.AccountIDGuildBank, Kind: "system"},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				_, err := strategy.ZeroSum{}.PlanAward(
+					newCtx(t, 1, 0, `{"solo_policy": "free"}`), strategy.AwardEvent{
+						Buyer:       tc.buyer,
+						Item:        strategy.ItemRef{ID: acct(90), Name: "Cloak of Flames"},
+						PriceCp:     &price,
+						EffectiveAt: fixedNow,
+					})
+				require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+				require.NotErrorIs(t, err, strategy.ErrNothingToPlan,
+					"a caller treats ErrNothingToPlan as 'legal event, no batch' and records the loot "+
+						"anyway; a malformed award must be an error it can act on")
+			})
+		}
+	})
+
 	t.Run("free with other raiders present still splits", func(t *testing.T) {
 		t.Parallel()
 
