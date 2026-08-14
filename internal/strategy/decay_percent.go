@@ -322,6 +322,14 @@ func (s DecayPercent) PlanDecay(ctx Ctx, run DecayRun) (BatchProposal, error) {
 	// duplication is the point: the planner reads balances at run.AsOfSeq while the engine checks them
 	// at the commit head, so a spend that landed between the two is caught by the invariant and by
 	// nothing else.
+	//
+	// IT IS DECLARED ON A toward_zero RUN TOO, and that is only defensible because the floor
+	// constrains a DEDUCTION rather than a balance: forgiving a debt of 45.00 leaves the member at
+	// −40.50, under a floor of zero and better off than they started, which the commit-time engine
+	// permits and a debit to the same balance would not. That was found in review of this PR, as a
+	// batch the ledger refused in its entirety; the fix is in internal/ledger/invariant.go's
+	// checkNonNegative, with the argument, and TestRules_DecayPercentTowardZero_ForgivesADebtEndToEnd
+	// is the run it refused.
 	return proposeZeroSum(ctx, decayPercentID, decayPercentVersion, kinds.KindDecay, run.EffectiveAt,
 		"decay "+run.PeriodKey, entries, []Invariant{
 			{Kind: InvariantSumZero, BalanceKind: BalanceKindDKP},
