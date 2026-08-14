@@ -515,6 +515,107 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 	}
 }
 
+// TestSpendStrategies_SettleAuction_TheHigherRungTakesTheItemWithoutARoll is the ladder at the
+// family level, and the shape of the case is what makes it strong: the two bids are IDENTICAL but for
+// the rung.
+//
+// Identical bids are what every one of these four settles by a seeded roll — an auction ties on the
+// amount, `relative_bid` ties on the share, `roll` ties on the die — so before #224 either bidder
+// could have won. With one of them a main and the other an alt they are not tied at all: the ladder
+// settled it, and it settled it deterministically, in the input order that puts the alt first so a
+// stable sort cannot produce the right answer by accident.
+func TestSpendStrategies_SettleAuction_TheHigherRungTakesTheItemWithoutARoll(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			alt, main := tc.bid(acct(0)), tc.bid(acct(1))
+			alt.Tier, main.Tier = strategy.TierAlt, strategy.TierMain
+
+			res, err := tc.s.SettleAuction(spendCtx(t, tc.config), strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, []strategy.Bid{alt, main})
+
+			require.NoError(t, err)
+			require.Len(t, res.Winners, 1,
+				"two bids on different rungs are never tied, so no settlement here may award nobody")
+			require.Equal(t, acct(1), res.Winners[0].AccountID,
+				"the main takes the item from an alt bidding exactly the same number")
+			require.Equal(t, strategy.TierMain, res.WinningTier,
+				"every settlement that awards names the rung that took it, including the two that rank "+
+					"across the ladder rather than partitioning on it")
+			require.Equal(t,
+				[]strategy.TierCount{
+					{Tier: strategy.TierMain, Bids: 1}, {Tier: strategy.TierAlt, Bids: 1},
+				}, res.TierCounts, "counts, highest rung first, and never amounts")
+
+			if tc.id != "roll" {
+				require.Nil(t, res.RngSeed,
+					"the ladder decided it outright; a roll here would mean tier was compared after the "+
+						"amount rather than before it")
+			}
+		})
+	}
+}
+
+// TestSpendStrategies_ValidateBid_AnUnrankableTier_IsRefused, at bid time, by all four.
+//
+// "main_offpsec" is one transposition from the second rung, and it is the realistic failure: a caller
+// writing a value from another vocabulary — or from a typo — into the one field that outranks the
+// amount. Ranking it low would be the silent version of exactly the inversion the ladder exists to
+// prevent, so it is refused where the bid is accepted rather than discovered at `closing`.
+func TestSpendStrategies_ValidateBid_AnUnrankableTier_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			bid := tc.bid(acct(0))
+			bid.Tier = "main_offpsec"
+
+			err := tc.s.ValidateBid(spendCtx(t, tc.config),
+				strategy.AccountRef{ID: acct(0), Kind: "person"}, bid)
+
+			require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+			require.ErrorContains(t, err, "not on the ladder")
+			require.ErrorContains(t, err, tc.id, "the refusal must name the strategy that refused")
+		})
+	}
+}
+
+// TestSpendStrategies_SettleAuction_AnUnrankableTier_StopsTheSettlement is the same value reaching a
+// settlement anyway — through an importer, a backfill, or a bid accepted before a rung was renamed.
+//
+// IT IS AN ERROR AND NOT A DROPPED BID, which is the one place tier differs from the minimum. A bid
+// under the floor could not have won, so dropping it costs nobody an item; a bid whose rung nobody
+// can read might be the winner, and dropping it awards the drop to somebody standing below it. The
+// session machine has a `resolution_failed` state for a settlement that cannot be computed; it has
+// none for an award to the wrong raider.
+func TestSpendStrategies_SettleAuction_AnUnrankableTier_StopsTheSettlement(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			good, bad := tc.bid(acct(0)), tc.bid(acct(1))
+			bad.Tier = "MAIN"
+
+			_, err := tc.s.SettleAuction(spendCtx(t, tc.config), strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, []strategy.Bid{good, bad})
+
+			require.ErrorIs(t, err, strategy.ErrInvalidEvent)
+			require.ErrorContains(t, err, "not on the ladder",
+				"the vocabulary is lowercase snake_case everywhere (canonical §5), so an uppercase "+
+					"spelling is a different value and not a synonym")
+		})
+	}
+}
+
 // TestSpendStrategies_Planners_PropagateFacadeFailures walks each planner with a façade that fails
 // the way a database does.
 //

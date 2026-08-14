@@ -27,13 +27,12 @@ import (
 // WHAT IS DELIBERATELY NOT HERE, because it is Phase 6 and not arithmetic: the bid state machine
 // (draft → open → extended → closing → resolved → settled), the anti-snipe window and holds.
 //
-// AND WHAT IS NOT HERE YET THOUGH IT IS ARITHMETIC: tier-aware resolution — "a 10-point main bid
-// beats a 350-point alt bid" (docs/guides/auctions.md), the most consequential rule in the product.
-// It is a Phase 1 deliverable of its own (ROADMAP item 12, #224) rather than part of this one: tier
-// is derived server-side from the bidding character at bid time and recorded on the award, and
-// strategy.Bid carries no such field, so implementing it means widening a shared type rather than
-// adding arithmetic to these five. What lands here is the amount comparison the tier phase runs
-// INSIDE the winning tier, which is the same comparison whether or not tiers exist.
+// TIER IS NOW THE FIRST COMPARISON EVERY ORDERING HERE MAKES (#224). The ladder and the phase that
+// partitions on it live in tier.go; what this file owns is that no ranking in the spend family can
+// skip it — rankBids compares the rung before the rank, and both tie counters carry the rung in their
+// key, so a settlement cannot roll a main against an alt however it assembled its input. The amount
+// comparison below the rung is unchanged, which is what makes it the same comparison whether or not a
+// session is tiered.
 //
 // PURITY (law 3) applies as everywhere in this package: no internal/store, no wall clock, no
 // math/rand — the settlement's coin flip is ctx.Rng(), whose seed is persisted onto the batch — and
@@ -225,10 +224,16 @@ func routeProceeds(
 type rankedBid struct {
 	bid  Bid
 	rank int64
+
+	// tier is the bid's rung on the ladder, HIGHER FIRST, filled in by rankBids rather than by the
+	// strategy that built the rankedBid. Computed once where the ladder is read, so that a comparator
+	// running O(n log n) times cannot be the place a tier is parsed — or, worse, the place one
+	// strategy parses it differently from another.
+	tier int
 }
 
-// rankBids copies the bids into settlement order: highest rank first, then highest amount, then
-// earliest, then the account id.
+// rankBids copies the bids into settlement order: highest TIER first, then highest rank, then highest
+// amount, then earliest, then the account id.
 //
 // A COPY, so a settlement never reorders its caller's slice, and TOTAL on the bid's own content, so
 // two callers that pass the same bids in different orders settle identically. That is the determinism
@@ -236,22 +241,44 @@ type rankedBid struct {
 //
 // THE CHAIN IS docs/guides/auctions.md's, MINUS THE STEPS A PLANNER CANNOT SEE. That page's order is
 // tier, amount, raid attendance, balance before the bid, items won in the window, bid sequence, then a
-// seeded roll. Tier is not on the Bid and attendance and items-won are not on the Ctx façade — the
-// façade's own comment says a method nothing can implement is a method every implementer must fake.
-// So what runs here is amount, then bid sequence (PlacedAt), then the seeded roll that settleHighest
-// performs, and the account id is the last resort that makes the ORDER total even when the roll is not
-// reached. A step this cannot evaluate is a step that lands ABOVE it later — tier as #224, the rest
-// with the facts Phase 3 and Phase 6 record — not one it approximates.
+// seeded roll. TIER IS STEP 1 AND IT IS HERE (#224): it is recorded on the bid, so a pure planner can
+// read it, and reading it is not optional — "a 10-point main bid beats a 350-point alt bid" is the
+// most consequential rule in the product and every ordering in this family runs through this
+// function. Attendance and items-won are still not on the Ctx façade — the façade's own comment says
+// a method nothing can implement is a method every implementer must fake — so what runs below the
+// rung is the rank, then the amount, then bid sequence (PlacedAt), then the seeded roll that
+// settleHighest performs, with the account id as the last resort that makes the ORDER total even when
+// the roll is not reached. A step this cannot evaluate lands ABOVE those later, with the facts Phase
+// 3 and Phase 6 record, rather than being approximated now.
+//
+// IT REFUSES A TIER IT CANNOT RANK, which is why it returns an error at all. The two auctions have
+// already partitioned on the ladder by the time they call this, so for them the tier key is a
+// tautology — deliberately, because `relative_bid` and `roll` rank bids WITHOUT partitioning, and
+// leaving them tier-blind would mean a main's roll of 3 losing to an alt's 97 in a session the guild
+// believed was tiered. One funnel, one rule, one refusal.
 //
 // SliceStable rather than Slice, because one account may legitimately hold several bids — an open
 // auction is a bidder raising themselves — so the key is not unique. Two bids identical in every key
 // are indistinguishable to every rule below, and stability makes the choice between them depend on
 // the input rather than on the sort's internals.
-func rankBids(in []rankedBid) []rankedBid {
+func rankBids(strategyID string, in []rankedBid) ([]rankedBid, error) {
 	out := make([]rankedBid, len(in))
 	copy(out, in)
 
+	for i := range out {
+		tier, err := checkTier(strategyID, out[i].bid)
+		if err != nil {
+			return nil, err
+		}
+
+		out[i].tier = tier
+	}
+
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].tier != out[j].tier {
+			return out[i].tier > out[j].tier
+		}
+
 		if out[i].rank != out[j].rank {
 			return out[i].rank > out[j].rank
 		}
@@ -267,16 +294,23 @@ func rankBids(in []rankedBid) []rankedBid {
 		return out[i].bid.AccountID < out[j].bid.AccountID
 	})
 
-	return out
+	return out, nil
 }
 
-// tiedAtTop is how many leading bids share the whole deterministic key — rank, amount and placement
-// time. It is the count settleHighest rolls between, and it is 1 for every ordinary auction.
+// tiedAtTop is how many leading bids share the whole deterministic key — rung, rank, amount and
+// placement time. It is the count settleHighest rolls between, and it is 1 for every ordinary
+// auction.
+//
+// THE RUNG IS PART OF THE KEY, and it is the part that decides whether a coin is flipped at all. Two
+// bids equal in amount and in the microsecond are genuinely equal only if they are on the same rung;
+// a main and an alt who bid the same number in the same instant are not tied, the main has won, and a
+// counter that omitted the rung would roll for it.
 func tiedAtTop(ranked []rankedBid) int {
 	n := 1
 
 	for ; n < len(ranked); n++ {
-		if ranked[n].rank != ranked[0].rank ||
+		if ranked[n].tier != ranked[0].tier ||
+			ranked[n].rank != ranked[0].rank ||
 			ranked[n].bid.AmountCp != ranked[0].bid.AmountCp ||
 			ranked[n].bid.PlacedAt != ranked[0].bid.PlacedAt {
 			break
@@ -286,17 +320,88 @@ func tiedAtTop(ranked []rankedBid) int {
 	return n
 }
 
-// tiedOnRank is how many leading bids share the RANK alone, whatever else differs.
+// tiedOnAmount is how many leading bids share the rung, the rank and the amount, whatever their
+// placement times. It is what the trace reads to say WHICH step of the chain actually decided the
+// item: one means the amount did, more than one means the chain ran on past it.
+func tiedOnAmount(ranked []rankedBid) int {
+	n := 1
+
+	for ; n < len(ranked); n++ {
+		if ranked[n].tier != ranked[0].tier ||
+			ranked[n].rank != ranked[0].rank ||
+			ranked[n].bid.AmountCp != ranked[0].bid.AmountCp {
+			break
+		}
+	}
+
+	return n
+}
+
+// tiedOnTier is how many leading bids stand on the WINNING RUNG, and lowerRungs is how many stand
+// below it.
+//
+// Both are prefix counts for the reason the tie counters are: rankBids compares the rung first, so
+// the winning rung's bids are a contiguous run at the head of the slice. They exist for the two rules
+// that rank ACROSS the ladder rather than partitioning on it — `relative_bid` and `roll` — which
+// still have to say what the ladder decided and must not describe a winner as the largest share or
+// the highest roll of a set it was only the largest of on its own rung.
+func tiedOnTier(ranked []rankedBid) int {
+	n := 1
+
+	for ; n < len(ranked); n++ {
+		if ranked[n].tier != ranked[0].tier {
+			break
+		}
+	}
+
+	return n
+}
+
+func lowerRungs(ranked []rankedBid) int {
+	if len(ranked) == 0 {
+		return 0
+	}
+
+	return len(ranked) - tiedOnTier(ranked)
+}
+
+// tierCountsOf tallies ranked bids by rung, highest first — the disclosure shape, for the two rules
+// that do not go through resolveTier.
+//
+// IT REQUIRES A RANKED SLICE, which is what lets it group by comparing against the previous entry
+// rather than by building a map: rankBids has already put each rung's bids in one contiguous run, and
+// a map would put the ladder's order at the mercy of Go's map iteration — P8's classic failure.
+func tierCountsOf(ranked []rankedBid) []TierCount {
+	out := make([]TierCount, 0, len(Tiers()))
+
+	for _, r := range ranked {
+		tier := tierOf(r.bid)
+
+		if n := len(out); n > 0 && out[n-1].Tier == tier {
+			out[n-1].Bids++
+
+			continue
+		}
+
+		out = append(out, TierCount{Tier: tier, Bids: 1})
+	}
+
+	return out
+}
+
+// tiedOnRank is how many leading bids share the rung and the RANK alone, whatever else differs.
 //
 // It is a different question from tiedAtTop and `roll` is why: two raiders who both rolled 97 are
 // tied, and which of them entered the session first has nothing to do with it. An auction settles a
 // tie; a roll-off does not — "a re-roll on a tie is a new round, not an edit"
-// (docs/guides/choosing-a-dkp-system.md).
+// (docs/guides/choosing-a-dkp-system.md). The rung is in the key for tiedAtTop's reason: a main who
+// rolled 97 and an alt who rolled 97 are not tied, and a round that declared them tied would send a
+// guild into a re-roll the ladder had already settled.
 func tiedOnRank(ranked []rankedBid) int {
 	n := 1
 
 	for ; n < len(ranked); n++ {
-		if ranked[n].rank != ranked[0].rank {
+		if ranked[n].tier != ranked[0].tier || ranked[n].rank != ranked[0].rank {
 			break
 		}
 	}
@@ -324,6 +429,81 @@ func settleHighest(ctx Ctx, ranked []rankedBid) (rankedBid, *int64) {
 	seed := ctx.Rng().Seed()
 
 	return ranked[ctx.Rng().IntN(tied)], &seed
+}
+
+// auctionTrace is the tie-break chain an auction actually walked, in order, ready to be written onto
+// the resolution.
+//
+// IT RECORDS THE STEPS THAT WERE REACHED, NOT THE STEPS THAT EXIST. A trace listing every step of
+// docs/guides/auctions.md's chain with "not reached" against five of them is a form; a trace that
+// stops where the item was decided is an answer. The caller appends the price step, because what the
+// winner pays is the pay rule's sentence and this function does not know the pay rule.
+//
+// THE ONLY AMOUNT IT NAMES IS THE WINNING ONE. That number is revealed at `closing` and is what the
+// winner pays; every other bid's value stays out of a resolution officers paste into chat
+// (docs/guides/auctions.md). The counts are safe and are the point: "3 of the 4 bids in main stood at
+// 1000" is what makes a seeded roll explicable months later without republishing anybody's number.
+func auctionTrace(
+	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
+	seed *int64,
+) []ResolutionStep {
+	trace := []ResolutionStep{
+		{
+			Kind: ResolutionStepEligibility,
+			Detail: fmt.Sprintf("%d of the %d bids placed cleared the minimum of %d centipoints",
+				eligible, placed, minimum),
+		},
+		phase.step(),
+	}
+
+	atAmount := tiedOnAmount(ordered)
+	if atAmount == 1 {
+		return append(trace, ResolutionStep{
+			Kind: ResolutionStepAmount,
+			Detail: fmt.Sprintf(
+				"the highest bid in tier %s is %d centipoints and no other bid there matches it",
+				phase.tier, ordered[0].bid.AmountCp),
+		})
+	}
+
+	trace = append(trace, ResolutionStep{
+		Kind: ResolutionStepAmount,
+		Detail: fmt.Sprintf("%d of the %d bids in tier %s stand at %d centipoints, the highest there",
+			atAmount, len(ordered), phase.tier, ordered[0].bid.AmountCp),
+	})
+
+	if seed == nil {
+		return append(trace, ResolutionStep{
+			Kind:   ResolutionStepBidSequence,
+			Detail: fmt.Sprintf("one of those %d bids was placed first and takes the item", atAmount),
+		})
+	}
+
+	return append(trace, ResolutionStep{
+		Kind: ResolutionStepSeededRoll,
+		Detail: fmt.Sprintf(
+			"%d bids are equal in tier, amount and the microsecond they were placed; a roll from "+
+				"seed %d settled it, and re-running that seed settles it the same way",
+			tiedAtTop(ordered), *seed),
+	})
+}
+
+// rotResolution is the settlement of an item nobody legally bid on: no winner, no tier, and the one
+// trace step there was anything to record.
+//
+// A ROT IS AN OUTCOME AND NOT A FAILURE (docs/guides/auctions.md), so it carries the same artefacts
+// every other outcome does — an officer looking at a session that awarded nothing has the same
+// question about it, and "12 bids placed, none of them legal" is the answer. Shared between the two
+// auctions because their wording was already identical, and two copies of a sentence are two
+// sentences that can stop agreeing.
+func rotResolution(placed int, minimum core.Centipoints) Resolution {
+	reason := fmt.Sprintf("no bid of the %d placed reached the minimum of %d centipoints",
+		placed, minimum)
+
+	return Resolution{
+		Reason: reason,
+		Trace:  []ResolutionStep{{Kind: ResolutionStepEligibility, Detail: reason}},
+	}
 }
 
 // eligibleBids drops the bids a settlement may not award to: anything below the session's minimum.
@@ -370,7 +550,8 @@ func sessionMinimum(s Session, configuredCp core.Centipoints) core.Centipoints {
 }
 
 // checkBidIdentity rejects the bid shapes no strategy has a defensible answer for: one that names no
-// bidder, one whose bidder is not the account being validated, and one from a system account.
+// bidder, one whose bidder is not the account being validated, one from a system account, and one
+// whose recorded tier is not on the ladder.
 //
 // THE BID AND THE ACCOUNT MUST AGREE. ValidateBid is handed both — the account whose eligibility is
 // being checked and the bid being placed — and nothing in the types makes them the same account. A
@@ -396,6 +577,16 @@ func checkBidIdentity(strategyID string, acct AccountRef, bid Bid) error {
 		return fmt.Errorf(
 			"%s: account %s is a system account; the four system accounts are counterparties, never "+
 				"bidders: %w", strategyID, acct.ID, ErrInvalidEvent)
+	}
+
+	// THE RUNG IS CHECKED WHERE THE BID IS ACCEPTED, not only where it is settled. resolveTier and
+	// rankBids both refuse a tier nobody can rank — guessing it low is how a main loses an item to an
+	// alt — and a session that discovered that at `closing`, with the item on the floor and the
+	// bidders waiting, would be a session that should have refused the bid two hours earlier. What
+	// this cannot check is whether the tier is the RIGHT one: that is derived from the bidding
+	// character by whoever accepts the bid, and a planner cannot see the roster (tier.go).
+	if _, err := checkTier(strategyID, bid); err != nil {
+		return err
 	}
 
 	return nil

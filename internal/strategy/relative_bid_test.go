@@ -139,6 +139,37 @@ func TestRelativeBid_SettleAuction_TheLargerShareWinsWhilePayingLess(t *testing.
 	require.Contains(t, res.Reason, "5500")
 }
 
+// TestRelativeBid_SettleAuction_TheLadderOutranksTheShare (#224): a main who commits a tenth of their
+// bank takes it from an alt who commits all of theirs.
+//
+// This strategy does not partition on the rung the way the two auctions do — a share is not a price
+// and there is no second-price rule to keep inside one — but the ordering it settles by is rankBids',
+// which compares the rung first. So "the largest share" is only ever the largest share ON THE WINNING
+// RUNG, and where a lower rung holds a bid the resolution says which and how many, naming no share
+// and no amount.
+func TestRelativeBid_SettleAuction_TheLadderOutranksTheShare(t *testing.T) {
+	t.Parallel()
+
+	ctx := newCtx(t, 2, 0, `{"max_bid_bp":10000}`)
+	ctx.balances[acct(0)] = 90_000
+	ctx.balances[acct(1)] = 50_000
+
+	res, err := strategy.RelativeBid{}.SettleAuction(ctx,
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+		[]strategy.Bid{
+			{AccountID: acct(0), AmountCp: 90_000, PlacedAt: fixedNow, Tier: strategy.TierAlt},
+			{AccountID: acct(1), AmountCp: 5_000, PlacedAt: fixedNow, Tier: strategy.TierMain},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 5_000}}, res.Winners,
+		"1000 bp on the winning rung beats the alt's whole bank")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Contains(t, res.Reason, "tier main takes the item ahead of 1 bid(s) on lower rungs")
+	require.NotContains(t, res.Reason, "10000",
+		"the count above a bidder is disclosable and the shares below them are not")
+}
+
 // TestRelativeBid_SettleAuction_ResolvesAgainstTheFrozenBalance is the rule the strategy exists for.
 //
 // Session.SeqAtOpen is the seq every balance in a settlement is read at, POSITIONALLY. Resolving

@@ -32,8 +32,14 @@ import (
 // of the number; the number is the money.
 //
 // WHAT LANDS HERE IS THE ARITHMETIC, NOT THE AUCTION: the state machine, the reveal, anti-snipe and
-// holds are Phase 6 (docs/guides/auctions.md), and tier-aware resolution is a Phase 1 deliverable of
-// its own (ROADMAP item 12, #224).
+// holds are Phase 6 (docs/guides/auctions.md).
+//
+// THE LADDER OUTRANKS THE SHARE, as it outranks every other ranking in this family (#224). This
+// strategy does not partition on the tier the way the two auctions do — a share is not a price and
+// there is no second-price rule here to keep inside a rung — but the ordering it settles by comes
+// from rankBids, which compares the rung first. So a main who committed 10% of their bank takes the
+// item from an alt who committed all of theirs, and a recorded tier nobody can rank stops the
+// settlement rather than being ranked at the bottom.
 
 // The compile-time proof that the implementation matches the interface.
 var _ PointStrategy = RelativeBid{}
@@ -378,7 +384,12 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 		}, nil
 	}
 
-	winner, seed := settleHighest(ctx, rankBids(ranked))
+	ordered, err := rankBids(relativeBidID, ranked)
+	if err != nil {
+		return Resolution{}, err
+	}
+
+	winner, seed := settleHighest(ctx, ordered)
 
 	reason := fmt.Sprintf(
 		"largest share of a balance frozen at seq %d: %d bp, committing %d centipoints",
@@ -388,14 +399,24 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 			reason, ignored)
 	}
 
+	// "The largest share" is only true within the rung that took the item, so where a lower one holds
+	// a bid the sentence says which and how many. It names no share and no amount: the count above a
+	// bidder is disclosable and the values below them are not (docs/guides/auctions.md).
+	if below := lowerRungs(ordered); below > 0 {
+		reason = fmt.Sprintf("tier %s takes the item ahead of %d bid(s) on lower rungs; %s",
+			tierOf(winner.bid), below, reason)
+	}
+
 	if seed != nil {
 		reason += ", after a seeded roll between the bids tied at that share"
 	}
 
 	return Resolution{
-		Winners: []Allocation{{AccountID: winner.bid.AccountID, AmountCp: winner.bid.AmountCp}},
-		Reason:  reason,
-		RngSeed: seed,
+		Winners:     []Allocation{{AccountID: winner.bid.AccountID, AmountCp: winner.bid.AmountCp}},
+		Reason:      reason,
+		RngSeed:     seed,
+		WinningTier: tierOf(winner.bid),
+		TierCounts:  tierCountsOf(ordered),
 	}, nil
 }
 

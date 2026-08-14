@@ -404,11 +404,16 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 		rolled = append(rolled, rankedBid{bid: b, rank: cfg.RollMin + int64(ctx.Rng().IntN(cfg.faces()))})
 	}
 
-	ordered := rankBids(rolled)
+	ordered, err := rankBids(rollID, rolled)
+	if err != nil {
+		return Resolution{}, err
+	}
 
 	// tiedOnRank rather than tiedAtTop: two entrants who rolled the same number are tied, whatever
 	// else differs between their entries. An entry carries no amount and its placement time has
-	// nothing to do with a die.
+	// nothing to do with a die. THE RUNG IS STILL PART OF THAT KEY (#224): a main and an alt who both
+	// rolled 97 are not tied, the ladder settled it, and a round that called for a re-roll there would
+	// re-open a question the guild's own rules had already answered.
 	if tied := tiedOnRank(ordered); tied > 1 {
 		return Resolution{
 			Reason: fmt.Sprintf(
@@ -419,11 +424,23 @@ func (s Roll) SettleAuction(ctx Ctx, _ Session, bids []Bid) (Resolution, error) 
 		}, nil
 	}
 
+	// THE ROLL THAT WON IS THE HIGHEST ON THE WINNING RUNG, and the sentence has to say so. Everybody
+	// entered rolls — the draws are per entrant, in account order, which is what makes the round
+	// replayable — but a lower rung cannot take the item whatever it rolled. "Highest of 6 rolls: 5"
+	// with a 97 sitting in `alt` would read as a misread die rather than as the ladder.
+	reason := fmt.Sprintf("highest of %d rolls of %d–%d: %d",
+		tiedOnTier(ordered), cfg.RollMin, cfg.RollMax, ordered[0].rank)
+	if below := lowerRungs(ordered); below > 0 {
+		reason = fmt.Sprintf("%s; %d entrant(s) on lower rungs could not win it whatever they rolled",
+			reason, below)
+	}
+
 	return Resolution{
-		Winners: []Allocation{{AccountID: ordered[0].bid.AccountID, AmountCp: cfg.WinCostCp}},
-		Reason: fmt.Sprintf("highest of %d rolls of %d–%d: %d",
-			len(entrants), cfg.RollMin, cfg.RollMax, ordered[0].rank),
-		RngSeed: &seed,
+		Winners:     []Allocation{{AccountID: ordered[0].bid.AccountID, AmountCp: cfg.WinCostCp}},
+		Reason:      reason,
+		RngSeed:     &seed,
+		WinningTier: tierOf(ordered[0].bid),
+		TierCounts:  tierCountsOf(ordered),
 	}, nil
 }
 

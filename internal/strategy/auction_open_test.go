@@ -164,6 +164,236 @@ func TestAuctionOpen_SettleAuction_HighestBidWinsAndPaysIt(t *testing.T) {
 	require.Contains(t, res.Reason, "20000")
 }
 
+// tieredOpenConfig is the pool an auction with a working ladder actually runs: a minimum of 5.00 and
+// an increment of 1.00 (docs/guides/auctions.md).
+//
+// THE NUMBERS ARE SMALL BY DESIGN AND THAT IS THE POINT. When mains only compete with mains, bids land
+// in single or low double digits — the whole three-figure economy of the old scheme was mains bidding
+// against alts with a bank behind them. A fixture showing a three-figure main-tier price is modelling
+// the system this deliverable replaced.
+const tieredOpenConfig = `{"min_bid_cp":500,"increment_cp":100}`
+
+// TestAuctionOpen_SettleAuction_ATenPointMainBeatsAThreeHundredAndFiftyPointAlt is the single most
+// consequential rule in the product, in one assertion (#224, docs/guides/auctions.md).
+//
+// The alt's 350.00 is the larger number by a factor of thirty-five and it is NEVER COMPARED against
+// the main's 10.00: the first phase finds the highest rung holding an eligible bid, that rung takes
+// the item, and the amount comparison happens only among the bids standing on it. Inverting this is
+// worse than not implementing it, which is why #195 shipped the auctions without a tier rather than
+// with an approximated one.
+func TestAuctionOpen_SettleAuction_ATenPointMainBeatsAThreeHundredAndFiftyPointAlt(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, tieredOpenConfig), strategy.Session{
+		ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+	}, []strategy.Bid{
+		{AccountID: acct(0), AmountCp: 35_000, PlacedAt: fixedNow, Tier: strategy.TierAlt},
+		{
+			AccountID: acct(1), AmountCp: 1_000, PlacedAt: fixedNow.Add(1_000_000_000),
+			Tier: strategy.TierMain,
+		},
+		{
+			AccountID: acct(2), AmountCp: 28_000, PlacedAt: fixedNow.Add(2_000_000_000),
+			Tier: strategy.TierAlt,
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []strategy.Allocation{{AccountID: acct(1), AmountCp: 1_000}}, res.Winners,
+		"the main pays their own 10.00 and the two alts are not in the comparison at all")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Nil(t, res.RngSeed, "the ladder decided it outright")
+	require.Contains(t, res.Reason, "tier main takes the item ahead of 2 bid(s) on lower rungs",
+		"the losing bidder arrives to argue about exactly this sentence")
+	require.NotContains(t, res.Reason, "35000",
+		"a resolution is pasted into guild chat and never republishes a losing bid's amount")
+}
+
+// TestAuctionOpen_SettleAuction_TheWholeLadderIsOrdered walks it rung by rung, with the amounts
+// INVERTED against the order: whoever is highest on the ladder has bid the least.
+//
+// One assertion per rung rather than one for `main`, because the ordering is what canonical §5 calls
+// the one enum whose declaration order is semantic — and an implementation that special-cased `main`
+// and compared the rest by amount would pass a test that only ever checks the top of the ladder.
+func TestAuctionOpen_SettleAuction_TheWholeLadderIsOrdered(t *testing.T) {
+	t.Parallel()
+
+	ladder := strategy.Tiers()
+	require.Equal(t, []string{"main", "main_offspec", "alt", "anyone"}, ladder,
+		"the order IS the rule (canonical §5); a reordering here is a change to who wins items")
+
+	for cut := range ladder {
+		present := ladder[cut:]
+
+		t.Run(present[0], func(t *testing.T) {
+			t.Parallel()
+
+			bids := make([]strategy.Bid, 0, len(present))
+			for i, tier := range present {
+				bids = append(bids, strategy.Bid{
+					// The lower the rung, the larger the bid: 5.00 for the top one present, then
+					// 105.00, 205.00, 305.00.
+					AccountID: acct(i), AmountCp: core.Centipoints(500 + i*10_000),
+					PlacedAt: fixedNow, Tier: tier,
+				})
+			}
+
+			res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, tieredOpenConfig),
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, bids)
+
+			require.NoError(t, err)
+			require.Equal(t, present[0], res.WinningTier)
+			require.Equal(t, acct(0), res.Winners[0].AccountID,
+				"the highest rung present wins on the smallest bid in the session")
+			require.Equal(t, core.Centipoints(500), res.Winners[0].AmountCp)
+			require.Len(t, res.TierCounts, len(present),
+				"every rung holding an eligible bid is counted, and no rung that holds none")
+			require.Equal(t, strategy.TierCount{Tier: present[0], Bids: 1}, res.TierCounts[0],
+				"the counts are ordered highest rung first, so the winning tier leads them")
+		})
+	}
+}
+
+// TestAuctionOpen_SettleAuction_TheTraceIsWrittenOntoTheResolution.
+//
+// "The whole trace is written onto the resolution, so an officer can explain an outcome months later
+// without re-deriving it" (docs/guides/auctions.md). The three cases below are the three ways the
+// chain can end once the ladder has run — the amount settled it, the bid sequence settled it, or a
+// seeded roll did — and the trace names which, rather than leaving an officer to infer it from a
+// sentence.
+func TestAuctionOpen_SettleAuction_TheTraceIsWrittenOntoTheResolution(t *testing.T) {
+	t.Parallel()
+
+	main := func(id core.ULID, amount core.Centipoints, at core.Micros) strategy.Bid {
+		return strategy.Bid{AccountID: id, AmountCp: amount, PlacedAt: at, Tier: strategy.TierMain}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		bids  []strategy.Bid
+		want  []strategy.ResolutionStepKind
+		rolls bool
+	}{
+		{
+			name: "the amount settled it",
+			bids: []strategy.Bid{main(acct(0), 1_000, fixedNow), main(acct(1), 500, fixedNow)},
+			want: []strategy.ResolutionStepKind{
+				strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+				strategy.ResolutionStepAmount, strategy.ResolutionStepPrice,
+			},
+		},
+		{
+			name: "the bid sequence settled it",
+			bids: []strategy.Bid{
+				main(acct(0), 1_000, fixedNow.Add(1_000_000_000)), main(acct(1), 1_000, fixedNow),
+			},
+			want: []strategy.ResolutionStepKind{
+				strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+				strategy.ResolutionStepAmount, strategy.ResolutionStepBidSequence,
+				strategy.ResolutionStepPrice,
+			},
+		},
+		{
+			name: "a seeded roll settled it",
+			bids: []strategy.Bid{main(acct(0), 1_000, fixedNow), main(acct(1), 1_000, fixedNow)},
+			want: []strategy.ResolutionStepKind{
+				strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+				strategy.ResolutionStepAmount, strategy.ResolutionStepSeededRoll,
+				strategy.ResolutionStepPrice,
+			},
+			rolls: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// One alt below them, so the tier step has something to record and the eligibility count
+			// is not the same number as the in-tier count.
+			bids := append(tc.bids, strategy.Bid{
+				AccountID: acct(2), AmountCp: 35_000, PlacedAt: fixedNow, Tier: strategy.TierAlt,
+			})
+
+			res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, tieredOpenConfig),
+				strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, bids)
+			require.NoError(t, err)
+
+			require.Equal(t, tc.want, traceKinds(res),
+				"the trace records the steps that were REACHED, in the order the chain runs them")
+
+			if tc.rolls {
+				require.NotNil(t, res.RngSeed)
+				require.Contains(t, res.Trace[3].Detail, "seed",
+					"a roll nobody can replay is the one thing a dispute cannot be settled from")
+			}
+
+			require.Contains(t, res.Trace[0].Detail, "3 bids placed")
+			require.Contains(t, res.Trace[1].Detail, "main")
+			require.NotContains(t, res.Trace[1].Detail, "35000",
+				"the tier step discloses how many bids sit below, never what they were")
+		})
+	}
+}
+
+// traceKinds is the trace's shape without its prose, so a test can assert which steps ran without
+// pinning every sentence in them.
+func traceKinds(res strategy.Resolution) []strategy.ResolutionStepKind {
+	out := make([]strategy.ResolutionStepKind, 0, len(res.Trace))
+	for _, s := range res.Trace {
+		out = append(out, s.Kind)
+	}
+
+	return out
+}
+
+// TestAuctionOpen_SettleAuction_AnUntieredSession_SaysNothingAboutTiers is the other half of the
+// ladder shipping: every session that exists today records no tier at all, because the field is
+// filled in by the bid FSM in Phase 6.
+//
+// Such a session settles on the amount exactly as it did before #224 — every bid stands on `anyone`,
+// so the rung decides nothing — and the resolution does not announce a rung nobody chose. The TRACE
+// still records that the ladder ran and settled nothing, because "tier was not the reason" is a fact
+// worth having written down rather than inferred from a silence.
+func TestAuctionOpen_SettleAuction_AnUntieredSession_SaysNothingAboutTiers(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, tieredOpenConfig), strategy.Session{
+		ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+	}, []strategy.Bid{
+		{AccountID: acct(0), AmountCp: 1_000, PlacedAt: fixedNow},
+		{AccountID: acct(1), AmountCp: 500, PlacedAt: fixedNow},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, acct(0), res.Winners[0].AccountID)
+	require.Equal(t, strategy.TierAnyone, res.WinningTier,
+		"a bid recording no claim to standing stands on the bottom rung, which is what `anyone` means")
+	require.Equal(t, []strategy.TierCount{{Tier: strategy.TierAnyone, Bids: 2}}, res.TierCounts)
+	require.NotContains(t, res.Reason, "tier",
+		"an officer running an untiered session must not be told which rung won it")
+	require.Contains(t, res.Trace[1].Detail, "settled nothing")
+}
+
+// TestAuctionOpen_SettleAuction_ARot_CarriesItsOwnTrace: an item nobody legally bid on has no winner
+// and no rung, and the one question an officer has about it — how many bids there were and what they
+// missed — is answered by the trace rather than by nothing.
+func TestAuctionOpen_SettleAuction_ARot_CarriesItsOwnTrace(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.AuctionOpen{}.SettleAuction(spendCtx(t, tieredOpenConfig), strategy.Session{
+		ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+	}, []strategy.Bid{{
+		AccountID: acct(0), AmountCp: 100, PlacedAt: fixedNow,
+		Tier: strategy.TierMain,
+	}})
+
+	require.NoError(t, err)
+	require.Empty(t, res.Winners)
+	require.Empty(t, res.WinningTier, "no bid was eligible, so no rung took anything")
+	require.Empty(t, res.TierCounts)
+	require.Equal(t, []strategy.ResolutionStepKind{strategy.ResolutionStepEligibility},
+		traceKinds(res))
+}
+
 // TestAuctionOpen_SettleAuction_BidsBelowTheMinimum_AreIgnored, and an auction whose every bid is
 // below it rots rather than failing: an item nobody legally bid on is a rot policy's problem, not a
 // broken settlement.

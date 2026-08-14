@@ -201,6 +201,34 @@ func TestRoll_SettleAuction_HighestRollWinsAndIsReplayable(t *testing.T) {
 // The fixture forces the tie by pigeonhole: twelve entrants over a two-value range. It is
 // deterministic rather than probabilistic — the seed is fixed — and the range is narrow enough that
 // it stays a tie whatever the sequence does.
+// TestRoll_SettleAuction_ALowerRungCannotWinWhateverItRolled (#224).
+//
+// Everybody rolls — the draws are per entrant, in account order, which is what makes the round
+// replayable — and the ladder decides who those rolls are compared between. One main against three
+// alts therefore wins on any face at all, and the reason says so: "highest of 1 roll" with a 97
+// sitting in `alt` would otherwise read as a misread die rather than as the guild's own rule.
+func TestRoll_SettleAuction_ALowerRungCannotWinWhateverItRolled(t *testing.T) {
+	t.Parallel()
+
+	res, err := strategy.Roll{}.SettleAuction(spendCtx(t, rollGoldenConfig),
+		strategy.Session{ID: acct(60)}, []strategy.Bid{
+			{AccountID: acct(0), Tier: strategy.TierAlt},
+			{AccountID: acct(1), Tier: strategy.TierMain},
+			{AccountID: acct(2), Tier: strategy.TierAlt},
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, acct(1), res.Winners[0].AccountID,
+		"the only main takes it whatever the three alts rolled")
+	require.Equal(t, strategy.TierMain, res.WinningTier)
+	require.Equal(t,
+		[]strategy.TierCount{{Tier: strategy.TierMain, Bids: 1}, {Tier: strategy.TierAlt, Bids: 2}},
+		res.TierCounts)
+	require.Contains(t, res.Reason, "highest of 1 rolls",
+		"the roll it was highest of is the winning rung's, not the session's")
+	require.Contains(t, res.Reason, "2 entrant(s) on lower rungs could not win it")
+}
+
 func TestRoll_SettleAuction_ATie_AwardsNobody(t *testing.T) {
 	t.Parallel()
 
