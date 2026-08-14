@@ -18,6 +18,11 @@
 //     sha256 uses effectively the whole hex alphabet, and a digest typed by a human to be replaced
 //     later uses one or two characters.
 //
+// The tree holds exactly one image, so neither of those is ever asked a hard question by the
+// repository itself. The rules they rest on are therefore exercised on fixtures too — a placeholder
+// digest, and a reference whose only colon belongs to a registry port — because a gate whose failure
+// branch has never executed is a gate nobody knows works.
+//
 // Neither test resolves anything against a registry: test/repo runs offline and a gate that needs
 // the network is a gate that fails for the wrong reason. That is a real limit — a pin that is
 // well-formed, varied, and simply wrong (a typo, a digest from another repository) still gets past
@@ -71,7 +76,7 @@ func TestContainerPins_EveryImageRef_CarriesATagAndDigest(t *testing.T) {
 			ref.rel, ref.line, ref.value)
 
 		name, _, _ := strings.Cut(ref.value, "@")
-		require.Containsf(t, name, ":",
+		require.Truef(t, hasTag(name),
 			"%s:%d pins a digest with no tag beside it. The digest is what makes the run reproducible "+
 				"and the tag is what makes it reviewable — `postgres:17-alpine@sha256:…` says which "+
 				"image a reader is looking at, and gives Renovate the tag to resolve the next digest "+
@@ -108,6 +113,62 @@ func TestContainerPins_NoDigest_IsAPlaceholder(t *testing.T) {
 				"about its subject (issue #246). Resolve the real digest:\n"+
 				"  docker manifest inspect <image>:<tag>\n  %s",
 			ref.rel, ref.line, distinctHexDigits(m[1]), ref.value)
+	}
+}
+
+// hasTag reports whether an image name — the part of a reference before `@sha256:` — carries a tag.
+//
+// The tag is separated from the repository by a colon in the LAST path component, and only there. A
+// colon anywhere before the final `/` is a registry PORT, so `registry.example:5000/team/image` is
+// untagged even though it contains a colon; a `strings.Contains` over the whole name calls it tagged
+// and lets exactly the reference this gate exists to reject walk past it (review of PR #251).
+func hasTag(name string) bool {
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+
+	return strings.Contains(name, ":")
+}
+
+// TestContainerPins_TheTagRule_IsNotFooledByARegistryPort is that finding, as a fixture.
+//
+// The tree holds one image and it is `postgres:17-alpine@sha256:…`, so the rule above is never asked
+// the interesting question by the repository itself. It is asked here instead: every case whose
+// colon is in the wrong place, which is the only way this assertion can be wrong in the direction
+// that matters — passing something it was written to fail.
+func TestContainerPins_TheTagRule_IsNotFooledByARegistryPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		image  string
+		tagged bool
+	}{
+		{name: "a tagged official image", image: "postgres:17-alpine", tagged: true},
+		{name: "an untagged official image", image: "postgres", tagged: false},
+		{name: "a tagged image on a host", image: "ghcr.io/prokopto-dev/dragonkillparty:1.0", tagged: true},
+		{name: "an untagged image on a host", image: "ghcr.io/prokopto-dev/dragonkillparty", tagged: false},
+		{
+			name:   "a registry PORT and no tag — the colon that is not one",
+			image:  "registry.example:5000/team/image",
+			tagged: false,
+		},
+		{
+			name:   "a registry port AND a tag",
+			image:  "registry.example:5000/team/image:1.2",
+			tagged: true,
+		},
+		// No slash, so there is no registry half to hold a port: Docker reads `localhost:5000` as the
+		// repository `localhost` at tag `5000`, and a tag is what this rule is looking for.
+		{name: "a bare host:port, which the grammar reads as repo:tag", image: "localhost:5000", tagged: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equalf(t, tc.tagged, hasTag(tc.image), "hasTag(%q)", tc.image)
+		})
 	}
 }
 
