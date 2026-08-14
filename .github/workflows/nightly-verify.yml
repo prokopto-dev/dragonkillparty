@@ -293,7 +293,13 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:17-alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000 # pinned by Renovate docker:pinDigests
+        # The digest is the multi-arch OCI index for postgres:17-alpine (PostgreSQL 17.11), not a
+        # per-platform manifest: the runner pulls whatever architecture it is. It shipped as an
+        # all-zeros PLACEHOLDER and stayed one, so `docker pull` failed before a step ever ran and
+        # this job was red every night for months without once reaching the check it names (#246).
+        # test/repo/container_pins_test.go now fails a placeholder digest, because a pin nobody can
+        # resolve is indistinguishable in a diff from a pin that works.
+        image: postgres:17-alpine@sha256:d4bb0a8c1b7bb2e29f976d099e7bfb9a5d8858cffe9e46b35cd302cd1f1f8168 # pinned by Renovate docker:pinDigests
         env:
           POSTGRES_PASSWORD: dkp
           POSTGRES_DB: dkp_convergence
@@ -307,6 +313,14 @@ jobs:
       - env:
           PGURL: postgres://postgres:dkp@localhost:5432/dkp_convergence?sslmode=disable
         run: make verify-postgres
+        # WHAT THIS RUNS TODAY: nothing. `verify-postgres` is a `notyet` stub that prints
+        # "lands in: post-1.0" and exits 0 — internal/store/pggen and db/migrations-postgres do not
+        # exist yet (ROADMAP 1.3). So the service above is provisioned for a no-op, and fixing the
+        # digest makes this job green without making it a check. Issue #249 tracks the choice
+        # between implementing it and standing the service down until then; it is recorded here
+        # rather than left as a green tick that reads like a passing convergence gate.
+        #
+        # What it will do:
         # 1. build with the CI-only `postgres` tag and assert the compile-time interface assertion
         #    `var _ Queries = (*pggen.Queries)(nil)` still holds
         # 2. apply db/migrations-postgres/ to an empty database

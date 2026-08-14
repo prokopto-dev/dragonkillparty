@@ -365,6 +365,69 @@ func TestMakefile_CacheableRecipes_NameNoGatePackage(t *testing.T) {
 			"parsing is broken, not the Makefile", targets)
 }
 
+// TestMakefile_ShuffleSwitch_RestoresCountOneOnEveryCacheableRecipe is the other half of the
+// expansion the test above pins, and the reason that pin is a claim rather than an evasion.
+//
+// ADR-0020 gave up `-shuffle=on -count=1` on the cacheable lane for the PR path and bought the
+// order-dependence search back as a nightly re-roll, through ONE environment variable and no second
+// code path: `TEST_CACHE_FLAGS := $(if $(DKP_TEST_SHUFFLE),-shuffle=$(DKP_TEST_SHUFFLE) -count=1,)`.
+// Nothing asserted that. A recipe that stopped naming $(TEST_CACHE_FLAGS) — or a variable renamed on
+// one side of the `$(if …)` — would leave `suite / shuffled` running the cacheable lane cached and
+// unshuffled, which is the one thing that job exists to do, and it would still be green.
+//
+// The two expansions are compared to each other rather than to a hardcoded flag list: every
+// invocation that runs WITHOUT `-count=1` by default is exactly the set the switch has to reach, so
+// the complement is derived from the Makefile instead of maintained beside it.
+func TestMakefile_ShuffleSwitch_RestoresCountOneOnEveryCacheableRecipe(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("dry-runs make twice per test target; runs under `make test`")
+	}
+
+	const shuffle = "on"
+
+	checked := 0
+
+	for _, target := range makeTestTargets(t) {
+		byDefault := goTestInvocations(lineContinuation.ReplaceAllString(makeDryRun(t, target), " "))
+		shuffled := goTestInvocations(
+			lineContinuation.ReplaceAllString(makeOutputWithShuffle(t, shuffle, "-n", target), " "))
+
+		require.Lenf(t, shuffled, len(byDefault),
+			"`make -n %s` expanded to %d `go test` invocations with %s unset and %d with it set to %q. "+
+				"The switch must change FLAGS, not the shape of the recipe — ADR-0020's whole argument is "+
+				"that the nightly suite compiles and selects what the PR suite does",
+			target, len(byDefault), shuffleEnv, len(shuffled), shuffle)
+
+		for i, invocation := range byDefault {
+			// Already forced to re-run, or a benchmark that is never cached: neither is what the
+			// switch is for. Same two exemptions the recipe scan above argues.
+			if strings.Contains(invocation, "-count=1") || strings.Contains(invocation, "-bench") {
+				continue
+			}
+
+			for _, want := range []string{"-count=1", "-shuffle=" + shuffle} {
+				require.Containsf(t, shuffled[i], want,
+					"`make %s` runs a cacheable `go test` that %s=%s does not put %s back on, so the "+
+						"nightly `suite / shuffled` job runs it cached and in a fixed order — the two things "+
+						"that job exists to undo (ADR-0020, issue #246). Give the recipe "+
+						"$(TEST_CACHE_FLAGS). Default:\n%s\nWith %s=%s:\n%s",
+					target, shuffleEnv, shuffle, want, strings.TrimSpace(invocation), shuffleEnv, shuffle,
+					strings.TrimSpace(shuffled[i]))
+			}
+
+			checked++
+		}
+	}
+
+	require.NotZero(t, checked,
+		"no cacheable `go test` invocation was found to check the %s switch against — either every "+
+			"recipe now carries -count=1 unconditionally, in which case ADR-0020's cacheable lane is "+
+			"gone and this test and the exemption it guards should go with it, or the dry run is broken",
+		shuffleEnv)
+}
+
 // The two lanes `make test-lanes` prints.
 const (
 	laneGate      = "gate"
@@ -886,22 +949,65 @@ func makeTestTargets(t *testing.T) []string {
 	return targets
 }
 
-// makeDryRun returns the recipe `make -n <target>` would run, fully expanded.
+// shuffleEnv is the one environment variable that changes what a test recipe expands to:
+// `TEST_CACHE_FLAGS := $(if $(DKP_TEST_SHUFFLE),-shuffle=$(DKP_TEST_SHUFFLE) -count=1,)`.
+const shuffleEnv = "DKP_TEST_SHUFFLE"
+
+// makeDryRun returns the recipe `make -n <target>` would run, fully expanded in the DEFAULT
+// configuration — the one whose cacheable lane is an exemption worth checking.
 func makeDryRun(t *testing.T, target string) string {
 	t.Helper()
 
 	return makeOutput(t, "-n", target)
 }
 
-// makeOutput runs make in the repository root and returns its stdout.
+// makeOutput runs make in the repository root and returns its stdout, with $DKP_TEST_SHUFFLE
+// REMOVED from the child's environment.
+//
+// That variable is not a developer's to set here: `suite / shuffled` declares `DKP_TEST_SHUFFLE: on`
+// at the job level, so it reaches this test binary, and every `make` this file starts inherits it
+// from os.Environ(). The expansion then comes back carrying `-shuffle=on -count=1` on the cacheable
+// lane — correct for that job, and the wrong subject for a test about what the cacheable lane runs
+// WITHOUT -count=1. Every invocation matched the -count=1 skip, nothing was resolved, and the
+// nightly failed on the vacuity guard that exists to catch a broken scan (issue #246). Reproducible
+// with the variable alone; the shuffled ORDER was never involved, which is why it survived a
+// sibling-state reading of the failure.
+//
+// So the environment is pinned rather than inherited, and
+// TestMakefile_ShuffleSwitch_PutsCountOneBackOnTheCacheableLane below asserts the other expansion —
+// the pin is a checked claim about two configurations, not a way to look away from one of them.
 func makeOutput(t *testing.T, args ...string) string {
+	t.Helper()
+
+	return makeOutputWithShuffle(t, "", args...)
+}
+
+// makeOutputWithShuffle runs make with $DKP_TEST_SHUFFLE set to shuffle, or unset when it is empty.
+func makeOutputWithShuffle(t *testing.T, shuffle string, args ...string) string {
 	t.Helper()
 
 	cmd := exec.Command("make", append([]string{"--no-print-directory"}, args...)...)
 	cmd.Dir = repoRoot(t)
 
+	// The whole environment minus the one variable, rather than a minimal one: make needs PATH, and
+	// the Makefile's recipes reach for HOME, GOFLAGS and the rest exactly as they do in CI.
+	parent := os.Environ()
+	env := make([]string, 0, len(parent)+1)
+
+	for _, kv := range parent {
+		if !strings.HasPrefix(kv, shuffleEnv+"=") {
+			env = append(env, kv)
+		}
+	}
+
+	if shuffle != "" {
+		env = append(env, shuffleEnv+"="+shuffle)
+	}
+
+	cmd.Env = env
+
 	out, err := cmd.Output()
-	require.NoErrorf(t, err, "make %s\n%s", strings.Join(args, " "), out)
+	require.NoErrorf(t, err, "make %s (%s=%q)\n%s", strings.Join(args, " "), shuffleEnv, shuffle, out)
 
 	return string(out)
 }
