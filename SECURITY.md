@@ -155,9 +155,13 @@ make licence-gate && make govulncheck && make osv-scan
 fetch advisory data over the network, from `vuln.go.dev` and `api.osv.dev` respectively, and
 `make check` is expected to work without connectivity. CI runs each as its own required job.
 
-`make setup` does not install `osv-scanner`: its own `go.mod` requires a Go *patch* release newer
-than the `go 1.26` line this project pins, and CI runs `GOTOOLCHAIN=local`, so coupling the two would
-break the scan for a reason no contributor could act on. CI runs the pinned upstream container action
+`make setup` does not install `osv-scanner`: its own `go.mod` requires a Go *patch* release (1.26.5
+for v2.5.0) and CI runs `GOTOOLCHAIN=local`, so coupling the two would break the scan the day the
+scanner asks for a patch newer than the one this project pins, for a reason no contributor could act
+on. This project pins a patch of its own — `go 1.26.6` in `go.mod`, a **security floor**: five
+reachable standard-library advisories (GO-2026-6218, -6090, -6089, -5972, -5026) are fixed there, and
+`security / govulncheck` is what says so. The two floors are independent cadences that presently
+agree. CI runs the pinned upstream container action
 instead; `make osv-scan` prints the `go install` line for the matching version when the binary is
 absent.
 
