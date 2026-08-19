@@ -38,6 +38,15 @@ import (
 // below is handed the winning rung's bids and nothing else, which is what makes that structural
 // rather than remembered.
 //
+// A BLIND TIE IS AN OUTCOME, NOT A COIN FLIP (#248). Two sealed bids equal in amount on the winning
+// rung are the one case this rule cannot decide from what it collected, and the steps below the
+// amount cannot decide it either: in an auction where nobody saw anybody else's number, submitting
+// first is not evidence of wanting the item more. So the settlement names the tied accounts and
+// awards nobody, and the item is settled BY HAND — a rebid above the tie value, or a pass. All but
+// one of them may pass, so the round ends with a single winner (#247 carries the round; this file
+// carries the arithmetic it starts from). Nothing here ever resolves a tie automatically, which is
+// why this is the one settlement in the family that consumes no randomness on any path.
+//
 // IT IS A SPEND RULE AND IT DOES NOT EARN. PlanAttendance and PlanDecay return ErrUnsupported naming
 // this strategy; a pool holds an earn rule and an over-time rule beside it (ADR-0026).
 
@@ -327,9 +336,23 @@ func (s AuctionSealed) ValidateBid(ctx Ctx, acct AccountRef, bid Bid) error {
 	return checkBidAffordable(ctx, auctionSealedID, acct, bid)
 }
 
-// SettleAuction awards the item to the highest bid, at the price the pay rule names.
+// SettleAuction awards the item to the highest bid, at the price the pay rule names — or names the
+// bidders it could not separate and awards nobody.
 //
 // NO ELIGIBLE BID IS THE ROT CASE, not an error — see AuctionOpen.SettleAuction.
+//
+// AN EQUAL-AMOUNT TIE ON THE WINNING RUNG IS REPORTED AND NEVER RESOLVED (#248). Two bidders who
+// named the same number in a BLIND auction are equal in the only fact the auction collected, and
+// every step left in the chain is noise about them: nobody could see anybody else's bid, so who
+// submitted first is not evidence about who wanted the item more, and a coin flip is not evidence
+// about anything. So the resolution stops, names exactly the tied accounts, and awards nobody.
+//
+// IT IS SETTLED BY HAND, WHICH IS THE GUILD'S RULE AND NOT A DEFERRAL. A tied item is decided by one
+// of the tied bidders bidding MORE than the tie value, or by the others passing (#247 carries the
+// round). There is no flag on this settlement that makes it decide instead — no seeded roll, no
+// "break it for me", no bid sequence — because every one of those is the platform quietly picking a
+// winner among people it has just declared equal. The round terminates without one: each rebid either
+// produces a higher bid or removes a contender, all but one may pass, and a tie of one is not a tie.
 //
 // THE MESSAGE NAMES NO LOSING AMOUNT. A resolution is read back by an officer and pasted into chat,
 // and a second-price reason that said "285, the runner-up's 280 plus 5" would publish a losing sealed
@@ -363,24 +386,100 @@ func (s AuctionSealed) SettleAuction(ctx Ctx, session Session, bids []Bid) (Reso
 		return Resolution{}, err
 	}
 
-	winner, seed := settleHighest(ctx, ordered)
-
-	price, reason := cfg.settlePrice(winner, ordered, phase, minimum)
-	if seed != nil {
-		reason += ", after a seeded roll between the bids tied at the top"
+	if tied := tiedAccounts(ordered); len(tied) > 1 {
+		return rebidResolution(len(bids), len(eligible), minimum, phase, ordered, tied), nil
 	}
 
-	trace := append(auctionTrace(len(bids), len(eligible), minimum, phase, ordered, seed),
+	// THE HEAD OF THE ORDER, AND NEVER A ROLL. Every case a roll could have decided is a case the
+	// line above has already returned as a tie: settleHighest draws only when the leading bids span
+	// more than one account, and that is exactly what tiedAccounts reports. What is left here is one
+	// bidder — holding one top bid, or holding several of them, in which case the earliest is the
+	// head and it is still them. So this settlement consumes no randomness at all, which is a
+	// property rather than an accident (TestProperty_AuctionSealed_NeverConsumesRandomness).
+	winner := ordered[0]
+
+	price, reason := cfg.settlePrice(winner, ordered, phase, minimum)
+
+	trace := append(auctionTrace(len(bids), len(eligible), minimum, phase, ordered, nil),
 		ResolutionStep{Kind: ResolutionStepPrice, Detail: reason})
 
 	return Resolution{
 		Winners:     []Allocation{{AccountID: winner.bid.AccountID, AmountCp: price}},
 		Reason:      phase.explain(reason),
-		RngSeed:     seed,
 		WinningTier: phase.tier,
 		TierCounts:  phase.counts,
 		Trace:       trace,
 	}, nil
+}
+
+// rebidResolution is the settlement of a sealed auction whose top bids tied: no winner, no price,
+// and the parties a rebid round has to be opened to (#248).
+//
+// IT AWARDS NOBODY AND IS NOT A FAILURE, which is the same shape rotResolution has and for a
+// stronger reason: a rot is an item nobody legally wanted, and this is an item two people wanted
+// equally. Both are outcomes an officer has to be able to read and act on, so both carry a reason and
+// the trace that produced them.
+//
+// IT NAMES NO RUNG AS THE WINNER and no tier counts, exactly as a rot does not: WinningTier is what
+// TOOK the item, and nothing has. The rung is on the Tie, where it belongs — it is the rung the rebid
+// will be decided on, and the round is opened from the tie rather than from the counts.
+//
+// THE ONLY AMOUNT IT NAMES IS THE TIED ONE, which is the winning amount: revealed at `closing`, paid
+// by whoever ends up taking the item, and the number a rebid has to beat. Every losing bid below it
+// stays sealed, as it does on every other path out of this file.
+func rebidResolution(
+	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
+	tied []core.ULID,
+) Resolution {
+	tie := Tie{
+		Tier:          phase.tier,
+		AmountCp:      ordered[0].bid.AmountCp,
+		Accounts:      tied,
+		RebidRequired: true,
+	}
+
+	// THE SENTENCE SAYS WHICH MOVES EXIST, and at the very top of the range one of them does not: no
+	// amount above the tie is representable, so the round is passes-only and telling an officer to
+	// ask for a higher bid would be telling them to ask for a number nobody can enter. Both wordings
+	// end the same way, because the pass budget is what terminates the round either way.
+	floor, canRebid := tie.MinRebidCp()
+
+	reason := fmt.Sprintf(
+		"%d bidders in tier %s are tied at %d centipoints; nothing settles it automatically — no bid "+
+			"above that is representable, so the item goes to the last of those bidders who has not "+
+			"passed, and every one of them but the last may pass",
+		len(tied), phase.tier, tie.AmountCp)
+
+	rebid := fmt.Sprintf(
+		"the bids at the top of tier %s are held by %d different bidders, and in a sealed auction "+
+			"nothing below the amount separates them; no amount above %d centipoints can be bid, so "+
+			"the item goes to the last of those %d who has not passed, and the bid sequence and the "+
+			"seeded roll were not run and never will be",
+		phase.tier, len(tied), tie.AmountCp, len(tied))
+
+	if canRebid {
+		reason = fmt.Sprintf(
+			"%d bidders in tier %s are tied at %d centipoints; nothing settles it automatically — a "+
+				"rebid round among exactly those bidders does, at %d centipoints or more, and every one "+
+				"of them but the last may pass instead",
+			len(tied), phase.tier, tie.AmountCp, floor)
+
+		rebid = fmt.Sprintf(
+			"the bids at the top of tier %s are held by %d different bidders, and in a sealed "+
+				"auction nothing below the amount separates them; the item goes to whichever of "+
+				"those %d bids at least %d centipoints, or to the last of them who has not passed, "+
+				"so the bid sequence and the seeded roll were not run and never will be",
+			phase.tier, len(tied), len(tied), floor)
+	}
+
+	trace := append(auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered),
+		ResolutionStep{Kind: ResolutionStepRebidRequired, Detail: rebid})
+
+	return Resolution{
+		Reason: phase.explain(reason),
+		Tie:    &tie,
+		Trace:  trace,
+	}
 }
 
 // settlePrice is what the winner pays, and the sentence that explains it.

@@ -457,7 +457,15 @@ func (s RelativeBid) SettleAuction(ctx Ctx, session Session, bids []Bid) (Resolu
 				"%d of the %d bids in tier %s committed the same %d bp of a balance frozen at seq %d, "+
 					"the largest share there",
 				atShare, len(ordered), phase.tier, winner.rank, session.SeqAtOpen),
-		}, sequenceOrRoll(ordered, seed))
+		})
+
+		// AND THE STEP BELOW IS WRITTEN ONLY IF ANYBODY WAS THERE TO COMPARE (AO review of #248). The
+		// share step counts BIDS, and equal top rows can be one bidder who committed the same fraction
+		// twice — a raise and its replacement. There is no bid sequence between a bidder and themselves
+		// and no roll to hold, so the trace stops at the share rather than claiming a tiebreak ran.
+		if contested(ordered) {
+			trace = append(trace, sequenceOrRoll(ordered, seed))
+		}
 	}
 
 	trace = append(trace, ResolutionStep{

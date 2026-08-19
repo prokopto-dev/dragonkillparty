@@ -229,14 +229,21 @@ func (c *fakeCtx) Allocate(
 }
 
 // countingRng wraps the real seeded Rng and counts every call. fixed_price must never reach for it.
+//
+// It also records the SIZE of every draw, which is the only way to see the difference between a
+// roll-off held between two bidders and one held between three bid rows two of which are the same
+// person (AO review of #248): both return a legal winner, and only the argument to IntN says which
+// odds were offered.
 type countingRng struct {
 	inner *ledger.Rng
 	calls int
+	draws []int
 }
 
 func (r *countingRng) Seed() int64 { r.calls++; return r.inner.Seed() }
 func (r *countingRng) IntN(n int) int {
 	r.calls++
+	r.draws = append(r.draws, n)
 
 	return r.inner.IntN(n)
 }

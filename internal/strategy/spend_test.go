@@ -490,10 +490,13 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 
 			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(1))}
 
-			// The two bids are identical but for the account, so the auctions tie at the top and roll:
-			// the seed must then be reported, because an unrecorded coin flip is the one thing a loot
-			// dispute cannot be settled from. `roll` instead rolls per entrant and can legitimately
-			// tie, which awards nobody — that case is its own file's.
+			// The two bids are identical but for the account, so every rule here ties at the top and
+			// the three answers to that are the three branches below: `auction_open` and
+			// `relative_bid` roll and report the seed, because an unrecorded coin flip is the one
+			// thing a loot dispute cannot be settled from; `roll` rolls per entrant and a tie is a new
+			// round, which awards nobody; and `auction_sealed` reports the tie and asks for a rebid
+			// among exactly the tied bidders (#248), which also awards nobody and is the case its own
+			// file covers in full.
 			res, err := tc.s.SettleAuction(spendCtx(t, tc.config), strategy.Session{
 				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
 			}, bids)
@@ -501,8 +504,20 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 			require.NotEmpty(t, res.Reason)
 
 			if len(res.Winners) == 0 {
-				require.Equal(t, "roll", tc.id,
-					"only a roll-off may award nobody, and only because a re-roll is a new round")
+				require.Contains(t, []string{"roll", "auction_sealed"}, tc.id,
+					"a settlement awards nobody only for a reason its own rule states: a re-roll is a "+
+						"new round, and a blind tie is a rebid")
+
+				if tc.id == "auction_sealed" {
+					require.NotNil(t, res.Tie, "a sealed auction that awards nobody names why")
+					require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts,
+						"the rebid is opened to exactly the tied bidders")
+					require.True(t, res.Tie.RebidRequired)
+					require.Nil(t, res.RngSeed, "a reported tie consumes no randomness")
+
+					return
+				}
+
 				require.NotNil(t, res.RngSeed, "the round is replayable or it is not a round")
 
 				return
@@ -511,6 +526,105 @@ func TestSpendStrategies_SettleAuction_AwardsOneWinner(t *testing.T) {
 			require.Len(t, res.Winners, 1)
 			require.Contains(t, []core.ULID{acct(0), acct(1)}, res.Winners[0].AccountID)
 			require.GreaterOrEqual(t, res.Winners[0].AmountCp, core.Centipoints(0))
+		})
+	}
+}
+
+// TestSpendStrategies_SettleAuction_ARepeatedBidder_NeverGetsTwoChances is the family's answer to the
+// AO review of #248, and the four rules answer it four different ways.
+//
+// Bids are append-only and one account may hold several rows, so a settlement that treated rows as
+// contenders would hand a raider who submitted twice a second ticket in the roll-off. Nothing about
+// the outcome shows it — a legal winner comes out either way — so what is asserted is the SIZE of the
+// draw the settlement asked the Rng for, which is the only place the odds are visible.
+//
+// The four mechanisms are deliberately different and all four belong here: the two auctions that roll
+// collapse the tied run to one row per account, `auction_sealed` reports the tie instead of rolling
+// at all, and `roll` refuses the repeated entrant outright because a second entry there is a second
+// die rather than a second row.
+func TestSpendStrategies_SettleAuction_ARepeatedBidder_NeverGetsTwoChances(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := spendCtx(t, tc.config)
+			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(0)), tc.bid(acct(1))}
+
+			res, err := tc.s.SettleAuction(ctx, strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, bids)
+
+			if tc.id == "roll" {
+				require.ErrorIs(t, err, strategy.ErrInvalidEvent,
+					"a repeated entrant is two rolls and twice the chance, and the round refuses it")
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			if tc.id == "auction_sealed" {
+				require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts,
+					"two people are tied, however many rows one of them holds")
+				require.Empty(t, ctx.rng.draws, "a reported tie rolls for nothing")
+
+				return
+			}
+
+			require.Len(t, res.Winners, 1)
+			require.Equal(t, []int{2}, ctx.rng.draws,
+				"the roll-off is drawn between the two tied BIDDERS; over three rows the duplicate "+
+					"bidder would hold two of the three tickets")
+		})
+	}
+}
+
+// TestSpendStrategies_SettleAuction_OneBidderHoldingEveryTiedRow_RecordsNoTiebreak is the other half
+// of the repeated-bidder rule, and it is about the RECORD rather than the odds (AO review of #248).
+//
+// A trace holds the steps that were actually evaluated (Resolution.Trace). Two equal top rows from
+// one account are one bidder who bid the same number twice — a raise and its replacement — so
+// nothing below the rank ran: there is no bid sequence between a bidder and themselves and no roll to
+// hold. A `bid_sequence` line saying "the earliest of them takes the item" would be the resolution
+// asserting a comparison nobody made, in the artefact an officer reads back months later to defend
+// the award.
+func TestSpendStrategies_SettleAuction_OneBidderHoldingEveryTiedRow_RecordsNoTiebreak(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := spendCtx(t, tc.config)
+			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(0))}
+
+			res, err := tc.s.SettleAuction(ctx, strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, bids)
+
+			if tc.id == "roll" {
+				require.ErrorIs(t, err, strategy.ErrInvalidEvent,
+					"a roll refuses the repeated entrant before it draws anything")
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, res.Winners, 1)
+			require.Equal(t, acct(0), res.Winners[0].AccountID)
+
+			for _, step := range res.Trace {
+				require.NotContains(t,
+					[]strategy.ResolutionStepKind{
+						strategy.ResolutionStepBidSequence, strategy.ResolutionStepSeededRoll,
+					}, step.Kind,
+					"nothing below the rank was evaluated, so nothing below the rank is recorded")
+			}
+
+			require.Nil(t, res.RngSeed)
+			require.Empty(t, ctx.rng.draws, "and no roll was held between a bidder and themselves")
 		})
 	}
 }

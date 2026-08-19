@@ -3,6 +3,7 @@ package strategy_test
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,66 @@ type spendPropCase struct {
 // session is the bid session a generated case settles in.
 func (c spendPropCase) session() strategy.Session {
 	return strategy.Session{ID: acct(60), SeqAtOpen: 3, MinAmountCp: c.SessionMinCp}
+}
+
+// untiedBids is the generated case's bids with every tie broken by construction: each amount nudged
+// apart by its index, keeping the order and the rungs the case drew.
+//
+// IT IS WHAT KEEPS THE PRICE PROPERTIES AT FULL STRENGTH. A sealed auction REPORTS an equal-amount
+// tie instead of resolving it, and the generator draws ties deliberately — a shared amount, so that
+// two bids collide — so the properties about what a winner PAYS would quietly stop seeing those
+// cases: they skip a resolution with no winner. Separating the amounts keeps every generated case
+// producing a settlement to check the price arithmetic against, including the shapes that used to tie
+// — a bid at the floor, a bid one increment above another, the whole bank. What the tie itself does
+// is the two tie properties' subject, on the bids as drawn.
+//
+// The nudge is upward and by the INDEX, so it cannot collide with another nudged bid, and it is
+// applied to a copy: a property that reordered the case's own slice would change what the properties
+// after it are running on.
+func (c spendPropCase) untiedBids(sealed bool) []strategy.Bid {
+	out := c.bids(sealed)
+	for i := range out {
+		if out[i].AmountCp > 0 {
+			out[i].AmountCp += core.Centipoints(i)
+		}
+	}
+
+	return out
+}
+
+// tiedInWinningTier is who a sealed settlement must name as tied: the distinct accounts holding the
+// HIGHEST eligible bid on the rung that takes the item, ascending, and fewer than two of them means
+// there is no tie.
+//
+// RESTATED FROM THE ISSUE RATHER THAN TAKEN FROM THE CODE UNDER TEST, like every other expectation in
+// this file. A tie set computed by calling tiedAccounts would agree with the settlement by
+// construction, including when both reach below the winning rung.
+func (c spendPropCase) tiedInWinningTier(bids []strategy.Bid) []core.ULID {
+	inTier := c.inWinningTier(bids)
+
+	var top core.Centipoints
+
+	for _, b := range inTier {
+		if b.AmountCp > top {
+			top = b.AmountCp
+		}
+	}
+
+	out := make([]core.ULID, 0, len(inTier))
+
+	for _, b := range inTier {
+		if b.AmountCp == top && !slices.Contains(out, b.AccountID) {
+			out = append(out, b.AccountID)
+		}
+	}
+
+	slices.Sort(out)
+
+	if len(out) < 2 {
+		return nil
+	}
+
+	return out
 }
 
 // effectiveMinimum is what the floor must actually be: the higher of the two, restated here rather
@@ -736,7 +797,15 @@ func TestProperty_Auctions_AMaximalBidInALowerTierNeverWins(t *testing.T) {
 			{"auction_open", strategy.AuctionOpen{}, c.openConfigJSON(), false},
 			{"auction_sealed", strategy.AuctionSealed{}, c.sealedConfigJSON("second_price"), true},
 		} {
+			// The sealed row separates the amounts so that every case still produces a winner to check
+			// the ladder against: a sealed tie is reported rather than resolved, and a resolution with
+			// no winner has no rung to compare (#248, see untiedBids). The ladder runs ABOVE the amount
+			// either way — a rung is decided before a tie can exist — so this changes which cases reach
+			// the assertion and never what it asserts.
 			bids := c.bids(p.sealed)
+			if p.sealed {
+				bids = c.untiedBids(p.sealed)
+			}
 
 			res, err := p.s.SettleAuction(c.ctx(t, p.config), c.session(), bids)
 			if err != nil {
@@ -815,7 +884,11 @@ func TestProperty_AuctionSealed_SecondPrice_NeverLeavesTheWinningTier(t *testing
 	settled, alone := 0, 0
 
 	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
-		bids := c.bids(true)
+		// Amounts separated so that every case still settles and reaches this arithmetic: a tie is
+		// reported rather than resolved, and there is no price on a resolution that awarded nobody
+		// (#248, see untiedBids). What a tie itself produces is
+		// TestProperty_AuctionSealed_ATieNamesExactlyTheEqualBiddersInTheWinningTier's subject.
+		bids := c.untiedBids(true)
 
 		res, err := strategy.AuctionSealed{}.SettleAuction(
 			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), bids)
@@ -873,6 +946,183 @@ func TestProperty_AuctionSealed_SecondPrice_NeverLeavesTheWinningTier(t *testing
 			"bids sitting below it")
 }
 
+// TestProperty_AuctionSealed_ATieNamesExactlyTheEqualBiddersInTheWinningTier is #248's property, and
+// it is stated in both directions because only one of them is about the tie set.
+//
+// A tie that is REPORTED must name exactly the accounts holding the highest eligible bid on the
+// winning rung — nobody from a lower rung, and nobody on the rung who bid less. And a tie that
+// EXISTS must be reported: the failure this deliverable is about is a settlement that picked one of
+// two equal bidders and said nothing, which every assertion about the tie set passes vacuously.
+//
+// It also pins what a reported tie must NOT do. No winner, because nobody has won; no seed, because
+// the roll is the fallback and nobody asked for it; and no winning tier, because a rung a rebid will
+// be decided on has not taken anything yet.
+func TestProperty_AuctionSealed_ATieNamesExactlyTheEqualBiddersInTheWinningTier(t *testing.T) {
+	t.Parallel()
+
+	ties, decided := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		bids := c.bids(true)
+
+		res, err := strategy.AuctionSealed{}.SettleAuction(
+			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), bids)
+		if err != nil {
+			return err
+		}
+
+		want := c.tiedInWinningTier(bids)
+
+		if len(want) == 0 {
+			if res.Tie != nil {
+				return fmt.Errorf("tier %s has one highest bidder and the settlement named %d as tied",
+					c.winningTier(), len(res.Tie.Accounts))
+			}
+
+			decided++
+
+			return nil
+		}
+
+		if res.Tie == nil {
+			return fmt.Errorf(
+				"%d bidders hold the highest eligible bid in tier %s and the settlement awarded %d "+
+					"winner(s) without naming a tie; a blind tie decided in silence is the whole of #248",
+				len(want), c.winningTier(), len(res.Winners))
+		}
+
+		if !slices.Equal(want, res.Tie.Accounts) {
+			return fmt.Errorf("the tie names %v and the equal bidders in tier %s are %v",
+				res.Tie.Accounts, c.winningTier(), want)
+		}
+
+		if res.Tie.Tier != c.winningTier() {
+			return fmt.Errorf("the tie stands on rung %q and the winning rung is %q",
+				res.Tie.Tier, c.winningTier())
+		}
+
+		if !res.Tie.RebidRequired || res.Tie.MaxPasses() != len(want)-1 {
+			return fmt.Errorf("a tie of %d bidders reports rebid_required=%v and %d permitted passes; "+
+				"every tied bidder may pass and they may not all pass",
+				len(want), res.Tie.RebidRequired, res.Tie.MaxPasses())
+		}
+
+		// The floor the rebid round opens at, which is the amount they tied on: a bidder asked to bid
+		// again may raise or stand, and may never retreat below what they already committed.
+		for _, b := range bids {
+			if slices.Contains(want, b.AccountID) && b.AmountCp > res.Tie.AmountCp {
+				return fmt.Errorf("the tie is recorded at %d and a tied bidder committed %d",
+					res.Tie.AmountCp, b.AmountCp)
+			}
+		}
+
+		if len(res.Winners) > 0 || res.RngSeed != nil || res.WinningTier != "" {
+			return fmt.Errorf(
+				"a reported tie awarded %d winner(s), consumed seed %v and named tier %q; it decides "+
+					"nothing and rolls for nothing", len(res.Winners), res.RngSeed, res.WinningTier)
+		}
+
+		ties++
+
+		return nil
+	})
+
+	require.Positive(t, ties, "no generated session ever tied, so the tie set is unexercised")
+	require.Positive(t, decided,
+		"every generated session tied, so 'a settlement with one top bidder reports no tie' held "+
+			"vacuously")
+}
+
+// TestProperty_AuctionSealed_NeverConsumesRandomness is "a tie is never auto-resolved" stated as the
+// one thing that cannot be true by accident (#248).
+//
+// The rule is a negative — no roll, ever, on any input — and a negative is exactly what an example
+// test cannot establish: it passes on the cases somebody thought of. The Rng is the witness. A
+// settlement that resolved a tie any automatic way would have had to draw from it, and this asserts
+// across every generated session that it never so much as READ the seed, ties included. It is also
+// the load-bearing half of the rebid round's replayability: the pool's randomness is exactly where
+// the next round finds it, because settling a sealed auction never advances it.
+func TestProperty_AuctionSealed_NeverConsumesRandomness(t *testing.T) {
+	t.Parallel()
+
+	tied, decided := 0, 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		ctx := c.ctx(t, c.sealedConfigJSON("second_price"))
+
+		res, err := strategy.AuctionSealed{}.SettleAuction(ctx, c.session(), c.bids(true))
+		if err != nil {
+			return err
+		}
+
+		if ctx.rng.calls != 0 || len(ctx.rng.draws) != 0 || res.RngSeed != nil {
+			return fmt.Errorf(
+				"the settlement made %d call(s) to the Rng and drew %v; a sealed auction decides a tie "+
+					"by hand or not at all, so there is nothing here for a roll to do",
+				ctx.rng.calls, ctx.rng.draws)
+		}
+
+		if res.Tie != nil {
+			tied++
+		} else if len(res.Winners) == 1 {
+			decided++
+		}
+
+		return nil
+	})
+
+	require.Positive(t, tied, "no session ever tied, so the case a roll would have decided is untested")
+	require.Positive(t, decided, "no session ever settled, so the property held vacuously")
+}
+
+// TestProperty_AuctionSealed_ATie_IsAlwaysResolvableByHand is the argument that the rule terminates,
+// which is what "never auto-resolve" has to answer for (#248).
+//
+// A hand-resolved tie ends because each round strictly shrinks the problem: somebody bids above the
+// tie and wins, or somebody passes and the contenders reduce, and all-but-one may pass so the last
+// one takes it. This asserts the two arithmetic facts that argument stands on, over every tie the
+// generator produces: there is a bid that BEATS the tie value (the floor is strictly above it, and it
+// is representable), and the pass budget always leaves exactly one bidder who cannot pass.
+func TestProperty_AuctionSealed_ATie_IsAlwaysResolvableByHand(t *testing.T) {
+	t.Parallel()
+
+	ties := 0
+
+	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
+		res, err := strategy.AuctionSealed{}.SettleAuction(
+			c.ctx(t, c.sealedConfigJSON("second_price")), c.session(), c.bids(true))
+		if err != nil {
+			return err
+		}
+
+		if res.Tie == nil {
+			return nil
+		}
+
+		// A rebid floor that is not strictly above the tie is a round that accepts the tied amount
+		// again — Session.MinAmountCp is a `>=` test — so the same tie comes back for ever. Where no
+		// raise is representable there is no floor at all, and the round is passes-only (AO review);
+		// the pass budget below is what terminates it either way.
+		if floor, canRebid := res.Tie.MinRebidCp(); canRebid && floor <= res.Tie.AmountCp {
+			return fmt.Errorf("a rebid clears %d and the tie stands at %d; standing on the tie value "+
+				"again is what everybody already did and would tie for ever", floor, res.Tie.AmountCp)
+		}
+
+		if res.Tie.MaxPasses() != len(res.Tie.Accounts)-1 || res.Tie.MaxPasses() < 1 {
+			return fmt.Errorf("%d tied bidders may take %d passes; every one of them is offered the "+
+				"pass and one of them has to be left holding the item",
+				len(res.Tie.Accounts), res.Tie.MaxPasses())
+		}
+
+		ties++
+
+		return nil
+	})
+
+	require.Positive(t, ties, "no generated session ever tied, so the round's terminating conditions "+
+		"are unexercised")
+}
+
 // TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution.
 //
 // "The whole trace is written onto the resolution, so an officer can explain an outcome months later
@@ -883,7 +1133,7 @@ func TestProperty_AuctionSealed_SecondPrice_NeverLeavesTheWinningTier(t *testing
 func TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution(t *testing.T) {
 	t.Parallel()
 
-	traced, rotted := 0, 0
+	traced, rotted, tied := 0, 0, 0
 
 	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
 		bids := c.bids(true)
@@ -905,8 +1155,28 @@ func TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution(t *testing.T)
 
 		if len(res.Winners) == 0 {
 			if res.WinningTier != "" || len(res.TierCounts) > 0 {
-				return fmt.Errorf("a rot named tier %q with %d rung(s) counted; nothing was awarded",
-					res.WinningTier, len(res.TierCounts))
+				return fmt.Errorf("a settlement that awarded nobody named tier %q with %d rung(s) "+
+					"counted", res.WinningTier, len(res.TierCounts))
+			}
+
+			// The two ways a sealed auction awards nobody, and their traces differ: a rot never
+			// reached the ladder and stops at `eligibility`, while a reported tie walked the ladder and
+			// the amount and stops at `rebid_required` — the step that says the chain had more to run
+			// and deliberately did not run it (#248).
+			if res.Tie != nil {
+				if last := res.Trace[len(res.Trace)-1]; last.Kind != strategy.ResolutionStepRebidRequired {
+					return fmt.Errorf("a reported tie's trace ends at %q rather than at the step that "+
+						"says why it stopped", last.Kind)
+				}
+
+				tied++
+
+				return nil
+			}
+
+			if len(res.Trace) != 1 || res.Trace[0].Kind != strategy.ResolutionStepEligibility {
+				return fmt.Errorf("a rot recorded %d step(s) ending at %q; nothing below the floor was "+
+					"ever ranked", len(res.Trace), res.Trace[len(res.Trace)-1].Kind)
 			}
 
 			rotted++
@@ -965,6 +1235,7 @@ func TestProperty_Auctions_TheWholeTraceIsWrittenOntoTheResolution(t *testing.T)
 
 	require.Positive(t, traced, "no resolution carried a trace, so the property held vacuously")
 	require.Positive(t, rotted, "no session ever rotted, so the trace on a rot is unexercised")
+	require.Positive(t, tied, "no session ever reported a tie, so the trace on one is unexercised")
 }
 
 // TestProperty_TieredSettlement_AwardsAndReversesExactly extends the invariant suite over the whole
@@ -985,7 +1256,10 @@ func TestProperty_TieredSettlement_AwardsAndReversesExactly(t *testing.T) {
 		s := strategy.AuctionSealed{}
 		config := c.sealedConfigJSON("second_price")
 
-		res, err := s.SettleAuction(c.ctx(t, config), c.session(), c.bids(true))
+		// Amounts separated so that the settle-award-reverse path is walked for every case: a reported
+		// tie has no price to award and nothing to conserve, and skipping those cases would quietly
+		// shrink what this property runs over (#248, see untiedBids).
+		res, err := s.SettleAuction(c.ctx(t, config), c.session(), c.untiedBids(true))
 		if err != nil {
 			return err
 		}
@@ -1056,7 +1330,10 @@ func TestProperty_AuctionSealed_SecondPrice_IsBoundedByTheWinningBidAndTheMinimu
 	settled := 0
 
 	forEachSpendCase(t, func(t *testing.T, c spendPropCase) error {
-		bids := c.bids(true)
+		// Amounts separated here too, and the near-tie they leave is the shape this property most
+		// wants: two bids a few centipoints apart under an increment of at least 25 is exactly the
+		// "runner-up plus one increment exceeds the winning bid" clamp (#248, see untiedBids).
+		bids := c.untiedBids(true)
 		floor := c.effectiveMinimum()
 
 		res, err := strategy.AuctionSealed{}.SettleAuction(

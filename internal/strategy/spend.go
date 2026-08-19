@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
@@ -411,6 +412,94 @@ func tiedOnRank(ranked []rankedBid) int {
 	return n
 }
 
+// tiedAccounts is WHO is tied on the rank: the distinct accounts holding the leading bids that share
+// the rung and the rank, ascending by id (#248).
+//
+// IT IS tiedOnRank COUNTED IN BIDDERS RATHER THAN IN BIDS, and the two differ in exactly the case a
+// tie must not be declared in. Bids are append-only and one account may hold several — a raise, a
+// retraction and its replacement — so two rows at the top can be one person who bid the same number
+// twice. That is a settlement with one bidder in it, and calling it a tie would send a guild into a
+// rebid round against nobody. Two entries here is what a tie is; one is a winner.
+//
+// SORTED, so two replays of the same settlement name the parties in the same order. The tie-break
+// chain's determinism argument applies to the artefact that RECORDS a tie exactly as it does to the
+// steps that break one: a set that came back in bid order would be a resolution whose bytes depended
+// on the order a caller happened to collect its bids in.
+//
+// The caller decides what a tie MEANS — a rebid round for a sealed auction, a submission race for an
+// open one, another round of the same kind for a roll. This function only answers who is in it.
+func tiedAccounts(ranked []rankedBid) []core.ULID {
+	if len(ranked) == 0 {
+		return nil
+	}
+
+	tied := bidPerAccount(ranked[:tiedOnRank(ranked)])
+
+	out := make([]core.ULID, 0, len(tied))
+	for _, r := range tied {
+		out = append(out, r.bid.AccountID)
+	}
+
+	slices.Sort(out)
+
+	return out
+}
+
+// bidPerAccount collapses a run of ranked bids to ONE row per account, keeping each account's first
+// row in the comparator's order.
+//
+// IT IS THE ONE PLACE THIS PACKAGE TURNS BIDS INTO BIDDERS, which is why both callers go through it.
+// A tie is between people: bids are append-only and one account may hold several — a raise, a
+// retraction and its replacement — so a run of equal rows is not a run of equal bidders. Naming the
+// tied parties and rolling between them are the same question asked twice, and two implementations
+// of it are two chances to answer it differently in the one place a settlement is deciding who owns
+// a raid's best drop.
+//
+// THE ORDER IS THE COMPARATOR'S, not the input's: rankBids has already put the run in a total order
+// whose last key is the account id, so each account's kept row and the order they are kept in are
+// both deterministic. A roll drawn over a list that depended on the input order would be a roll that
+// depended on a query plan.
+func bidPerAccount(ranked []rankedBid) []rankedBid {
+	out := make([]rankedBid, 0, len(ranked))
+
+	for _, r := range ranked {
+		if !slices.ContainsFunc(out, func(kept rankedBid) bool {
+			return kept.bid.AccountID == r.bid.AccountID
+		}) {
+			out = append(out, r)
+		}
+	}
+
+	return out
+}
+
+// contested reports whether the top of the order is held by MORE THAN ONE BIDDER — the question
+// every step below the rank is an answer to (AO review of #248).
+//
+// IT IS THE GATE ON THE WHOLE BOTTOM OF THE CHAIN. A run of equal top rows can be one person who bid
+// the same number twice, and there is no bid sequence to compare and no roll to hold between a
+// bidder and themselves: they simply won. The trace records the steps that were EVALUATED
+// (Resolution.Trace), so a `bid_sequence` line saying "the earliest of them takes the item" written
+// for a comparison that never happened is a resolution asserting a decision nobody made — which is
+// exactly the sort of plausible line an officer would later have to defend.
+//
+// A ROW COUNT CANNOT ANSWER IT, which is why this exists rather than a comparison against
+// tiedOnRank: that counts rows, and rows are not people.
+func contested(ranked []rankedBid) bool {
+	return len(tiedAccounts(ranked)) > 1
+}
+
+// tiedBiddersAtTop is how many BIDDERS the roll would be drawn between — tiedAtTop counted in people
+// rather than in rows. It is what the trace reports, so that the sentence describes the draw that
+// actually happened.
+func tiedBiddersAtTop(ranked []rankedBid) int {
+	if len(ranked) == 0 {
+		return 0
+	}
+
+	return len(bidPerAccount(ranked[:tiedAtTop(ranked)]))
+}
+
 // settleHighest returns the winning bid and the seed it consumed, if it consumed one.
 //
 // THE ROLL IS THE LAST STEP OF THE TIE-BREAK CHAIN AND IT IS SEEDED. Two bids that agree on the rank,
@@ -420,17 +509,27 @@ func tiedOnRank(ranked []rankedBid) int {
 // is what makes the flip replayable three months later when somebody asks
 // (.claude/rules/ledger-and-strategy.md).
 //
+// THE ROLL IS BETWEEN BIDDERS AND NOT BETWEEN BID ROWS (AO review of #248), and the difference is a
+// raider's odds. Bids are append-only and one account may hold several, so a bidder whose duplicate
+// bid sits in the tied run would draw a second ticket: with A holding two identical top bids and B
+// one, a roll over the rows gives A two chances in three where the rule — and the tie the settlement
+// just reported, which names two PEOPLE — says one in two. It is silent, it is plausible, and it is
+// wrong in the direction of whoever submitted twice.
+//
+// A RUN THAT IS ALL ONE ACCOUNT THEREFORE CONSUMES NO RANDOMNESS. There is one bidder, they have won,
+// and a seed recorded there would claim a coin was flipped to decide something nobody was contesting.
+//
 // The caller guarantees a non-empty list: an auction with no eligible bid is the rot case, and it is
 // answered with a resolution that names no winner rather than by rolling between nobody.
 func settleHighest(ctx Ctx, ranked []rankedBid) (rankedBid, *int64) {
-	tied := tiedAtTop(ranked)
-	if tied == 1 {
-		return ranked[0], nil
+	candidates := bidPerAccount(ranked[:tiedAtTop(ranked)])
+	if len(candidates) == 1 {
+		return candidates[0], nil
 	}
 
 	seed := ctx.Rng().Seed()
 
-	return ranked[ctx.Rng().IntN(tied)], &seed
+	return candidates[ctx.Rng().IntN(len(candidates))], &seed
 }
 
 // auctionTrace is the tie-break chain an auction actually walked, in order, ready to be written onto
@@ -448,6 +547,24 @@ func settleHighest(ctx Ctx, ranked []rankedBid) (rankedBid, *int64) {
 func auctionTrace(
 	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
 	seed *int64,
+) []ResolutionStep {
+	trace := auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered)
+	if !contested(ordered) {
+		return trace
+	}
+
+	return append(trace, sequenceOrRoll(ordered, seed))
+}
+
+// auctionTraceThroughAmount is the chain as far as step 2 — eligibility, the ladder, the amount — and
+// it stops there because that is where the two ways an auction can end diverge.
+//
+// SPLIT OUT RATHER THAN DUPLICATED (#248). A sealed auction that ties on the amount does not fall to
+// the bid sequence and the roll; it stops and names the tied parties, and the three steps it walked
+// to get there are the same three steps every other settlement walked. Two copies of them would be
+// two wordings of the eligibility count, drifting apart the first time one was improved.
+func auctionTraceThroughAmount(
+	placed, eligible int, minimum core.Centipoints, phase tierOutcome, ordered []rankedBid,
 ) []ResolutionStep {
 	trace := []ResolutionStep{
 		{
@@ -471,13 +588,11 @@ func auctionTrace(
 		})
 	}
 
-	trace = append(trace, ResolutionStep{
+	return append(trace, ResolutionStep{
 		Kind: ResolutionStepAmount,
 		Detail: fmt.Sprintf("%d of the %d bids in tier %s stand at %d centipoints, the highest there",
 			atAmount, len(ordered), phase.tier, ordered[0].bid.AmountCp),
 	})
-
-	return append(trace, sequenceOrRoll(ordered, seed))
 }
 
 // sequenceOrRoll is the bottom of the tie-break chain, and it is shared because by the time a rule
@@ -489,8 +604,10 @@ func auctionTrace(
 // months later — so the number that reproduces it goes in the line rather than only in the field
 // beside it.
 //
-// The caller guarantees it was reached: the steps above are recorded as tied before this runs, so
-// "every step above" in the wording is a claim the trace itself has already made.
+// The caller guarantees it was reached, and guarantees more than that: `contested` has established
+// that MORE THAN ONE BIDDER holds the top of the order, so "every step above" is a claim the trace
+// has already made and "the earliest of them takes the item" is a comparison that genuinely ran
+// between two people rather than between one person's two bids.
 func sequenceOrRoll(ordered []rankedBid, seed *int64) ResolutionStep {
 	if seed == nil {
 		return ResolutionStep{
@@ -501,12 +618,15 @@ func sequenceOrRoll(ordered []rankedBid, seed *int64) ResolutionStep {
 		}
 	}
 
+	// BIDDERS RATHER THAN BIDS, because that is the draw settleHighest actually made: one ticket per
+	// account, however many rows an account holds in the tied run. A sentence counting rows would
+	// describe odds nobody was given.
 	return ResolutionStep{
 		Kind: ResolutionStepSeededRoll,
 		Detail: fmt.Sprintf(
-			"%d bids are equal on every step above and in the microsecond they were placed; a roll "+
+			"%d bidders are equal on every step above and in the microsecond they bid; a roll "+
 				"from seed %d settled it, and re-running that seed settles it the same way",
-			tiedAtTop(ordered), *seed),
+			tiedBiddersAtTop(ordered), *seed),
 	}
 }
 

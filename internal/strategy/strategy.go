@@ -325,6 +325,16 @@ const (
 	// the tie-break but the whole comparison.
 	ResolutionStepSeededRoll ResolutionStepKind = "seeded_roll"
 
+	// ResolutionStepRebidRequired — where a SEALED auction's chain stops when step 2 tied: the
+	// bidders it could not separate are named, and the round that separates them is a rebid among
+	// exactly them (#247, #248).
+	//
+	// It is a step rather than a silence because it is a decision — the chain HAD steps 6 and 7 left
+	// and deliberately did not run them, and a trace that simply ended at `amount` would read as a
+	// settlement that forgot to finish. It never appears on a resolution that awarded somebody:
+	// reaching it is what means nobody was awarded yet.
+	ResolutionStepRebidRequired ResolutionStepKind = "rebid_required"
+
 	// ResolutionStepPrice — not a tie-break at all but the answer the chain exists to produce: what
 	// the winner pays, and under which rule.
 	ResolutionStepPrice ResolutionStepKind = "price"
@@ -350,10 +360,124 @@ type ResolutionStep struct {
 	Detail string
 }
 
+// Tie is a settlement that could not separate two or more bidders, and exactly who they are (#248).
+//
+// A TIE IS NEVER AUTO-RESOLVED. Not by a roll, not by who submitted first, not by the size of
+// anybody's bank: a tied item is decided BY HAND, by one of the tied bidders bidding MORE than the
+// tie value or by the others passing. That is the guild's rule and it is the reason this type exists
+// rather than a coin flip — the platform's job at a tie is to state it precisely enough for people to
+// settle it, not to settle it for them. A settlement that reports a Tie has therefore awarded nobody
+// and consumed no randomness, and there is no flag anywhere that makes it decide instead.
+//
+// IT NAMES THE PARTIES BECAUSE THE ROUND THAT SETTLES IT IS OPEN TO THEM AND TO NOBODY ELSE. A
+// sealed auction whose top two bids are equal has not produced a winner, and the guild's answer is a
+// REBID among the tied bidders (#247) — so the settlement's job is to say who they are, once, in a
+// form the round can be opened from rather than re-derived out of the bids by whoever builds it. A
+// resolution that only said "two bids tied" would leave that derivation to the session layer, where
+// getting it wrong means opening a raid's best drop to the wrong people.
+//
+// IT IS THE TIE ITSELF AND NOT THE ROUND. The FSM, the rebid window, the passes it collects and what
+// it does when a rebid ties again are Phase 6 (#247); what a pure planner owes is the arithmetic
+// those all start from — the rung, the amount, the parties, the floor a rebid must clear and how many
+// of them may stand aside.
+type Tie struct {
+	// Tier is the rung the tie stands on: the highest one holding an eligible bid, which is the only
+	// rung a tie can be on, because everything below it lost to the ladder before amounts were
+	// compared.
+	Tier string
+
+	// AmountCp is what every tied bid named: the value the tie stands at, and what the last bidder
+	// standing pays if the others pass.
+	//
+	// It is safe to publish: it is the winning amount, revealed at `closing` and paid by whoever
+	// takes the item. Every OTHER bid in the session stays sealed (docs/guides/auctions.md).
+	AmountCp core.Centipoints
+
+	// Accounts are the tied bidders — exactly the accounts holding a bid at AmountCp on Tier —
+	// ASCENDING BY ID and each named once.
+	//
+	// DISTINCT ACCOUNTS RATHER THAN BIDS, which is the difference between a tie and a bidder who
+	// raised themselves. Bids are append-only and one account may hold several, so two rows at the
+	// top can be one person; that is a settlement with one bidder in it and it awards them the item.
+	// Two or more entries here is what a tie IS.
+	//
+	// Sorted so that two replays of the same settlement produce the same list — the tie-break
+	// determinism argument applied to the artefact that records a tie rather than breaks one.
+	Accounts []core.ULID
+
+	// RebidRequired says the round that settles this is a REBID among exactly Accounts, rather than
+	// any other kind of round.
+	//
+	// It is a flag rather than something the session layer infers from the strategy id, because the
+	// two rules that can tie deliberately want different rounds: a sealed auction wants the tied
+	// bidders to name new amounts, and `roll` wants the same entrants to roll again — "a re-roll on
+	// a tie is a new round, not an edit" (docs/guides/choosing-a-dkp-system.md). Which round to open
+	// is the rule's policy, so the rule states it here.
+	RebidRequired bool
+}
+
+// MinRebidCp is the smallest bid that WINS the rebid round — one centipoint above the tie — and
+// whether such a bid exists at all.
+//
+// A REBID BEATS THE TIE OR IT IS NOT A REBID. The two moves open to a tied bidder are to bid more
+// than the tie value or to pass; standing on the same number again is what everybody already did and
+// would produce the same tie for ever. So the floor of the round that settles a tie is strictly
+// ABOVE AmountCp, and a Phase-6 rebid session opens with Session.MinAmountCp set to this — where
+// sessionMinimum's "a session may raise the pool's floor and may not lower it" keeps it.
+//
+// ONE CENTIPOINT, NOT ONE INCREMENT. `increment_cp` is a SETTLEMENT rule in this family — what a
+// second-price winner pays above the runner-up — and a sealed auction deliberately has no bid
+// lattice: you name what the item is worth to you, 2.85 and not 3.00, because quantising bids
+// quantises exactly the valuations sealed bidding exists to elicit (AuctionSealed.ValidateBid). The
+// smallest representable raise is therefore the honest floor, and a guild wanting bigger steps has
+// said so in a rule that is about price rather than about bids.
+//
+// THE SECOND RESULT IS FALSE WHEN NO SUCH BID IS REPRESENTABLE, and it is a result rather than a
+// saturating number because those two are the same value and opposite instructions (AO review). A
+// tie at the top of the range has no bid above it; returning AmountCp there would hand a session a
+// floor that ADMITS the tied amount — Session.MinAmountCp is a `>=` test — so every tied bidder
+// could re-place the number they already bid, tie again, and the round would never end. False says
+// the honest thing instead: bidding is unavailable, the round is passes-only, and MaxPasses still
+// terminates it because the last bidder standing takes the item at AmountCp. A caller that ignores
+// the flag and opens a round at the returned value gets the same 0 it would get from any other
+// unusable floor rather than a plausible one.
+func (t Tie) MinRebidCp() (cp core.Centipoints, representable bool) {
+	next, ok := addCentipoints(t.AmountCp, 1)
+	if !ok {
+		return 0, false
+	}
+
+	return next, true
+}
+
+// MaxPasses is how many of the tied bidders may decline to rebid: all but one.
+//
+// EVERY TIED PARTY IS OFFERED THE PASS, AND THEY MAY NOT ALL TAKE IT. A raider who bid 10.00 blind
+// and finds themselves tied is entitled to say "I am not going higher" — that is the whole reason a
+// rebid is a round rather than an auto-escalation. But a round in which everybody passes has settled
+// nothing and left the item exactly where it started, so the last bidder standing takes it at
+// AmountCp: the pass is a withdrawal from the rebid, not from the tie.
+//
+// IT IS ALSO WHAT MAKES THE CHAIN TERMINATE WITHOUT A COIN FLIP. Every rebid round either produces a
+// higher bid — which decides it — or reduces the number of contenders by at least one, and a tie of
+// one is not a tie. That is the whole argument for a tie never being auto-resolved: the hand-resolved
+// round provably ends, so nothing has to be decided by a roll nobody chose.
+//
+// Derived rather than stored, so it cannot disagree with Accounts. It is 0 for a tie of one, which
+// is not a tie — see Accounts.
+func (t Tie) MaxPasses() int {
+	if len(t.Accounts) == 0 {
+		return 0
+	}
+
+	return len(t.Accounts) - 1
+}
+
 // Resolution is an auction's outcome: who won, at what price, and why.
 //
 // Winners is a slice because a session may award several copies of the same drop, and because a
-// strategy that ties deliberately (a roll-off pending) must be able to say so by returning none.
+// strategy that ties deliberately (a roll-off pending, a rebid pending) must be able to say so by
+// returning none.
 type Resolution struct {
 	// Winners are the accepted bids in award order.
 	Winners []Allocation
@@ -366,8 +490,22 @@ type Resolution struct {
 	// thing a loot dispute cannot be settled from.
 	RngSeed *int64
 
+	// Tie is the tie a settlement stopped at rather than broke, nil when it decided.
+	//
+	// NON-NIL AND EMPTY Winners ARE THE SAME FACT, stated once as a discriminator and once as an
+	// outcome: nobody was awarded, and the reason is a tie among named parties rather than a rot. A
+	// session layer reads this to know which round to open next and to whom, without re-deriving
+	// either from the bids.
+	//
+	// It is nil on every settlement that AWARDED, including one that reached the seeded roll: a tie
+	// that was broken is a decided auction, and recording an unbroken tie beside a winner would be
+	// two answers to "who has the item?".
+	Tie *Tie
+
 	// WinningTier is the rung that took the item — the highest one holding an eligible bid. Empty
-	// when nothing was awarded, which is the rot case and the deliberate roll-off tie.
+	// when nothing was awarded, which is the rot case, the deliberate roll-off tie and the sealed
+	// tie awaiting a rebid; the last of those carries its rung on Tie.Tier, because the rung that a
+	// rebid round will be decided on is not yet a rung that took anything.
 	WinningTier string
 
 	// TierCounts is every rung holding at least one eligible bid, HIGHEST FIRST, with the number of
@@ -385,6 +523,7 @@ type Resolution struct {
 	// remembered rule.
 	//
 	// EVERY SETTLEMENT WRITES ONE, including the ones that award nobody: a rot, a roll-off that tied,
+	// a sealed auction whose top bids tied and await a rebid,
 	// a session in which no bid was a bidable share. An officer's question about a drop that went
 	// nowhere is the same question as one about a drop that went somewhere, and a resolution that
 	// answered only the second would be a trail with a hole exactly where an argument starts. The
