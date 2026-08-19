@@ -473,6 +473,22 @@ func bidPerAccount(ranked []rankedBid) []rankedBid {
 	return out
 }
 
+// contested reports whether the top of the order is held by MORE THAN ONE BIDDER — the question
+// every step below the rank is an answer to (AO review of #248).
+//
+// IT IS THE GATE ON THE WHOLE BOTTOM OF THE CHAIN. A run of equal top rows can be one person who bid
+// the same number twice, and there is no bid sequence to compare and no roll to hold between a
+// bidder and themselves: they simply won. The trace records the steps that were EVALUATED
+// (Resolution.Trace), so a `bid_sequence` line saying "the earliest of them takes the item" written
+// for a comparison that never happened is a resolution asserting a decision nobody made — which is
+// exactly the sort of plausible line an officer would later have to defend.
+//
+// A ROW COUNT CANNOT ANSWER IT, which is why this exists rather than a comparison against
+// tiedOnRank: that counts rows, and rows are not people.
+func contested(ranked []rankedBid) bool {
+	return len(tiedAccounts(ranked)) > 1
+}
+
 // tiedBiddersAtTop is how many BIDDERS the roll would be drawn between — tiedAtTop counted in people
 // rather than in rows. It is what the trace reports, so that the sentence describes the draw that
 // actually happened.
@@ -533,7 +549,7 @@ func auctionTrace(
 	seed *int64,
 ) []ResolutionStep {
 	trace := auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered)
-	if tiedOnRank(ordered) == 1 {
+	if !contested(ordered) {
 		return trace
 	}
 
@@ -588,8 +604,10 @@ func auctionTraceThroughAmount(
 // months later — so the number that reproduces it goes in the line rather than only in the field
 // beside it.
 //
-// The caller guarantees it was reached: the steps above are recorded as tied before this runs, so
-// "every step above" in the wording is a claim the trace itself has already made.
+// The caller guarantees it was reached, and guarantees more than that: `contested` has established
+// that MORE THAN ONE BIDDER holds the top of the order, so "every step above" is a claim the trace
+// has already made and "the earliest of them takes the item" is a comparison that genuinely ran
+// between two people rather than between one person's two bids.
 func sequenceOrRoll(ordered []rankedBid, seed *int64) ResolutionStep {
 	if seed == nil {
 		return ResolutionStep{

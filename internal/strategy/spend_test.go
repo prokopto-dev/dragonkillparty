@@ -581,6 +581,54 @@ func TestSpendStrategies_SettleAuction_ARepeatedBidder_NeverGetsTwoChances(t *te
 	}
 }
 
+// TestSpendStrategies_SettleAuction_OneBidderHoldingEveryTiedRow_RecordsNoTiebreak is the other half
+// of the repeated-bidder rule, and it is about the RECORD rather than the odds (AO review of #248).
+//
+// A trace holds the steps that were actually evaluated (Resolution.Trace). Two equal top rows from
+// one account are one bidder who bid the same number twice — a raise and its replacement — so
+// nothing below the rank ran: there is no bid sequence between a bidder and themselves and no roll to
+// hold. A `bid_sequence` line saying "the earliest of them takes the item" would be the resolution
+// asserting a comparison nobody made, in the artefact an officer reads back months later to defend
+// the award.
+func TestSpendStrategies_SettleAuction_OneBidderHoldingEveryTiedRow_RecordsNoTiebreak(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range spendCases() {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := spendCtx(t, tc.config)
+			bids := []strategy.Bid{tc.bid(acct(0)), tc.bid(acct(0))}
+
+			res, err := tc.s.SettleAuction(ctx, strategy.Session{
+				ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow,
+			}, bids)
+
+			if tc.id == "roll" {
+				require.ErrorIs(t, err, strategy.ErrInvalidEvent,
+					"a roll refuses the repeated entrant before it draws anything")
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, res.Winners, 1)
+			require.Equal(t, acct(0), res.Winners[0].AccountID)
+
+			for _, step := range res.Trace {
+				require.NotContains(t,
+					[]strategy.ResolutionStepKind{
+						strategy.ResolutionStepBidSequence, strategy.ResolutionStepSeededRoll,
+					}, step.Kind,
+					"nothing below the rank was evaluated, so nothing below the rank is recorded")
+			}
+
+			require.Nil(t, res.RngSeed)
+			require.Empty(t, ctx.rng.draws, "and no roll was held between a bidder and themselves")
+		})
+	}
+}
+
 // TestSpendStrategies_SettleAuction_TheHigherRungTakesTheItemWithoutARoll is the ladder at the
 // family level, and the shape of the case is what makes it strong: the two bids are IDENTICAL but for
 // the rung.

@@ -559,6 +559,13 @@ func TestAuctionSealed_SettleAuction_ADuplicateTopBid_IsStillOneBidder(t *testin
 				require.Nil(t, res.Tie, "one bidder holding every top row has won, and alone")
 				require.Len(t, res.Winners, 1)
 				require.Equal(t, acct(0), res.Winners[0].AccountID)
+				require.Equal(t, []strategy.ResolutionStepKind{
+					strategy.ResolutionStepEligibility, strategy.ResolutionStepTier,
+					strategy.ResolutionStepAmount, strategy.ResolutionStepPrice,
+				}, traceKinds(res),
+					"and the chain stops at the amount: there is no bid sequence between a bidder and "+
+						"themselves, so a step claiming the earliest of them took it would record a "+
+						"comparison nobody made")
 
 				return
 			}
