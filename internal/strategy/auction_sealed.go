@@ -438,22 +438,42 @@ func rebidResolution(
 		RebidRequired: true,
 	}
 
+	// THE SENTENCE SAYS WHICH MOVES EXIST, and at the very top of the range one of them does not: no
+	// amount above the tie is representable, so the round is passes-only and telling an officer to
+	// ask for a higher bid would be telling them to ask for a number nobody can enter. Both wordings
+	// end the same way, because the pass budget is what terminates the round either way.
+	floor, canRebid := tie.MinRebidCp()
+
 	reason := fmt.Sprintf(
-		"%d bidders in tier %s are tied at %d centipoints; nothing settles it automatically — a rebid "+
-			"round among exactly those bidders does, at %d centipoints or more, and every one of them "+
-			"but the last may pass instead",
-		len(tied), phase.tier, tie.AmountCp, tie.MinRebidCp())
+		"%d bidders in tier %s are tied at %d centipoints; nothing settles it automatically — no bid "+
+			"above that is representable, so the item goes to the last of those bidders who has not "+
+			"passed, and every one of them but the last may pass",
+		len(tied), phase.tier, tie.AmountCp)
+
+	rebid := fmt.Sprintf(
+		"the bids at the top of tier %s are held by %d different bidders, and in a sealed auction "+
+			"nothing below the amount separates them; no amount above %d centipoints can be bid, so "+
+			"the item goes to the last of those %d who has not passed, and the bid sequence and the "+
+			"seeded roll were not run and never will be",
+		phase.tier, len(tied), tie.AmountCp, len(tied))
+
+	if canRebid {
+		reason = fmt.Sprintf(
+			"%d bidders in tier %s are tied at %d centipoints; nothing settles it automatically — a "+
+				"rebid round among exactly those bidders does, at %d centipoints or more, and every one "+
+				"of them but the last may pass instead",
+			len(tied), phase.tier, tie.AmountCp, floor)
+
+		rebid = fmt.Sprintf(
+			"the bids at the top of tier %s are held by %d different bidders, and in a sealed "+
+				"auction nothing below the amount separates them; the item goes to whichever of "+
+				"those %d bids at least %d centipoints, or to the last of them who has not passed, "+
+				"so the bid sequence and the seeded roll were not run and never will be",
+			phase.tier, len(tied), len(tied), floor)
+	}
 
 	trace := append(auctionTraceThroughAmount(placed, eligible, minimum, phase, ordered),
-		ResolutionStep{
-			Kind: ResolutionStepRebidRequired,
-			Detail: fmt.Sprintf(
-				"the bids at the top of tier %s are held by %d different bidders, and in a sealed "+
-					"auction nothing below the amount separates them; the item goes to whichever of "+
-					"those %d bids at least %d centipoints, or to the last of them who has not passed, "+
-					"so the bid sequence and the seeded roll were not run and never will be",
-				phase.tier, len(tied), len(tied), tie.MinRebidCp()),
-		})
+		ResolutionStep{Kind: ResolutionStepRebidRequired, Detail: rebid})
 
 	return Resolution{
 		Reason: phase.explain(reason),

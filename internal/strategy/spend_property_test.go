@@ -1099,10 +1099,13 @@ func TestProperty_AuctionSealed_ATie_IsAlwaysResolvableByHand(t *testing.T) {
 			return nil
 		}
 
-		if res.Tie.MinRebidCp() <= res.Tie.AmountCp {
+		// A rebid floor that is not strictly above the tie is a round that accepts the tied amount
+		// again — Session.MinAmountCp is a `>=` test — so the same tie comes back for ever. Where no
+		// raise is representable there is no floor at all, and the round is passes-only (AO review);
+		// the pass budget below is what terminates it either way.
+		if floor, canRebid := res.Tie.MinRebidCp(); canRebid && floor <= res.Tie.AmountCp {
 			return fmt.Errorf("a rebid clears %d and the tie stands at %d; standing on the tie value "+
-				"again is what everybody already did and would tie for ever",
-				res.Tie.MinRebidCp(), res.Tie.AmountCp)
+				"again is what everybody already did and would tie for ever", floor, res.Tie.AmountCp)
 		}
 
 		if res.Tie.MaxPasses() != len(res.Tie.Accounts)-1 || res.Tie.MaxPasses() < 1 {

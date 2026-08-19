@@ -416,7 +416,8 @@ type Tie struct {
 	RebidRequired bool
 }
 
-// MinRebidCp is the smallest bid that WINS the rebid round: one centipoint above the tie.
+// MinRebidCp is the smallest bid that WINS the rebid round — one centipoint above the tie — and
+// whether such a bid exists at all.
 //
 // A REBID BEATS THE TIE OR IT IS NOT A REBID. The two moves open to a tied bidder are to bid more
 // than the tie value or to pass; standing on the same number again is what everybody already did and
@@ -431,16 +432,22 @@ type Tie struct {
 // smallest representable raise is therefore the honest floor, and a guild wanting bigger steps has
 // said so in a rule that is about price rather than about bids.
 //
-// SATURATING RATHER THAN WRAPPING at the top of the range: an unrepresentable raise means no rebid
-// can clear the floor and the tie is settled by passes alone, which is a legal outcome. Wrapping
-// would make the floor smaller than the tie and let a rebid win by bidding less.
-func (t Tie) MinRebidCp() core.Centipoints {
+// THE SECOND RESULT IS FALSE WHEN NO SUCH BID IS REPRESENTABLE, and it is a result rather than a
+// saturating number because those two are the same value and opposite instructions (AO review). A
+// tie at the top of the range has no bid above it; returning AmountCp there would hand a session a
+// floor that ADMITS the tied amount — Session.MinAmountCp is a `>=` test — so every tied bidder
+// could re-place the number they already bid, tie again, and the round would never end. False says
+// the honest thing instead: bidding is unavailable, the round is passes-only, and MaxPasses still
+// terminates it because the last bidder standing takes the item at AmountCp. A caller that ignores
+// the flag and opens a round at the returned value gets the same 0 it would get from any other
+// unusable floor rather than a plausible one.
+func (t Tie) MinRebidCp() (cp core.Centipoints, representable bool) {
 	next, ok := addCentipoints(t.AmountCp, 1)
 	if !ok {
-		return t.AmountCp
+		return 0, false
 	}
 
-	return next
+	return next, true
 }
 
 // MaxPasses is how many of the tied bidders may decline to rebid: all but one.

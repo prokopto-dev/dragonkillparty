@@ -617,7 +617,9 @@ func TestAuctionSealed_SettleAuction_AThreeWayTie_LeavesOnePartyUnableToPass(t *
 	require.Equal(t, 2, res.Tie.MaxPasses(), "all but one of the three")
 	require.Equal(t, core.Centipoints(1_000), res.Tie.AmountCp,
 		"and the last of the three to still be standing pays what they all tied on")
-	require.Equal(t, core.Centipoints(1_001), res.Tie.MinRebidCp(),
+	floor, canRebid := res.Tie.MinRebidCp()
+	require.True(t, canRebid)
+	require.Equal(t, core.Centipoints(1_001), floor,
 		"while any of them takes it outright by beating that number")
 }
 
@@ -684,19 +686,57 @@ func TestAuctionSealed_SettleAuction_ARebidMustBeatTheTie(t *testing.T) {
 		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow}, sealedTieBids())
 	require.NoError(t, err)
 
-	require.Equal(t, core.Centipoints(1_000), res.Tie.AmountCp)
-	require.Equal(t, core.Centipoints(1_001), res.Tie.MinRebidCp(),
+	require.Equal(t, core.Centipoints(1_000), res.Tie.AmountCp,
+		"the tie value itself is what the last bidder standing pays if the others pass")
+
+	floor, canRebid := res.Tie.MinRebidCp()
+	require.True(t, canRebid)
+	require.Equal(t, core.Centipoints(1_001), floor,
 		"the smallest bid that WINS the rebid is one centipoint above the tie")
-	require.Equal(t, core.Centipoints(1_000), strategy.Tie{AmountCp: 1_000}.AmountCp,
-		"and the tie value itself is what the last bidder standing pays if the others pass")
 
 	require.Contains(t, res.Reason, "nothing settles it automatically")
 	require.Contains(t, res.Reason, "1001 centipoints or more")
+}
 
-	// Saturating rather than wrapping: an unrepresentable raise leaves passing as the only move, and
-	// a floor that wrapped below the tie would let a rebid win by bidding LESS than the tie.
-	require.Equal(t, core.Centipoints(math.MaxInt64),
-		strategy.Tie{AmountCp: math.MaxInt64}.MinRebidCp())
+// TestAuctionSealed_SettleAuction_ATieWithNoRepresentableRaise_IsPassesOnly is the top of the range,
+// and it is a CONTRACT case rather than a raid-night one (AO review).
+//
+// A tie at math.MaxInt64 has no bid above it, and the floor of the round that settles it cannot
+// therefore be a number: returning the tie value there would hand a Phase-6 session a floor that
+// ADMITS the tied amount — Session.MinAmountCp is a `>=` test — so every tied bidder could re-place
+// the number they already bid, tie again, and the round would never end. The second result says
+// bidding is unavailable, the officer's sentence says so too, and MaxPasses still terminates it: the
+// last bidder who has not passed takes the item at the tie value.
+func TestAuctionSealed_SettleAuction_ATieWithNoRepresentableRaise_IsPassesOnly(t *testing.T) {
+	t.Parallel()
+
+	top := func(id core.ULID) strategy.Bid {
+		return strategy.Bid{
+			AccountID: id, AmountCp: math.MaxInt64, PlacedAt: fixedNow, Sealed: true,
+			Tier: strategy.TierMain,
+		}
+	}
+
+	res, err := strategy.AuctionSealed{}.SettleAuction(spendCtx(t, tieredSealedConfig),
+		strategy.Session{ID: acct(60), SeqAtOpen: 5, OpenedAt: fixedNow},
+		[]strategy.Bid{top(acct(0)), top(acct(1))})
+	require.NoError(t, err)
+
+	require.Equal(t, []core.ULID{acct(0), acct(1)}, res.Tie.Accounts)
+	require.Equal(t, core.Centipoints(math.MaxInt64), res.Tie.AmountCp)
+
+	floor, canRebid := res.Tie.MinRebidCp()
+	require.False(t, canRebid,
+		"no bid above the tie is representable, so there is no floor a rebid could clear")
+	require.Zero(t, floor,
+		"and the unusable floor is not the tie value, which a session would accept a rebid AT")
+	require.Equal(t, 1, res.Tie.MaxPasses(),
+		"the round still ends: one of the two may pass and the other takes it")
+
+	require.Contains(t, res.Reason, "no bid above that is representable")
+	require.Contains(t, res.Reason, "the last of those bidders who has not passed")
+	require.NotContains(t, res.Reason, "or more", "there is no amount to ask anybody for")
+	require.Contains(t, res.Trace[len(res.Trace)-1].Detail, "no amount above")
 }
 
 // TestAuctionSealed_SettleAuction_BelowTheMinimum_Rots: sealed or not, a bid under the floor cannot
