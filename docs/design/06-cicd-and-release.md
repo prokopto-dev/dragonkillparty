@@ -855,6 +855,15 @@ renders a banner with the exact command.
 GitHub **Releases** and fails if any released minor lacks a refdb artifact, rather than iterating
 whatever happens to exist.
 
+**Nothing to ladder is a PASS.** Before the first release there is no version to upgrade *from*, so
+`upgrade-ladder-enumerate` emits `[]` — always valid JSON, and always written to `$GITHUB_OUTPUT`
+under the name its job publishes — and `upgrade-ladder` skips an empty or unset matrix instead of
+expanding it. Both halves carry weight: an unwritten output expands `fromJSON('')`, an empty array is
+`Matrix vector 'version' does not contain any values`, and GitHub reports either against the **run**
+rather than against a job. That produces a nightly concluding `failure` with every job green, no red
+check-run and nothing to click — which is what issue #255 was, for four consecutive nights.
+`test/repo/upgrade_ladder_matrix_test.go` holds both halves, including through the Phase 8 rewrite.
+
 **Postgres, post-1.0.** Nightly `verify-postgres` builds with the CI-only tag, asserts
 `var _ Queries = (*pggen.Queries)(nil)` compiles, applies `db/migrations-postgres/`, and asserts
 `atlas schema inspect` on both dialects normalises to the same committed logical fingerprint. Ninety
