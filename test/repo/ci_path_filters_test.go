@@ -302,7 +302,10 @@ func TestCIFilters_CodeFilter_SelectsTheWorkflowFiles(t *testing.T) {
 			"release_gates_test.go, smoke_scripts_test.go, spa_pipeline_test.go, docker_layer_cache_test.go",
 		},
 		{".github/workflows/edge.yml", "smoke_scripts_test.go, docker_layer_cache_test.go"},
-		{".github/workflows/nightly-verify.yml", "ci_toolchain_test.go, release_gates_test.go"},
+		{
+			".github/workflows/nightly-verify.yml",
+			"ci_toolchain_test.go, release_gates_test.go, upgrade_ladder_matrix_test.go",
+		},
 		{".github/workflows/pages.yml", "mockup_gates_test.go"},
 	} {
 		t.Run(input.path, func(t *testing.T) {

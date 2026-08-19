@@ -1336,8 +1336,27 @@ test-upgrade:
 test-upgrade-ladder:
 	@$(call notyet,Phase 8,every published minor upgraded to HEAD)
 
+# The upgrade ladder's matrix source. TWO consumers, and the difference is issue #255:
+#
+#   stdout          a human running this locally, and any script that pipes it
+#   $GITHUB_OUTPUT  `versions`, which nightly-verify.yml's `upgrade-ladder-enumerate` job declares
+#                   as an output and `upgrade-ladder` expands with fromJSON
+#
+# Writing only stdout left `versions` UNSET, so the matrix expanded `fromJSON('')` — an expression
+# error, which GitHub reports against the RUN rather than against a job. Every nightly since the
+# ladder was wired concluded `failure` with eighteen green jobs, no red check-run, and no
+# `upgrade-ladder` entry at all: nothing for a maintainer to click. Emit BOTH, and emit valid JSON
+# even when the answer is "nothing to ladder" — `[]` before the first release, which is the state
+# this repository is in until Phase 8 publishes one.
+#
+# The guarded append is scripts/release-manifest.sh's shape, for its reason: the producer owns the
+# CI contract, so a caller cannot forget it, and the write is skipped outside Actions rather than
+# failing on an unset variable. Phase 8 replaces the `[]` with the real enumeration and KEEPS both
+# halves; test/repo/upgrade_ladder_matrix_test.go fails if it does not.
 upgrade-ladder-enumerate:
-	@echo '[]'
+	@versions='[]'; \
+	echo "$$versions"; \
+	if [ -n "$${GITHUB_OUTPUT:-}" ]; then echo "versions=$$versions" >>"$$GITHUB_OUTPUT"; fi
 
 soak-jobs:
 	@$(call notyet,Phase 1,10k-job River soak)

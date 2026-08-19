@@ -413,11 +413,25 @@ jobs:
         # the latest — and FAILS if any of them lacks a $REFDB artifact. Iterating "whatever refdbs
         # happen to exist" is how the ladder rots silently: a release that fails after the image
         # step but before `refdb` leaves a hole nobody notices until an upgrade breaks.
-        # Emits a JSON array for the matrix below.
+        #
+        # The target writes `versions=<json array>` to $GITHUB_OUTPUT — that is what `outputs:`
+        # above publishes and what the matrix below expands. Printing the array to stdout ALONE
+        # left `versions` unset and expanded `fromJSON('')`, which fails the whole run outside the
+        # job graph (issue #255): eighteen green jobs, no red check-run, and no `upgrade-ladder`
+        # entry to click. It always emits valid JSON, `[]` included.
 
+  # NOTHING TO LADDER IS A PASS (issue #255). Before the first release there is no version to
+  # upgrade FROM, so `enumerate` emits `[]` and this job skips. Without the guard the run dies at
+  # matrix expansion — `[]` is "Matrix vector 'version' does not contain any values", and the empty
+  # string that predated the $GITHUB_OUTPUT write was a JSON parse error — and BOTH surface as a
+  # run-level failure with no job entry at all. A red nightly nobody can open is worse than no
+  # nightly: it trains maintainers to ignore the badge, which is what four consecutive nights of it
+  # did. The condition is deliberately not `!= '[]'` alone; an unset output must skip too, so that a
+  # future enumerate that dies before writing its output cannot be read as "ladder ran".
   upgrade-ladder:
     name: upgrade-ladder / ${{ matrix.version }}
     needs: upgrade-ladder-enumerate
+    if: needs.upgrade-ladder-enumerate.outputs.versions != '' && needs.upgrade-ladder-enumerate.outputs.versions != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     strategy:
@@ -557,3 +571,10 @@ jobs:
         # Red: updates the single open `nightly` issue in place with the failing job names, the run
         # URL, and — for each failure — the exact local reproduce command. The deletion rule applies
         # here too: any check whose failure a maintainer cannot diagnose in 60 seconds is deleted.
+        #
+        # `skipped` IS NOT RED, and the Phase 8 implementation must test for `failure`/`cancelled`
+        # rather than for `!= 'success'`. `upgrade-ladder` skips on every night with nothing
+        # published to upgrade from (issue #255), which is the ordinary state of this repository
+        # until Phase 8 publishes a release — reading that as a failure would file an issue about
+        # the absence of releases, nightly, forever. Today's target is a `notyet` stub that reads
+        # RESULTS and does nothing, so the contract is a note for whoever fills it in.
