@@ -151,3 +151,66 @@ func TestMigrate_FreshInstall_NoGuildIDColumn(t *testing.T) {
 
 	require.NoError(t, rows.Err())
 }
+
+// TestMigrate_FreshInstall_RolePermissionByPermissionKey_IsIndexed is issue #271, asserted the way
+// the defect was found: as a query plan rather than as the presence of an index name.
+//
+// role_permission.permission_key is the child of the foreign key that makes a permission row
+// undeletable — ON DELETE NO ACTION, deliberately, because a cascade would silently strip capability
+// from every role that held the key. SQLite enforces that by looking up the child rows for the parent
+// it was asked to delete, and the table's only key is PRIMARY KEY (role_id, permission_key), which it
+// cannot use to find rows by the second column. So the protection was a full scan of the grants table,
+// taken while the boot path's single write connection holds the lock.
+//
+// Asserting the plan rather than `SELECT ... FROM sqlite_schema WHERE name = 'ix_...'` is what makes
+// this test about the property: an index that exists and is not chosen buys nothing, and the day an
+// index is renamed or its column order changes, the name assertion goes green on a table scan.
+//
+// The statement below is the lookup SQLite performs for that enforcement, not the DELETE itself: a
+// permission row is never deleted by this product (see permission.orphaned_at), so the query that
+// belongs in a test is the read the constraint is made of. It is also the role editor's "which roles
+// hold this key?" read, which is the other caller that would have scanned.
+func TestMigrate_FreshInstall_RolePermissionByPermissionKey_IsIndexed(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("applies real migrations to a real database; run `make test` or `make check`")
+	}
+
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "dkp.db")
+
+	runner, err := migrate.New(migrationDir(t), migrate.Config{
+		DBPath: dbPath, DataDir: dataDir, BinaryVersion: "v1.0.0", AutoMigrate: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, runner.Migrate(t.Context()))
+
+	rows, err := openRaw(t, dbPath).QueryContext(t.Context(),
+		`EXPLAIN QUERY PLAN SELECT 1 FROM role_permission WHERE permission_key = ?`, "roster.read")
+	require.NoError(t, err)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	var plan []string
+
+	for rows.Next() {
+		var id, parent, notUsed int
+
+		var detail string
+
+		require.NoError(t, rows.Scan(&id, &parent, &notUsed, &detail))
+		plan = append(plan, detail)
+	}
+
+	require.NoError(t, rows.Err())
+	require.NotEmpty(t, plan, "EXPLAIN QUERY PLAN returned nothing; the query never ran")
+
+	joined := strings.Join(plan, " | ")
+
+	require.NotContains(t, joined, "SCAN role_permission",
+		"looking up grants by permission key is a full table scan (#271). That scan is how SQLite "+
+			"enforces role_permission's ON DELETE NO ACTION on permission(key) — the authorization "+
+			"safety boundary — and it runs inside the write transaction. Plan was: %s", joined)
+	require.Contains(t, joined, "ix_role_permission_permission",
+		"the lookup does not use ix_role_permission_permission. Plan was: %s", joined)
+}
