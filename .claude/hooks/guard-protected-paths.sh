@@ -129,6 +129,9 @@ case "$rel" in
     db/migrations-*/*)
         gen_source="db/schema.hcl (Atlas generates the migration; goose applies it)"
         ;;
+    docs/reference/permissions.md | docs/reference/scopes.md)
+        gen_source="internal/authz/catalogue.go (scripts/gen-docs.sh)"
+        ;;
 esac
 
 if [[ -n "$gen_source" ]]; then

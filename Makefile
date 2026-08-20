@@ -327,6 +327,7 @@ gen:
 	@env -u DKP_REPO_ROOT bash scripts/gen-db.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-openapi.sh
 	@env -u DKP_REPO_ROOT bash scripts/gen-client.sh
+	@env -u DKP_REPO_ROOT bash scripts/gen-docs.sh
 
 # THE TWO TEST LANES (issues #153 and #155). `-count=1` is a GATE on one of them and a pure cost on
 # the other, and until #155 it was on both.
@@ -753,7 +754,7 @@ labels-sync:
 # file is what makes a hand-edit of any region fail here with "run make gen" instead of surviving
 # until the CHECK and the Go catalogue disagree in production.
 GENERATED_PATHS := db/migrations-sqlite internal/store/sqlitegen openapi clients web/src/api \
-                   db/schema.hcl
+                   db/schema.hcl docs/reference
 #
 # CHAINED WITH `&&`, NOT `;`. A recipe is one shell invocation and make judges it by the LAST
 # command's status, so a `;`-separated version reported success whenever `make gen` failed without

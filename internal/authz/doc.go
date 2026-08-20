@@ -60,3 +60,28 @@
 // because the literal "raid.tick.create" never appears in the source. This was measured, both
 // directions (see the decision record §Q1). Do not "tidy" the catalogue into Resource/Action fields.
 package authz
+
+// Phase0EnforcementNotice is the disclosure every published description of a credential carries until
+// the authorization middleware exists.
+//
+// IT IS A TRIPWIRE, AND IT IS MEANT TO BE DELETED. Phase 0 ships the shape the security controls
+// attach to before the controls themselves (SECURITY.md, "Known Phase 0 gaps"): there is no
+// authentication and no authz.Check, so `GET` and `PATCH /api/v1/guild` are served with no credential
+// at all — the mutating one included. `TestGuild_Unauthenticated_IsAKnownPhase0Gap` asserts that
+// CURRENT behaviour so the day the middleware lands it goes red and the gap closes deliberately.
+//
+// WHY IT HAS TO BE ON THE PUBLISHED SURFACE, and this is a security review's finding rather than a
+// tidiness one: the OpenAPI security schemes and the generated reference pages now describe bearer
+// tokens, session cookies, scopes and step-up in detail. A bot author reading that reasonably
+// concludes an unauthenticated `PATCH /api/v1/guild` is rejected. It is not — it succeeds, today,
+// with nothing but a current ETag. Describing a credential well makes the absence of enforcement
+// HARDER to notice, not easier, so the description has to say so itself.
+//
+// Delete this constant and its uses in the same change that lands the middleware. Its consumers are
+// internal/api's security schemes and internal/authz/docgen's two reference pages; both have tests
+// asserting the notice is present, which is what makes the deletion deliberate rather than a silent
+// drift back to over-promising.
+const Phase0EnforcementNotice = "**NOT YET ENFORCED.** This describes the contract Phase 2 " +
+	"implements, not what the server checks today: there is no authentication or authorization " +
+	"middleware yet, so every operation is served without a credential — including the mutating " +
+	"`PATCH /api/v1/guild`. See \"Known Phase 0 gaps\" in SECURITY.md."
