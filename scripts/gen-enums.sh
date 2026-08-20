@@ -3,8 +3,11 @@
 # catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source), internal/audit/kinds
 # (audit_log.actor_kind, audit_log.outcome), internal/account/kinds (account.kind,
 # account.system_key), internal/decay/kinds (decay_run.kind, decay_run.state),
-# internal/authz/role/kinds (role.applies_to) and internal/authz/roleassignment/kinds
-# (role_assignment.subject_kind, .scope_type, .granted_via).
+# internal/authz/role/kinds (role.applies_to), internal/authz/roleassignment/kinds
+# (role_assignment.subject_kind, .scope_type, .granted_via) and the four auth catalogues:
+# internal/auth/appuser/kinds (app_user.state), internal/auth/useridentity/kinds
+# (user_identity.provider, .password_algo), internal/auth/serviceaccount/kinds
+# (service_account.state) and internal/auth/feedtoken/kinds (feed_token.kind).
 #
 # RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Every catalogue and internal/schemaenum, which holds
 # the rendering they share, import nothing but the standard library, deliberately: this step
@@ -50,9 +53,11 @@ command -v go >/dev/null 2>&1 || die "go is not installed — see make setup"
 # generator, not a gate: the drift assertions are TestLedgerKinds_CheckMatchesCatalogue,
 # TestAuditKinds_CheckMatchesCatalogue, TestAccountKinds_CheckMatchesCatalogue,
 # TestDecayKinds_CheckMatchesCatalogue, TestRoleKinds_CheckMatchesCatalogue,
-# TestRoleAssignmentKinds_CheckMatchesCatalogue and `make verify-generated`.
+# TestRoleAssignmentKinds_CheckMatchesCatalogue, TestAppUserKinds_CheckMatchesCatalogue,
+# TestUserIdentityKinds_CheckMatchesCatalogue, TestServiceAccountKinds_CheckMatchesCatalogue,
+# TestFeedTokenKinds_CheckMatchesCatalogue and `make verify-generated`.
 go run ./internal/ledger/enumgen db/schema.hcl \
     || die "enumgen failed — db/schema.hcl was not rewritten"
 
 printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from %s\n' \
-    'internal/{ledger,audit,account,decay}/kinds and internal/authz/{role,roleassignment}/kinds'
+    'internal/{ledger,audit,account,decay}/kinds, internal/authz/{role,roleassignment}/kinds and internal/auth/{appuser,useridentity,serviceaccount,feedtoken}/kinds'

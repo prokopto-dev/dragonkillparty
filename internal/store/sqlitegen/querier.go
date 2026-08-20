@@ -91,6 +91,11 @@ type Querier interface {
 	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
 	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
 	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
+	// InsertAPIToken writes one PAT row. The plaintext secret is NEVER stored and never recoverable:
+	// token_hash is HMAC-SHA256(pepper, secret) and the caller has already discarded everything else.
+	// Its callers are the mint endpoint (a later wave) and the tests that prove the bearer path resolves
+	// what the minting primitive produces - which is the point of it existing before its endpoint does.
+	InsertAPIToken(ctx context.Context, arg InsertAPITokenParams) error
 	// InsertAccount creates one balance holder. The four SYSTEM accounts are seeded by the migration and
 	// never inserted through here; this is the person half, and its first caller is internal/seed - a
 	// ledger of 520k entries needs 280 accounts to hang them on, and the commit path's
@@ -102,6 +107,40 @@ type Querier interface {
 	// nullable columns are supplied explicitly for the reason InsertLedgerBatch names every column -
 	// a value the database invented is a value the caller never saw.
 	InsertAccount(ctx context.Context, arg InsertAccountParams) error
+	// Identity and credentials - the cookie-or-bearer resolution path and the rows it reads
+	// (docs/design/01-domain-model.md section 4, docs/design/03-security.md sections 3 and 6).
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated from
+	// a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate SQL002),
+	// so the only way a new query enters the codebase is by being written here first and reviewed as
+	// SQL.
+	//
+	// TWO RESOLVES, ONE PER CREDENTIAL CLASS, AND BOTH ARE ONE INDEXED LOOKUP. That is the hot path of
+	// every authenticated request: a cookie resolves by the SHA-256 of its secret against
+	// ux_session_token, and a bearer resolves by its public 8-character prefix against
+	// ux_api_token_prefix followed by one constant-time compare in Go. ADR-0011 accepted a database
+	// round trip per request as the price of instant revocation; it is one round trip, not a scan.
+	//
+	// NEITHER RESOLVE FILTERS ON expires_at OR revoked_at, and that is deliberate. The row comes back
+	// whole and internal/auth decides, because the middleware has to tell "no such credential" from
+	// "expired" from "revoked" from "the account is disabled" in its LOGS while returning the same 401
+	// to the caller either way. A WHERE clause that hid the row would leave the server unable to answer
+	// the only question that matters during an incident: was this token used, and when.
+	//
+	// NO DELETE STATEMENTS, AND NO REVOKE STATEMENTS EITHER. Revocation is one UPDATE on a row this
+	// path already reads, and it lands with the endpoints that perform it - token mint/rotate/revoke and
+	// sign-out are session-and-step-up operations from a later wave (canonical section 6's capability
+	// floor). A mutation with no caller is a method the Postgres target has to implement for nothing.
+	//
+	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+	// by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
+	// that many trailing characters off the generated query string. The failure is silent at generate
+	// time and shows up as a syntax error only when the query runs.
+	// InsertAppUser writes one human login. The caller normalises username_norm and email_norm in Go
+	// (NFKC + casefold + strip ' ` -): core SQLite has no NFKC and lower() is ASCII-only, so a
+	// normalisation done in SQL would let a homoglyph of an officer's name be a second account that
+	// looks identical in every list.
+	InsertAppUser(ctx context.Context, arg InsertAppUserParams) error
 	// InsertAuditLog appends one row. There is no update and no delete here: trg_audit_log_no_update
 	// aborts an UPDATE, and pruning is `dkp audit prune --before`, a Phase 2+ interactive command that
 	// writes an audit_gap_marker rather than a silence. No endpoint deletes audit rows at any permission
@@ -167,6 +206,12 @@ type Querier interface {
 	// migration beside pool and account: at migration time the permission table is empty.
 	InsertRole(ctx context.Context, arg InsertRoleParams) error
 	InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error
+	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) error
+	InsertSession(ctx context.Context, arg InsertSessionParams) error
+	// InsertUserIdentity writes one credential for a user. password_hash is the argon2id PHC string
+	// internal/auth produces; NULL means this identity cannot authenticate with a password, which is
+	// what the EQdkp importer writes because legacy hashes are never migrated.
+	InsertUserIdentity(ctx context.Context, arg InsertUserIdentityParams) error
 	// ListAuditRowsAfterSeq is one page of the audit log in seq order, for `dkp verify-ledger` (Phase 1,
 	// issue #198). It is the FIRST read of this table, and it is not the officer-facing forensic view
 	// the header above defers to Phase 2: it is the chain verifier, it selects no PII the write path did
@@ -310,6 +355,32 @@ type Querier interface {
 	// being shipped, not when the instance was last restarted, and every boot after a downgrade would
 	// otherwise rewrite it.
 	OrphanPermission(ctx context.Context, arg OrphanPermissionParams) error
+	// ResolveAPIToken is the bearer half: one lookup on the PUBLIC prefix, joined to the service account
+	// for its state and its human owner.
+	//
+	// IT RETURNS token_hash, and the comparison is a constant-time one in Go. Comparing in SQL would be
+	// a byte-by-byte comparison whose timing is observable, and matching on the hash instead of the
+	// prefix would move the secret into the query - and into every statement log and slow-query trace
+	// that ever reads one.
+	ResolveAPIToken(ctx context.Context, prefix string) (ResolveAPITokenRow, error)
+	// ResolveSession is the cookie half of the auth path: one lookup on ux_session_token, joined to the
+	// user because every session check needs the account's state and its session epoch in the same
+	// round trip.
+	//
+	// THE EPOCH COMPARISON IS THE CALLER'S. Both epochs come back and internal/auth requires them equal,
+	// which is what makes "sign out everywhere" one UPDATE on the user row rather than an UPDATE over
+	// every session. Doing the comparison in SQL would turn a bumped epoch into "no such session", and
+	// the log line that says a session was killed by an epoch bump is the one that explains a mass
+	// logout to the officer who caused it.
+	// THE SESSION ROW ARRIVES WHOLE, through sqlc.embed, and the user's four columns arrive beside it.
+	// That is not a style preference: sqlc's SQLite engine loses a column's nullability across a JOIN
+	// and types every nullable one as interface{}, which AGENTS.md bans in a domain signature and which
+	// would put a runtime type assertion on the auth hot path. Embedding hands back the generated
+	// Session model, whose nullable columns are already *int64 under emit_pointers_for_null_types.
+	//
+	// user_deleted is a PREDICATE rather than the timestamp, for the same reason: the resolver only asks
+	// whether the account is gone, and a boolean expression is a column sqlc types without help.
+	ResolveSession(ctx context.Context, tokenHash []byte) (ResolveSessionRow, error)
 	// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
 	// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
 	// StandingsFromSnapshot against, and it is what a replay or a verification job reads.
@@ -353,6 +424,25 @@ type Querier interface {
 	// What this query does owe that endpoint is the ORDER BY above: the cursor it grows must tiebreak on
 	// account_id in the same direction, or the page boundary is not stable.
 	StandingsFromSnapshot(ctx context.Context, arg StandingsFromSnapshotParams) ([]StandingsFromSnapshotRow, error)
+	// TouchAPIToken records that a token was used, throttled and guarded exactly as TouchSession is.
+	//
+	// last_used_ip IS NOT WRITTEN HERE. Behind the reverse proxy this project recommends every request
+	// arrives from 127.0.0.1, and there is no DKP_TRUSTED_PROXIES yet (issue #98), so the only address
+	// available is either useless or attacker-controlled. A column that says '' is honest; one that says
+	// whatever X-Forwarded-For claimed is a lie in the screen an officer reads after a leak.
+	TouchAPIToken(ctx context.Context, arg TouchAPITokenParams) error
+	// TouchSession advances last_seen_at and slides the idle expiry, both THROTTLED by the caller and
+	// guarded here.
+	//
+	// THE GUARD IS WHAT MAKES IT SAFE TO CALL, not an optimisation: `last_seen_at < ?` means a burst of
+	// concurrent requests on one session produces at most one write, on SQLite's single writer, which is
+	// the connection raid-night awards are queued on. internal/auth calls this only when the stored
+	// value is already older than its throttle interval, so the common case is no statement at all.
+	//
+	// expires_at NEVER PASSES absolute_expires_at. The idle window slides on use (14 days, 30 with
+	// "remember me"); the absolute ceiling does not, so a session held open by a polling script still
+	// ends. min() is SQLite's two-argument scalar minimum, not the aggregate.
+	TouchSession(ctx context.Context, arg TouchSessionParams) error
 	// UpdateGuild writes every settable column and RETURNS the new row, so the handler emits the fresh
 	// representation and its new ETag in the same round trip a bot needs after a PATCH.
 	//

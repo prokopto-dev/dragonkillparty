@@ -2070,3 +2070,876 @@ table "role_assignment" {
 
   strict = true
 }
+
+// app_user — a human login (docs/design/01-domain-model.md §4.1, docs/design/03-security.md §3).
+//
+// THE PERSON AND THE LOGIN ARE DIFFERENT THINGS, and keeping them apart is what makes an EQdkp
+// import possible at all: `person` is a roster entry with DKP history and exists for members who
+// have never logged in and never will; app_user is a credential holder. The importer creates the
+// former in bulk and the latter never — passwords are never migrated (AGENTS.md), so a migrating
+// guild's members arrive as roster rows and claim their login afterwards.
+//
+// NO PASSWORD COLUMN HERE. The credential lives on user_identity, one row per way of proving you are
+// this user — a local password, a Discord account, an OIDC subject — because §3.4 requires the
+// credential table to be polymorphic from day one so that WebAuthn is not a retrofit, and because
+// "unlinking is blocked if it would leave the account with no usable credential" has to be a query
+// over rows rather than a special case over columns.
+//
+// NO avatar_media_id YET. The domain model's DDL carries one referencing media(id); that table
+// arrives with internal/cms, and a column whose foreign key cannot be declared is a column that
+// silently accepts a dangling id. It lands with the table it points at.
+table "app_user" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // The name typed at a login prompt, and its normalised twin. Normalised IN GO (NFKC + casefold +
+  // strip ' ` -) rather than by a generated column or a COLLATE: core SQLite has no NFKC and lower()
+  // is ASCII-only, so an accented or full-width homoglyph of an officer's name would otherwise be a
+  // distinct username that looks identical in every list an officer reads (canonical §8).
+  column "username" {
+    null = false
+    type = text
+  }
+
+  column "username_norm" {
+    null = false
+    type = text
+  }
+
+  // NULLABLE, and that is a deliberate product decision rather than laziness: SMTP is optional
+  // (§3.7), a guild with no mail server is not locked out, and `dkp admin reset-password` prints a
+  // one-time link instead. An account with no address simply has no email recovery path.
+  column "email" {
+    null = true
+    type = text
+  }
+
+  column "email_norm" {
+    null = true
+    type = text
+  }
+
+  // Micros. NULL means unverified, and an unverified address is never trusted for authorization —
+  // §3.5's second takeover hazard is the attacker who registers a Discord account carrying an
+  // officer's email address and expects to be merged into it.
+  column "email_verified_at" {
+    null = true
+    type = integer
+  }
+
+  column "display_name" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // NULL means "inherit the guild's", for both. A per-user timezone is what makes a raid time render
+  // correctly for the member three zones away, and a NULL is how the guild's value keeps applying
+  // when it changes rather than being copied into every row at signup.
+  column "timezone" {
+    null = true
+    type = text
+  }
+
+  column "locale" {
+    null = true
+    type = text
+  }
+
+  // Values are internal/auth/appuser/kinds' (CHECK generated below); the default is
+  // kinds.DefaultState(), restated here because a column default is a catalogue value written where
+  // `make gen` does not rewrite — TestAppUserKinds_SchemaDefault_MatchesTheCatalogue ties them.
+  column "state" {
+    null    = false
+    type    = text
+    default = "active"
+  }
+
+  // SIGN OUT EVERYWHERE, IN ONE WRITE (§3.6). Every session row records the epoch it was minted
+  // under; the resolver requires the two to be equal, so incrementing this invalidates every session
+  // the user has, on every device, in a single UPDATE that cannot race a session being created
+  // concurrently — the new session simply carries the new epoch. Bumped on password change, MFA
+  // disable, OAuth unlink, role change and deactivation.
+  //
+  // The alternative — UPDATE session SET revoked_at WHERE user_id = ? — is the same number of
+  // statements and touches N rows in the table the auth hot path reads. This is one integer on a row
+  // that path already joins.
+  //
+  // NOT IN the domain model's DDL, which predates §3.6's mechanism being written down; both halves
+  // (this column and session.session_epoch) are named there now.
+  column "session_epoch" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  column "last_login_at" {
+    null = true
+    type = integer
+  }
+
+  // The progressive-delay counter of §3.3, reset on a successful login. Not a lockout counter:
+  // hard lockout is OFF by default, because a lockout is a denial of service an attacker aims at
+  // every officer thirty minutes before a raid.
+  column "failed_logins" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  column "locked_until_at" {
+    null = true
+    type = integer
+  }
+
+  // TOTP (§3.4, Wave 2). The secret is ENCRYPTED, not hashed — AES-256-GCM under an HKDF subkey with
+  // the user's ULID as AAD — because a TOTP seed has to be readable to verify a code, which is the
+  // opposite of a password. The columns ship with the table: adding them later is an ALTER, but
+  // adding mfa_required's CHECK later is a 12-step rebuild of the busiest auth table in the product.
+  column "mfa_totp_secret_enc" {
+    null = true
+    type = blob
+  }
+
+  column "mfa_enrolled_at" {
+    null = true
+    type = integer
+  }
+
+  column "mfa_required" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // Micros. Soft delete, because app_user is referenced by ledger batches, audit rows and role
+  // assignments that must survive the person leaving — the audit trail's whole value is that it still
+  // names who did it. The two unique indexes are PARTIAL over this column so a deleted username and
+  // email become available again.
+  column "deleted_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // BEGIN GENERATED — app_user enum CHECK, from internal/auth/appuser/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestAppUserKinds_CheckMatchesCatalogue fails on.
+  check "app_user_state_enum" {
+    expr = "state IN ('pending', 'active', 'suspended', 'disabled')"
+  }
+  // END GENERATED — app_user enum CHECK.
+
+  // Booleans are INTEGER + CHECK (canonical §8). Not a string enum, so ENUM001 does not read this and
+  // no catalogue owns it.
+  check "app_user_mfa_required_bool" {
+    expr = "mfa_required IN (0, 1)"
+  }
+
+  index "ux_user_username" {
+    unique  = true
+    columns = [column.username_norm]
+    where   = "deleted_at IS NULL"
+  }
+
+  index "ux_user_email" {
+    unique  = true
+    columns = [column.email_norm]
+    where   = "email_norm IS NOT NULL AND deleted_at IS NULL"
+  }
+
+  strict = true
+}
+
+// user_identity — one way of proving you are an app_user (docs/design/01-domain-model.md §4.1).
+//
+// POLYMORPHIC BY ROW, not by nullable column sets: a local password, a Discord account and a generic
+// OIDC subject are three rows, and WebAuthn after 1.0 is a fourth. §3.4 requires this shape from day
+// one so passkeys are not a retrofit, and it is what makes "unlinking is blocked if it would leave
+// the account with no usable credential" (§3.5 rule 4) a COUNT rather than a special case.
+//
+// IDENTITY IS THE PROVIDER'S ID, NEVER THE HANDLE. Discord handles became changeable and REUSABLE
+// after the 2023 pomelo migration, so keying on one hands the account to whoever claims the released
+// name. The unique index is (provider, provider_key, subject) and subject is the snowflake, the OIDC
+// `sub`, or — for a local identity — the username_norm.
+//
+// PASSWORDS ARE NEVER MIGRATED FROM EQdkp (AGENTS.md). The source population mixes seven verifiers;
+// the importer sets password_hash = NULL and must_reset = 1 and mints claim invitations, which is why
+// password_algo has exactly one legal value and why NULL means "login disabled" rather than "no
+// password yet".
+table "user_identity" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  column "user_id" {
+    null = false
+    type = text
+  }
+
+  // Values are internal/auth/useridentity/kinds' (CHECK generated below).
+  column "provider" {
+    null = false
+    type = text
+  }
+
+  // The OIDC issuer discriminator — one instance may federate with more than one issuer, and two
+  // issuers can each mint a subject called "1". Empty for local and Discord, never NULL, so the
+  // unique index below has no NULL component: SQLite treats NULLs as distinct, which would let the
+  // same Discord account be linked to every user in the guild.
+  column "provider_key" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "subject" {
+    null = false
+    type = text
+  }
+
+  // The argon2id PHC string (§3.1): $argon2id$v=19$m=19456,t=2,p=1$<salt>$<tag>. PARAMETERS TRAVEL
+  // WITH THE HASH, which is what makes rehash-on-login possible when the cost profile changes.
+  // NULL ⇒ this identity cannot authenticate with a password.
+  //
+  // NO PEPPER, deliberately (§3.1). A pepper helps only against a DB-only leak, which for a
+  // single-file SQLite deployment is nearly the same event as a filesystem leak, and it makes
+  // rotation require every user to re-authenticate. Tokens ARE peppered because they need a fast
+  // keyed hash, not a slow one. This is written down so it is not "fixed" later by someone who read
+  // a blog post.
+  column "password_hash" {
+    null = true
+    type = text
+  }
+
+  // Values are internal/auth/useridentity/kinds' (CHECK generated below, in the nullable form).
+  column "password_algo" {
+    null = true
+    type = text
+  }
+
+  column "password_set_at" {
+    null = true
+    type = integer
+  }
+
+  column "must_reset" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // Provider tokens, encrypted with AES-256-GCM under an HKDF subkey (§9.1). Stored ONLY when
+  // Discord role sync is enabled (§3.5) — a provider refresh token is a credential for someone
+  // else's system, and the default is not to hold one at all.
+  column "access_token_enc" {
+    null = true
+    type = blob
+  }
+
+  column "refresh_token_enc" {
+    null = true
+    type = blob
+  }
+
+  column "token_expires_at" {
+    null = true
+    type = integer
+  }
+
+  // Space-separated, as GRANTED by the provider — not as requested. Never queried into.
+  column "scopes" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // Last-seen avatar, global_name and guild roles. A cache of the provider's view, rendered in the
+  // UI and never authoritative: §3.5 rule 7 says a changed handle is surfaced, never acted upon.
+  column "profile_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  column "last_used_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // CASCADE, and this is the one place in the auth schema where a delete is the right answer: a
+  // credential for a user that no longer exists is not history, it is a live way in.
+  foreign_key "user_identity_user" {
+    columns     = [column.user_id]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  // BEGIN GENERATED — user_identity enum CHECKs, from internal/auth/useridentity/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestUserIdentityKinds_CheckMatchesCatalogue fails on.
+  check "user_identity_provider_enum" {
+    expr = "provider IN ('local', 'discord', 'oidc')"
+  }
+
+  check "user_identity_password_algo_enum" {
+    expr = "password_algo IS NULL OR password_algo IN ('argon2id')"
+  }
+  // END GENERATED — user_identity enum CHECKs.
+
+  check "user_identity_must_reset_bool" {
+    expr = "must_reset IN (0, 1)"
+  }
+
+  // THE ANTI-TAKEOVER INDEX. One identity per (provider, issuer, subject) across the whole instance,
+  // so a Discord account can be linked to exactly one DKP user and a released handle carries nothing
+  // with it.
+  index "ux_identity_subject" {
+    unique  = true
+    columns = [column.provider, column.provider_key, column.subject]
+  }
+
+  index "ix_identity_user" {
+    columns = [column.user_id]
+  }
+
+  strict = true
+}
+
+// session — a browser login, opaque and server-side (docs/design/01-domain-model.md §4.2,
+// docs/design/03-security.md §3.6).
+//
+// THE ROW ID IS NOT THE COOKIE. The cookie carries 32 random bytes; this table stores their SHA-256
+// and nothing else, so a read-only database leak yields no live session. The id is an ordinary ULID
+// used by the session-list UI and by revocation.
+//
+// NOT A JWT, and that is the decision this table records. A single-process app gains nothing from
+// stateless sessions and loses instant revocation — the property that makes a stolen cookie a
+// support conversation rather than an incident. The only signed bearer in the product is the
+// 30-second SSE handshake ticket.
+//
+// UNKEYED SHA-256 HERE, HMAC ON api_token, and the asymmetry is deliberate. A session secret is
+// verified by exact hash lookup and never leaves the browser; a PAT is pasted into bot configs and
+// Discord DMs, so its hash is keyed with a server pepper (§6.1) that a database-only leak does not
+// contain.
+table "session" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  column "user_id" {
+    null = false
+    type = text
+  }
+
+  // SHA-256 of the 32-byte cookie secret. BLOB rather than hex TEXT: it is 32 bytes instead of 64 on
+  // the index the auth hot path reads on every request, and there is nothing to read by eye.
+  column "token_hash" {
+    null = false
+    type = blob
+  }
+
+  // WHICH credential opened this session — the local password, or a Discord identity. Nullable
+  // because a session may outlive the identity it was opened with (an unlink), and because the
+  // first-run bootstrap opens one before any identity row is the answer to anything.
+  column "identity_id" {
+    null = true
+    type = text
+  }
+
+  // The app_user.session_epoch this session was minted under. The resolver requires the two to be
+  // equal, which is what makes "sign out everywhere" one UPDATE on the user row (§3.6).
+  column "session_epoch" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  // Advanced by the resolver, THROTTLED (internal/auth): a write per request on SQLite's single
+  // writer would put the auth path in the same queue as raid-night awards.
+  column "last_seen_at" {
+    null = false
+    type = integer
+  }
+
+  // Idle expiry: 14 days, extended on use. The absolute ceiling below is not extendable, so a session
+  // kept alive by a polling bot still ends.
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+
+  column "absolute_expires_at" {
+    null = false
+    type = integer
+  }
+
+  column "revoked_at" {
+    null = true
+    type = integer
+  }
+
+  // The session-list UI's "where was this signed in from". EMPTY UNTIL DKP_TRUSTED_PROXIES EXISTS
+  // (issue #98): behind the reverse proxy this project recommends, every request arrives from
+  // 127.0.0.1, and recording a spoofable X-Forwarded-For as if it were a fact would put a lie in the
+  // one screen a member checks after a stolen-session scare.
+  column "ip" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "user_agent" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // THE STEP-UP CLOCK (§3.4). Minting a token, editing a role, downloading a backup and committing
+  // an import all require re-authentication within five minutes; this is the instant that window is
+  // measured from. NULL means no step-up has happened on this session.
+  column "mfa_satisfied_at" {
+    null = true
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "session_user" {
+    columns     = [column.user_id]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  foreign_key "session_identity" {
+    columns     = [column.identity_id]
+    ref_columns = [table.user_identity.column.id]
+    on_update   = NO_ACTION
+    on_delete   = SET_NULL
+  }
+
+  // The auth hot path: one indexed lookup per cookie-bearing request.
+  index "ux_session_token" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+
+  // The session-list read, and the sweep that deletes expired rows.
+  index "ix_session_user_active" {
+    columns = [column.user_id, column.expires_at]
+    where   = "revoked_at IS NULL"
+  }
+
+  strict = true
+}
+
+// service_account — a bot identity (docs/design/01-domain-model.md §4.3, ADR-0011).
+//
+// TOKENS BELONG TO SERVICE ACCOUNTS, NOT PEOPLE, and that is the single most load-bearing sentence in
+// the token design. A service account has a human owner_user_id for audit and notification, but
+// revoking the human does not kill the bot — the bot dying mid-raid because an officer quit is the
+// most predictable failure mode in guild tooling, and EQdkp's api_key, which impersonates the first
+// superadmin, is the incumbent's version of it.
+table "service_account" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  column "name" {
+    null = false
+    type = text
+  }
+
+  column "name_norm" {
+    null = false
+    type = text
+  }
+
+  column "description" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // A HUMAN, for audit and notification. NOT NULL: every bot has somebody answerable for it. §6.2's
+  // "orphaned" flag is derived from this user's state, not stored — a bot can be orphaned and
+  // disabled at once, and a state column could only say one of them.
+  column "owner_user_id" {
+    null = false
+    type = text
+  }
+
+  // Values are internal/auth/serviceaccount/kinds' (CHECK generated below); the default is
+  // kinds.DefaultState().
+  column "state" {
+    null    = false
+    type    = text
+    default = "active"
+  }
+
+  column "created_by" {
+    null = false
+    type = text
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // NO_ACTION on both, where user_identity CASCADEs. Deleting a user must FAIL while they still own
+  // or created a bot, rather than silently taking the guild's raid bot with them: reassignment is an
+  // officer's decision, and the FK is what forces the conversation.
+  foreign_key "service_account_owner" {
+    columns     = [column.owner_user_id]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  foreign_key "service_account_creator" {
+    columns     = [column.created_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  // BEGIN GENERATED — service_account enum CHECK, from internal/auth/serviceaccount/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestServiceAccountKinds_CheckMatchesCatalogue fails on.
+  check "service_account_state_enum" {
+    expr = "state IN ('active', 'disabled')"
+  }
+  // END GENERATED — service_account enum CHECK.
+
+  index "ux_service_account_name" {
+    unique  = true
+    columns = [column.name_norm]
+  }
+
+  strict = true
+}
+
+// api_token — an opaque, scoped personal access token (ADR-0011, docs/design/03-security.md §6).
+//
+// FORMAT: dkp_pat_<8-char public prefix>_<43 chars base64url of 32 random bytes>. The prefix is
+// indexed and non-secret — it is what appears in logs, in the token list and in
+// `dkp token revoke <prefix>` — and the secret half appears in neither. A distinctive, greppable
+// prefix is itself a control: a secret scanner can match it.
+//
+// STORED AS HMAC-SHA256(hkdf(root_key, "dkp/pat-pepper/v1"), secret) — a KEYED hash, not a password
+// hash, because verification is on the hot path of every bot request and must be one indexed lookup
+// plus one constant-time compare. The pepper lives in <data-dir>/secrets.json, so a database-only
+// leak yields nothing usable.
+//
+// THERE IS NO admin:* SCOPE AND NO ALL-POWERFUL TOKEN. Effective capability is the service account's
+// role permissions INTERSECTED with this row's scopes, so a token can only ever narrow what its
+// account already has, and the operations that alter authentication, authorization or bulk-export
+// state carry no scope at all and are session-and-step-up only. That is a property of the schema
+// rather than of a policy document: there is no cell in the matrix to grant.
+table "api_token" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // 8 characters, public, and the ONLY part of the token that is ever printed. It identifies the row
+  // for revocation and for `GET /tokens/{id}/activity` without revealing the secret.
+  column "prefix" {
+    null = false
+    type = text
+  }
+
+  column "token_hash" {
+    null = false
+    type = blob
+  }
+
+  column "service_account_id" {
+    null = false
+    type = text
+  }
+
+  column "name" {
+    null = false
+    type = text
+  }
+
+  // Space-separated, from the closed enum internal/authz publishes (canonical §6). TEXT rather than a
+  // join table because it is read whole on every request and never queried into — the intersection
+  // with the account's role permissions happens in Go, where it can be unit-tested.
+  column "scopes" {
+    null = false
+    type = text
+  }
+
+  // WHICH PEPPER HASHED THIS ROW (§9.1). The PAT pepper cannot be rotated in place — the plaintext
+  // secret is not stored, so old hashes cannot be re-peppered — and the honest mechanism is that
+  // rotation mints a new kid for NEW tokens, marks the existing ones stale and surfaces a "rotate
+  // these N tokens" task. Without this column that mechanism has nowhere to record itself, and the
+  // migration to add one would land during the incident that needed it.
+  column "pepper_kid" {
+    null    = false
+    type    = text
+    default = "v1"
+  }
+
+  // Micros. NULL means never, which §6.2 permits only behind an explicit confirmation flag and a
+  // permanent warning badge; the default the mint path applies is 365 days, with a maximum of three
+  // years.
+  column "expires_at" {
+    null = true
+    type = integer
+  }
+
+  // "Did the leaked token do anything?" — answered in seconds because the auth path stamps this.
+  // THROTTLED, like session.last_seen_at, and last_used_ip stays empty until DKP_TRUSTED_PROXIES
+  // makes a client address a fact rather than a header (issue #98).
+  column "last_used_at" {
+    null = true
+    type = integer
+  }
+
+  column "last_used_ip" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  // Per-token rate limit. A bot that starts hammering is throttled at the token rather than at the
+  // instance, so one misbehaving script does not shed raid-night traffic for everyone.
+  column "rate_limit_rpm" {
+    null    = false
+    type    = integer
+    default = 600
+  }
+
+  column "created_by" {
+    null = false
+    type = text
+  }
+
+  // REVOCATION IS ONE UPDATE ON A ROW THE AUTH PATH ALREADY READS, which is the concrete reason PATs
+  // are not JWTs: no denylist, no propagation delay, no window in which a leaked token still works.
+  column "revoked_at" {
+    null = true
+    type = integer
+  }
+
+  column "revoked_by" {
+    null = true
+    type = text
+  }
+
+  column "revoke_reason" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // CASCADE: deleting the bot deletes its credentials. The audit rows the token wrote survive
+  // elsewhere and name it by prefix.
+  foreign_key "api_token_service_account" {
+    columns     = [column.service_account_id]
+    ref_columns = [table.service_account.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  foreign_key "api_token_creator" {
+    columns     = [column.created_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  foreign_key "api_token_revoker" {
+    columns     = [column.revoked_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = SET_NULL
+  }
+
+  // The auth hot path: the bearer names its own row through the public prefix, and the constant-time
+  // compare happens against that one row's hash in Go.
+  index "ux_api_token_prefix" {
+    unique  = true
+    columns = [column.prefix]
+  }
+
+  // Defence in depth against a duplicate secret, which cannot happen from 32 random bytes but would
+  // be catastrophic and silent if a mint path ever reused one.
+  index "ux_api_token_hash" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+
+  index "ix_api_token_sa" {
+    columns = [column.service_account_id]
+    where   = "revoked_at IS NULL"
+  }
+
+  strict = true
+}
+
+// feed_token — a single-purpose, path-embedded read credential (docs/design/01-domain-model.md §4.3,
+// docs/design/03-security.md §6.3).
+//
+// PATH-EMBEDDED BECAUSE CALENDAR CLIENTS CANNOT SET HEADERS, which puts the credential in URLs, proxy
+// logs and shared calendars — so it is a DIFFERENT CLASS rather than a PAT with a relaxed transport:
+// read-only, scoped to one feed kind, independently revocable, carrying no scopes column at all, and
+// containing no email addresses in what it serves.
+//
+// THE TABLE SHIPS AHEAD OF ITS ROUTES, deliberately: /feeds/{feed_token}/… lands with the calendar
+// and article surfaces, and adding a value to the kind CHECK later is a 12-step table rebuild.
+table "feed_token" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // HMAC-SHA256 under the same pepper as api_token (§9.1 derives one "PAT / feed-token HMAC key"),
+  // which is why this row carries a pepper_kid too.
+  column "token_hash" {
+    null = false
+    type = blob
+  }
+
+  column "user_id" {
+    null = false
+    type = text
+  }
+
+  // Values are internal/auth/feedtoken/kinds' (CHECK generated below). No default: a feed token
+  // without a purpose is the general-purpose credential this table exists to avoid.
+  column "kind" {
+    null = false
+    type = text
+  }
+
+  column "pepper_kid" {
+    null    = false
+    type    = text
+    default = "v1"
+  }
+
+  column "revoked_at" {
+    null = true
+    type = integer
+  }
+
+  column "last_used_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "feed_token_user" {
+    columns     = [column.user_id]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  // BEGIN GENERATED — feed_token enum CHECK, from internal/auth/feedtoken/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestFeedTokenKinds_CheckMatchesCatalogue fails on.
+  check "feed_token_kind_enum" {
+    expr = "kind IN ('raids_ical', 'calendar_ical', 'standings_rss', 'articles_rss')"
+  }
+  // END GENERATED — feed_token enum CHECK.
+
+  index "ux_feed_token_hash" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+
+  strict = true
+}

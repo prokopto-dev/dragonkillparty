@@ -107,6 +107,32 @@ type Queries interface {
 	ListRoles(ctx context.Context) ([]sqlitegen.Role, error)
 	InsertRole(ctx context.Context, arg sqlitegen.InsertRoleParams) error
 	InsertRolePermission(ctx context.Context, arg sqlitegen.InsertRolePermissionParams) error
+
+	// Identity and credentials (Phase 2 Wave 0d, issue #273). The two Resolve methods are the auth
+	// hot path — one indexed lookup each, on ux_session_token and ux_api_token_prefix — and they are
+	// the ONLY reads internal/auth performs per request. The two Touch methods are throttled writes
+	// on the same rows, guarded in SQL so a burst on one credential produces at most one statement on
+	// SQLite's single writer.
+	//
+	// NEITHER RESOLVE FILTERS the row it returns. Expiry, revocation, the account's state and the
+	// session epoch all come back and internal/auth decides, because the middleware must tell those
+	// apart in its logs while returning the same 401 to the caller — and "was this token used, and
+	// when" is the only question worth asking during an incident.
+	//
+	// THERE IS NO DeleteSession, NO RevokeAPIToken AND NO UpdateAppUser here, and their absence is
+	// the wave boundary rather than an oversight: sign-out, token mint/rotate/revoke and credential
+	// edits are session-and-step-up operations (canonical §6's capability floor) that land with the
+	// endpoints performing them. A mutation with no caller is a method the Postgres target has to
+	// implement for nothing.
+	InsertAppUser(ctx context.Context, arg sqlitegen.InsertAppUserParams) error
+	InsertUserIdentity(ctx context.Context, arg sqlitegen.InsertUserIdentityParams) error
+	InsertSession(ctx context.Context, arg sqlitegen.InsertSessionParams) error
+	ResolveSession(ctx context.Context, tokenHash []byte) (sqlitegen.ResolveSessionRow, error)
+	TouchSession(ctx context.Context, arg sqlitegen.TouchSessionParams) error
+	InsertServiceAccount(ctx context.Context, arg sqlitegen.InsertServiceAccountParams) error
+	InsertAPIToken(ctx context.Context, arg sqlitegen.InsertAPITokenParams) error
+	ResolveAPIToken(ctx context.Context, prefix string) (sqlitegen.ResolveAPITokenRow, error)
+	TouchAPIToken(ctx context.Context, arg sqlitegen.TouchAPITokenParams) error
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.
