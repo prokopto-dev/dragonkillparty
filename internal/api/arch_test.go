@@ -894,31 +894,29 @@ func TestArch_SecuritySchemes_MatchTheCanonicalContract(t *testing.T) {
 			"generates the PAT scope enum, so a second list here is exactly what that forbids.")
 }
 
-// TestArch_SecuritySchemes_DiscloseThePhase0Gap is a security review's finding turned into a test,
+// TestArch_SecuritySchemes_DiscloseTheAuthorizationGap is a security review's finding turned into a test,
 // and it is a TRIPWIRE TO DELETE rather than a rule to keep.
 //
 // The finding: describing a credential well makes the absence of enforcement HARDER to notice. These
 // two schemes document bearer tokens, session cookies, scopes and step-up in detail, and a bot author
-// reading that reasonably concludes an unauthenticated `PATCH /api/v1/guild` is rejected. It is not —
-// it succeeds today with nothing but a current ETag, which is what
-// TestGuild_Unauthenticated_IsAKnownPhase0Gap (test/integration/guild_test.go) asserts and SECURITY.md
-// names.
+// reading that reasonably concludes a zero-scope token is refused. It is not.
 //
-// So every published description of a credential carries authz.Phase0EnforcementNotice until the
-// middleware exists. When it lands, that constant and this test are deleted in the same change as the
-// integration tripwire — which is the point of asserting it: the notice cannot quietly outlive the gap
-// any more than it can quietly vanish while the gap is open.
-func TestArch_SecuritySchemes_DiscloseThePhase0Gap(t *testing.T) {
+// IT HAS ALREADY NARROWED ONCE, which is the shape to keep. Phase 0's notice said nothing was
+// enforced at all; Phase 2 Wave 0d (#273) made an unauthenticated PATCH answer 401, deleted the
+// integration tripwire that pinned that gap, and replaced the notice rather than removing it —
+// because the other half, capability, is still not checked. Wave 0e lands authz.Check, and that is
+// the change that deletes this constant and this test together.
+func TestArch_SecuritySchemes_DiscloseTheAuthorizationGap(t *testing.T) {
 	t.Parallel()
 
 	schemes := NewHumaAPI(Config{}).OpenAPI().Components.SecuritySchemes
 
 	for name, scheme := range schemes {
-		require.Containsf(t, scheme.Description, authz.Phase0EnforcementNotice,
-			"the %q scheme describes a credential without disclosing that nothing enforces it yet. "+
-				"A reader takes a detailed credential description as evidence the server checks it; "+
-				"today an unauthenticated PATCH succeeds. Delete this test with the middleware, not "+
-				"before.", name)
+		require.Containsf(t, scheme.Description, authz.AuthorizationGapNotice,
+			"the %q scheme describes scopes and step-up without disclosing that no capability check "+
+				"runs yet. A reader takes a detailed credential description as evidence the server "+
+				"checks it; today any live credential passes every operation. Delete this test with "+
+				"authz.Check, not before.", name)
 	}
 }
 

@@ -34,7 +34,9 @@
 //   - The admin.owner HOLDER, and the first-run bootstrap that creates it. The owner ROLE is seeded
 //     here; who holds it cannot be, because a role_assignment names an app_user or a service_account
 //     and both are Phase 2 deliverable 1. Issue #264.
-//   - authz.Check and the MIDDLEWARE. There is no Principal to check yet.
+//   - authz.Check. Phase 2 Wave 0d (#273) built the Principal and the middleware that resolves one,
+//     so the missing half is now the CHECK itself: the permission lookup, the role-permission
+//     intersection with a token's scopes, and the capability floor. Wave 0e.
 //   - The GENERATED OUTPUTS canonical §6 lists — the OpenAPI x-dkp-permission metadata, the PAT scope
 //     enum, the authorization matrix and docs/reference/permissions.md.
 //
@@ -61,27 +63,35 @@
 // directions (see the decision record §Q1). Do not "tidy" the catalogue into Resource/Action fields.
 package authz
 
-// Phase0EnforcementNotice is the disclosure every published description of a credential carries until
+// AuthorizationGapNotice is the disclosure every published description of a credential carries until
 // the authorization middleware exists.
 //
-// IT IS A TRIPWIRE, AND IT IS MEANT TO BE DELETED. Phase 0 ships the shape the security controls
-// attach to before the controls themselves (SECURITY.md, "Known Phase 0 gaps"): there is no
-// authentication and no authz.Check, so `GET` and `PATCH /api/v1/guild` are served with no credential
-// at all — the mutating one included. `TestGuild_Unauthenticated_IsAKnownPhase0Gap` asserts that
-// CURRENT behaviour so the day the middleware lands it goes red and the gap closes deliberately.
+// IT IS A TRIPWIRE, AND IT IS MEANT TO BE DELETED. It is also the SECOND of them: the first,
+// Phase0EnforcementNotice, said that nothing was enforced at all, and it was deleted by Phase 2 Wave
+// 0d (issue #273) together with TestGuild_Unauthenticated_IsAKnownPhase0Gap, in the change that made
+// an unauthenticated `PATCH /api/v1/guild` answer 401. Narrowing a disclosure is not the same as
+// removing it, and replacing it rather than deleting it is what keeps the remaining half visible.
+//
+// WHAT IS TRUE NOW: an operation that declares `Security` requires a live credential. What is still
+// NOT true is anything about capability. internal/auth resolves identity; nothing yet checks that the
+// principal HOLDS the `x-dkp-permission` the operation declares, that a token's scopes reach it, or
+// that the capability floor's session-and-step-up operations refuse a token. Any live credential
+// passes every operation — a member's session can `PATCH /api/v1/guild`, and so can a zero-scope
+// token.
 //
 // WHY IT HAS TO BE ON THE PUBLISHED SURFACE, and this is a security review's finding rather than a
-// tidiness one: the OpenAPI security schemes and the generated reference pages now describe bearer
-// tokens, session cookies, scopes and step-up in detail. A bot author reading that reasonably
-// concludes an unauthenticated `PATCH /api/v1/guild` is rejected. It is not — it succeeds, today,
-// with nothing but a current ETag. Describing a credential well makes the absence of enforcement
-// HARDER to notice, not easier, so the description has to say so itself.
+// tidiness one: the OpenAPI security schemes and the generated reference pages describe scopes,
+// intersection and step-up in detail. A bot author reading that reasonably concludes a zero-scope
+// token is refused. It is not. Describing a control well makes its absence HARDER to notice, not
+// easier, so the description has to say so itself.
 //
-// Delete this constant and its uses in the same change that lands the middleware. Its consumers are
-// internal/api's security schemes and internal/authz/docgen's two reference pages; both have tests
-// asserting the notice is present, which is what makes the deletion deliberate rather than a silent
-// drift back to over-promising.
-const Phase0EnforcementNotice = "**NOT YET ENFORCED.** This describes the contract Phase 2 " +
-	"implements, not what the server checks today: there is no authentication or authorization " +
-	"middleware yet, so every operation is served without a credential — including the mutating " +
-	"`PATCH /api/v1/guild`. See \"Known Phase 0 gaps\" in SECURITY.md."
+// Delete this constant and its uses in the same change that lands authz.Check and the capability
+// floor (Wave 0e). Its consumers are internal/api's security schemes and internal/authz/docgen's two
+// reference pages; both have tests asserting the notice is present, which is what makes the deletion
+// deliberate rather than a silent drift back to over-promising.
+const AuthorizationGapNotice = "**AUTHENTICATION IS ENFORCED; AUTHORIZATION IS NOT YET.** An " +
+	"operation that names a credential requires one — an anonymous request is refused with `401`. " +
+	"What the server does not check yet is CAPABILITY: no permission is verified, scopes are not " +
+	"intersected with the service account's role, and the capability floor is documented rather than " +
+	"enforced. Until the authorization middleware lands, any live credential passes every operation. " +
+	"See \"Known gaps\" in SECURITY.md."
