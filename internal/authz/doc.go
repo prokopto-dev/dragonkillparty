@@ -9,10 +9,18 @@
 //
 // WHAT THIS PACKAGE IS, AND WHAT IT IS STILL NOT.
 //
-// Two halves. Catalogue() and Scopes() are the SOURCE: pure Go, no database, read as text by
-// SPEC005. Reconcile() is the projection: it writes the catalogue into the permission table on the
-// boot path, stamps orphaned_at on a key the running binary no longer ships, never deletes a row, and
-// refuses to boot when a registered route names a key the catalogue does not have.
+// Two halves. Catalogue(), Scopes() and BuiltinRoles() are the SOURCE: pure Go, no database, and the
+// first of them is read as TEXT by SPEC005. Reconcile() is the projection: it writes the catalogue
+// into the permission table on the boot path, seeds the built-in roles and their grants, stamps
+// orphaned_at on a key the running binary no longer ships, never deletes a row, and refuses to boot
+// when a registered route names a key the catalogue does not have.
+//
+// THE PERMISSION TABLE IS RECONCILED AND THE ROLE TABLE IS SEEDED, and the two words are not
+// interchangeable. A permission row is code's, so every boot makes it match the catalogue. A role row
+// is the GUILD'S once it exists — docs/design/01-domain-model.md §5.1 calls this table "the seed, not
+// a second catalogue" — so a built-in role that is already there is left alone, grants included.
+// Rewriting them would silently restore a permission an officer deliberately revoked, which is a
+// security decision undone by a restart.
 //
 // Phase 0 PR 5 shipped the first half alone, deliberately: there was no permission table, no
 // role_permission and therefore no FK, so a bad key was a red `make verify-spec` rather than a boot
@@ -23,9 +31,9 @@
 //
 // Still NOT here, and each has a reason rather than an omission:
 //
-//   - The BUILT-IN ROLE SEED (guest … owner, bot_readonly, bot_raid — 01-domain-model.md §5.1) and
-//     the admin.owner holder. A role nobody can be assigned to is a row with no effect: assignment
-//     needs app_user and service_account, which are Phase 2 deliverable 1. Issue #264.
+//   - The admin.owner HOLDER, and the first-run bootstrap that creates it. The owner ROLE is seeded
+//     here; who holds it cannot be, because a role_assignment names an app_user or a service_account
+//     and both are Phase 2 deliverable 1. Issue #264.
 //   - authz.Check and the MIDDLEWARE. There is no Principal to check yet.
 //   - The GENERATED OUTPUTS canonical §6 lists — the OpenAPI x-dkp-permission metadata, the PAT scope
 //     enum, the authorization matrix and docs/reference/permissions.md.

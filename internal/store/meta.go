@@ -99,6 +99,14 @@ type Queries interface {
 	GetPermission(ctx context.Context, key string) (sqlitegen.Permission, error)
 	UpsertPermission(ctx context.Context, arg sqlitegen.UpsertPermissionParams) error
 	OrphanPermission(ctx context.Context, arg sqlitegen.OrphanPermissionParams) error
+
+	// The built-in role seed, called from the same place and in the same transaction. There is no
+	// UpdateRole and no DeleteRole: a built-in role is created once and then belongs to the guild
+	// (docs/design/01-domain-model.md §5.1 calls this table "the seed, not a second catalogue"), and
+	// rewriting its grants on a later boot would silently restore a permission an officer revoked.
+	ListRoles(ctx context.Context) ([]sqlitegen.Role, error)
+	InsertRole(ctx context.Context, arg sqlitegen.InsertRoleParams) error
+	InsertRolePermission(ctx context.Context, arg sqlitegen.InsertRolePermissionParams) error
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

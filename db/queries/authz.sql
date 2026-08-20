@@ -65,3 +65,33 @@ ON CONFLICT (key) DO UPDATE SET
 UPDATE permission
 SET orphaned_at = ?
 WHERE key = ? AND orphaned_at IS NULL;
+
+-- Built-in roles (docs/design/01-domain-model.md section 5.1). SEEDED, not reconciled - the domain
+-- model calls this table "the seed, not a second catalogue", and the distinction is a control rather
+-- than a wording choice: rewriting a built-in role's grants on every boot would silently restore a
+-- permission an officer deliberately revoked, which is a security decision being undone by a restart.
+-- So internal/authz seeds a built-in role and its grants only when the role row is absent.
+--
+-- There is no UPDATE and no DELETE here. A built-in role is not renamable and not deletable; the role
+-- editor changes grants, which is role_permission's business and lands with it.
+
+-- name: ListRoles :many
+SELECT
+    id, key, name, name_norm, description, is_builtin, applies_to, sort_order,
+    deleted_at, created_at, updated_at
+FROM role
+ORDER BY sort_order, id;
+
+-- InsertRole writes one role. The seed calls it inside the same transaction that upserts the
+-- permission rows, because role_permission references permission(key) and the grants below would
+-- otherwise fail the foreign key on a fresh install - which is also why the seed cannot live in the
+-- migration beside pool and account: at migration time the permission table is empty.
+
+-- name: InsertRole :exec
+INSERT INTO role (
+    id, key, name, name_norm, description, is_builtin, applies_to, sort_order,
+    deleted_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);
+
+-- name: InsertRolePermission :exec
+INSERT INTO role_permission (role_id, permission_key) VALUES (?, ?);

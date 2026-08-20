@@ -64,6 +64,29 @@ func TestServe_Boot_ReconcilesThePermissionCatalogue(t *testing.T) {
 	for _, key := range api.DeclaredPermissions() {
 		require.Truef(t, live[key], "route permission %q has no live row after boot", key)
 	}
+
+	// And the roles, which are the half that makes the permission rows usable: a table of keys nobody
+	// can be granted is an instance where the documented bootstrap has nothing to hand out.
+	roles, err := st.Q().ListRoles(t.Context())
+	require.NoError(t, err, "read the role table")
+	require.Len(t, roles, len(authz.BuiltinRoles()),
+		"`dkp serve` must seed the built-in roles (docs/design/01-domain-model.md §5.1) on the boot "+
+			"path — the migration cannot, because role_permission references permission(key) and the "+
+			"permission table is empty until this same transaction fills it")
+
+	var grants int
+
+	require.NoError(t, st.QueryRowForTest(t, `SELECT count(*) FROM role_permission`).Scan(&grants))
+	require.Positive(t, grants, "the roles were seeded with no grants")
+
+	// The owner role exists and holds the owner capability. Who HOLDS the role is Wave 0d's — a
+	// role_assignment needs an app_user — but the role itself has to be here for that to be possible.
+	var ownerGrants int
+
+	require.NoError(t, st.QueryRowForTest(t,
+		`SELECT count(*) FROM role_permission WHERE role_id = ? AND permission_key = ?`,
+		authz.RoleIDOwner, "admin.owner").Scan(&ownerGrants))
+	require.Equal(t, 1, ownerGrants, "the owner role does not grant admin.owner")
 }
 
 // TestReconcileOnBoot_NoStore_IsNotFatal covers the degraded boot canonical §13 requires.

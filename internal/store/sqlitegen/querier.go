@@ -161,6 +161,12 @@ type Querier interface {
 	// orders the audit chain; event_seq is instance-wide, never-reused and orders the event stream. A
 	// bot author who confuses them gets wrong answers silently, which is why they do not share a name.
 	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) (int64, error)
+	// InsertRole writes one role. The seed calls it inside the same transaction that upserts the
+	// permission rows, because role_permission references permission(key) and the grants below would
+	// otherwise fail the foreign key on a fresh install - which is also why the seed cannot live in the
+	// migration beside pool and account: at migration time the permission table is empty.
+	InsertRole(ctx context.Context, arg InsertRoleParams) error
+	InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error
 	// ListAuditRowsAfterSeq is one page of the audit log in seq order, for `dkp verify-ledger` (Phase 1,
 	// issue #198). It is the FIRST read of this table, and it is not the officer-facing forensic view
 	// the header above defers to Phase 2: it is the chain verifier, it selects no PII the write path did
@@ -236,6 +242,15 @@ type Querier interface {
 	// has to know the whole set - reading only the default pool would report a clean ledger while an
 	// entire second pool's chain was broken.
 	ListPoolIDs(ctx context.Context) ([]string, error)
+	// Built-in roles (docs/design/01-domain-model.md section 5.1). SEEDED, not reconciled - the domain
+	// model calls this table "the seed, not a second catalogue", and the distinction is a control rather
+	// than a wording choice: rewriting a built-in role's grants on every boot would silently restore a
+	// permission an officer deliberately revoked, which is a security decision being undone by a restart.
+	// So internal/authz seeds a built-in role and its grants only when the role row is absent.
+	//
+	// There is no UPDATE and no DELETE here. A built-in role is not renamable and not deletable; the role
+	// editor changes grants, which is role_permission's business and lands with it.
+	ListRoles(ctx context.Context) ([]Role, error)
 	// ListSnapshotsAfter is one page of a pool's cached balances, walked in primary-key order so the
 	// verifier can compare them against its fold without holding the whole cache in memory.
 	//

@@ -397,6 +397,214 @@ func TestReconcile_GrantedPermission_SurvivesOrphaning(t *testing.T) {
 			"the row is stamped instead of deleted")
 }
 
+// grantsByRoleKey reads role_permission joined back to the role key, so a test can compare a seeded
+// role's grants against the Go catalogue without knowing any ULID.
+func grantsByRoleKey(t *testing.T, s *store.Store) map[string][]string {
+	t.Helper()
+
+	rows := s.QueryForTest(t,
+		`SELECT r.key, rp.permission_key FROM role_permission rp
+		   JOIN role r ON r.id = rp.role_id
+		  ORDER BY r.sort_order, rp.permission_key`)
+	defer func() { require.NoError(t, rows.Close()) }()
+
+	out := map[string][]string{}
+
+	for rows.Next() {
+		var key, permission string
+		require.NoError(t, rows.Scan(&key, &permission))
+
+		out[key] = append(out[key], permission)
+	}
+
+	require.NoError(t, rows.Err())
+
+	return out
+}
+
+// TestReconcile_FreshInstall_SeedsTheBuiltinRoles is the other half of a fresh install: the nine roles
+// docs/design/01-domain-model.md §5.1 specifies, with their grants.
+//
+// Without it the migration ships four tables and only one of them is ever written to — an install with
+// no assignable role, where the documented bootstrap has nothing to grant. The grants are compared as
+// SETS against the Go seed rather than spot-checked, because a role that lands with half its
+// permissions is a role that looks right in a list and refuses work at the door.
+func TestReconcile_FreshInstall_SeedsTheBuiltinRoles(t *testing.T) {
+	t.Parallel()
+
+	r, s := newReconciler(t)
+
+	report, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+
+	seed := authz.BuiltinRoles()
+
+	wantKeys := make([]string, 0, len(seed))
+	wantGrants := 0
+
+	for _, role := range seed {
+		wantKeys = append(wantKeys, role.Key)
+		wantGrants += len(role.Permissions)
+	}
+
+	require.Equal(t, wantKeys, report.RolesSeeded, "every built-in role is seeded, in §5.1's order")
+	require.Equal(t, wantGrants, report.GrantsSeeded)
+
+	rows, err := s.Q().ListRoles(t.Context())
+	require.NoError(t, err, "list roles")
+	require.Len(t, rows, len(seed))
+
+	byKey := map[string]sqlitegen.Role{}
+
+	for _, row := range rows {
+		require.NotNil(t, row.Key, "a seeded built-in role must carry a key — that is what marks it "+
+			"built-in, and what ux_role_key keeps singular")
+		byKey[*row.Key] = row
+	}
+
+	grants := grantsByRoleKey(t, s)
+
+	for _, role := range seed {
+		row, ok := byKey[role.Key]
+		require.Truef(t, ok, "built-in role %s was not seeded", role.Key)
+
+		require.Equal(t, role.ID, row.ID, "%s must carry its deterministic id", role.Key)
+		require.Equal(t, role.Name, row.Name)
+		require.Equal(t, role.NameNorm, row.NameNorm)
+		require.Equal(t, role.Description, row.Description)
+		require.Equal(t, role.AppliesTo, row.AppliesTo)
+		require.Equal(t, role.SortOrder, row.SortOrder)
+		require.Equal(t, int64(1), row.IsBuiltin, "%s must be marked built-in", role.Key)
+		require.Nil(t, row.DeletedAt)
+
+		require.ElementsMatch(t, role.Permissions, grants[role.Key],
+			"%s's grants in the database do not match internal/authz", role.Key)
+	}
+}
+
+// TestReconcile_SecondBoot_SeedsNoRoles asserts the seed is idempotent.
+//
+// A second insert would violate ux_role_key and abort the boot, so this is the difference between an
+// instance that restarts and one that does not.
+func TestReconcile_SecondBoot_SeedsNoRoles(t *testing.T) {
+	t.Parallel()
+
+	r, s := newReconciler(t)
+
+	_, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+
+	report, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err, "a second boot must not fail on the role seed")
+
+	require.Empty(t, report.RolesSeeded)
+	require.Zero(t, report.GrantsSeeded)
+
+	rows, err := s.Q().ListRoles(t.Context())
+	require.NoError(t, err)
+	require.Len(t, rows, len(authz.BuiltinRoles()), "the second boot duplicated a role")
+}
+
+// TestReconcile_EditedBuiltinRole_IsNotRewritten is the security half of "seeded, not reconciled".
+//
+// An officer revoking a permission from a built-in role through the role editor is a deliberate
+// security decision. If the boot path rewrote built-in grants from the Go seed, that revocation would
+// be undone by the next restart — silently, with no audit row and nothing on screen to explain it,
+// which is the worst way for a control to fail. So a role that already exists is left alone entirely,
+// grants included.
+//
+// The cost is the mirror image and it is the acceptable one: a later version that adds a key to
+// `officer` does not reach an install that already has the row, and an officer grants it in the role
+// editor. A capability that has to be added by hand is visible; one that appears by itself is not.
+func TestReconcile_EditedBuiltinRole_IsNotRewritten(t *testing.T) {
+	t.Parallel()
+
+	r, s := newReconciler(t)
+
+	_, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+
+	// The officer decides this guild's officers do not reverse ledger batches. (admin holds
+	// ledger.reverse; the row is deleted the way the role editor will delete it.)
+	s.ExecForTest(t, `DELETE FROM role_permission WHERE role_id = ? AND permission_key = ?`,
+		authz.RoleIDAdmin, "ledger.reverse")
+
+	report, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+	require.Empty(t, report.RolesSeeded)
+
+	require.NotContains(t, grantsByRoleKey(t, s)[authz.RoleKeyAdmin], "ledger.reverse",
+		"the boot path restored a grant an officer had revoked. Built-in roles are SEEDED, not "+
+			"reconciled: a security decision undone by a restart is worse than a capability that has "+
+			"to be granted by hand")
+}
+
+// TestReconcile_CustomRole_IsUntouched asserts the seed minds its own business.
+//
+// A guild's own role has a NULL key, so it is invisible to the built-in seed's presence check. Nothing
+// about it — its grants, its name, its sort order — is the boot path's to manage.
+func TestReconcile_CustomRole_IsUntouched(t *testing.T) {
+	t.Parallel()
+
+	r, s := newReconciler(t)
+
+	_, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+
+	const customID = "0000000000000000DKPCUSTOM1"
+
+	s.ExecForTest(t, `INSERT INTO role (id, key, name, name_norm, description, is_builtin, applies_to,
+		sort_order, created_at, updated_at) VALUES (?, NULL, 'Bank Crew', 'bank crew', '', 0, 'user', 50, ?, ?)`,
+		customID, bootTime.UnixMicro(), bootTime.UnixMicro())
+	s.ExecForTest(t, `INSERT INTO role_permission (role_id, permission_key) VALUES (?, ?)`,
+		customID, "bank.manage")
+
+	report, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+	require.Empty(t, report.RolesSeeded)
+
+	rows, err := s.Q().ListRoles(t.Context())
+	require.NoError(t, err)
+	require.Len(t, rows, len(authz.BuiltinRoles())+1, "the custom role survives a boot")
+
+	var grants int
+
+	require.NoError(t, s.QueryRowForTest(t,
+		`SELECT count(*) FROM role_permission WHERE role_id = ?`, customID).Scan(&grants))
+	require.Equal(t, 1, grants, "the custom role's grant survives a boot")
+}
+
+// TestReconcile_RoleGrants_ResolveAgainstLivePermissions is the FK, exercised end to end.
+//
+// Every seeded grant names a permission key, and the FK on role_permission resolves it against rows
+// the SAME transaction wrote moments earlier. That ordering is the reason the seed cannot live in the
+// migration beside pool and account: at migration time the permission table is empty, and every one of
+// these INSERTs would fail.
+func TestReconcile_RoleGrants_ResolveAgainstLivePermissions(t *testing.T) {
+	t.Parallel()
+
+	r, s := newReconciler(t)
+
+	_, err := r.Reconcile(t.Context(), nil)
+	require.NoError(t, err)
+
+	var dangling int
+
+	require.NoError(t, s.QueryRowForTest(t,
+		`SELECT count(*) FROM role_permission rp
+		  LEFT JOIN permission p ON p.key = rp.permission_key
+		  WHERE p.key IS NULL`).Scan(&dangling))
+	require.Zero(t, dangling, "a seeded grant names a permission with no row")
+
+	var orphanedGrants int
+
+	require.NoError(t, s.QueryRowForTest(t,
+		`SELECT count(*) FROM role_permission rp
+		   JOIN permission p ON p.key = rp.permission_key
+		  WHERE p.orphaned_at IS NOT NULL`).Scan(&orphanedGrants))
+	require.Zero(t, orphanedGrants, "a built-in role grants a key this binary no longer ships")
+}
+
 // boolAsInt renders a Go bool the way the reconciler writes it into an INTEGER boolean column.
 func boolAsInt(b bool) int64 {
 	if b {

@@ -33,6 +33,61 @@ func (q *Queries) GetPermission(ctx context.Context, key string) (Permission, er
 	return i, err
 }
 
+const insertRole = `-- name: InsertRole :exec
+
+INSERT INTO role (
+    id, key, name, name_norm, description, is_builtin, applies_to, sort_order,
+    deleted_at, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+`
+
+type InsertRoleParams struct {
+	ID          string
+	Key         *string
+	Name        string
+	NameNorm    string
+	Description string
+	IsBuiltin   int64
+	AppliesTo   string
+	SortOrder   int64
+	CreatedAt   int64
+	UpdatedAt   int64
+}
+
+// InsertRole writes one role. The seed calls it inside the same transaction that upserts the
+// permission rows, because role_permission references permission(key) and the grants below would
+// otherwise fail the foreign key on a fresh install - which is also why the seed cannot live in the
+// migration beside pool and account: at migration time the permission table is empty.
+func (q *Queries) InsertRole(ctx context.Context, arg InsertRoleParams) error {
+	_, err := q.db.ExecContext(ctx, insertRole,
+		arg.ID,
+		arg.Key,
+		arg.Name,
+		arg.NameNorm,
+		arg.Description,
+		arg.IsBuiltin,
+		arg.AppliesTo,
+		arg.SortOrder,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
+const insertRolePermission = `-- name: InsertRolePermission :exec
+INSERT INTO role_permission (role_id, permission_key) VALUES (?, ?)
+`
+
+type InsertRolePermissionParams struct {
+	RoleID        string
+	PermissionKey string
+}
+
+func (q *Queries) InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error {
+	_, err := q.db.ExecContext(ctx, insertRolePermission, arg.RoleID, arg.PermissionKey)
+	return err
+}
+
 const listPermissions = `-- name: ListPermissions :many
 
 SELECT
@@ -84,6 +139,58 @@ func (q *Queries) ListPermissions(ctx context.Context) ([]Permission, error) {
 			&i.RequiresStepUp,
 			&i.OrphanedAt,
 			&i.SortOrder,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoles = `-- name: ListRoles :many
+
+SELECT
+    id, key, name, name_norm, description, is_builtin, applies_to, sort_order,
+    deleted_at, created_at, updated_at
+FROM role
+ORDER BY sort_order, id
+`
+
+// Built-in roles (docs/design/01-domain-model.md section 5.1). SEEDED, not reconciled - the domain
+// model calls this table "the seed, not a second catalogue", and the distinction is a control rather
+// than a wording choice: rewriting a built-in role's grants on every boot would silently restore a
+// permission an officer deliberately revoked, which is a security decision being undone by a restart.
+// So internal/authz seeds a built-in role and its grants only when the role row is absent.
+//
+// There is no UPDATE and no DELETE here. A built-in role is not renamable and not deletable; the role
+// editor changes grants, which is role_permission's business and lands with it.
+func (q *Queries) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := q.db.QueryContext(ctx, listRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Role
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.ID,
+			&i.Key,
+			&i.Name,
+			&i.NameNorm,
+			&i.Description,
+			&i.IsBuiltin,
+			&i.AppliesTo,
+			&i.SortOrder,
+			&i.DeletedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -75,6 +75,12 @@ type Report struct {
 	// Restored names the keys whose orphaned_at stamp this reconciliation cleared: they are shipped
 	// again, so the row is live again.
 	Restored []string
+
+	// RolesSeeded names the built-in roles this reconciliation created, and GrantsSeeded counts the
+	// role_permission rows that came with them. On a fresh install that is all nine roles; afterwards
+	// it is empty, because a built-in role that exists is left alone — see seedBuiltinRoles.
+	RolesSeeded  []string
+	GrantsSeeded int
 }
 
 // Reconcile writes the catalogue into the permission table and verifies that every required key
@@ -123,6 +129,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, required []string) (Report, 
 			return err
 		}
 
+		// AFTER the permission upserts, and that ordering is a foreign key rather than a preference:
+		// role_permission references permission(key), SQLite enforces it immediately, and on a fresh
+		// install the grants below would have nothing to resolve against if this ran first.
+		if err := seedBuiltinRoles(ctx, q, now, &report); err != nil {
+			return err
+		}
+
 		if err := orphanRetired(ctx, q, existing, catalogue, now, &report); err != nil {
 			return err
 		}
@@ -135,7 +148,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, required []string) (Report, 
 
 	slog.InfoContext(ctx, "reconciled the permission catalogue",
 		"live", report.Live, "inserted", report.Inserted, "updated", report.Updated,
-		"orphaned", len(report.Orphaned), "restored", len(report.Restored), "required", len(required))
+		"orphaned", len(report.Orphaned), "restored", len(report.Restored), "required", len(required),
+		"roles_seeded", len(report.RolesSeeded), "grants_seeded", report.GrantsSeeded)
 
 	// Loud, once per boot, and only when there is something to say. An orphaned key is a role holding
 	// a capability no code implements — harmless in itself, and the first thing to look at when an
@@ -148,6 +162,77 @@ func (r *Reconciler) Reconcile(ctx context.Context, required []string) (Report, 
 	}
 
 	return report, nil
+}
+
+// seedBuiltinRoles inserts every built-in role that has no row yet, with its grants, and counts what
+// it did.
+//
+// SEEDED, NOT RECONCILED, and the difference is a control rather than a wording choice.
+// docs/design/01-domain-model.md §5.1 calls this table "the seed, not a second catalogue": a role row
+// is created once and then belongs to the guild. Rewriting a built-in role's grants on every boot
+// would silently restore a permission an officer deliberately revoked through the role editor — a
+// security decision undone by a restart, with no audit row and nothing on screen to explain it. So the
+// test is presence of the ROLE, and a role that exists is left entirely alone, grants included.
+//
+// The cost of that choice, stated plainly: a later version that adds a permission to `officer` does
+// NOT reach an install that already has the row. The officer grants it in the role editor, which is
+// visible and reversible — the opposite failure, a grant appearing by itself, is neither.
+//
+// CHECK-THEN-INSERT IS SAFE HERE without an ON CONFLICT clause, for the reason the ledger's sequence
+// allocator is: this runs inside store.Tx, whose write pool is capped at one connection and whose DSN
+// carries _txlock=immediate, so the write lock is taken at BEGIN. Two processes booting against one
+// file are serialised at the door rather than racing, and the loser's ListRoles sees the winner's
+// committed rows. (INSERT OR IGNORE would also be a SQLite-only spelling, which the dual-dialect
+// Queries contract does not admit.)
+func seedBuiltinRoles(ctx context.Context, q store.Queries, now int64, report *Report) error {
+	rows, err := q.ListRoles(ctx)
+	if err != nil {
+		return fmt.Errorf("list roles: %w", err)
+	}
+
+	present := make(map[string]struct{}, len(rows))
+
+	for _, row := range rows {
+		if row.Key != nil {
+			present[*row.Key] = struct{}{}
+		}
+	}
+
+	for _, role := range BuiltinRoles() {
+		if _, found := present[role.Key]; found {
+			continue
+		}
+
+		key := role.Key
+		if err := q.InsertRole(ctx, sqlitegen.InsertRoleParams{
+			ID:          role.ID,
+			Key:         &key,
+			Name:        role.Name,
+			NameNorm:    role.NameNorm,
+			Description: role.Description,
+			IsBuiltin:   1,
+			AppliesTo:   role.AppliesTo,
+			SortOrder:   role.SortOrder,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			return fmt.Errorf("insert role %s: %w", role.Key, err)
+		}
+
+		for _, permission := range role.Permissions {
+			if err := q.InsertRolePermission(ctx, sqlitegen.InsertRolePermissionParams{
+				RoleID:        role.ID,
+				PermissionKey: permission,
+			}); err != nil {
+				return fmt.Errorf("grant %s to role %s: %w", permission, role.Key, err)
+			}
+		}
+
+		report.RolesSeeded = append(report.RolesSeeded, role.Key)
+		report.GrantsSeeded += len(role.Permissions)
+	}
+
+	return nil
 }
 
 // existingPermissions reads the whole permission table into a map keyed by permission key.
