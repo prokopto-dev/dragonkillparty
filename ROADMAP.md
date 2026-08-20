@@ -173,7 +173,7 @@ product is a client of this package.
     is reproducible; the ledger posting is Phase 7. Discounts **stack** by owner decision
     ([`docs/design/10-ui-decisions.md`](docs/design/10-ui-decisions.md) §12).
 
-### Where this stands in the tree, 2026-08-14
+### Where this stands in the tree, 2026-08-20 — **the phase is complete**
 
 The list above is the plan and its numbering is cited elsewhere — [ADR-0023](docs/adr/0023-balance-snapshot-is-load-bearing.md)
 says "ROADMAP Phase 1 item 9" and means it. So the plan is not renumbered or reworded as work lands;
@@ -182,9 +182,13 @@ this table is the separate reality layer, and it is the thing to keep honest.
 **Phase 0 pulled the ledger core forward.** Deliverables 1–6 shipped inside the walking skeleton
 rather than at the head of this phase, because `EXAMPLE_ENDPOINT.md` and `RECIPES.md` needed a real
 table to be worked examples *of*, and the append-only triggers had to exist before the first
-migration that could drop them. What that leaves for Phase 1 proper is the breadth — twelve more
-strategies — plus the four subsystems in items 9, 10, 12 and 13. All four have now landed; the table
-below is the current state.
+migration that could drop them. That is recorded as a pull-forward, not as a gap: the rows below
+still carry those six, and where they landed is Phase 0's PRs.
+
+What it left for Phase 1 proper was the breadth — twelve more strategies — plus the four subsystems
+in items 9, 10, 12 and 13. **All fourteen rows are now done**, every `phase-1` issue behind them is
+closed, and the two things that did *not* land are named as deferrals below rather than left as
+silence. The table is the current state.
 
 | # | Deliverable | State | Where it is |
 |---|---|---|---|
@@ -194,12 +198,12 @@ below is the current state.
 | 4 | Invariant engine | **partial, by design** | `internal/ledger/invariant.go`. The universal set plus `SumZero`, `NonNegative` and `LargestRemainderSumsToDebit` are checked. `Conserved`, `MonotoneNonDecreasing`, `Permutation` and `RatioPreserved` are vocabulary-legal and **refuse the commit**, because a declared rule nothing checks is one every reviewer will believe. Each lands with the strategy that needs it |
 | 5 | Largest-remainder allocator, system accounts | **done** | `internal/ledger/allocate.go`; `internal/account/kinds` |
 | 6 | `PointStrategy`, injected `Clock`/`Rng`, purity test | **done** | `internal/strategy/{strategy,proposal}.go`, `arch_test.go` |
-| 7 | Thirteen strategies | **13 of 13** | All thirteen 1.0 rules ship: `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`, `auction_sealed`, `relative_bid`, `roll`, `loot_council`, `decay_percent`, `decay_window`, `zero_sum`, `attendance_weighted`. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) also added `internal/strategy/catalogue.go` (the registry a pool's rule ids resolve through, since those columns deliberately carry no CHECK) and `common.go` (the strict config decode, the zero-sum assertion and the shared reversal); [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) added `spend.go` (the award assembly every spend rule returns through); and [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) widened the `Ctx` façade with `EarnedBetween` and corrected `NonNegative` to constrain a deduction rather than a balance. Each entry declares which of a pool's three questions it answers — [ADR-0026](docs/adr/0026-three-rules-per-pool.md), item 14. [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196)'s two are the ones whose every batch is a largest-remainder split through the shared allocator, proved end to end against a real commit in `internal/ledger/pool_composition_test.go`. Two documented gaps remain inside shipped rules rather than as missing rules: the `decay_window` linear taper ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)) and the `attendance_weighted` ranking score ([#223](https://github.com/prokopto-dev/dragonkillparty/issues/223)). The third, tier-aware bid resolution ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)), is closed — it is item 12 below |
+| 7 | Thirteen strategies | **13 of 13** | All thirteen 1.0 rules ship: `fixed_price`, `tick`, `start_points`, `cap`, `auction_open`, `auction_sealed`, `relative_bid`, `roll`, `loot_council`, `decay_percent`, `decay_window`, `zero_sum`, `attendance_weighted`. [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193) also added `internal/strategy/catalogue.go` (the registry a pool's rule ids resolve through, since those columns deliberately carry no CHECK) and `common.go` (the strict config decode, the zero-sum assertion and the shared reversal); [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) added `spend.go` (the award assembly every spend rule returns through); and [#194](https://github.com/prokopto-dev/dragonkillparty/issues/194) widened the `Ctx` façade with `EarnedBetween` and corrected `NonNegative` to constrain a deduction rather than a balance. Each entry declares which of a pool's three questions it answers — [ADR-0026](docs/adr/0026-three-rules-per-pool.md), item 14. [#196](https://github.com/prokopto-dev/dragonkillparty/issues/196)'s two are the ones whose every batch is a largest-remainder split through the shared allocator, proved end to end against a real commit in `internal/ledger/pool_composition_test.go`. Two documented gaps remain inside shipped rules rather than as missing rules: the `decay_window` linear taper ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221)) and the `attendance_weighted` ranking score ([#223](https://github.com/prokopto-dev/dragonkillparty/issues/223)). The third, tier-aware bid resolution ([#224](https://github.com/prokopto-dev/dragonkillparty/issues/224)), is closed — it is item 12 below, along with the within-tier tie hook ([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)) and the two corrections the tie-break chain took on the way: an equal `relative_bid` share now falls to the bid sequence rather than to the larger bank ([#244](https://github.com/prokopto-dev/dragonkillparty/issues/244), [#250](https://github.com/prokopto-dev/dragonkillparty/issues/250)), and a `decay_percent` period that nets to zero omits the bank entry the ledger would have refused ([#235](https://github.com/prokopto-dev/dragonkillparty/issues/235), [#252](https://github.com/prokopto-dev/dragonkillparty/issues/252)) |
 | 8 | `PlanReversal` per strategy | **ships with each** | `BatchProposal.Negated` and `strategy.reversePlan` set the shape, including dropping `NonNegative`; every shipped strategy plans a reversal through it |
 | 9 | `dkp verify-ledger` + nightly replay | **done** | `cmd/dkp/verify_ledger.go`, `internal/ledger/verify.go`, `.github/workflows/nightly-verify.yml`. ADR-0023 **promoted this** from verification hygiene to a correctness dependency of the standings page, which is what [#198](https://github.com/prokopto-dev/dragonkillparty/issues/198) then shipped against. `--rebuild` is documented and not implemented — [#209](https://github.com/prokopto-dev/dragonkillparty/issues/209) |
 | 10 | Pools, `pool_config_change`, `decay_run` | **done** | `db/schema.hcl`; `db/migrations-sqlite/000005_pool_config_versioning_and_decay_run.sql`; `internal/decay/kinds`; `test/migrations/config_history_and_decay_test.go`. `pool` also gained `strategy_config_json` — the configuration `pool_config_change` versions. `decay_run`'s key is `(pool_id, kind, cadence_period)` per [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md); the semantics both tables must satisfy are `.claude/rules/decay-and-jobs.md`. No writer yet: the strategies are items 7 and 12 |
 | 11 | `seed.Perf` v1 + the standings spike | **done** | `internal/seed`, `internal/ledger/standings*.go`, `.claude/rules/seed-profiles.md`. **V5 resolved and `balance_snapshot` survived unchanged** — see below |
-| 12 | Tier-aware auction resolution | **done** | [#224](https://github.com/prokopto-dev/dragonkillparty/issues/224). `internal/strategy/tier.go` holds the ladder (the one enum whose declaration ORDER is semantic, canonical §5) and the first phase; `strategy.Bid.Tier` records the rung; `rankBids` compares it before the amount and both tie counters carry it, so no ranking in the spend family can skip it; `auctionSealedConfig.settlePrice` is handed the winning rung's bids and nothing else, which is what makes second price within-tier structural rather than remembered. The resolution carries `WinningTier`, per-rung counts (counts, never amounts — the disclosure rule) and the tie-break trace. It did NOT land with the bid strategies: [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) shipped the four rules with the amount comparison that runs *inside* a tier and deferred the ladder, because it is a shared-type change rather than arithmetic added to five planners. **What DERIVES the rung from the bidding character is the bid FSM's, Phase 6** — until then no bid records one, every bid stands on `anyone`, and a session settles on the amount exactly as it did before |
+| 12 | Tier-aware auction resolution | **done** | [#224](https://github.com/prokopto-dev/dragonkillparty/issues/224). `internal/strategy/tier.go` holds the ladder (the one enum whose declaration ORDER is semantic, canonical §5) and the first phase; `strategy.Bid.Tier` records the rung; `rankBids` compares it before the amount and both tie counters carry it, so no ranking in the spend family can skip it; `auctionSealedConfig.settlePrice` is handed the winning rung's bids and nothing else, which is what makes second price within-tier structural rather than remembered. The resolution carries `WinningTier`, per-rung counts (counts, never amounts — the disclosure rule) and the tie-break trace. It did NOT land with the bid strategies: [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) shipped the four rules with the amount comparison that runs *inside* a tier and deferred the ladder, because it is a shared-type change rather than arithmetic added to five planners. **What DERIVES the rung from the bidding character is the bid FSM's, Phase 6** — until then no bid records one, every bid stands on `anyone`, and a session settles on the amount exactly as it did before. [#248](https://github.com/prokopto-dev/dragonkillparty/issues/248) then closed the one case the chain could not separate honestly: a `auction_sealed` tie on amount **within the winning rung** now resolves to no winner and no price, and returns a `Resolution.Tie` that names exactly the tied accounts, the rung they tied on, and `MinRebidCp` — the floor a rebid has to clear — with a `rebid_required` step on the trace. Naming the parties is the pure half; **the rebid ROUND that acts on it is Phase 6** ([#247](https://github.com/prokopto-dev/dragonkillparty/issues/247)), and the seeded roll survives as the deterministic fallback for a caller that has no round to open |
 | 13 | `internal/swap` | **done** | `internal/swap/{policy,request,quote,evaluate}.go`. Pure, with the purity proof in its own `arch_test.go` rather than in the repo gates, because all four of law 3's mechanisms are scoped to `internal/strategy` — [ADR-0025](docs/adr/0025-pure-evaluators-outside-strategy.md). The ledger posting and the request state machine stay Phase 7 |
 | 14 | Pool composition — three rules per pool | **done** | [ADR-0026](docs/adr/0026-three-rules-per-pool.md), [#213](https://github.com/prokopto-dev/dragonkillparty/issues/213). `pool` holds `earn_`/`spend_`/`over_time_strategy_id`, each with its own config; `strategy.Rules` routes every planner to the one rule that owns the question and refuses an empty slot by name. `ledger_batch.strategy_id` now records **which of the three** planned a batch, and `PlanReversal` routes on it. The pool settings endpoint that edits the three is Phase 2, with [#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)'s generators |
 
@@ -238,15 +242,28 @@ trigger is a named guild in an issue, not a maintainer's guess.
   reason as the line above it: the scale is ninety seconds of seeding, while `internal/ledger`'s
   perf suite runs the same `ledger.Verify` over an eight-raid ledger on every push, so the path
   cannot rot between nightlies.
-- Properties P1–P12 at 200 checks per PR, 20k nightly. **P1, P2, P5, P6, P7, P8 and P9 exist**; the
-  rest arrive with the subsystems they constrain — P4 with the bid FSM, P10 with attendance in Phase
-  4. P9's planner half is `TestProperty_P9_DecayRuns_ASecondRunForThePeriodIsTheSameBatch`: a re-run
-  of a cadence period proposes the batch that already committed, which is what the
-  `(pool_id, kind, cadence_period)` key needs to be true before it can deduplicate anything.
-- Decay idempotency across DST and month boundaries. The trap is treating a cadence period as a
-  duration rather than a guild-local label; `.claude/rules/decay-and-jobs.md` §2.
-- Per-strategy golden `BatchProposal` files — seven exist (one per planner each, under
-  `test/golden/strategy/<id>/`), six follow their strategies.
+- Properties P1–P12 at 200 checks per PR, 20k nightly. **P1, P2, P4, P5, P6, P7, P8 and P9 exist**;
+  the rest arrive with the subsystems they constrain — P10 with attendance in Phase 4. Two of the
+  eight are **planner halves**, which is all a pure package can own: P9's is
+  `TestProperty_P9_DecayRuns_ASecondRunForThePeriodIsTheSameBatch` — a re-run of a cadence period
+  proposes the batch that already committed, which is what the `(pool_id, kind, cadence_period)` key
+  needs to be true before it can deduplicate anything — and P4's is
+  `TestProperty_P4_SpendStrategies_ValidateBid_NeverAcceptsMoreThanTheBalance`, no accepted bid
+  exceeding what the bidder holds. P4's other half, double-spend across concurrent sessions, is a
+  state machine over holds and settlements and stays with the FSM in Phase 6.
+- ~~Decay idempotency across DST and month boundaries.~~ **Amended: this is not a Phase-1 completion
+  condition, because Phase 1 contains nothing for it to test.** The trap it guards is treating a
+  cadence period as a duration rather than a guild-local label (`.claude/rules/decay-and-jobs.md`
+  §2) — and that mistake can only be made by the code that *derives* the label. Phase 1 does not
+  derive it: `strategy.Ctx.PeriodKey` is an **input** to a pure planner (`'2024-06'`, handed in),
+  and what computes it from a clock and the guild's timezone is the `decay_run` writer, which item
+  10's row already records as not existing yet. A DST case written here would have to fabricate the
+  subject under test and would assert on its own fixture. It moves with the writer, to Phase 2 —
+  [#257](https://github.com/prokopto-dev/dragonkillparty/issues/257), and the third row of the
+  deferral table below. What Phase 1 *can* prove about the key, it does prove: P9 asserts a re-run of
+  a period proposes the batch that already committed.
+- ✓ Per-strategy golden `BatchProposal` files — **all thirteen exist**, one directory per rule under
+  `test/golden/strategy/<id>/`.
 
 **Docs written during.** `docs/concepts/ledger.md` · `docs/concepts/strategies.md` (one page per
 shipped strategy with a worked numeric example) · `docs/concepts/invariants.md` · ADR "why integer
@@ -254,17 +271,32 @@ centipoints" · ADR "why append-only" · **[ADR-0023](docs/adr/0023-balance-snap
 (written here, from item 11's measurement) · `.claude/rules/seed-profiles.md` ·
 `.claude/rules/decay-and-jobs.md`.
 
-**Exit criterion.** Unchanged as a definition of done: every shipped strategy passes its declared
-invariants under randomised input; a 10⁵-entry replay reproduces every snapshot exactly; the reversal
-property holds for every shipped strategy; `internal/strategy` provably cannot import
-`internal/store`. No HTTP surface yet, and that is correct.
+**Exit criterion — met, against the shipped set.** The definition of done never changed; what
+changed is that there is now a set to read it against. **All thirteen** catalogue rules pass their
+declared invariants under randomised input at 200 checks per PR and 20 000 nightly; the 527,164-entry
+replay reproduces every snapshot exactly, nightly as `replay / seed.Perf`; the reversal property holds
+for every shipped rule through `BatchProposal.Negated` and `strategy.reversePlan`; tier-aware
+resolution settles the rung before the amount and prices second within the winning rung, with a
+within-tier tie named rather than silently rolled; and `internal/strategy` provably cannot import
+`internal/store` — proved by `arch_test.go`, the repo gate and the advisory type-aware twin.
+No HTTP surface yet, and that is correct.
 
-**What is left to get there**, given the state table above — two workstreams, no others:
+**Deferred out of Phase 1**, named rather than left silent. None of the three is a gap in the phase:
+each needs a subsystem a later phase builds, and each is scheduled where that subsystem is. The third
+amends a line out of the "tests that must exist" list above, which is a scope decision and is
+recorded here as one rather than left as an unticked bullet nobody reconciles.
 
-| Remaining | Items | Issues |
-|---|---|---|
-| The twelve unshipped strategies, each with its `PlanReversal`, its declared invariants and its golden proposal. The decay family is also item 10's only missing half — the tables exist and nothing writes to them yet, keyed `(pool_id, kind, cadence_period)` per [ADR-0024](docs/adr/0024-one-run-table-scoped-by-kind.md) | 7, 8 | [#193](https://github.com/prokopto-dev/dragonkillparty/issues/193)–[#197](https://github.com/prokopto-dev/dragonkillparty/issues/197) |
-| Tier-aware auction resolution | 12 | [#195](https://github.com/prokopto-dev/dragonkillparty/issues/195) |
+| Deferred | Target | Issue | Why there |
+|---|---|---|---|
+| **A guild-configurable tier ladder** — whether a guild tiers its bidding at all, which rungs it has, in what order, and a new default of `main, alt, base` in place of the fixed four | Phase 2 | [#242](https://github.com/prokopto-dev/dragonkillparty/issues/242) | The ladder becomes an ordered array in the spend rule's config, so it lands with the pool-settings form and the generated config schema ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)) rather than ahead of them. It stays cheap until Phase 6: no bid records a rung yet, so no recorded value has to be reinterpreted on an append-only ledger. [#234](https://github.com/prokopto-dev/dragonkillparty/issues/234) carries the generated catalogue canonical §5 wants once the column lands |
+| **The sealed-bid rebid ROUND** — the bid-session FSM that opens a round among exactly the tied parties, collects passes, and decides what a second tie means; plus **open-bid simultaneous-submission races** | Phase 6 | [#247](https://github.com/prokopto-dev/dragonkillparty/issues/247) | A round is state, holds and locking, which is the FSM Phase 6 builds — a pure planner cannot own it. Phase 1 shipped the half that *is* arithmetic: the detection, the named parties and `MinRebidCp` ([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)), which is what a Phase-6 session opens from |
+| **Decay idempotency across DST and month boundaries** — the cadence-period cases listed above as a Phase-1 test, formally amended out of the phase | Phase 2 | [#257](https://github.com/prokopto-dev/dragonkillparty/issues/257) | It tests code Phase 1 does not contain. `Ctx.PeriodKey` is handed to the planner already computed; the derivation that could mistake a guild-local label for a duration is the `decay_run` writer, and item 10 records that no writer exists yet. The test moves with its subject, not ahead of it |
+
+Two documented gaps sit **inside shipped rules** rather than as missing ones, and are tracked where
+they will be closed: the `decay_window` linear taper ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221), Phase 2)
+and the `attendance_weighted` ranking score ([#223](https://github.com/prokopto-dev/dragonkillparty/issues/223), Phase 4 —
+it needs attendance statistics on the `Ctx` façade, which Phase 4 produces). `dkp verify-ledger
+--rebuild` is documented and unimplemented ([#209](https://github.com/prokopto-dev/dragonkillparty/issues/209), Phase 2).
 
 The replay had the one ordering constraint on it — it is what makes the 10⁵-entry clause of the exit
 criterion executable, and ADR-0023 makes it a dependency of a Phase 3 page — and it landed early
