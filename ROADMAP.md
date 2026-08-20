@@ -251,12 +251,17 @@ trigger is a named guild in an issue, not a maintainer's guess.
   `TestProperty_P4_SpendStrategies_ValidateBid_NeverAcceptsMoreThanTheBalance`, no accepted bid
   exceeding what the bidder holds. P4's other half, double-spend across concurrent sessions, is a
   state machine over holds and settlements and stays with the FSM in Phase 6.
-- **Not in the tree:** decay idempotency across DST and month boundaries — the trap is treating a
-  cadence period as a duration rather than a guild-local label
-  (`.claude/rules/decay-and-jobs.md` §2). The guild-timezone bucketing it depends on landed with
-  [#203](https://github.com/prokopto-dev/dragonkillparty/issues/203)
-  (`internal/ledger/effective_day_test.go`); the cadence-period cases over a DST transition and a
-  month end do not exist yet, and are [#257](https://github.com/prokopto-dev/dragonkillparty/issues/257).
+- ~~Decay idempotency across DST and month boundaries.~~ **Amended: this is not a Phase-1 completion
+  condition, because Phase 1 contains nothing for it to test.** The trap it guards is treating a
+  cadence period as a duration rather than a guild-local label (`.claude/rules/decay-and-jobs.md`
+  §2) — and that mistake can only be made by the code that *derives* the label. Phase 1 does not
+  derive it: `strategy.Ctx.PeriodKey` is an **input** to a pure planner (`'2024-06'`, handed in),
+  and what computes it from a clock and the guild's timezone is the `decay_run` writer, which item
+  10's row already records as not existing yet. A DST case written here would have to fabricate the
+  subject under test and would assert on its own fixture. It moves with the writer, to Phase 2 —
+  [#257](https://github.com/prokopto-dev/dragonkillparty/issues/257), and the third row of the
+  deferral table below. What Phase 1 *can* prove about the key, it does prove: P9 asserts a re-run of
+  a period proposes the batch that already committed.
 - ✓ Per-strategy golden `BatchProposal` files — **all thirteen exist**, one directory per rule under
   `test/golden/strategy/<id>/`.
 
@@ -276,13 +281,16 @@ within-tier tie named rather than silently rolled; and `internal/strategy` prova
 `internal/store` — proved by `arch_test.go`, the repo gate and the advisory type-aware twin.
 No HTTP surface yet, and that is correct.
 
-**Deferred out of Phase 1**, named rather than left silent. Neither is a gap in the phase: each needs
-a subsystem a later phase builds, and each is scheduled where that subsystem is.
+**Deferred out of Phase 1**, named rather than left silent. None of the three is a gap in the phase:
+each needs a subsystem a later phase builds, and each is scheduled where that subsystem is. The third
+amends a line out of the "tests that must exist" list above, which is a scope decision and is
+recorded here as one rather than left as an unticked bullet nobody reconciles.
 
 | Deferred | Target | Issue | Why there |
 |---|---|---|---|
 | **A guild-configurable tier ladder** — whether a guild tiers its bidding at all, which rungs it has, in what order, and a new default of `main, alt, base` in place of the fixed four | Phase 2 | [#242](https://github.com/prokopto-dev/dragonkillparty/issues/242) | The ladder becomes an ordered array in the spend rule's config, so it lands with the pool-settings form and the generated config schema ([#212](https://github.com/prokopto-dev/dragonkillparty/issues/212)) rather than ahead of them. It stays cheap until Phase 6: no bid records a rung yet, so no recorded value has to be reinterpreted on an append-only ledger. [#234](https://github.com/prokopto-dev/dragonkillparty/issues/234) carries the generated catalogue canonical §5 wants once the column lands |
 | **The sealed-bid rebid ROUND** — the bid-session FSM that opens a round among exactly the tied parties, collects passes, and decides what a second tie means; plus **open-bid simultaneous-submission races** | Phase 6 | [#247](https://github.com/prokopto-dev/dragonkillparty/issues/247) | A round is state, holds and locking, which is the FSM Phase 6 builds — a pure planner cannot own it. Phase 1 shipped the half that *is* arithmetic: the detection, the named parties and `MinRebidCp` ([#248](https://github.com/prokopto-dev/dragonkillparty/issues/248)), which is what a Phase-6 session opens from |
+| **Decay idempotency across DST and month boundaries** — the cadence-period cases listed above as a Phase-1 test, formally amended out of the phase | Phase 2 | [#257](https://github.com/prokopto-dev/dragonkillparty/issues/257) | It tests code Phase 1 does not contain. `Ctx.PeriodKey` is handed to the planner already computed; the derivation that could mistake a guild-local label for a duration is the `decay_run` writer, and item 10 records that no writer exists yet. The test moves with its subject, not ahead of it |
 
 Two documented gaps sit **inside shipped rules** rather than as missing ones, and are tracked where
 they will be closed: the `decay_window` linear taper ([#221](https://github.com/prokopto-dev/dragonkillparty/issues/221), Phase 2)
