@@ -98,9 +98,8 @@ func migrationLintFixture(t *testing.T, nameBodyPairs ...string) string {
 //
 // Atlas refuses to lint a directory whose atlas.sum does not match its contents, which is the
 // integrity check that makes a hand-edited migration visible (scripts/gen-db.sh). A fixture must
-// therefore be hashed rather than hand-written — and TestMigrateLint_ChecksumMismatch_FailsLoud
-// below deliberately breaks it again afterwards, which is only a meaningful test because every
-// other fixture here is valid.
+// therefore be hashed rather than hand-written, or every case in this file would fail on the
+// checksum before reaching the analyzer it is about.
 func hashMigrationDir(t *testing.T, tree string) {
 	t.Helper()
 
@@ -123,9 +122,21 @@ func hashMigrationDir(t *testing.T, tree string) {
 func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode int) {
 	t.Helper()
 
+	return runMigrateLintEnv(t, tree, mode)
+}
+
+// runMigrateLintEnv is runMigrateLint with explicit NAME=VALUE overrides, applied last.
+//
+// An override REPLACES the inherited variable of that name rather than being appended after it. The
+// two the issue #254 fixtures steer — PATH and DKP_ATLAS — are exactly the ones `make check` sets
+// for this script, and which of two same-named entries an exec'd shell honours is not a thing worth
+// depending on. Replacing makes the fixture say what it means.
+func runMigrateLintEnv(t *testing.T, tree, mode string, overrides ...string) (output string, exitCode int) {
+	t.Helper()
+
 	require.True(t, filepath.IsAbs(tree), "DKP_REPO_ROOT must be absolute, got %q", tree)
 
-	env := []string{"DKP_REPO_ROOT=" + tree, "DKP_MIGRATE_LINT_BASE=" + absentBaseRef}
+	env := make([]string, 0, len(os.Environ())+len(overrides)+3)
 
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "MODE=") {
@@ -133,12 +144,15 @@ func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode in
 		}
 	}
 
+	env = append(env, "DKP_REPO_ROOT="+tree, "DKP_MIGRATE_LINT_BASE="+absentBaseRef)
+	env = append(env, overrides...)
+
 	if mode != "" {
 		env = append(env, "MODE="+mode)
 	}
 
 	cmd := exec.Command("bash", scriptPath(t, "migrate-lint.sh"))
-	cmd.Env = env
+	cmd.Env = dedupeEnvLastWins(t, env)
 
 	out, err := cmd.CombinedOutput()
 	if err == nil {
@@ -153,6 +167,35 @@ func runMigrateLint(t *testing.T, tree, mode string) (output string, exitCode in
 	t.Fatalf("run migrate-lint.sh: %v\n%s", err, out)
 
 	return "", 0
+}
+
+// dedupeEnvLastWins collapses an environment to one entry per name, keeping the last value.
+//
+// Env slices are built here by appending defaults and then overrides, which is the readable order to
+// write them in and the wrong one to hand to exec: POSIX leaves a duplicate name to the callee, and
+// bash resolving it one way on Linux and another on macOS is precisely the kind of difference a
+// fixture must not be built on.
+func dedupeEnvLastWins(t *testing.T, env []string) []string {
+	t.Helper()
+
+	at := make(map[string]int, len(env))
+	out := make([]string, 0, len(env))
+
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		require.Truef(t, ok, "environment entry %q must be NAME=VALUE", kv)
+
+		if i, seen := at[name]; seen {
+			out[i] = kv
+
+			continue
+		}
+
+		at[name] = len(out)
+		out = append(out, kv)
+	}
+
+	return out
 }
 
 // runAtlas runs the real Atlas against a fixture tree, the way `make migration` does.
@@ -524,6 +567,199 @@ func TestMigrateLint_MissingAtlas_FailsLoud(t *testing.T) {
 			"its analyser was missing reports a clean tree it never read.\n%s", out)
 	require.Containsf(t, string(out), "atlas is not installed",
 		"the failure must name the missing tool and how to get it\n%s", out)
+}
+
+// stubProAbort is what Atlas's OFFICIAL build prints instead of a report, verbatim from v1.3.0.
+const stubProAbort = "Abort: Starting with v0.38, 'atlas migrate lint' is available only to Atlas Pro users."
+
+// pathWithOfficialAtlasStub returns the caller's PATH with a temp directory PREPENDED holding an
+// `atlas` that behaves the way Atlas's official build does: `version` omits the word "community",
+// and everything else aborts unlicensed.
+//
+// A stub rather than the real thing, for the reason stubGoSentinel exists: the difference between
+// the two builds is two strings, neither of which the pinned binary this suite otherwise runs can
+// produce, and downloading a 30 MB unpinned artefact inside the gate that keeps the pinned one
+// honest would be a strange way to test a pin. PREPENDED, because `command -v` takes the first
+// match and the fixture is about which atlas wins.
+func pathWithOfficialAtlasStub(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+
+	stub := "#!/bin/sh\n" +
+		"if [ \"$1\" = version ]; then echo 'atlas version v1.3.0'; exit 0; fi\n" +
+		"echo \"" + stubProAbort + "\" >&2\n" +
+		"exit 1\n"
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "atlas"), []byte(stub), 0o755),
+		"write the official-build atlas stub")
+
+	return dir + string(filepath.ListSeparator) + os.Getenv("PATH")
+}
+
+// TestMigrateLint_OfficialAtlasBuild_FailsLoud is issue #254, as a fixture.
+//
+// `atlas migrate lint` is Atlas Pro-only from v0.38 in the OFFICIAL build: it aborts asking for
+// `atlas login` and analyses nothing. The COMMUNITY build scripts/install-atlas.sh pins runs the
+// same analyzers with no account and no network — so the two differ by one word of `atlas version`
+// and by whether this gate can run at all, and a contributor arrives at the wrong one by following
+// Atlas's OWN advice, which suggests `curl -sSf https://atlasgo.sh | sh` after any error.
+//
+// The fixture is a CLEAN migration on purpose. A destructive one would fail whichever atlas ran,
+// so the test would pass even if the edition check were deleted; with a clean one the only route to
+// a non-zero exit is the check under test.
+//
+// The assertions on what the failure must NOT say are the other half. Before this check existed the
+// abort fell through to the invocation-failed branch, which guesses at an unreadable atlas.hcl and a
+// dev database Atlas could not open — the message that cost the reporter of #254 a wrong diagnosis.
+func TestMigrateLint_OfficialAtlasBuild_FailsLoud(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+
+	tree := migrationLintFixture(t,
+		"000001_init.sql", "-- +goose Up\n"+
+			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
+			gooseDownStub,
+	)
+
+	out, code := runMigrateLintEnv(t, tree, "enforce",
+		"PATH="+pathWithOfficialAtlasStub(t),
+		"DKP_ATLAS=")
+
+	require.NotEqualf(t, 0, code,
+		"an atlas whose migrate lint is licence-gated must FAIL the gate, never pass it. The "+
+			"analysis cannot run at all on that build, and a run that checked nothing must not "+
+			"report like a run that found nothing (issue #254).\n%s", out)
+
+	require.Containsf(t, out, "community",
+		"the failure must name the EDITION as the problem — that one word is the whole difference "+
+			"between an atlas that can run this gate and one that cannot\n%s", out)
+	require.Containsf(t, out, "make install-atlas",
+		"the failure must name the command that fixes it. A gate that reports an unusable "+
+			"toolchain without saying how to repair it sends the reader to a vendor's website.\n%s", out)
+	require.Containsf(t, out, "atlasgo.sh",
+		"the failure must warn off Atlas's own suggestion, which is how the pinned build gets "+
+			"replaced by the one that cannot lint\n%s", out)
+
+	require.NotContainsf(t, out, "unreadable atlas.hcl",
+		"a licence gate must not be reported as one of the causes the invocation-failed branch "+
+			"guesses at — that is the wrong diagnosis issue #254 was filed about\n%s", out)
+	require.NotContainsf(t, out, "no diagnostics",
+		"an atlas that never analysed anything must never print the clean-run message\n%s", out)
+}
+
+// TestMigrateLint_PinnedAtlas_BeatsAnAtlasOnPATH pins the precedence, which is the half of issue
+// #254 that a message cannot fix.
+//
+// The Makefile APPENDS GOTOOLS_BIN to PATH so "a deliberately chosen system tool still wins" — the
+// right rule for every other pinned tool here, and the wrong one for this one: the system atlas that
+// wins may be the build whose migrate lint is Pro-only, and then `make check` fails for a reason
+// that has nothing to do with the tree. `make lint-migrations` passes the pinned path as DKP_ATLAS,
+// and this asserts the script honours it over an atlas standing earlier on PATH.
+func TestMigrateLint_PinnedAtlas_BeatsAnAtlasOnPATH(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+
+	pinned, err := exec.LookPath("atlas")
+	require.NoError(t, err, "locate the atlas make setup installed")
+
+	pinned, err = filepath.Abs(pinned)
+	require.NoError(t, err, "absolute path to atlas")
+
+	tree := migrationLintFixture(t,
+		"000001_init.sql", "-- +goose Up\n"+
+			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
+			gooseDownStub,
+	)
+
+	out, code := runMigrateLintEnv(t, tree, "enforce",
+		"PATH="+pathWithOfficialAtlasStub(t),
+		"DKP_ATLAS="+pinned)
+
+	require.Equalf(t, 0, code,
+		"DKP_ATLAS names the pinned atlas and must be preferred over the one first on PATH. If this "+
+			"fails naming the community build, the atlas on this machine is not the one "+
+			"`make setup` installs — run `make install-atlas` (issue #254).\n%s", out)
+	require.Containsf(t, out, "no diagnostics",
+		"the pinned atlas must have actually analysed the migration, not merely been chosen\n%s", out)
+}
+
+// gitCommitFixture makes tree a git repository with a single commit and returns that commit's short
+// sha and commit date, so the `--git-base` selection — the one CI takes and no other fixture here
+// reaches — can be exercised.
+//
+// Identity passed to `git config` inside the fixture, never a global write: githooks_test.go's rule.
+func gitCommitFixture(t *testing.T, tree string) (shortSHA, commitDate string) {
+	t.Helper()
+
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tree
+
+		out, err := cmd.CombinedOutput()
+		require.NoErrorf(t, err, "git %s\n%s", strings.Join(args, " "), out)
+	}
+
+	// stdout only for the two VALUES: `git init` writes hints to stderr on some versions, and a
+	// fixture that folded them into a sha would assert on the hint.
+	capture := func(args ...string) string {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = tree
+
+		out, err := cmd.Output()
+		require.NoErrorf(t, err, "git %s", strings.Join(args, " "))
+
+		return strings.TrimSpace(string(out))
+	}
+
+	run("init", "-q")
+	run("config", "user.email", "test@example.invalid")
+	run("config", "user.name", "Repo Test")
+	run("add", "-A")
+	run("commit", "-q", "-m", "migrate-lint fixture")
+
+	return capture("rev-parse", "--short", "HEAD"), capture("log", "-1", "--format=%cs", "HEAD")
+}
+
+// TestMigrateLint_GitBase_NamesTheCommitItAnalysedAgainst covers the third finding on issue #254: a
+// stale base ref silently changes what the gate analysed.
+//
+// "analysing every migration added versus origin/main" is the same sentence on a checkout that
+// fetched an hour ago and on one that has not fetched for a week, and the two select different sets
+// of migrations. Neither run is wrong on its face, which is why the reporter of #254 spent a
+// diagnosis on one: an already-shipped migration looked new, so Atlas was invoked where a fresh
+// checkout would have skipped it. Printing the sha and the commit date makes two runs comparable.
+//
+// It also exercises `--git-base` at all. Every other fixture here points the base at an absent ref
+// to reach the shallow-clone fallback deterministically, which leaves the selection CI actually
+// takes covered by nothing.
+func TestMigrateLint_GitBase_NamesTheCommitItAnalysedAgainst(t *testing.T) {
+	t.Parallel()
+	requireAtlas(t)
+	requireTool(t, "git", "every checkout of this repository has it")
+
+	tree := migrationLintFixture(t,
+		"000001_init.sql", "-- +goose Up\n"+
+			"CREATE TABLE \"fixture_widget\" (\"id\" text NOT NULL, PRIMARY KEY (\"id\")) STRICT;\n"+
+			gooseDownStub,
+	)
+
+	sha, date := gitCommitFixture(t, tree)
+
+	out, code := runMigrateLintEnv(t, tree, "enforce", "DKP_MIGRATE_LINT_BASE=HEAD")
+
+	require.Equalf(t, 0, code,
+		"a committed, clean migration set adds nothing versus HEAD and must pass\n%s", out)
+	require.NotContainsf(t, out, "is not available in this checkout",
+		"the base ref exists, so this must be the --git-base path and not the fallback — a fixture "+
+			"that silently fell back would assert nothing about the selection CI uses\n%s", out)
+	require.Containsf(t, out, sha,
+		"the run must name the COMMIT it analysed against, not just the ref: `origin/main` on a "+
+			"stale checkout and on a fresh one are the same words and a different scope "+
+			"(issue #254)\n%s", out)
+	require.Containsf(t, out, date,
+		"the run must say how old that commit is, which is the fact that tells a reader their base "+
+			"needs fetching\n%s", out)
 }
 
 // TestMigrateLint_CallSites_Enforce pins the promotion (issue #136), which is a property of the CALL
