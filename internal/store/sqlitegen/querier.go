@@ -42,6 +42,18 @@ type Querier interface {
 	// GetAccount reads one account by id. It backs the "system accounts are addressable by id"
 	// acceptance test and the account reader in internal/ledger.
 	GetAccount(ctx context.Context, id string) (Account, error)
+	// GetAppUser reads one user row by id.
+	//
+	// ITS CALLER IS CreateSession, AND THE REASON IS THE EPOCH. A session records the
+	// app_user.session_epoch it was minted under, and the resolver requires the two to be equal - so a
+	// session created without reading the user's current epoch would be born stale on any account that
+	// has ever signed out everywhere, and would be refused by the very next request. The read and the
+	// insert run in ONE transaction, so a concurrent epoch bump either precedes the read (and the
+	// session is born dead, correctly) or follows the insert (and kills it, correctly).
+	//
+	// There is no GetAppUserByUsernameNorm yet: looking a user up by what they typed is the login
+	// endpoint's read, and it arrives with the endpoint, its rate limits and its uniform-response rules.
+	GetAppUser(ctx context.Context, id string) (AppUser, error)
 	// GetBatchByIdempotencyKey is the replay lookup. Every mutating POST that creates domain state
 	// carries an Idempotency-Key (canonical invariant); a bot that retries must land on the FIRST batch
 	// rather than committing a second one, because a duplicated raid tick or a double-charged bid is the
@@ -127,10 +139,18 @@ type Querier interface {
 	// to the caller either way. A WHERE clause that hid the row would leave the server unable to answer
 	// the only question that matters during an incident: was this token used, and when.
 	//
-	// NO DELETE STATEMENTS, AND NO REVOKE STATEMENTS EITHER. Revocation is one UPDATE on a row this
-	// path already reads, and it lands with the endpoints that perform it - token mint/rotate/revoke and
-	// sign-out are session-and-step-up operations from a later wave (canonical section 6's capability
-	// floor). A mutation with no caller is a method the Postgres target has to implement for nothing.
+	// NO DELETE STATEMENTS. A session or a token is revoked, never removed: "did the leaked token do
+	// anything" is answered from the row, and deleting it deletes the answer.
+	//
+	// THE TWO REVOKES SHIP AHEAD OF THEIR ENDPOINTS, and that is a deliberate exception to "a mutation
+	// with no caller is a method the Postgres target implements for nothing". The resolver has a branch
+	// for each - a revoked session and a revoked token are both refused - and a branch nobody has
+	// watched go red is a branch nobody knows works. Producing a revoked row is the only way to test
+	// them, and a test that fabricated one by writing the column through some other insert would be
+	// testing its own fixture. ADR-0011 sells instant revocation as the reason PATs are not JWTs; this
+	// is the statement that claim rests on, and it is one UPDATE on a row the auth path already reads.
+	// Sign-out and token revoke (session-and-step-up operations, canonical section 6) call these
+	// verbatim when they land.
 	//
 	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
 	// by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
@@ -381,6 +401,15 @@ type Querier interface {
 	// user_deleted is a PREDICATE rather than the timestamp, for the same reason: the resolver only asks
 	// whether the account is gone, and a boolean expression is a column sqlc types without help.
 	ResolveSession(ctx context.Context, tokenHash []byte) (ResolveSessionRow, error)
+	// RevokeAPIToken kills one token immediately - the property ADR-0011 chose opaque tokens over JWTs
+	// to get. The reason is recorded because a revocation without one is a support conversation six
+	// months later; revoked_by is a user id, or NULL when the binary itself did it (a leaked-token sweep,
+	// an import). The `revoked_at IS NULL` guard keeps the first instant, as RevokeSession's does.
+	RevokeAPIToken(ctx context.Context, arg RevokeAPITokenParams) error
+	// RevokeSession ends one session immediately. The `revoked_at IS NULL` guard keeps the FIRST
+	// instant: when a session was revoked is the interesting fact, and a repeated call - a retry, a
+	// second click on "sign out this device" - must not rewrite it.
+	RevokeSession(ctx context.Context, arg RevokeSessionParams) error
 	// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
 	// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
 	// StandingsFromSnapshot against, and it is what a replay or a verification job reads.
@@ -442,6 +471,12 @@ type Querier interface {
 	// expires_at NEVER PASSES absolute_expires_at. The idle window slides on use (14 days, 30 with
 	// "remember me"); the absolute ceiling does not, so a session held open by a polling script still
 	// ends. min() is SQLite's two-argument scalar minimum, not the aggregate.
+	// THE CASTS ARE LOAD-BEARING, not noise. sqlc's SQLite engine takes a parameter's Go type from the
+	// expression it lands in: inside min() it has no column affinity to read and emits interface{}, and
+	// compared against a nullable column it emits *int64. Both are Micros, both are NOT NULL here, and
+	// `any` in a domain signature is what .claude/rules/go-idioms.md bans - so each one is pinned in the
+	// QUERY, the way BalanceAsOfSeq's aggregate is, because a sqlc.yaml override keys on table.column
+	// and a parameter inside an expression has neither.
 	TouchSession(ctx context.Context, arg TouchSessionParams) error
 	// UpdateGuild writes every settable column and RETURNS the new row, so the handler emits the fresh
 	// representation and its new ETag in the same round trip a bot needs after a PATCH.

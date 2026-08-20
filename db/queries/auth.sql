@@ -18,10 +18,18 @@
 -- to the caller either way. A WHERE clause that hid the row would leave the server unable to answer
 -- the only question that matters during an incident: was this token used, and when.
 --
--- NO DELETE STATEMENTS, AND NO REVOKE STATEMENTS EITHER. Revocation is one UPDATE on a row this
--- path already reads, and it lands with the endpoints that perform it - token mint/rotate/revoke and
--- sign-out are session-and-step-up operations from a later wave (canonical section 6's capability
--- floor). A mutation with no caller is a method the Postgres target has to implement for nothing.
+-- NO DELETE STATEMENTS. A session or a token is revoked, never removed: "did the leaked token do
+-- anything" is answered from the row, and deleting it deletes the answer.
+--
+-- THE TWO REVOKES SHIP AHEAD OF THEIR ENDPOINTS, and that is a deliberate exception to "a mutation
+-- with no caller is a method the Postgres target implements for nothing". The resolver has a branch
+-- for each - a revoked session and a revoked token are both refused - and a branch nobody has
+-- watched go red is a branch nobody knows works. Producing a revoked row is the only way to test
+-- them, and a test that fabricated one by writing the column through some other insert would be
+-- testing its own fixture. ADR-0011 sells instant revocation as the reason PATs are not JWTs; this
+-- is the statement that claim rests on, and it is one UPDATE on a row the auth path already reads.
+-- Sign-out and token revoke (session-and-step-up operations, canonical section 6) call these
+-- verbatim when they land.
 --
 -- Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
 -- by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
@@ -50,6 +58,26 @@ INSERT INTO user_identity (
     must_reset, access_token_enc, refresh_token_enc, token_expires_at, scopes, profile_json,
     last_used_at, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '', '{}', NULL, ?, ?);
+
+-- GetAppUser reads one user row by id.
+--
+-- ITS CALLER IS CreateSession, AND THE REASON IS THE EPOCH. A session records the
+-- app_user.session_epoch it was minted under, and the resolver requires the two to be equal - so a
+-- session created without reading the user's current epoch would be born stale on any account that
+-- has ever signed out everywhere, and would be refused by the very next request. The read and the
+-- insert run in ONE transaction, so a concurrent epoch bump either precedes the read (and the
+-- session is born dead, correctly) or follows the insert (and kills it, correctly).
+--
+-- There is no GetAppUserByUsernameNorm yet: looking a user up by what they typed is the login
+-- endpoint's read, and it arrives with the endpoint, its rate limits and its uniform-response rules.
+
+-- name: GetAppUser :one
+SELECT
+    id, username, username_norm, email, email_norm, email_verified_at, display_name,
+    timezone, locale, state, session_epoch, last_login_at, failed_logins, locked_until_at,
+    mfa_totp_secret_enc, mfa_enrolled_at, mfa_required, deleted_at, created_at, updated_at
+FROM app_user
+WHERE id = ?;
 
 -- name: InsertSession :exec
 INSERT INTO session (
@@ -99,12 +127,28 @@ WHERE s.token_hash = ?;
 -- "remember me"); the absolute ceiling does not, so a session held open by a polling script still
 -- ends. min() is SQLite's two-argument scalar minimum, not the aggregate.
 
+-- THE CASTS ARE LOAD-BEARING, not noise. sqlc's SQLite engine takes a parameter's Go type from the
+-- expression it lands in: inside min() it has no column affinity to read and emits interface{}, and
+-- compared against a nullable column it emits *int64. Both are Micros, both are NOT NULL here, and
+-- `any` in a domain signature is what .claude/rules/go-idioms.md bans - so each one is pinned in the
+-- QUERY, the way BalanceAsOfSeq's aggregate is, because a sqlc.yaml override keys on table.column
+-- and a parameter inside an expression has neither.
+
 -- name: TouchSession :exec
 UPDATE session
-SET last_seen_at = sqlc.arg(now),
-    expires_at   = min(sqlc.arg(idle_expires_at), absolute_expires_at)
+SET last_seen_at = CAST(sqlc.arg(now) AS INTEGER),
+    expires_at   = min(CAST(sqlc.arg(idle_expires_at) AS INTEGER), absolute_expires_at)
 WHERE id = sqlc.arg(id)
-  AND last_seen_at < sqlc.arg(touch_before);
+  AND last_seen_at < CAST(sqlc.arg(touch_before) AS INTEGER);
+
+-- RevokeSession ends one session immediately. The `revoked_at IS NULL` guard keeps the FIRST
+-- instant: when a session was revoked is the interesting fact, and a repeated call - a retry, a
+-- second click on "sign out this device" - must not rewrite it.
+
+-- name: RevokeSession :exec
+UPDATE session
+SET revoked_at = CAST(sqlc.arg(revoked_at) AS INTEGER)
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
 
 -- name: InsertServiceAccount :exec
 INSERT INTO service_account (
@@ -141,6 +185,18 @@ FROM api_token t
 JOIN service_account a ON a.id = t.service_account_id
 WHERE t.prefix = ?;
 
+-- RevokeAPIToken kills one token immediately - the property ADR-0011 chose opaque tokens over JWTs
+-- to get. The reason is recorded because a revocation without one is a support conversation six
+-- months later; revoked_by is a user id, or NULL when the binary itself did it (a leaked-token sweep,
+-- an import). The `revoked_at IS NULL` guard keeps the first instant, as RevokeSession's does.
+
+-- name: RevokeAPIToken :exec
+UPDATE api_token
+SET revoked_at    = CAST(sqlc.arg(revoked_at) AS INTEGER),
+    revoked_by    = sqlc.narg(revoked_by),
+    revoke_reason = sqlc.arg(revoke_reason)
+WHERE id = sqlc.arg(id) AND revoked_at IS NULL;
+
 -- TouchAPIToken records that a token was used, throttled and guarded exactly as TouchSession is.
 --
 -- last_used_ip IS NOT WRITTEN HERE. Behind the reverse proxy this project recommends every request
@@ -150,6 +206,6 @@ WHERE t.prefix = ?;
 
 -- name: TouchAPIToken :exec
 UPDATE api_token
-SET last_used_at = sqlc.arg(now)
+SET last_used_at = CAST(sqlc.arg(now) AS INTEGER)
 WHERE id = sqlc.arg(id)
-  AND (last_used_at IS NULL OR last_used_at < sqlc.arg(touch_before));
+  AND (last_used_at IS NULL OR last_used_at < CAST(sqlc.arg(touch_before) AS INTEGER));

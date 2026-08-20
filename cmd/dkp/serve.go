@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
@@ -103,6 +105,12 @@ type serveConfig struct {
 
 	// dbPath is DKP_DB_PATH.
 	dbPath string
+
+	// dataDir is DKP_DATA_DIR, already defaulted by resolveDataDir to the database's directory. It
+	// holds <data-dir>/secrets.json, the instance root key every credential pepper is derived from
+	// (docs/design/03-security.md §9.1) — the same directory the pre-migration snapshots land in, so
+	// "back up the data directory" stays one complete instruction.
+	dataDir string
 
 	// autoMigrate is DKP_AUTO_MIGRATE. False means pending migrations are reported through /readyz
 	// rather than applied.
@@ -256,6 +264,7 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 			cfg := serveConfig{
 				addr:        addr,
 				dbPath:      os.Getenv(dbPathEnv),
+				dataDir:     resolveDataDir(os.Getenv(dbPathEnv)),
 				autoMigrate: autoMigrateEnabled(),
 				readyDetail: readyDetailPolicy(ctx),
 			}
@@ -328,6 +337,30 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		return err
 	}
 
+	// The credential resolver, and the instance root key it derives the token pepper from.
+	//
+	// A BAD SECRETS FILE IS FATAL, where a bad database is not (§9.1: "if /data/secrets.json exists
+	// but is unreadable or malformed, refuse to start, naming the file and the recovery path"). The
+	// asymmetry is deliberate. An unreadable database degrades to 500s while /healthz and /readyz
+	// keep telling an operator what is wrong; an unreadable secrets file cannot be degraded around —
+	// booting anyway would either serve with no way to verify a token, or silently generate a new key
+	// and invalidate every session and every bot token in the guild at once, which looks exactly like
+	// a mass-logout bug and is unrecoverable.
+	//
+	// A nil store means no resolver, and api.Config's contract takes it from there: operations that
+	// declare Security answer 503 rather than being served unauthenticated. That is the same
+	// degradation the store-backed operations get, applied to the thing that guards them.
+	var authService *auth.Service
+
+	if st != nil {
+		keyring, keyErr := auth.LoadOrCreateKeyring(cfg.dataDir)
+		if keyErr != nil {
+			return fmt.Errorf("load %s: %w", filepath.Join(cfg.dataDir, auth.SecretsFileName), keyErr)
+		}
+
+		authService = auth.NewService(st, clock.System{}, keyring)
+	}
+
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
@@ -365,7 +398,10 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			// same-origin, which is what a co-hosted binary serves.
 			APIBase: os.Getenv(apiBaseEnv),
 			WebUI:   webUI,
-			Store:   st,
+			// The authentication choke point. Nil only when the database could not be opened, in
+			// which case every operation declaring Security answers 503 (api.Config).
+			Auth:  authService,
+			Store: st,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,

@@ -9,6 +9,55 @@ import (
 	"context"
 )
 
+const getAppUser = `-- name: GetAppUser :one
+
+SELECT
+    id, username, username_norm, email, email_norm, email_verified_at, display_name,
+    timezone, locale, state, session_epoch, last_login_at, failed_logins, locked_until_at,
+    mfa_totp_secret_enc, mfa_enrolled_at, mfa_required, deleted_at, created_at, updated_at
+FROM app_user
+WHERE id = ?
+`
+
+// GetAppUser reads one user row by id.
+//
+// ITS CALLER IS CreateSession, AND THE REASON IS THE EPOCH. A session records the
+// app_user.session_epoch it was minted under, and the resolver requires the two to be equal - so a
+// session created without reading the user's current epoch would be born stale on any account that
+// has ever signed out everywhere, and would be refused by the very next request. The read and the
+// insert run in ONE transaction, so a concurrent epoch bump either precedes the read (and the
+// session is born dead, correctly) or follows the insert (and kills it, correctly).
+//
+// There is no GetAppUserByUsernameNorm yet: looking a user up by what they typed is the login
+// endpoint's read, and it arrives with the endpoint, its rate limits and its uniform-response rules.
+func (q *Queries) GetAppUser(ctx context.Context, id string) (AppUser, error) {
+	row := q.db.QueryRowContext(ctx, getAppUser, id)
+	var i AppUser
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.UsernameNorm,
+		&i.Email,
+		&i.EmailNorm,
+		&i.EmailVerifiedAt,
+		&i.DisplayName,
+		&i.Timezone,
+		&i.Locale,
+		&i.State,
+		&i.SessionEpoch,
+		&i.LastLoginAt,
+		&i.FailedLogins,
+		&i.LockedUntilAt,
+		&i.MfaTotpSecretEnc,
+		&i.MfaEnrolledAt,
+		&i.MfaRequired,
+		&i.DeletedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertAPIToken = `-- name: InsertAPIToken :exec
 
 INSERT INTO api_token (
@@ -95,10 +144,18 @@ type InsertAppUserParams struct {
 // to the caller either way. A WHERE clause that hid the row would leave the server unable to answer
 // the only question that matters during an incident: was this token used, and when.
 //
-// NO DELETE STATEMENTS, AND NO REVOKE STATEMENTS EITHER. Revocation is one UPDATE on a row this
-// path already reads, and it lands with the endpoints that perform it - token mint/rotate/revoke and
-// sign-out are session-and-step-up operations from a later wave (canonical section 6's capability
-// floor). A mutation with no caller is a method the Postgres target has to implement for nothing.
+// NO DELETE STATEMENTS. A session or a token is revoked, never removed: "did the leaked token do
+// anything" is answered from the row, and deleting it deletes the answer.
+//
+// THE TWO REVOKES SHIP AHEAD OF THEIR ENDPOINTS, and that is a deliberate exception to "a mutation
+// with no caller is a method the Postgres target implements for nothing". The resolver has a branch
+// for each - a revoked session and a revoked token are both refused - and a branch nobody has
+// watched go red is a branch nobody knows works. Producing a revoked row is the only way to test
+// them, and a test that fabricated one by writing the column through some other insert would be
+// testing its own fixture. ADR-0011 sells instant revocation as the reason PATs are not JWTs; this
+// is the statement that claim rests on, and it is one UPDATE on a row the auth path already reads.
+// Sign-out and token revoke (session-and-step-up operations, canonical section 6) call these
+// verbatim when they land.
 //
 // Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
 // by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
@@ -356,18 +413,68 @@ func (q *Queries) ResolveSession(ctx context.Context, tokenHash []byte) (Resolve
 	return i, err
 }
 
+const revokeAPIToken = `-- name: RevokeAPIToken :exec
+
+UPDATE api_token
+SET revoked_at    = CAST(?1 AS INTEGER),
+    revoked_by    = ?2,
+    revoke_reason = ?3
+WHERE id = ?4 AND revoked_at IS NULL
+`
+
+type RevokeAPITokenParams struct {
+	RevokedAt    int64
+	RevokedBy    *string
+	RevokeReason string
+	ID           string
+}
+
+// RevokeAPIToken kills one token immediately - the property ADR-0011 chose opaque tokens over JWTs
+// to get. The reason is recorded because a revocation without one is a support conversation six
+// months later; revoked_by is a user id, or NULL when the binary itself did it (a leaked-token sweep,
+// an import). The `revoked_at IS NULL` guard keeps the first instant, as RevokeSession's does.
+func (q *Queries) RevokeAPIToken(ctx context.Context, arg RevokeAPITokenParams) error {
+	_, err := q.db.ExecContext(ctx, revokeAPIToken,
+		arg.RevokedAt,
+		arg.RevokedBy,
+		arg.RevokeReason,
+		arg.ID,
+	)
+	return err
+}
+
+const revokeSession = `-- name: RevokeSession :exec
+
+UPDATE session
+SET revoked_at = CAST(?1 AS INTEGER)
+WHERE id = ?2 AND revoked_at IS NULL
+`
+
+type RevokeSessionParams struct {
+	RevokedAt int64
+	ID        string
+}
+
+// RevokeSession ends one session immediately. The `revoked_at IS NULL` guard keeps the FIRST
+// instant: when a session was revoked is the interesting fact, and a repeated call - a retry, a
+// second click on "sign out this device" - must not rewrite it.
+func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) error {
+	_, err := q.db.ExecContext(ctx, revokeSession, arg.RevokedAt, arg.ID)
+	return err
+}
+
 const touchAPIToken = `-- name: TouchAPIToken :exec
 
 UPDATE api_token
-SET last_used_at = ?1
+SET last_used_at = CAST(?1 AS INTEGER)
 WHERE id = ?2
-  AND (last_used_at IS NULL OR last_used_at < ?3)
+  AND (last_used_at IS NULL OR last_used_at < CAST(?3 AS INTEGER))
 `
 
 type TouchAPITokenParams struct {
-	Now         *int64
+	Now         int64
 	ID          string
-	TouchBefore *int64
+	TouchBefore int64
 }
 
 // TouchAPIToken records that a token was used, throttled and guarded exactly as TouchSession is.
@@ -383,16 +490,17 @@ func (q *Queries) TouchAPIToken(ctx context.Context, arg TouchAPITokenParams) er
 
 const touchSession = `-- name: TouchSession :exec
 
+
 UPDATE session
-SET last_seen_at = ?1,
-    expires_at   = min(?2, absolute_expires_at)
+SET last_seen_at = CAST(?1 AS INTEGER),
+    expires_at   = min(CAST(?2 AS INTEGER), absolute_expires_at)
 WHERE id = ?3
-  AND last_seen_at < ?4
+  AND last_seen_at < CAST(?4 AS INTEGER)
 `
 
 type TouchSessionParams struct {
 	Now           int64
-	IdleExpiresAt interface{}
+	IdleExpiresAt int64
 	ID            string
 	TouchBefore   int64
 }
@@ -408,6 +516,12 @@ type TouchSessionParams struct {
 // expires_at NEVER PASSES absolute_expires_at. The idle window slides on use (14 days, 30 with
 // "remember me"); the absolute ceiling does not, so a session held open by a polling script still
 // ends. min() is SQLite's two-argument scalar minimum, not the aggregate.
+// THE CASTS ARE LOAD-BEARING, not noise. sqlc's SQLite engine takes a parameter's Go type from the
+// expression it lands in: inside min() it has no column affinity to read and emits interface{}, and
+// compared against a nullable column it emits *int64. Both are Micros, both are NOT NULL here, and
+// `any` in a domain signature is what .claude/rules/go-idioms.md bans - so each one is pinned in the
+// QUERY, the way BalanceAsOfSeq's aggregate is, because a sqlc.yaml override keys on table.column
+// and a parameter inside an expression has neither.
 func (q *Queries) TouchSession(ctx context.Context, arg TouchSessionParams) error {
 	_, err := q.db.ExecContext(ctx, touchSession,
 		arg.Now,

@@ -7,6 +7,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
+	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -77,6 +78,19 @@ type Config struct {
 	// the shape every test that predates PR 6 constructs, which is why this is a field rather than an
 	// unconditional mount. cmd/dkp passes internal/ui.Handler(); a handler-level test passes nil.
 	WebUI http.Handler
+
+	// Auth resolves the credential on every request into the single Principal a handler sees
+	// (docs/design/03-security.md §5). cmd/dkp builds one from the store, the clock and the keyring
+	// it loaded from <data-dir>/secrets.json.
+	//
+	// A NIL Auth DOES NOT MEAN "NO AUTHENTICATION". It means no operation that declares `Security`
+	// can be served at all: those answer 503, and only operations that declare an explicitly empty
+	// `Security` still work. The alternative — skipping the middleware — is a wiring bug that turns
+	// every gate in the product off silently and passes every test, which is exactly the failure this
+	// field exists to prevent. `dkp openapi` and the architectural tests pass nil deliberately: they
+	// build the registry without serving a request.
+	Auth *auth.Service
+
 	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
 	// It is nil when New is called only to build the spec (NewHumaAPI): the operations still register
 	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
@@ -208,6 +222,16 @@ func registerOperations(humaAPI huma.API, cfg Config) {
 	if clk == nil {
 		clk = clock.System{}
 	}
+
+	// THE CHOKE POINT, INSTALLED BEFORE ANY OPERATION IS REGISTERED (03-security.md §4.1). It runs
+	// for every Huma operation, resolves the cookie or the bearer into one Principal, and refuses an
+	// operation that declares `Security` when no live credential is present.
+	//
+	// It is installed HERE, beside the registrations, rather than in New: the operations and the
+	// middleware that guards them are one assembly, and a second site is how a served tree comes to
+	// differ from the tree the tests build. The /healthz, /readyz, /config.json, docs and SPA routes
+	// are not Huma operations and are deliberately outside it — none of them reads a credential.
+	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth))
 
 	registerMeta(humaAPI, cfg)
 	registerGuild(humaAPI, guild.NewService(cfg.Store, clk))

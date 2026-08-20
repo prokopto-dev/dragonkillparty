@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
@@ -32,7 +35,13 @@ func (c fixedClock) Now() time.Time { return c.t }
 
 // newGuildServer opens a fresh database, seeds the singleton guild row, and returns a server built
 // over it plus the store (so a test can declare a statement budget).
-func newGuildServer(t *testing.T) (*httptest.Server, *store.Store) {
+//
+// IT ALSO SEEDS A USER AND OPENS A SESSION, and the client it returns carries that session's cookie.
+// Since Phase 2 Wave 0d both guild operations declare `Security`, so the middleware refuses them
+// without a credential — which is the point of the change and is asserted directly by
+// TestGuild_Unauthenticated_Is401 in test/integration. Every OTHER guild test is about ETags,
+// validation and the patch semantics, and each of them would otherwise assert 401 by accident.
+func newGuildServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client) {
 	t.Helper()
 
 	s := store.NewDB(t)
@@ -55,20 +64,45 @@ func newGuildServer(t *testing.T) (*httptest.Server, *store.Store) {
 	})
 	require.NoError(t, err, "seed the guild row")
 
+	clk := fixedClock{t: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)}
+	authService := auth.NewTestService(t, s, clk)
+
 	srv := httptest.NewServer(New(Config{
 		Store: s,
-		Clock: fixedClock{t: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)},
+		Clock: clk,
+		Auth:  authService,
 	}))
 	t.Cleanup(srv.Close)
 
-	return srv, s
+	cookie, _ := auth.SeedSession(t, authService, auth.SeedUser(t, s, clk, "officer"))
+
+	return srv, s, clientWithCookie(t, srv.URL, cookie)
+}
+
+// clientWithCookie returns an http.Client that sends cookie to base on every request.
+//
+// A JAR RATHER THAN A HEADER ON EACH CALL, so the two request helpers below keep the signatures they
+// had and the cookie cannot be forgotten on one of them. The jar sends it over plain HTTP because
+// the test cookie is not marked Secure — see auth.SeedSession, which explains why the real one is.
+func clientWithCookie(t *testing.T, base string, cookie *http.Cookie) *http.Client {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+
+	u, err := url.Parse(base)
+	require.NoError(t, err)
+
+	jar.SetCookies(u, []*http.Cookie{cookie})
+
+	return &http.Client{Jar: jar}
 }
 
 // getGuild issues GET /api/v1/guild and returns the response and the decoded DTO.
-func getGuild(t *testing.T, base string) (*http.Response, GuildDTO) {
+func getGuild(t *testing.T, c *http.Client, base string) (*http.Response, GuildDTO) {
 	t.Helper()
 
-	res, err := http.Get(base + "/api/v1/guild") //nolint:noctx // test client
+	res, err := c.Get(base + "/api/v1/guild") //nolint:noctx // test client
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = res.Body.Close() })
 
@@ -81,7 +115,7 @@ func getGuild(t *testing.T, base string) (*http.Response, GuildDTO) {
 }
 
 // patchGuild issues PATCH /api/v1/guild with the given If-Match (omitted when empty) and body.
-func patchGuild(t *testing.T, base, ifMatch string, body map[string]any) *http.Response {
+func patchGuild(t *testing.T, c *http.Client, base, ifMatch string, body map[string]any) *http.Response {
 	t.Helper()
 
 	raw, err := json.Marshal(body)
@@ -96,7 +130,7 @@ func patchGuild(t *testing.T, base, ifMatch string, body map[string]any) *http.R
 		req.Header.Set("If-Match", ifMatch)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = res.Body.Close() })
 
@@ -121,9 +155,9 @@ func decodeProblemBody(t *testing.T, res *http.Response) ProblemDetail {
 func TestGetGuild_ReturnsSingletonWithStrongETag(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
-	res, dto := getGuild(t, srv.URL)
+	res, dto := getGuild(t, client, srv.URL)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
 	etag := res.Header.Get("ETag")
@@ -135,18 +169,32 @@ func TestGetGuild_ReturnsSingletonWithStrongETag(t *testing.T) {
 	require.Nil(t, dto.InactiveAfterDays, "an unset inactive_after_days must serialise as null")
 }
 
-// TestGetGuild_StatementBudgetIsOne is the N+1 tripwire: the singleton read must cost exactly one
-// statement. The budget is declared AFTER the server is built so boot statements are excluded.
-func TestGetGuild_StatementBudgetIsOne(t *testing.T) {
+// TestGetGuild_StatementBudgetIsTwo is the N+1 tripwire: one statement to resolve the credential,
+// one to read the singleton. The budget is declared AFTER the server is built so boot statements are
+// excluded.
+//
+// IT WAS ONE UNTIL PHASE 2 WAVE 0d, and the raise is the whole point of writing it down rather than
+// a budget quietly following the code. The second statement is the authentication lookup: ADR-0011
+// chose opaque credentials over JWTs precisely to pay one indexed round trip per request in exchange
+// for instant revocation, and this test is where that price is visible. What it still refuses is a
+// THIRD: an authorization layer that read role assignments per request, or a resolver that looked up
+// the user separately from the session, would fail here — which is the pressure Wave 0e needs to feel
+// when it adds `authz.Check`.
+//
+// The touch write is deliberately NOT in the count and must not become a way to sneak past this. The
+// resolver stamps last_seen_at at most once a minute (internal/auth's touchInterval) and the session
+// here was opened by the same fixed clock this request runs under, so its stamp is current and no
+// write is due. A budget that included an occasional write would be a flaky budget.
+func TestGetGuild_StatementBudgetIsTwo(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
-	// Declared after the server is built, so boot statements are outside the window. The GET reads
-	// the singleton in exactly one statement; anything more is an N+1 and fails the budget.
-	store.Counted(t).Budget(t, 1)
+	// Declared after the server is built, so boot statements and the session seed are outside the
+	// window.
+	store.Counted(t).Budget(t, 2)
 
-	res, _ := getGuild(t, srv.URL)
+	res, _ := getGuild(t, client, srv.URL)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 }
 
@@ -157,9 +205,9 @@ func TestGetGuild_StatementBudgetIsOne(t *testing.T) {
 func TestUpdateGuild_NoIfMatch_Returns428(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
-	res := patchGuild(t, srv.URL, "", map[string]any{"name": "Renamed"})
+	res := patchGuild(t, client, srv.URL, "", map[string]any{"name": "Renamed"})
 	require.Equal(t, http.StatusPreconditionRequired, res.StatusCode,
 		"a PATCH with no If-Match must be 428, not the 422 a required-param would produce")
 
@@ -173,14 +221,14 @@ func TestUpdateGuild_NoIfMatch_Returns428(t *testing.T) {
 func TestUpdateGuild_StaleIfMatch_Returns412WithCurrent(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
 	// Capture the current representation and ETag.
-	getRes, cur := getGuild(t, srv.URL)
+	getRes, cur := getGuild(t, client, srv.URL)
 	require.Equal(t, http.StatusOK, getRes.StatusCode)
 	currentETag := getRes.Header.Get("ETag")
 
-	res := patchGuild(t, srv.URL, `"stale-etag"`, map[string]any{"name": "Renamed"})
+	res := patchGuild(t, client, srv.URL, `"stale-etag"`, map[string]any{"name": "Renamed"})
 	require.Equal(t, http.StatusPreconditionFailed, res.StatusCode)
 
 	p := decodeProblemBody(t, res)
@@ -201,13 +249,13 @@ func TestUpdateGuild_StaleIfMatch_Returns412WithCurrent(t *testing.T) {
 func TestUpdateGuild_CurrentIfMatch_Succeeds(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
-	getRes, before := getGuild(t, srv.URL)
+	getRes, before := getGuild(t, client, srv.URL)
 	require.Equal(t, http.StatusOK, getRes.StatusCode)
 	currentETag := getRes.Header.Get("ETag")
 
-	res := patchGuild(t, srv.URL, currentETag, map[string]any{"name": "Renamed"})
+	res := patchGuild(t, client, srv.URL, currentETag, map[string]any{"name": "Renamed"})
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
 	newETag := res.Header.Get("ETag")
@@ -228,12 +276,12 @@ func TestUpdateGuild_CurrentIfMatch_Succeeds(t *testing.T) {
 func TestUpdateGuild_ValidationFailure_Is422(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newGuildServer(t)
+	srv, _, client := newGuildServer(t)
 
-	getRes, _ := getGuild(t, srv.URL)
+	getRes, _ := getGuild(t, client, srv.URL)
 	etag := getRes.Header.Get("ETag")
 
-	res := patchGuild(t, srv.URL, etag, map[string]any{"points_precision": 9})
+	res := patchGuild(t, client, srv.URL, etag, map[string]any{"points_precision": 9})
 	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode,
 		"points_precision above 2 must fail schema validation as 422")
 
