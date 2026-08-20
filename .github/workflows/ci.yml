@@ -357,6 +357,7 @@ jobs:
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/guild/**'
+              - 'internal/schemaenum/**'
               - 'internal/store/**'
             # The point-math suites: `make test-property` and `make test-coverage-floor`. Same
             # construction as `authz` above and the same test — the dependency closure of the
@@ -369,6 +370,8 @@ jobs:
               - 'go.sum'
               - 'internal/account/kinds/**'
               - 'internal/audit/kinds/**'
+              - 'internal/authz/role/kinds/**'
+              - 'internal/authz/roleassignment/kinds/**'
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/decay/kinds/**'

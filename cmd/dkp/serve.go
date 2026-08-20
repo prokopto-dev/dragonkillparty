@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -317,6 +318,16 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		}()
 	}
 
+	// The permission catalogue, projected into the database before the listener opens. A route whose
+	// permission key does not resolve is an operation the middleware cannot authorize, and canonical §6
+	// makes that a boot failure rather than a 403 discovered by a member.
+	// api.DeclaredPermissions() reads the registry this binary serves, with the `public` and `self`
+	// sentinels already dropped. cmd/ is the wiring point because internal/authz must not import
+	// internal/api — internal/api's own tests import internal/authz, so the cycle would be immediate.
+	if err := reconcileOnBoot(ctx, st, api.DeclaredPermissions()); err != nil {
+		return err
+	}
+
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp", cfg.addr)
@@ -395,6 +406,48 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 	}
 
 	return closedOrErr(<-serveErr, bound)
+}
+
+// reconcileOnBoot projects internal/authz's permission catalogue into the database, and decides
+// whether a failure is fatal.
+//
+// THE SPLIT IS THE SAME SHAPE AS migrateOnBoot'S, AND IT IS NOT SYMMETRIC:
+//
+//   - A MISSING REQUIRED KEY is fatal. A route declares a permission this binary's catalogue does not
+//     ship, so there is a registered operation whose authorization cannot be resolved against the
+//     table role_permission is FK-constrained to. Canonical §6 calls that a boot failure in as many
+//     words, and serving anyway would mean answering requests for an operation nobody can be
+//     authorized for — silently permissive is the one way authorization is allowed to fail, so it is
+//     the one this refuses.
+//
+//   - ANY OTHER ERROR — no store at all, an unreadable database, a permission table that does not
+//     exist because DKP_AUTO_MIGRATE is false and the migration has not run — is logged and the
+//     server starts anyway. That is canonical §13: /healthz must answer 200 so Docker's HEALTHCHECK
+//     does not kill the container, and /readyz already reports the pending migration that explains it.
+//
+// Returning an error from here aborts the boot; returning nil serves.
+//
+// required is a parameter rather than a call to api.DeclaredPermissions() inside the body so that the
+// fatal branch is reachable from a test. The registry and the catalogue agree — SPEC005 keeps them
+// agreeing — so the only way to watch that branch execute is to hand it a key that is not there.
+func reconcileOnBoot(ctx context.Context, st *store.Store, required []string) error {
+	// The report is not logged here: Reconcile already logs the counts, and a boot that says the same
+	// thing twice is a boot log an operator stops reading.
+	_, err := authz.NewReconciler(st, clock.System{}).Reconcile(ctx, required)
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, authz.ErrMissingPermission) {
+		return err
+	}
+
+	// Logged at ERROR, never discarded. Every operation that needs a permission will fail once the
+	// listener opens, and this line plus the /readyz body are the only two places that say why.
+	slog.ErrorContext(ctx, "could not reconcile the permission catalogue; serving anyway so /healthz stays up",
+		"error", err, "readyz", "will report the underlying database state")
+
+	return nil
 }
 
 // closedOrErr maps the sentinel http.ErrServerClosed to nil — a deliberate shutdown is not a

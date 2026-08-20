@@ -7,19 +7,33 @@
 // upstream of it. A hand-written permission list anywhere else is forbidden, because
 // role_permission is FK-constrained to permission(key) and a divergent list is a boot failure.
 //
-// WHAT SHIPS AT PHASE 0 PR 5, AND WHAT DOES NOT.
+// WHAT THIS PACKAGE IS, AND WHAT IT IS STILL NOT.
 //
-// This package is the Go catalogue and nothing more: Catalogue() returns every permission key with
-// its Key, Category, Label and Description, and Scopes() returns every PAT scope. There is no
-// permission table, no role_permission, no seed and no boot reconciliation — those arrive with the
-// role table that makes the FK meaningful, in ROADMAP Phase 2 deliverable 3, and a migration cannot
-// be un-shipped. See docs/development/phase-0-pr5-decisions.md §Q1.
+// Two halves. Catalogue() and Scopes() are the SOURCE: pure Go, no database, read as text by
+// SPEC005. Reconcile() is the projection: it writes the catalogue into the permission table on the
+// boot path, stamps orphaned_at on a key the running binary no longer ships, never deletes a row, and
+// refuses to boot when a registered route names a key the catalogue does not have.
 //
-// The catalogue carries Key, Category, Label and Description and NO policy fields. RequiresStepUp,
-// IsDangerous and SortOrder wait for Phase 2, which builds the middleware that can test them against
-// a real consumer. The "declare it whole now" argument holds for keys — both SDKs and the Phase 2
-// seed derive from them, and growing the list one key per PR would make every early endpoint PR a
-// breaking SDK change — and it does not hold for a policy flag nothing derives from.
+// Phase 0 PR 5 shipped the first half alone, deliberately: there was no permission table, no
+// role_permission and therefore no FK, so a bad key was a red `make verify-spec` rather than a boot
+// failure, and a migration cannot be un-shipped (docs/development/phase-0-pr5-decisions.md §Q1).
+// Phase 2 Wave 0b (issue #261) ships the second half with the four tables that make the FK
+// meaningful — permission, role, role_permission, role_assignment — which is ROADMAP Phase 2
+// deliverable 3.
+//
+// Still NOT here, and each has a reason rather than an omission:
+//
+//   - The BUILT-IN ROLE SEED (guest … owner, bot_readonly, bot_raid — 01-domain-model.md §5.1) and
+//     the admin.owner holder. A role nobody can be assigned to is a row with no effect: assignment
+//     needs app_user and service_account, which are Phase 2 deliverable 1. Issue #264.
+//   - authz.Check and the MIDDLEWARE. There is no Principal to check yet.
+//   - The GENERATED OUTPUTS canonical §6 lists — the OpenAPI x-dkp-permission metadata, the PAT scope
+//     enum, the authorization matrix and docs/reference/permissions.md.
+//
+// The catalogue now carries all three policy fields — RequiresStepUp, IsDangerous and SortOrder —
+// because Reconcile is the consumer their absence was waiting for: every one of them is a column of a
+// row this package writes. orphaned_at is still not a field, because it is a fact about a database
+// after a downgrade rather than about code.
 //
 // THE WHOLE LIST SHIPS NOW, for the reason internal/api/errors.go gives about the error enum: the
 // catalogue is what the PAT scope enum and the Phase 2 table seed derive from, so publishing it

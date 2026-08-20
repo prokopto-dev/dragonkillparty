@@ -534,6 +534,7 @@ test-perf:
 COVERAGE_FLOOR          := 95
 COVERAGE_FLOOR_PACKAGES := ./internal/ledger ./internal/ledger/kinds ./internal/audit/kinds \
                            ./internal/account/kinds ./internal/decay/kinds ./internal/schemaenum \
+                           ./internal/authz/role/kinds ./internal/authz/roleassignment/kinds \
                            ./internal/strategy
 #
 # Cacheable (issue #155), for the same reason as test-property: none of these packages shells out.

@@ -1,12 +1,17 @@
 package authz
 
-// Permission is one row of the permission catalogue.
+// Permission is one row of the permission catalogue, and one row of the permission table.
 //
-// Four fields, and only four, at Phase 0 PR 5: Key, Category, Label and Description. The policy
-// fields the domain model's permission table also carries — is_dangerous, requires_step_up,
-// sort_order, orphaned_at — are Phase 2's, and the reasoning is in doc.go and in
-// docs/development/phase-0-pr5-decisions.md §Q1: nothing derives from a policy flag today and no test
-// can validate one against a consumer that does not exist yet.
+// SEVEN FIELDS, which is the permission table's eight columns minus orphaned_at. Phase 0 PR 5 shipped
+// four — Key, Category, Label, Description — and deferred the three policy fields because nothing
+// derived from them and no test could validate one against a consumer that did not exist
+// (docs/development/phase-0-pr5-decisions.md §Q1). Phase 2 Wave 0b is that consumer: Reconcile writes
+// every field below into the permission table at boot, so a flag that is wrong here is now a wrong row
+// in a database rather than an unread constant.
+//
+// orphaned_at is deliberately NOT a field. It is a property of a DB row after a downgrade — the
+// timestamp at which a key that a newer binary had stopped shipping was noticed — so it exists only in
+// the table, is written only by Reconcile, and has nothing to say in code.
 type Permission struct {
 	// Key is the <resource>.<action> permission key, dot-separated and lowercase (canonical §6, §16).
 	// It is written as a WHOLE QUOTED LITERAL below, never composed from parts — SPEC005 does a quoted
@@ -22,6 +27,33 @@ type Permission struct {
 
 	// Description is one sentence an officer reads when deciding whether a role should hold this key.
 	Description string
+
+	// RequiresStepUp is true for the keys canonical §6's capability floor names: the operations that
+	// alter authentication, authorization or bulk-export state, which are session-and-step-up only and
+	// carry no PAT scope at all. It is the column the middleware reads
+	// (docs/design/01-domain-model.md §5), so it is stored on the row rather than recomputed per
+	// request.
+	//
+	// It is NOT a second definition of the floor. CapabilityFloor() is the definition;
+	// TestCatalogue_RequiresStepUp_IsExactlyTheCapabilityFloor compares the two in both directions, so
+	// a key flagged here and absent there — or the reverse — is a red test.
+	RequiresStepUp bool
+
+	// IsDangerous marks a key the role editor confirms twice before granting, and the matrix renders
+	// with a warning. It is an affordance, not a control: nothing about authorization changes.
+	//
+	// EXACTLY ONE KEY CARRIES IT, and that is not an oversight — docs/design/01-domain-model.md:455
+	// specifies bid.reveal_early and no document specifies a second. Guessing the rest would put an
+	// invented policy in a database column that survives every later correction, so the flag ships with
+	// the one documented case and the rest are decided with the role editor that renders them
+	// (issue #265).
+	IsDangerous bool
+
+	// SortOrder is the display order of the key in the role editor and the authorization matrix,
+	// 1-based. It is derived from this catalogue's position — canonical §6's order, which groups by
+	// category — rather than hand-written per row: fifty-eight hand-maintained integers are fifty-eight
+	// chances for two keys to claim one slot, and the order is already declared by the list itself.
+	SortOrder int64
 }
 
 // Scope is one PAT scope: <family>:<verb>, colon-separated (canonical §6).
@@ -75,8 +107,14 @@ const (
 //
 // Every Key below is a whole quoted string literal. Do not refactor these into Resource+Action:
 // SPEC005 greps this file for `"<key>"` and a composed key fails the gate. See doc.go.
+//
+// SortOrder is stamped from the position in that list rather than written per row: the order is
+// already declared once, by the list, and a second hand-maintained copy of it as fifty-eight integers
+// is fifty-eight chances for two keys to claim one slot. Inserting a key therefore renumbers the keys
+// after it, which is correct and costs nothing — sort_order is display order, Reconcile rewrites it on
+// every boot, and nothing joins on it.
 func Catalogue() []Permission {
-	return []Permission{
+	permissions := []Permission{
 		// Roster and people.
 		{Key: "roster.read", Category: categoryRoster, Label: "Read roster", Description: "View the guild roster, members and characters."},
 		{Key: "roster.write", Category: categoryRoster, Label: "Edit roster", Description: "Add, edit and archive members and characters."},
@@ -108,7 +146,11 @@ func Catalogue() []Permission {
 		// Bidding.
 		{Key: "bid.read", Category: categoryBidding, Label: "Read bids", Description: "View bid sessions and, after reveal, the bids in them."},
 		{Key: "bid.manage", Category: categoryBidding, Label: "Manage bids", Description: "Open, extend, close, resolve and settle bid sessions."},
-		{Key: "bid.reveal_early", Category: categoryBidding, Label: "Reveal bids early", Description: "Reveal a sealed bid session before its scheduled reveal."},
+		// The one is_dangerous key, and the only one any document specifies
+		// (docs/design/01-domain-model.md:455): the UI requires an extra confirmation and every use
+		// writes an audit row naming the session, because revealing early is how a sealed auction
+		// stops being sealed.
+		{Key: "bid.reveal_early", Category: categoryBidding, Label: "Reveal bids early", Description: "Reveal a sealed bid session before its scheduled reveal.", IsDangerous: true},
 
 		// Guild bank.
 		{Key: "bank.read", Category: categoryBank, Label: "Read bank", Description: "View the guild bank's contents and requests."},
@@ -148,25 +190,25 @@ func Catalogue() []Permission {
 
 		// Import.
 		{Key: "import.run", Category: categoryImport, Label: "Run an import", Description: "Run an EQdkp import in dry-run, staging the data without committing it."},
-		{Key: "import.commit", Category: categoryImport, Label: "Commit an import", Description: "Commit a staged import into the live database."},
+		{Key: "import.commit", Category: categoryImport, Label: "Commit an import", Description: "Commit a staged import into the live database.", RequiresStepUp: true},
 
 		// Webhooks.
 		{Key: "webhook.manage", Category: categoryWebhooks, Label: "Manage webhooks", Description: "Create, edit and delete outbound webhooks."},
 
 		// Tokens.
-		{Key: "token.mint", Category: categoryTokens, Label: "Mint tokens", Description: "Mint a personal access token or a service-account token."},
-		{Key: "token.revoke", Category: categoryTokens, Label: "Revoke tokens", Description: "Revoke a personal access token or a service-account token."},
+		{Key: "token.mint", Category: categoryTokens, Label: "Mint tokens", Description: "Mint a personal access token or a service-account token.", RequiresStepUp: true},
+		{Key: "token.revoke", Category: categoryTokens, Label: "Revoke tokens", Description: "Revoke a personal access token or a service-account token.", RequiresStepUp: true},
 
 		// Administration.
 		{Key: "admin.settings", Category: categoryAdmin, Label: "Manage settings", Description: "Change instance configuration that does not affect the security posture, such as the guild name, timezone and point label."},
-		{Key: "admin.security.manage", Category: categoryAdmin, Label: "Manage security settings", Description: "Read and change security-affecting configuration — identity-provider credentials, MFA and session policy, the outbound allowlist — and feed tokens."},
-		{Key: "admin.roles.manage", Category: categoryAdmin, Label: "Manage roles", Description: "Edit roles and role assignments."},
-		{Key: "admin.backup", Category: categoryAdmin, Label: "Manage backups", Description: "Download and restore database backups."},
-		{Key: "admin.owner", Category: categoryAdmin, Label: "Owner", Description: "The owner capability: an ordinary permission row, not a hardcoded superuser."},
+		{Key: "admin.security.manage", Category: categoryAdmin, Label: "Manage security settings", Description: "Read and change security-affecting configuration — identity-provider credentials, MFA and session policy, the outbound allowlist — and feed tokens.", RequiresStepUp: true},
+		{Key: "admin.roles.manage", Category: categoryAdmin, Label: "Manage roles", Description: "Edit roles and role assignments.", RequiresStepUp: true},
+		{Key: "admin.backup", Category: categoryAdmin, Label: "Manage backups", Description: "Download and restore database backups.", RequiresStepUp: true},
+		{Key: "admin.owner", Category: categoryAdmin, Label: "Owner", Description: "The owner capability: an ordinary permission row, not a hardcoded superuser.", RequiresStepUp: true},
 
 		// Sensitive reads.
-		{Key: "person.pii.read", Category: categorySensitive, Label: "Read PII", Description: "Read personally-identifying information in bulk, such as email addresses."},
-		{Key: "audit.read", Category: categorySensitive, Label: "Read the audit log", Description: "Read the audit log."},
+		{Key: "person.pii.read", Category: categorySensitive, Label: "Read PII", Description: "Read personally-identifying information in bulk, such as email addresses.", RequiresStepUp: true},
+		{Key: "audit.read", Category: categorySensitive, Label: "Read the audit log", Description: "Read the audit log.", RequiresStepUp: true},
 		// ops.read is SESSION-ONLY BY OMISSION, not session-plus-step-up. It sits in the sensitive
 		// category beside person.pii.read and audit.read, both of which ARE in CapabilityFloor(), and
 		// its absence from that list is the intended answer rather than an oversight — Category is a
@@ -189,6 +231,14 @@ func Catalogue() []Permission {
 		// CapabilityFloor(), so it would go red.
 		{Key: "ops.read", Category: categorySensitive, Label: "Read operational status", Description: "Read operational status and diagnostics."},
 	}
+
+	// 1-based, so a zero SortOrder in a permission row is distinguishable from "the first key" — the
+	// column defaults to 0, and a row that kept the default is a row Reconcile never wrote.
+	for i := range permissions {
+		permissions[i].SortOrder = int64(i) + 1
+	}
+
+	return permissions
 }
 
 // CapabilityFloor returns the permission keys that are session-and-step-up only and carry no PAT

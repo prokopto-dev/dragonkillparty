@@ -1,5 +1,12 @@
 package api
 
+import (
+	"maps"
+	"slices"
+
+	"github.com/danielgtaylor/huma/v2"
+)
+
 // ExtensionPermission is the OpenAPI extension key naming an operation's permission.
 //
 // It belongs in huma.Operation.Extensions, never in Metadata. Metadata is tagged `yaml:"-"` in
@@ -73,6 +80,64 @@ const (
 // and the other half forbids one for.
 func SentinelPermissions() []string {
 	return []string{PermissionPublic, PermissionSelf}
+}
+
+// DeclaredPermissions returns every catalogue permission key the registry's operations declare, once
+// each and in sorted order.
+//
+// IT IS THE BOOT PATH'S REQUIRED SET (issue #261). Canonical §6 makes a divergent permission list a
+// boot failure rather than a style issue — role_permission is FK-constrained to permission(key) — and
+// authz.Reconcile is what enforces it: every key here has to resolve to a live row in this officer's
+// database before the listener opens. cmd/dkp wires the two together, because internal/authz must not
+// import this package (arch_test.go imports internal/authz, so the cycle would be immediate) and this
+// package must not import internal/authz's store-backed half either.
+//
+// THE SENTINELS ARE DROPPED HERE, at the one place that knows they exist. `public` and `self` are not
+// catalogue keys and must never become permission rows: `public` means no credential at all, and
+// `self` means any authenticated principal constrained to its own records. Passing either to the
+// reconciler would turn a correctly-declared public route into a boot failure.
+//
+// SPEC005 checks the same property against the COMMITTED spec at lint time, and this checks it against
+// the running binary at boot. They are not redundant: the gate cannot see a patched build, a partial
+// upgrade or a fork, and the boot check cannot see an operation nobody registered. The one that stops
+// a mistake reaching an officer's database is this one.
+func DeclaredPermissions() []string {
+	sentinels := make(map[string]struct{}, len(SentinelPermissions()))
+	for _, s := range SentinelPermissions() {
+		sentinels[s] = struct{}{}
+	}
+
+	seen := make(map[string]struct{})
+
+	doc := NewHumaAPI(Config{}).OpenAPI()
+	if doc == nil {
+		return nil
+	}
+
+	for _, item := range doc.Paths {
+		for _, op := range []*huma.Operation{
+			item.Get, item.Put, item.Post, item.Delete, item.Patch, item.Head,
+		} {
+			if op == nil {
+				continue
+			}
+
+			key, ok := op.Extensions[ExtensionPermission].(string)
+			if !ok || key == "" {
+				continue
+			}
+
+			if _, sentinel := sentinels[key]; sentinel {
+				continue
+			}
+
+			seen[key] = struct{}{}
+		}
+	}
+
+	// Sorted, because the caller logs it and reports missing keys from it: a set whose order changes
+	// on every boot is a diff an operator cannot read.
+	return slices.Sorted(maps.Keys(seen))
 }
 
 // HiddenOperationAllowlist returns the only paths permitted to carry `Hidden: true`.

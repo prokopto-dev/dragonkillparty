@@ -189,6 +189,83 @@ func TestCatalogue_Permissions_KeysAreUnique(t *testing.T) {
 	}
 }
 
+// TestCatalogue_RequiresStepUp_IsExactlyTheCapabilityFloor ties the per-row policy flag to the set
+// canonical §6 defines, in both directions.
+//
+// The flag and the floor are two spellings of one fact — "this operation alters authentication,
+// authorization or bulk-export state, so it is session-and-step-up only" — and they are consumed by
+// different halves of the product: CapabilityFloor() drives the spec's x-dkp-pat-forbidden through
+// TestArch_ScopeCoverage_MatchesSecurity, while RequiresStepUp is written into permission rows that
+// the Phase 2 middleware reads per request (docs/design/01-domain-model.md §5).
+//
+// Without this test those halves drift silently and in the dangerous direction: a floor key whose row
+// says requires_step_up = 0 is an operation the spec forbids to a PAT and the middleware waves a
+// session through without re-authentication, which is the whole control the MFA deliverable exists to
+// provide.
+func TestCatalogue_RequiresStepUp_IsExactlyTheCapabilityFloor(t *testing.T) {
+	t.Parallel()
+
+	var flagged []string
+
+	for _, p := range authz.Catalogue() {
+		if p.RequiresStepUp {
+			flagged = append(flagged, p.Key)
+		}
+	}
+
+	floor := authz.CapabilityFloor()
+
+	require.ElementsMatch(t, floor, flagged,
+		"the keys carrying RequiresStepUp must be exactly authz.CapabilityFloor(). A key flagged here "+
+			"and absent from the floor puts a re-authentication prompt in front of an ordinary officer "+
+			"action; a floor key not flagged here writes requires_step_up = 0 into the permission row "+
+			"the middleware reads, so the step-up the spec promises never happens.")
+}
+
+// TestCatalogue_IsDangerous_IsExactlyTheDocumentedSet pins the one key any document specifies.
+//
+// docs/design/01-domain-model.md:455 names bid.reveal_early and nothing else: "the UI requires an
+// extra confirmation and every use writes an audit_log row naming the session". No document specifies
+// a second, and docs/development/phase-0-pr5-decisions.md §Q1 calls the field an affordance "specified
+// nowhere" — which is why it was deferred out of PR 5 rather than guessed at.
+//
+// So the assertion is the exact set, not a lower bound. Adding a key here without a document that says
+// it is dangerous is inventing product policy into a database column, and the failure this test
+// produces is the moment to write that document instead.
+func TestCatalogue_IsDangerous_IsExactlyTheDocumentedSet(t *testing.T) {
+	t.Parallel()
+
+	var flagged []string
+
+	for _, p := range authz.Catalogue() {
+		if p.IsDangerous {
+			flagged = append(flagged, p.Key)
+		}
+	}
+
+	require.Equal(t, []string{"bid.reveal_early"}, flagged,
+		"IsDangerous is specified for exactly one key (docs/design/01-domain-model.md:455). A second "+
+			"needs a document saying so first — the flag reaches an officer's screen as a confirmation "+
+			"dialogue, and a guessed one trains people to click through it.")
+}
+
+// TestCatalogue_SortOrder_IsTheCanonicalOrder asserts the derived display order.
+//
+// 1-based, dense and in canonical §6's order, which is what makes "the role editor groups by category"
+// work without a second ordering rule: §6 already lists the keys category by category. The zero value
+// is deliberately not used, so a permission row still carrying the column default is a row Reconcile
+// never wrote — a distinction worth having on the one table whose contents are supposed to be
+// completely replaced at every boot.
+func TestCatalogue_SortOrder_IsTheCanonicalOrder(t *testing.T) {
+	t.Parallel()
+
+	for i, p := range authz.Catalogue() {
+		require.Equal(t, int64(i)+1, p.SortOrder,
+			"%s has SortOrder %d at position %d; the order is derived from the list, so this means "+
+				"someone hand-wrote one", p.Key, p.SortOrder, i)
+	}
+}
+
 // TestCapabilityFloor_MatchesCanonicalConventions compares authz.CapabilityFloor() against the
 // fenced capability-floor list in canonical §6, element by element and in both directions.
 //

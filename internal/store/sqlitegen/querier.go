@@ -87,6 +87,7 @@ type Querier interface {
 	// `db.Query` and `db.Exec` outside internal/store are grep-banned (gate SQL002), so the only way
 	// a new query enters the codebase is by being written here first and reviewed as SQL.
 	GetMetaValue(ctx context.Context, key string) (string, error)
+	GetPermission(ctx context.Context, key string) (Permission, error)
 	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
 	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
 	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
@@ -192,6 +193,31 @@ type Querier interface {
 	// By batch_id, not by a seq range: ix_entry_batch(batch_id) makes this an index seek, and a batch
 	// holds at most ~70 entries, so the page is bounded by the domain rather than by a LIMIT.
 	ListEntriesByBatch(ctx context.Context, batchID string) ([]LedgerEntry, error)
+	// Permission catalogue reconciliation - the boot path that projects internal/authz/catalogue.go
+	// into the permission table (canonical section 6, docs/design/01-domain-model.md section 5).
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated
+	// from a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate
+	// SQL002), so the only way a new query enters the codebase is by being written here first and
+	// reviewed as SQL.
+	//
+	// FOUR STATEMENTS AND NO "DELETE FROM permission". That is the whole design of the reconciliation
+	// and not an omission: role_permission is FK-constrained to permission(key), so deleting a key a
+	// newer binary stopped shipping would either fail against the grants that reference it or - with a
+	// cascade - silently strip capability from every role that held it, permanently, on a DOWNGRADE.
+	// OrphanPermission stamps the row instead, UpsertPermission clears the stamp when the key comes
+	// back, and no code path in this product removes a permission row.
+	//
+	// THE SET IS SMALL AND THE WHOLE-TABLE READ IS DELIBERATE. There are fifty-eight keys, read once per
+	// boot, so ListPermissions returns every row and the diff against the catalogue happens in Go where
+	// it can be unit-tested. A sqlc.slice() over the catalogue would move that set logic into SQL for no
+	// measurable gain on a table this size.
+	//
+	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+	// by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
+	// that many trailing characters off the generated query string. The failure is silent at generate
+	// time and shows up as a syntax error only when the query runs.
+	ListPermissions(ctx context.Context) ([]Permission, error)
 	// The REPLAY reads - Phase 1, issue #198. `dkp verify-ledger` walks the whole ledger from genesis
 	// and recomputes it: the per-pool hash chain, and balance_snapshot from a fold over every entry.
 	//
@@ -264,6 +290,11 @@ type Querier interface {
 	// This is dialect divergence #1 (db/RECIPES.md): on Postgres max+1 is NOT safe under real
 	// concurrency and becomes a locked counter row or an advisory lock. Do not copy this pattern.
 	NextPoolSeq(ctx context.Context, poolID string) (int64, error)
+	// OrphanPermission marks a key the running binary no longer ships. The `orphaned_at IS NULL` guard
+	// makes it idempotent and keeps the FIRST timestamp: the interesting fact is when the key stopped
+	// being shipped, not when the instance was last restarted, and every boot after a downgrade would
+	// otherwise rewrite it.
+	OrphanPermission(ctx context.Context, arg OrphanPermissionParams) error
 	// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
 	// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
 	// StandingsFromSnapshot against, and it is what a replay or a verification job reads.
@@ -325,6 +356,11 @@ type Querier interface {
 	// A batch has at most ~70 entries, so this is a sub-millisecond indexed write under the single writer.
 	UpsertBalanceSnapshot(ctx context.Context, arg UpsertBalanceSnapshotParams) error
 	UpsertMetaValue(ctx context.Context, arg UpsertMetaValueParams) error
+	// UpsertPermission writes one catalogue row. It ALWAYS clears orphaned_at: reaching this statement
+	// means the running binary ships the key, which is exactly the condition orphaned_at records the
+	// absence of, so an upgrade that restores a key restores its row to live in the same statement that
+	// refreshes its label.
+	UpsertPermission(ctx context.Context, arg UpsertPermissionParams) error
 }
 
 var _ Querier = (*Queries)(nil)
