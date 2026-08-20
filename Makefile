@@ -1126,8 +1126,17 @@ osv-scan:
 # variable so test/repo can point it at a fabricated migration directory in t.TempDir(), and a value
 # leaking in from a developer's shell would make `make check` analyse some other tree while printing
 # that it passed.
+#
+# DKP_ATLAS names the PINNED atlas by path (issue #254). PATH is appended above so "a deliberately
+# chosen system tool still wins", which is right for every tool here except this one: `atlas migrate
+# lint` is Pro-only from v0.38 in Atlas's OFFICIAL build, so a system atlas does not merely differ
+# from the pin, it makes this target impossible to run — and Atlas's own error banner is what talks
+# contributors into installing it. GOTOOLS_BIN is still derived in exactly one place; this passes
+# that value on rather than re-deriving it, the same contract install-atlas.sh takes it under. The
+# script falls back to PATH when the pinned copy is absent, and refuses a non-community atlas either
+# way, so this line is the preference and the check in the script is the guarantee.
 lint-migrations:
-	@env -u DKP_REPO_ROOT MODE=enforce bash scripts/migrate-lint.sh
+	@env -u DKP_REPO_ROOT DKP_ATLAS='$(GOTOOLS_BIN)/atlas' MODE=enforce bash scripts/migrate-lint.sh
 
 # The template-database clone cost, printed as a p50 in the CI log. This is the measurement behind
 # item V4 of docs/development/verify-before-phase-0.md — "integration tests are nearly free" is the

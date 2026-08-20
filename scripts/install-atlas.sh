@@ -12,10 +12,17 @@
 #     2023. The cmd/atlas/vX tags stopped at v0.9.1. The current release is v1.3.0.
 #
 # So the `go install <module>@$(VERSION)` line every other tool in `make setup` uses is not
-# available, and the alternative — `curl https://atlasgo.sh | sh` — pins nothing and verifies
-# nothing. This script is the third option: a version pinned in one place, an artefact verified
-# against a checksum committed to this repository, and one implementation shared by `make setup`
-# and .github/actions/setup-toolchain, so the laptop and CI cannot install different binaries.
+# available, and the alternative — `curl https://atlasgo.sh | sh` — pins nothing, verifies nothing,
+# and installs the OFFICIAL build rather than the community one. That last part is not a detail:
+# `atlas migrate lint` is Atlas Pro-only from v0.38 in the official build, so a contributor who runs
+# that line has replaced a working migration gate with one that aborts asking for `atlas login`
+# (issue #254) — and the community build suggests exactly that line after any error of its own.
+# The asset below is `atlas-community-…` deliberately, and scripts/migrate-lint.sh refuses any atlas
+# whose `version` does not say so.
+#
+# This script is the third option: a version pinned in one place, an artefact verified against a
+# checksum committed to this repository, and one implementation shared by `make setup` and
+# .github/actions/setup-toolchain, so the laptop and CI cannot install different binaries.
 #
 # It is called as `make install-atlas` from both. The Makefile owns GOTOOLS_BIN and passes it in;
 # nothing here re-derives an install location, because two copies of that logic is exactly the

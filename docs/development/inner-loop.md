@@ -173,6 +173,7 @@ possible.
 | Integration tests are slow the first time | The Go build cache is cold | The second run is the honest number |
 | `make test-importer` fails immediately | Docker is not running | It is the only target that needs it |
 | A golden test fails and `-update` fixes it | You changed parser behaviour | That is the test doing its job. Decide whether the *new* output is correct before you update anything. |
+| `make lint-migrations` aborts asking for `atlas login` | An Atlas **official** build is being used; `migrate lint` is Pro-only there from v0.38 | `make install-atlas` — the pinned community build runs the same analyzers with no account. Ignore Atlas's own banner suggesting `curl -sSf https://atlasgo.sh \| sh`; that is what installs the build the gate cannot use. |
 
 ## Next
 
