@@ -158,12 +158,12 @@ argumentative than the guides above.
 ## Reference pages are generated
 
 The reference tree is produced by `make gen` from the code, not written by hand, so it cannot
-drift. None of it exists yet; it lands with the subsystem it describes.
+drift. Each page lands with the subsystem it describes; **✅ marks the ones that exist**.
 
 | Reference page | Generated from | Phase |
 |---|---|---|
 | `reference/configuration.md` | the `Config` struct tags | 2 |
-| `reference/permissions.md`, `reference/scopes.md` | `internal/authz/catalogue.go` | 2 |
+| ✅ [`reference/permissions.md`](reference/permissions.md), [`reference/scopes.md`](reference/scopes.md) | `internal/authz/catalogue.go` | 2 |
 | `reference/errors/<code>.md` | the closed error-code enum | 2 |
 | `reference/strategies/<id>.md` | each strategy's `ConfigSchema` | 1 |
 | `reference/invariants.md` | the `Invariants()` registrations | 1 |

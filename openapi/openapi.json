@@ -322,6 +322,49 @@
         },
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "pat": {
+        "bearerFormat": "dkp_pat_\u003c8-char prefix\u003e_\u003c43-char secret\u003e",
+        "description": "**NOT YET ENFORCED.** This describes the contract Phase 2 implements, not what the server checks today: there is no authentication or authorization middleware yet, so every operation is served without a credential — including the mutating `PATCH /api/v1/guild`. See \"Known Phase 0 gaps\" in SECURITY.md.\n\nA personal access token belonging to a service account, sent as `Authorization: Bearer dkp_pat_…`. Query-string tokens are rejected (canonical §7); the compat shim's `?atoken=` is the single documented exception and is not part of this API. Effective capability is the service account's role permissions INTERSECTED with the token's scopes, so a token can only ever narrow what its account already has. There is no `admin:*` scope and no all-powerful token (ADR-0011): the operations that alter authentication, authorization or bulk-export state are session-and-step-up only and carry no scope at all.",
+        "scheme": "bearer",
+        "type": "http",
+        "x-dkp-scopes": [
+          "roster:read",
+          "roster:write",
+          "raids:read",
+          "raids:write",
+          "dkp:read",
+          "dkp:adjust",
+          "loot:read",
+          "loot:award",
+          "bids:read",
+          "bids:place",
+          "bids:manage",
+          "logs:ingest",
+          "calendar:read",
+          "calendar:write",
+          "cms:read",
+          "cms:write",
+          "events:subscribe",
+          "webhooks:manage",
+          "bank:read",
+          "bank:request",
+          "bank:manage",
+          "draft:read",
+          "draft:vote",
+          "recruit:read",
+          "recruit:manage",
+          "swap:read",
+          "swap:manage"
+        ]
+      },
+      "session": {
+        "description": "**NOT YET ENFORCED.** This describes the contract Phase 2 implements, not what the server checks today: there is no authentication or authorization middleware yet, so every operation is served without a credential — including the mutating `PATCH /api/v1/guild`. See \"Known Phase 0 gaps\" in SECURITY.md.\n\nThe browser session cookie: opaque, server-side, `HttpOnly; Secure; SameSite=Lax; Path=/`, no `Domain`. The `__Host-` prefix pins it to the exact origin (03-security.md §3.6). Cookies are ignored entirely when `Authorization` is present. Operations in canonical §6's capability floor accept this scheme ONLY, and require a recent step-up.",
+        "in": "cookie",
+        "name": "__Host-dkp_session",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
