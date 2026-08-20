@@ -170,6 +170,27 @@ func tableRow(t *testing.T, page, key string) string {
 	return ""
 }
 
+// TestDocgen_Pages_DiscloseThePhase0Gap is the reference-page half of a security review's finding,
+// and a TRIPWIRE TO DELETE rather than a rule to keep.
+//
+// Both pages describe scopes, the capability floor and step-up as though a server enforced them. None
+// of it is enforced yet — there is no authorization middleware, and an unauthenticated PATCH succeeds
+// (SECURITY.md's "Known Phase 0 gaps", pinned by TestGuild_Unauthenticated_IsAKnownPhase0Gap). A
+// reference page that documents a control well is exactly the thing that stops a reader checking
+// whether it exists.
+//
+// Deleted in the same change that lands the middleware, alongside authz.Phase0EnforcementNotice and
+// the arch test that asserts the same property of the OpenAPI schemes.
+func TestDocgen_Pages_DiscloseThePhase0Gap(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{permissionsFile, scopesFile} {
+		require.Containsf(t, committed(t, name), authz.Phase0EnforcementNotice,
+			"docs/reference/%s describes credentials and step-up without saying that nothing "+
+				"enforces them yet", name)
+	}
+}
+
 // TestDocgen_Pages_CarryTheGeneratedBanner is small and load-bearing.
 //
 // The banner is the only thing standing between a contributor who spots a typo and an edit that the

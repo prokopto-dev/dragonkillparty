@@ -2,6 +2,8 @@
 
 # Permissions
 
+> **NOT YET ENFORCED.** This describes the contract Phase 2 implements, not what the server checks today: there is no authentication or authorization middleware yet, so every operation is served without a credential — including the mutating `PATCH /api/v1/guild`. See "Known Phase 0 gaps" in SECURITY.md.
+
 The 58 permission keys a role can grant. They are `<resource>.<action>`, dot-separated and
 lowercase, and this page is generated from `internal/authz/catalogue.go` — the single source
 ([canonical §6](../design/00-canonical-conventions.md)). The same catalogue is reconciled

@@ -191,3 +191,13 @@ The gap is pinned by `TestGuild_Unauthenticated_IsAKnownPhase0Gap` in
 `test/integration/guild_test.go`, which asserts that an unauthenticated GET **and** an unauthenticated
 PATCH both currently succeed. When the auth middleware lands (Phase 2), those assertions go red;
 closing the gap is then a deliberate edit of that test to expect `401`, not a silent discovery.
+
+**The published document now describes the credentials in detail, and that made this worse before it
+made it better.** Phase 2 Wave 0c defined the `pat` and `session` security schemes and generated
+`docs/reference/permissions.md` and `scopes.md` — bearer format, cookie name, the scope vocabulary,
+which operations are step-up only. A reader takes a well-described control as evidence the control
+exists, so a security review required the disclosure to travel with the description: every one of
+those surfaces carries `authz.Phase0EnforcementNotice`, which says in as many words that nothing
+enforces any of it yet and points back here. Two tests assert the notice is present
+(`TestArch_SecuritySchemes_DiscloseThePhase0Gap`, `TestDocgen_Pages_DiscloseThePhase0Gap`); all of it
+— the constant, its uses and both tests — is deleted in the same change that lands the middleware.

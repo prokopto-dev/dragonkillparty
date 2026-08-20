@@ -2,6 +2,8 @@
 
 # PAT scopes
 
+> **NOT YET ENFORCED.** This describes the contract Phase 2 implements, not what the server checks today: there is no authentication or authorization middleware yet, so every operation is served without a credential — including the mutating `PATCH /api/v1/guild`. See "Known Phase 0 gaps" in SECURITY.md.
+
 The 27 scopes a personal access token can carry. They are `<family>:<verb>`,
 colon-separated, and this page is generated from `internal/authz/catalogue.go`
 ([canonical §6](../design/00-canonical-conventions.md)). The same list is published in the
