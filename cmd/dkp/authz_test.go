@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"path/filepath"
 	"testing"
 
@@ -13,8 +14,12 @@ import (
 
 // The boot wiring for the permission catalogue (issue #261). internal/authz has the reconciler's own
 // tests against a real database; what is asserted HERE is the half cmd/ owns and could get wrong on
-// its own — that `dkp serve` calls it at all, before the listener opens, and that a failure to
-// reconcile is fatal only for the one reason that must be.
+// its own — that `dkp serve` calls it at all, before the listener opens, that a failure to reconcile
+// is fatal only for the one reason that must be, and that the failures which are NOT fatal still
+// leave the instance unable to serve an operation that requires a permission (issue #272).
+//
+// "Not fatal" and "fine" are different states, and conflating them was the finding: before #272 every
+// non-fatal branch returned nil and the listener opened with no authorization source at all.
 //
 // It calls t.Setenv, so none of these may be parallel.
 
@@ -99,9 +104,16 @@ func TestServe_Boot_ReconcilesThePermissionCatalogue(t *testing.T) {
 // TestServe_UnreadableDatabasePath_HealthzStillReturns200 covers the same path end to end; this pins
 // the decision itself, because the difference between the two failure classes lives in one errors.Is.
 func TestReconcileOnBoot_NoStore_IsNotFatal(t *testing.T) {
-	require.NoError(t, reconcileOnBoot(t.Context(), nil, api.DeclaredPermissions()),
+	state, err := reconcileOnBoot(t.Context(), nil, api.DeclaredPermissions())
+
+	require.NoError(t, err,
 		"a missing store must not abort the boot: /healthz has to keep answering (canonical §13), "+
 			"and /readyz already reports why the database is unusable")
+	require.False(t, state.Available(),
+		"the boot continued AND reported that this instance can authorize a request. Not aborting is "+
+			"about /healthz staying up; it is not a statement that authorization works (#272)")
+	require.Contains(t, state.Reason(), authz.ErrNoStore.Error(),
+		"the state must carry why, because it becomes the /readyz detail an operator reads")
 }
 
 // TestReconcileOnBoot_MissingRequiredKey_IsFatal is the asymmetry itself, and it is the assertion the
@@ -127,8 +139,11 @@ func TestReconcileOnBoot_MissingRequiredKey_IsFatal(t *testing.T) {
 
 	defer func() { require.NoError(t, st.Close()) }()
 
-	err = reconcileOnBoot(t.Context(), st, []string{"roster.read", "raid.timewarp"})
+	state, err := reconcileOnBoot(t.Context(), st, []string{"roster.read", "raid.timewarp"})
 
+	require.False(t, state.Available(),
+		"a fatal reconciliation returned an available authorization state; if a caller ignored the "+
+			"error it would serve every protected operation")
 	require.ErrorIs(t, err, authz.ErrMissingPermission,
 		"a route naming a key the catalogue does not ship must be a boot failure (canonical §6)")
 	require.ErrorContains(t, err, "raid.timewarp")
@@ -154,7 +169,95 @@ func TestReconcileOnBoot_UnusableDatabase_IsNotFatal(t *testing.T) {
 
 	defer func() { require.NoError(t, st.Close()) }()
 
-	require.NoError(t, reconcileOnBoot(t.Context(), st, api.DeclaredPermissions()),
+	state, err := reconcileOnBoot(t.Context(), st, api.DeclaredPermissions())
+
+	require.NoError(t, err,
 		"an unmigrated database must not abort the boot — /readyz reports the pending migration and "+
 			"the SPA renders the command that fixes it")
+	require.False(t, state.Available(),
+		"an unmigrated database has no permission table, so nothing in it can authorize a request. "+
+			"Serving the protected operations anyway is issue #272: the instance would answer them "+
+			"with no authorization source at all")
+	require.NotEmpty(t, state.Reason())
+}
+
+// TestServe_ReconciliationFails_ServesHealthzAndRefusesProtectedOperations is issue #272 end to end,
+// through the real binary, the real migration set and real HTTP requests.
+//
+// The database here is fully migrated and then broken the way a real one breaks at exactly the wrong
+// moment: the permission table refuses writes. A trigger is the smallest honest way to produce that
+// on demand — the shapes the issue names (a locked table, a corrupt page, a failed catalogue query, a
+// failed role seed) all arrive at the same place, an error from inside Reconcile's transaction that
+// is not ErrMissingPermission.
+//
+// Before this change that error was logged and the listener opened anyway, with every operation
+// served and /readyz answering ready, because readiness consumed the migration state and never the
+// reconciliation result. Four assertions, and they are the four halves of "fail closed" that have to
+// hold together:
+//
+//   - /healthz answers 200. Canonical §13: Docker's HEALTHCHECK calls it, and a container killed here
+//     is a container killed over a fault a restart cannot fix.
+//   - /readyz answers 503 and names the check, so a load balancer takes the instance out of rotation
+//     and monitoring keeps firing for as long as the state lasts.
+//   - an operation that declares a permission is REFUSED, rather than served by a process that has no
+//     authorization source at all.
+//   - a public operation is still served, because refusing it would buy nothing and would remove the
+//     surface that tells whoever is debugging which build this is.
+//
+// No t.Parallel: t.Setenv panics in a parallel test.
+func TestServe_ReconciliationFails_ServesHealthzAndRefusesProtectedOperations(t *testing.T) {
+	const reason = "simulated permission table failure"
+
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "dkp.db")
+
+	t.Setenv(dbPathEnv, dbPath)
+	t.Setenv(dataDirEnv, dataDir)
+	t.Setenv(autoMigrateEnv, "true")
+
+	// Migrated first and damaged afterwards, so the boot path finds nothing pending: the migration
+	// rung of the readiness ladder has to be satisfied for the authorization rung to be the answer,
+	// and an unmigrated database would report the pending migration instead — correctly, and without
+	// exercising anything this test is about.
+	runner, err := newMigrator(dbPath, true)
+	require.NoError(t, err)
+	require.NoError(t, runner.Migrate(t.Context()))
+
+	st, err := store.Open(t.Context(), dbPath)
+	require.NoError(t, err)
+	st.ExecForTest(t, `CREATE TRIGGER trg_test_permission_unwritable BEFORE INSERT ON permission
+		BEGIN SELECT RAISE(ABORT, '`+reason+`'); END`)
+	require.NoError(t, st.Close())
+
+	base := startServe(t)
+
+	status, body := get(t, base+"/healthz")
+	require.Equal(t, http.StatusOK, status,
+		"/healthz went unhealthy because the permission catalogue could not be reconciled — that lets "+
+			"Docker kill the container over a fault restarting does not fix (canonical §13)")
+	require.JSONEq(t, `{"status":"ok"}`, body)
+
+	status, body = get(t, base+"/readyz")
+	require.Equal(t, http.StatusServiceUnavailable, status,
+		"an instance that could not prepare its authorization source reported itself ready. That is "+
+			"the whole of issue #272: the boot log fires once and the load balancer keeps sending it "+
+			"traffic")
+	require.Contains(t, body, `"check":"authorization"`)
+	require.Contains(t, body, `"state":"failed"`)
+	require.NotContains(t, body, reason,
+		"the readiness detail was disclosed with DKP_READYZ_DETAIL unset; the new rung must honour "+
+			"the same default the append-only rung does (#74)")
+
+	status, body = get(t, base+"/api/v1/guild")
+	require.Equal(t, http.StatusServiceUnavailable, status,
+		"GET /api/v1/guild declares x-dkp-permission roster.read and was served by a process that "+
+			"never established what a permission means in this database (#272)")
+	require.Contains(t, body, `"code":"service_unavailable"`)
+	require.NotContains(t, body, reason,
+		"the refusal told an unauthenticated caller why the database failed")
+
+	status, _ = get(t, base+"/api/v1/meta")
+	require.Equal(t, http.StatusOK, status,
+		"a public operation was refused. getMeta carries the `public` sentinel: there is nothing to "+
+			"authorize, and it is how whoever is debugging finds out which build is running")
 }

@@ -454,6 +454,13 @@ Detail lives in [`04-testing.md`](04-testing.md); the security argument is:
   idempotency and a test fails. Omit the pagination envelope and a test fails. Omit `Security` on a
   Huma operation and everything works beautifully, for everyone — and it looks fine in review,
   because the missing thing is a line that is not there.
+- **So the source of that authority fails CLOSED when it cannot be prepared.** A boot that cannot
+  reconcile the permission catalogue into the database — an unmigrated schema, an unreadable file, a
+  failure inside the transaction — does not serve the operations that declare a permission: they
+  answer `503 service_unavailable`, `/readyz` reports `check=authorization state=failed` until a boot
+  reconciles, and `/healthz` stays green so the container is not killed over a fault a restart does
+  not fix. Logging it and serving anyway was the same defect one layer down: an instance with no
+  authorization source at all, indistinguishable from a healthy one.
 - **Cost is O(1) per endpoint; coverage is O(endpoints × principals).** Adding a route costs one row.
 - **It is the machine-checked form of the product's founding claim.** "There is no all-powerful
   token" is in the README; the `pat_zero_scope`, `pat_revoked` and `pat_expired` rows are what make

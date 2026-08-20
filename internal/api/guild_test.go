@@ -58,6 +58,12 @@ func newGuildServer(t *testing.T) (*httptest.Server, *store.Store) {
 	srv := httptest.NewServer(New(Config{
 		Store: s,
 		Clock: fixedClock{t: time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)},
+		// The state a booted instance has: cmd/dkp reconciled the permission catalogue before the
+		// listener opened. It is stated rather than defaulted because the zero value refuses every
+		// operation that declares a permission (#272), which is both guild operations — so a harness
+		// that omits it is testing the gate rather than the resource. authorization_test.go is where
+		// the omitted case belongs and asserts exactly that.
+		Authorization: AuthorizationReconciled(),
 	}))
 	t.Cleanup(srv.Close)
 
