@@ -163,3 +163,41 @@ sql:
             go_type:
               type: "string"
               pointer: true
+          # The authz tables (Phase 2 Wave 0b, #261). Same affinity loss as every block above: sqlc's
+          # SQLite engine types a nullable column read through a bare `SELECT col` as `interface{}`,
+          # and `any` in the middle of the typed boundaries is what .claude/rules/go-idioms.md bans.
+          # Each is pinned to what emit_pointers_for_null_types would have produced.
+          #
+          # permission.orphaned_at is NULL for a live key and a Micros timestamp for one the running
+          # binary no longer ships (internal/authz.Reconcile never deletes a row). role.key is NULL for
+          # a guild's own role and non-NULL for a built-in. role_assignment's four are the scope target
+          # (NULL exactly when the scope is global), a suspension that is usually absent, the DEFERRED
+          # FK to app_user, and an expiry that is usually never.
+          - column: "permission.orphaned_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "role.key"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "role.deleted_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "role_assignment.scope_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "role_assignment.suspended_until_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "role_assignment.granted_by"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "role_assignment.expires_at"
+            go_type:
+              type: "int64"
+              pointer: true

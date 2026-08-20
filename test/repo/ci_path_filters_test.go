@@ -454,6 +454,7 @@ func TestCIFilters_ClosureFilters_CoverTheirDependencies(t *testing.T) {
 			packages: []string{
 				"./internal/ledger/...", "./internal/strategy/...", "./internal/audit/kinds",
 				"./internal/account/kinds", "./internal/schemaenum",
+				"./internal/authz/role/kinds", "./internal/authz/roleassignment/kinds",
 			},
 		},
 		{

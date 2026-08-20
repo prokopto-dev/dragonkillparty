@@ -1626,3 +1626,447 @@ table "decay_run" {
 
   strict = true
 }
+
+// permission — the authorization catalogue, RECONCILED FROM CODE at every boot.
+//
+// The single source is internal/authz/catalogue.go (canonical §6, docs/design/01-domain-model.md §5):
+// this table is its projection, not a second catalogue. internal/authz.Reconcile upserts every key on
+// the boot path, stamps orphaned_at on a row the running binary no longer ships, and NEVER deletes —
+// see the column comment for why that asymmetry is the whole design.
+//
+// WHY THE TABLE EXISTS AT ALL, given the catalogue is in Go: role_permission is FK-constrained to
+// permission(key), which is what makes a divergent permission list a boot failure rather than a style
+// issue. A role granted a key the binary does not implement cannot be written; a key the binary
+// implements and the table lacks cannot be granted. Neither is expressible with a Go slice.
+//
+// NO admin:* AND NO SUPERADMIN (ADR-0011). admin.owner is an ORDINARY ROW here, held by at least one
+// account through an ordinary role_assignment, and evaluated by the same code path as roster.read.
+// EQdkp's `group_id = 2 short-circuits the ACL` is the named anti-pattern this shape exists to refuse.
+table "permission" {
+  schema = schema.main
+
+  // The <resource>.<action> key, and the primary key: it is stable, meaningful, written by hand in Go
+  // and referenced by name from role_permission. A ULID here would add a join to every grant and take
+  // away the property that makes `sqlite3 dkp.db` a usable debugging tool for an officer at 1 a.m.
+  column "key" {
+    null = false
+    type = text
+  }
+
+  // The display grouping the role editor and the authorization matrix render — 'roster', 'bidding',
+  // 'administration'. NOT a security boundary: canonical §6 spends a paragraph on ops.read sitting in
+  // the 'sensitive' category while deliberately NOT being in the capability floor, because membership
+  // is decided by what a compromise costs and not by which heading a key is filed under.
+  column "category" {
+    null = false
+    type = text
+  }
+
+  // The short human name, and the one sentence an officer reads when deciding whether a role should
+  // hold this key. Both are catalogue text rather than UI strings: the role editor, the matrix and
+  // docs/reference/permissions.md all render them, and three copies of a sentence is how they drift.
+  column "label" {
+    null = false
+    type = text
+  }
+
+  column "description" {
+    null = false
+    type = text
+  }
+
+  // An affordance, not a control: the role editor confirms twice and the matrix marks the row.
+  // Nothing about authorization changes. Exactly one key carries it today — bid.reveal_early
+  // (docs/design/01-domain-model.md:455) — and the catalogue's test pins that set, because a guessed
+  // dangerous flag trains officers to click through the confirmation that matters.
+  column "is_dangerous" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // Canonical §6's capability floor: this operation alters authentication, authorization or
+  // bulk-export state, so it is session-and-step-up only and carries no PAT scope at all. It is the
+  // column the middleware reads (docs/design/01-domain-model.md §5), and internal/authz.CapabilityFloor
+  // is what fills it — a catalogue test compares the two in both directions.
+  column "requires_step_up" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // Micros, and the reason this table is reconciled rather than seeded. A key that exists in the
+  // database and not in the running binary is a DOWNGRADE — an officer rolling back after a bad
+  // upgrade — and deleting the row would cascade into the role_permission grants that reference it,
+  // silently stripping capability from every role that held it and never restoring it on the way back
+  // up. So the row is marked instead: FK integrity survives, the grant survives, and re-upgrading
+  // clears the stamp. NULL means live.
+  column "orphaned_at" {
+    null = true
+    type = integer
+  }
+
+  // Display order for the role editor and the matrix, 1-based, derived from canonical §6's order.
+  // Rewritten on every boot with the rest of the row; nothing joins on it.
+  column "sort_order" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  primary_key {
+    columns = [column.key]
+  }
+
+  // Booleans are INTEGER + CHECK (canonical §8). Not a string enum, so ENUM001 does not read these and
+  // no catalogue owns them.
+  check "permission_is_dangerous_bool" {
+    expr = "is_dangerous IN (0, 1)"
+  }
+
+  check "permission_requires_step_up_bool" {
+    expr = "requires_step_up IN (0, 1)"
+  }
+
+  // WITHOUT ROWID: the key IS the row. Fifty-eight rows, always read by key or in full, with no
+  // integer id anyone ever uses — the same argument dkp_meta records.
+  without_rowid = true
+  strict        = true
+}
+
+// role — a named bundle of permissions (docs/design/01-domain-model.md §5).
+//
+// ALLOW-ONLY, SET UNION, NO DENY. Deny plus union is a lattice: adding a role can REMOVE capability
+// and evaluation order becomes load-bearing. The two things deny gets used for have better answers
+// here — temporary revocation is role_assignment.suspended_until_at, and "this one person must not
+// touch loot" is "do not grant the role, or split the role".
+//
+// BUILT-IN ROLES ARE ROWS, not code. `key` non-NULL marks one: not deletable and not renamable, but
+// otherwise an ordinary row evaluated by an ordinary query. The seed itself (guest, member, raider,
+// raid_leader, officer, admin, owner, bot_readonly, bot_raid) lands with the auth tables that make an
+// assignment possible — a role nobody can be assigned to is a row with no effect.
+table "role" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // Non-NULL marks a BUILT-IN role and names it stably for code that has to find one ('owner'), which
+  // is why it is a separate column from the officer-editable name. NULL for a guild's own roles: there
+  // is nothing for code to look them up by, and a unique index over the non-NULL half is what keeps
+  // 'owner' singular without forbidding a hundred custom roles.
+  column "key" {
+    null = true
+    type = text
+  }
+
+  // The officer-facing name and its normalised form. name_norm is normalised IN GO (NFKC + casefold +
+  // strip ' ` -), a plain column and never a generated one — canonical §8 gives the reason: core
+  // SQLite has no NFKC, lower() is ASCII-only, and ALTER TABLE cannot add a STORED column, so every
+  // future normalisation change would force a 12-step rebuild.
+  column "name" {
+    null = false
+    type = text
+  }
+
+  column "name_norm" {
+    null = false
+    type = text
+  }
+
+  column "description" {
+    null    = false
+    type    = text
+    default = ""
+  }
+
+  column "is_builtin" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // WHICH KIND OF PRINCIPAL may hold this role. The values are internal/authz/role/kinds' and the
+  // CHECK below is generated from it — this comment deliberately does not restate them, because a
+  // prose list beside a generated one is the drift the catalogue exists to remove.
+  column "applies_to" {
+    null    = false
+    type    = text
+    default = "both"
+  }
+
+  column "sort_order" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // SOFT DELETE, and it is about the grants rather than about undo: role_permission and
+  // role_assignment cascade on a hard DELETE, so removing a role would silently strip capability from
+  // everyone holding it with no record of what they had. A deleted role keeps its rows and stops being
+  // assignable.
+  column "deleted_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // BEGIN GENERATED — role enum CHECK, from internal/authz/role/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestRoleKinds_CheckMatchesCatalogue fails on.
+  check "role_applies_to_enum" {
+    expr = "applies_to IN ('user', 'service_account', 'both')"
+  }
+  // END GENERATED — role enum CHECK.
+
+  check "role_is_builtin_bool" {
+    expr = "is_builtin IN (0, 1)"
+  }
+
+  // One row per built-in key, partial so the NULL side — every custom role — never collides.
+  index "ux_role_key" {
+    unique  = true
+    columns = [column.key]
+    where   = "key IS NOT NULL"
+  }
+
+  // One live role per normalised name. Partial over the undeleted rows, so a name freed by a soft
+  // delete can be used again and the deleted row keeps its own.
+  index "ux_role_name" {
+    unique  = true
+    columns = [column.name_norm]
+    where   = "deleted_at IS NULL"
+  }
+
+  strict = true
+}
+
+// role_permission — which permissions a role grants. A pure junction, hard-deleted and cascading
+// (docs/design/01-domain-model.md §22): it has no independent identity and an ungranted permission is
+// an absent row, never a row saying no.
+//
+// THE FK TO permission(key) IS THE POINT OF THE WHOLE TABLE. Canonical §6: "role_permission is
+// FK-constrained to permission(key), so a divergent list is a boot failure, not a style issue." Every
+// document that says "adding a permission key is a schema change — stop and ask" is relying on this
+// constraint existing, and until Phase 2 it did not.
+table "role_permission" {
+  schema = schema.main
+
+  column "role_id" {
+    null = false
+    type = text
+  }
+
+  column "permission_key" {
+    null = false
+    type = text
+  }
+
+  primary_key {
+    columns = [column.role_id, column.permission_key]
+  }
+
+  // CASCADE: a deleted role's grants go with it. Reaching this requires a hard DELETE, which the
+  // product does not do — role.deleted_at is the soft delete — so the cascade is for `dkp` maintenance
+  // and for the import, not for the role editor.
+  foreign_key "role_permission_role" {
+    columns     = [column.role_id]
+    ref_columns = [table.role.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  // NO ACTION, deliberately, and the contrast with the line above is the design: a permission row is
+  // never deleted (see permission.orphaned_at), and if one ever were, taking every grant with it would
+  // silently strip capability from every role. Refusing the delete is the correct outcome.
+  foreign_key "role_permission_permission" {
+    columns     = [column.permission_key]
+    ref_columns = [table.permission.column.key]
+    on_update   = NO_ACTION
+    on_delete   = NO_ACTION
+  }
+
+  without_rowid = true
+  strict        = true
+}
+
+// role_assignment — who holds a role, and how far it reaches
+// (docs/design/01-domain-model.md §5).
+//
+// THE SCOPE PAIR IS WHY THIS IS NOT A TWO-COLUMN JUNCTION. EQdkp expressed "raid leader, but only for
+// the Tuesday group" as two hardcoded *_grpleader permissions; here it is any role plus a
+// (scope_type, scope_id) pair, so the same role serves a global officer and a Tuesday-group raid
+// leader without a second permission key.
+//
+// THERE IS NO guild_id COLUMN and there will not be one (ADR-0004, canonical §9). Scope is a pool or a
+// raid group, never a tenant.
+table "role_assignment" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // The polymorphic subject: a user or a service account. No foreign key — SQLite has no polymorphic
+  // reference — so the kind column is what makes the id resolvable, and its values are
+  // internal/authz/roleassignment/kinds' (CHECK generated below).
+  column "subject_kind" {
+    null = false
+    type = text
+  }
+
+  column "subject_id" {
+    null = false
+    type = text
+  }
+
+  column "role_id" {
+    null = false
+    type = text
+  }
+
+  // How far the assignment reaches, and what it reaches. scope_id is NULL exactly when the scope is
+  // global — the paired CHECK below makes that an equivalence rather than a convention — and carries
+  // no foreign key because the target is a pool for one scope_type and a raid group for another.
+  column "scope_type" {
+    null    = false
+    type    = text
+    default = "global"
+  }
+
+  column "scope_id" {
+    null = true
+    type = text
+  }
+
+  // TEMPORARY REVOCATION, and the reason this schema needs no deny rule: an officer on leave, or one
+  // under review, is suspended until a date rather than having their role deleted and re-created from
+  // memory. Micros; NULL means not suspended.
+  column "suspended_until_at" {
+    null = true
+    type = integer
+  }
+
+  // DEFERRED FK -> app_user(id). app_user is a Phase 2 auth table and lands with sessions and PATs
+  // (ROADMAP Phase 2 deliverable 1); nullable TEXT with no constraint until then, exactly as
+  // pool_config_change.changed_by and decay_run.triggered_by are. NULL for a grant no user made — the
+  // bootstrap owner, a Discord sync, an import.
+  column "granted_by" {
+    null = true
+    type = text
+  }
+
+  // Provenance, and it is a real column because each value has a different revocation story: a
+  // discord_sync grant is rewritten by the next sync, an import grant is the first thing to audit
+  // after a migration, and a bootstrap grant is the one nobody may be left without. Values are
+  // internal/authz/roleassignment/kinds'.
+  column "granted_via" {
+    null    = false
+    type    = text
+    default = "manual"
+  }
+
+  // Micros. NULL means the assignment does not expire; the effective-permission query compares it
+  // against now rather than relying on a sweep, so an expired grant stops working at the moment it
+  // expires whether or not a job has run.
+  column "expires_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  column "updated_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  foreign_key "role_assignment_role" {
+    columns     = [column.role_id]
+    ref_columns = [table.role.column.id]
+    on_update   = NO_ACTION
+    on_delete   = CASCADE
+  }
+
+  // BEGIN GENERATED — role_assignment enum CHECKs, from internal/authz/roleassignment/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestRoleAssignmentKinds_CheckMatchesCatalogue fails on.
+  check "role_assignment_subject_kind_enum" {
+    expr = "subject_kind IN ('user', 'service_account')"
+  }
+
+  check "role_assignment_scope_type_enum" {
+    expr = "scope_type IN ('global', 'pool', 'raid_group')"
+  }
+
+  check "role_assignment_granted_via_enum" {
+    expr = "granted_via IN ('manual', 'invitation', 'discord_sync', 'import', 'bootstrap')"
+  }
+  // END GENERATED — role_assignment enum CHECKs.
+
+  // The scope pair, as an EQUIVALENCE in both directions: a global assignment has no scope_id, and a
+  // scoped one must have one. Written as `(a) = (b)` rather than as two implications because SQLite
+  // admits a row whose CHECK is NULL, and the equality of two boolean expressions over NOT NULL and
+  // IS NULL is never NULL.
+  check "role_assignment_scope_shape" {
+    expr = "((scope_type = 'global') = (scope_id IS NULL))"
+  }
+
+  // One assignment per (subject, role, scope). COALESCE because a UNIQUE index treats NULLs as
+  // distinct in SQLite, so without it a subject could be granted the same global role any number of
+  // times — and the duplicates would each be a row the role editor has to render and an officer has to
+  // revoke separately.
+  index "ux_role_assign" {
+    unique = true
+    on {
+      column = column.subject_kind
+    }
+    on {
+      column = column.subject_id
+    }
+    on {
+      column = column.role_id
+    }
+    on {
+      column = column.scope_type
+    }
+    on {
+      expr = "COALESCE(scope_id, '')"
+    }
+  }
+
+  // The authorization read: every assignment a principal holds, which the middleware resolves once per
+  // request and caches on the Principal.
+  index "ix_role_assign_subject" {
+    columns = [column.subject_kind, column.subject_id]
+  }
+
+  strict = true
+}

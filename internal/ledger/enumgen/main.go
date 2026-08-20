@@ -3,7 +3,9 @@
 // It is the `make gen` half of canonical §5 ("the enum catalogue is a Go const block; make gen
 // writes it into the migration CHECK"): internal/ledger/kinds holds ledger_batch's kind and source,
 // internal/audit/kinds holds audit_log's actor_kind and outcome, internal/account/kinds holds
-// account's kind and system_key, internal/decay/kinds holds decay_run's state, this rewrites their
+// account's kind and system_key, internal/decay/kinds holds decay_run's state,
+// internal/authz/role/kinds holds role's applies_to and internal/authz/roleassignment/kinds holds
+// role_assignment's subject_kind, scope_type and granted_via; this rewrites their
 // CHECK constraints from them, and
 // `make migration` turns the resulting schema into SQL. It never writes a migration itself, for
 // the reason scripts/gen-db.sh gives — `make gen` runs reflexively and must not create numbered,
@@ -11,7 +13,8 @@
 //
 // A GENERATOR, NOT A GATE. It rewrites and says nothing; the drift assertions are
 // TestLedgerKinds_CheckMatchesCatalogue, TestAuditKinds_CheckMatchesCatalogue,
-// TestAccountKinds_CheckMatchesCatalogue, TestDecayKinds_CheckMatchesCatalogue and
+// TestAccountKinds_CheckMatchesCatalogue, TestDecayKinds_CheckMatchesCatalogue,
+// TestRoleKinds_CheckMatchesCatalogue, TestRoleAssignmentKinds_CheckMatchesCatalogue and
 // `make verify-generated`. Keeping the two apart is what
 // lets `make gen` be the fix rather than another thing to interpret.
 //
@@ -21,10 +24,10 @@
 // scripts/gen-enums.sh, the Makefile and test/repo/verify_generated_test.go to buy tidiness and
 // nothing else — and its name, not its parent directory, is what a reader looks up.
 //
-// It imports the four catalogues and NOTHING ELSE from this repository. Importing internal/ledger or
-// internal/audit's future service package would pull in internal/store/sqlitegen — generated code —
-// and make `make gen` unable to repair a tree whose generated code does not build. See the package
-// comment on internal/ledger/kinds.
+// It imports the six catalogues and NOTHING ELSE from this repository. Importing internal/ledger,
+// internal/authz or internal/audit's future service package would pull in internal/store/sqlitegen —
+// generated code — and make `make gen` unable to repair a tree whose generated code does not build.
+// See the package comment on internal/ledger/kinds.
 package main
 
 import (
@@ -35,6 +38,8 @@ import (
 
 	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
+	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/schemaenum"
@@ -79,6 +84,11 @@ func catalogues() []catalogue {
 		{name: "internal/audit/kinds", render: auditkinds.RenderSchemaHCL},
 		{name: "internal/account/kinds", render: accountkinds.RenderSchemaHCL},
 		{name: "internal/decay/kinds", render: decaykinds.RenderSchemaHCL},
+		// The RBAC pair. Two packages for two tables rather than one for the subsystem: a catalogue
+		// owns its region through a schemaEnumBegin/schemaEnumEnd const pair, ENUM001 matches those by
+		// identifier name, and two pairs cannot live in one Go package. Each package's comment says so.
+		{name: "internal/authz/role/kinds", render: rolekinds.RenderSchemaHCL},
+		{name: "internal/authz/roleassignment/kinds", render: assignmentkinds.RenderSchemaHCL},
 	}
 }
 

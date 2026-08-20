@@ -128,6 +128,17 @@ type LedgerEntry struct {
 	MetadataJson string
 }
 
+type Permission struct {
+	Key            string
+	Category       string
+	Label          string
+	Description    string
+	IsDangerous    int64
+	RequiresStepUp int64
+	OrphanedAt     *int64
+	SortOrder      int64
+}
+
 type Pool struct {
 	ID                 string
 	Name               string
@@ -159,4 +170,38 @@ type PoolConfigChange struct {
 	ToConfigJson        string
 	Reason              string
 	MigrationBatchID    *string
+}
+
+type Role struct {
+	ID          string
+	Key         *string
+	Name        string
+	NameNorm    string
+	Description string
+	IsBuiltin   int64
+	AppliesTo   string
+	SortOrder   int64
+	DeletedAt   *int64
+	CreatedAt   int64
+	UpdatedAt   int64
+}
+
+type RoleAssignment struct {
+	ID               string
+	SubjectKind      string
+	SubjectID        string
+	RoleID           string
+	ScopeType        string
+	ScopeID          *string
+	SuspendedUntilAt *int64
+	GrantedBy        *string
+	GrantedVia       string
+	ExpiresAt        *int64
+	CreatedAt        int64
+	UpdatedAt        int64
+}
+
+type RolePermission struct {
+	RoleID        string
+	PermissionKey string
 }

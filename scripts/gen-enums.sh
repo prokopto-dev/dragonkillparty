@@ -2,7 +2,9 @@
 # The enum half of `make gen`: db/schema.hcl's generated CHECK constraints, emitted from the Go
 # catalogues in internal/ledger/kinds (ledger_batch.kind, ledger_batch.source), internal/audit/kinds
 # (audit_log.actor_kind, audit_log.outcome), internal/account/kinds (account.kind,
-# account.system_key) and internal/decay/kinds (decay_run.kind, decay_run.state).
+# account.system_key), internal/decay/kinds (decay_run.kind, decay_run.state),
+# internal/authz/role/kinds (role.applies_to) and internal/authz/roleassignment/kinds
+# (role_assignment.subject_kind, .scope_type, .granted_via).
 #
 # RUNS FIRST, AND COMPILES ONLY LEAF PACKAGES. Every catalogue and internal/schemaenum, which holds
 # the rendering they share, import nothing but the standard library, deliberately: this step
@@ -47,8 +49,10 @@ command -v go >/dev/null 2>&1 || die "go is not installed — see make setup"
 # The generator writes through a temp file and a rename, and says nothing on success. It is a
 # generator, not a gate: the drift assertions are TestLedgerKinds_CheckMatchesCatalogue,
 # TestAuditKinds_CheckMatchesCatalogue, TestAccountKinds_CheckMatchesCatalogue,
-# TestDecayKinds_CheckMatchesCatalogue and `make verify-generated`.
+# TestDecayKinds_CheckMatchesCatalogue, TestRoleKinds_CheckMatchesCatalogue,
+# TestRoleAssignmentKinds_CheckMatchesCatalogue and `make verify-generated`.
 go run ./internal/ledger/enumgen db/schema.hcl \
     || die "enumgen failed — db/schema.hcl was not rewritten"
 
-printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from internal/ledger/kinds, internal/audit/kinds, internal/account/kinds, internal/decay/kinds\n'
+printf '  \033[32mdb/schema.hcl enum CHECKs regenerated\033[0m — from %s\n' \
+    'internal/{ledger,audit,account,decay}/kinds and internal/authz/{role,roleassignment}/kinds'

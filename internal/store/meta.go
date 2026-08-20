@@ -85,6 +85,28 @@ type Queries interface {
 	ListEntriesByBatch(ctx context.Context, batchID string) ([]sqlitegen.LedgerEntry, error)
 	ListSnapshotsAfter(ctx context.Context, arg sqlitegen.ListSnapshotsAfterParams) ([]sqlitegen.ListSnapshotsAfterRow, error)
 	ListAuditRowsAfterSeq(ctx context.Context, arg sqlitegen.ListAuditRowsAfterSeqParams) ([]sqlitegen.AuditLog, error)
+
+	// The permission-catalogue reconciliation (Phase 2 Wave 0b, issue #261). All four are called from
+	// exactly one place — authz.Reconciler.Reconcile, on the boot path — and the three that write run
+	// inside a single store.Tx, because a half-reconciled catalogue is a database whose FK to
+	// permission(key) means something different from what the running binary implements.
+	//
+	// There is no DeletePermission here and there never will be: role_permission is FK-constrained to
+	// permission(key), so removing a key a newer binary stopped shipping either fails against the
+	// grants that reference it or silently strips capability from every role that held it. OrphanPermission
+	// is the whole answer — the row is marked, never removed (docs/design/01-domain-model.md §5).
+	ListPermissions(ctx context.Context) ([]sqlitegen.Permission, error)
+	GetPermission(ctx context.Context, key string) (sqlitegen.Permission, error)
+	UpsertPermission(ctx context.Context, arg sqlitegen.UpsertPermissionParams) error
+	OrphanPermission(ctx context.Context, arg sqlitegen.OrphanPermissionParams) error
+
+	// The built-in role seed, called from the same place and in the same transaction. There is no
+	// UpdateRole and no DeleteRole: a built-in role is created once and then belongs to the guild
+	// (docs/design/01-domain-model.md §5.1 calls this table "the seed, not a second catalogue"), and
+	// rewriting its grants on a later boot would silently restore a permission an officer revoked.
+	ListRoles(ctx context.Context) ([]sqlitegen.Role, error)
+	InsertRole(ctx context.Context, arg sqlitegen.InsertRoleParams) error
+	InsertRolePermission(ctx context.Context, arg sqlitegen.InsertRolePermissionParams) error
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

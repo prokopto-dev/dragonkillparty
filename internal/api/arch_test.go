@@ -177,15 +177,63 @@ func TestArch_Operations_DeclareSecurityAndPermission(t *testing.T) {
 			continue
 		}
 
-		// A non-sentinel permission must resolve in the generated catalogue. That file does not
-		// exist yet and PR 4 does not create one, because `role_permission` is FK-constrained to
-		// `permission(key)` and inventing a key is a boot failure, not a 403. The first operation
-		// that needs a real permission — PR 5's /api/v1/guild — brings the catalogue with it.
-		require.FileExistsf(t, filepath.Join(repoRoot(t), "internal", "authz", "catalogue.go"),
-			"%s names permission %q, which is not a sentinel, but internal/authz/catalogue.go does "+
-				"not exist. Adding a permission key is a schema change — see "+
+		// A non-sentinel permission must resolve in the catalogue. PR 4 could only assert that
+		// internal/authz/catalogue.go EXISTED, because it did not; PR 5a created it and Phase 2
+		// Wave 0b (#261) gave it a database to project into, so the assertion is now the real one:
+		// the key is in Catalogue(). That is the same set authz.Reconcile writes into the permission
+		// table at boot and the same set the FK on role_permission resolves against, so a key that
+		// fails here would fail the boot rather than return a 403.
+		require.Containsf(t, catalogueKeys(), permission,
+			"%s names permission %q, which is neither a sentinel nor a key in "+
+				"internal/authz/catalogue.go. Adding a permission key is a schema change — see "+
 				".claude/rules/api-endpoints.md's \"Stop and ask if\".", op, permission)
 	}
+}
+
+// catalogueKeys returns every permission key in the authz catalogue.
+func catalogueKeys() []string {
+	keys := make([]string, 0, len(authz.Catalogue()))
+	for _, p := range authz.Catalogue() {
+		keys = append(keys, p.Key)
+	}
+
+	return keys
+}
+
+// TestArch_DeclaredPermissions_AreCatalogueKeysWithoutSentinels pins what the boot path is handed.
+//
+// DeclaredPermissions() is the required set authz.Reconcile verifies against this officer's database
+// before the listener opens (#261), so two properties have to hold and both are easy to break in a
+// way nothing else notices:
+//
+//   - every element resolves in the catalogue — otherwise a correctly-declared route makes the binary
+//     refuse to boot;
+//   - NO element is a sentinel — `public` and `self` are not catalogue keys and must never become
+//     permission rows, so a public route must not be able to fail a boot.
+//
+// The second is the one worth a test of its own: the sentinel filter is three lines in a loop, and
+// deleting it produces a binary that boots fine today (getMeta is the only public operation and the
+// registry is small) and refuses to boot the first time somebody adds a `self` route.
+func TestArch_DeclaredPermissions_AreCatalogueKeysWithoutSentinels(t *testing.T) {
+	t.Parallel()
+
+	declared := DeclaredPermissions()
+
+	require.NotEmpty(t, declared,
+		"no operation declares a catalogue permission, so this test would pass vacuously. "+
+			"/api/v1/guild declares roster.read and admin.settings.")
+
+	for _, key := range declared {
+		require.NotContains(t, SentinelPermissions(), key,
+			"DeclaredPermissions() returned the sentinel %q. Sentinels are not catalogue keys and "+
+				"must never reach authz.Reconcile — a public route would then be a boot failure.", key)
+		require.Contains(t, catalogueKeys(), key,
+			"DeclaredPermissions() returned %q, which is not in internal/authz/catalogue.go", key)
+	}
+
+	require.Equal(t, slices.Sorted(slices.Values(declared)), declared,
+		"DeclaredPermissions() must be sorted: the boot log and the missing-key report are read by an "+
+			"operator, and a set whose order changes on every boot is a diff nobody can use")
 }
 
 // TestArch_MutatingPost_RequiresIdempotencyKey is a tripwire installed ahead of the code it gates.
