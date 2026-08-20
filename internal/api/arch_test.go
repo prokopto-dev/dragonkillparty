@@ -821,6 +821,79 @@ func TestArch_StateChangingWithoutIfMatch_FailsBuild(t *testing.T) {
 	})
 }
 
+// TestArch_SecurityRequirements_NameADefinedScheme closes the gap that shipped an empty
+// securitySchemes block for two releases.
+//
+// A Security requirement is a MAP KEYED BY SCHEME NAME, and OpenAPI has no way to complain when that
+// name is defined nowhere: the document simply tells a bot author to authenticate with `pat` and
+// never says what `pat` is — not the transport, not the header, not the token format. Every
+// operation registered before Wave 0c declared `{"pat": …}` or `{"session": {}}` against
+// `components.securitySchemes: {}`, and every gate in the repository passed, because each one
+// checked that Security was PRESENT rather than that it RESOLVED.
+//
+// The `security: []` case is the deliberate hole in the rule and not an oversight: an explicitly
+// empty requirement list is how canonical §7 and 02-api-design.md §4.1 declare a public operation,
+// so it names no scheme and there is nothing to resolve.
+func TestArch_SecurityRequirements_NameADefinedScheme(t *testing.T) {
+	t.Parallel()
+
+	doc := NewHumaAPI(Config{}).OpenAPI()
+	require.NotNil(t, doc.Components, "the document has no components block")
+	require.NotEmpty(t, doc.Components.SecuritySchemes,
+		"components.securitySchemes is empty. Every operation's Security names a scheme by key, so an "+
+			"empty block means the published document requires credentials it never describes.")
+
+	for _, op := range registeredOperations(t) {
+		for _, requirement := range op.Op.Security {
+			for scheme := range requirement {
+				require.Containsf(t, doc.Components.SecuritySchemes, scheme,
+					"%s requires security scheme %q, which components.securitySchemes does not define. "+
+						"Add it in internal/api/security.go — a requirement naming an undefined scheme "+
+						"is a spec that asks for a credential it never explains.", op, scheme)
+			}
+		}
+	}
+}
+
+// TestArch_SecuritySchemes_MatchTheCanonicalContract pins the three values other documents quote.
+//
+// Each is load-bearing somewhere outside this file, which is why they are asserted here rather than
+// left to review: canonical §7 requires the session cookie's exact name to appear in this block;
+// 03-security.md §3.6 relies on the `__Host-` prefix for origin pinning; and the PAT scope list is
+// canonical §6's "one catalogue generates the PAT scope enum", so a hand-typed copy here would be the
+// second list that section exists to forbid.
+func TestArch_SecuritySchemes_MatchTheCanonicalContract(t *testing.T) {
+	t.Parallel()
+
+	schemes := NewHumaAPI(Config{}).OpenAPI().Components.SecuritySchemes
+
+	session := schemes[SchemeSession]
+	require.NotNil(t, session, "the session scheme is not defined")
+	require.Equal(t, "apiKey", session.Type)
+	require.Equal(t, "cookie", session.In)
+	require.Equal(t, "__Host-dkp_session", session.Name,
+		"canonical §7: the session cookie's exact name appears in the securitySchemes block, and the "+
+			"__Host- prefix is what pins it to the origin (03-security.md §3.6)")
+
+	pat := schemes[SchemePAT]
+	require.NotNil(t, pat, "the pat scheme is not defined")
+	require.Equal(t, "http", pat.Type)
+	require.Equal(t, "bearer", pat.Scheme,
+		"canonical §7: `Authorization: Bearer dkp_pat_…` only — query-string tokens are rejected")
+
+	declared, ok := stringSlice(pat.Extensions[ExtensionScopes])
+	require.True(t, ok, "the pat scheme carries no %s extension", ExtensionScopes)
+
+	want := make([]string, 0, len(authz.Scopes()))
+	for _, s := range authz.Scopes() {
+		want = append(want, s.Key)
+	}
+
+	require.Equal(t, want, declared,
+		"the scheme's scope list must be authz.Scopes(), in order. Canonical §6: one catalogue "+
+			"generates the PAT scope enum, so a second list here is exactly what that forbids.")
+}
+
 // TestArch_ScopeCoverage_MatchesSecurity enforces the three-case x-dkp-scopes rule, in both
 // directions, and is the gate the previous four documents lacked when they each described an
 // x-dkp-scopes convention that no code emitted (decision record §U4).

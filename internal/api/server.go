@@ -240,8 +240,13 @@ func humaConfig() huma.Config {
 					Identifier: "Apache-2.0",
 				},
 			},
-			Components: &huma.Components{Schemas: registry},
-			Webhooks:   webhookPlaceholder(),
+			Components: &huma.Components{
+				Schemas: registry,
+				// The two schemes every operation's Security requirement names. Without this block
+				// they were undefined names in a published document (see internal/api/security.go).
+				SecuritySchemes: securitySchemes(),
+			},
+			Webhooks: webhookPlaceholder(),
 		},
 		OpenAPIPath:   BasePath + "/openapi",
 		DocsPath:      "",
