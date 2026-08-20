@@ -81,6 +81,10 @@ func TestOpenAPI_ConfigVariation_ProducesIdenticalSpec(t *testing.T) {
 		// disclosure policy has no business in the document — but "has no business" is what this test
 		// exists to check rather than assume.
 		{ReadyDetail: ReadyDetailAlways},
+		// The other runtime value that is not a build stamp: whether this process can authorize a
+		// request at all (#272). It gates requests at the middleware and must not reach the document
+		// — an operation's declared statuses are the same on a healthy instance and a fail-closed one.
+		{Authorization: AuthorizationReconciled()},
 	} {
 		doc, err := NewHumaAPI(cfg).OpenAPI().MarshalJSON()
 		require.NoError(t, err)

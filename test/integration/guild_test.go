@@ -56,7 +56,14 @@ func newServer(t *testing.T) (*httptest.Server, *store.Store) {
 	})
 	require.NoError(t, err, "seed the guild row")
 
-	srv := httptest.NewServer(api.New(api.Config{Store: s, Clock: fixedClock{}}))
+	// Authorization is stated, because the zero value fails closed (#272): an instance that never
+	// reconciled its permission catalogue refuses every operation that declares a permission, and
+	// both guild operations do. This harness is the booted, reconciled instance — which is also what
+	// makes the known-Phase-0-gap test below meaningful, since a 503 from the gate would mask the
+	// missing credential check rather than assert it.
+	srv := httptest.NewServer(api.New(api.Config{
+		Store: s, Clock: fixedClock{}, Authorization: api.AuthorizationReconciled(),
+	}))
 	t.Cleanup(srv.Close)
 
 	return srv, s

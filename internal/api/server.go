@@ -77,6 +77,18 @@ type Config struct {
 	// the shape every test that predates PR 6 constructs, which is why this is a field rather than an
 	// unconditional mount. cmd/dkp passes internal/ui.Handler(); a handler-level test passes nil.
 	WebUI http.Handler
+	// Authorization is what the boot path learned about this instance's ability to authorize a
+	// request: did cmd/dkp's reconcileOnBoot project the permission catalogue into the database
+	// before the listener opened?
+	//
+	// THE ZERO VALUE REFUSES every operation that requires a permission (issue #272). A Config that
+	// does not mention this field describes a process that never reconciled anything, so the
+	// operations that need a permission answer 503 while /healthz, /readyz, /config.json, the docs
+	// and the public operations stay up. Serving them anyway would be an authorization choke point
+	// whose unprepared state is "allow", which is the one way authorization is not allowed to fail.
+	// See AuthorizationState.
+	Authorization AuthorizationState
+
 	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
 	// It is nil when New is called only to build the spec (NewHumaAPI): the operations still register
 	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
@@ -136,6 +148,13 @@ func New(cfg Config) http.Handler {
 	registerConfigJSON(mux, cfg.APIBase)
 
 	humaAPI := humago.New(mux, humaConfig())
+
+	// The fail-closed authorization gate, installed BEFORE any operation is registered because Huma
+	// captures the middleware chain at huma.Register time (huma.go:881) — one added afterwards is
+	// silently never called. NewHumaAPI does NOT install it: that path builds the registry for
+	// `dkp openapi` and the arch tests, where no request is ever served and a middleware would only
+	// be a second assembly site's worth of difference between the emitted document and this one.
+	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
 
 	registerOperations(humaAPI, cfg)
 	registerDocs(mux)
