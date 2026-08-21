@@ -169,35 +169,59 @@ The runtime image is `FROM scratch`: no shell, no package manager, no interprete
 base-image CVE feed. A `:1-debug` tag exists for people who need to exec in, and its larger attack
 surface is documented where it is offered.
 
-## Known Phase 0 gaps
+## Known gaps
 
-These are deliberate, documented, and pinned by a test that goes red the day the gap closes. They
-exist because Phase 0 builds the shape the security controls attach to before the controls
-themselves — authentication is ROADMAP Phase 2 deliverable 1, and no Phase 0 PR adds it.
+These are deliberate, documented, and pinned by a test that goes red the day the gap closes.
 
-### The guild resource is unauthenticated
+### Authorization is not enforced yet
 
-`GET /api/v1/guild` and `PATCH /api/v1/guild` (Phase 0 PR 5a) are **served with no credential
-required**, while the published OpenAPI document declares `security: [{pat: [...]}, {session: {}}]`
-for the read and `[{session: {}}]` for the write. PATCH is the product's first mutating endpoint. A
-bot author reading the spec is told a credential is required; the server currently accepts the
-request without one.
+**Authentication IS.** Phase 2 Wave 0d (issue #273) shipped `internal/auth` and the one middleware
+that resolves a session cookie or a `dkp_pat_…` bearer into a single `Principal`, mounted before
+every operation: a request with no credential to an operation that declares `Security` is refused
+with `401`, and the refusal happens before the handler runs.
 
-There is no released binary yet — the release train is Phase 0 PR 7 — so the exposure is a
-developer's laptop, not a guild's site. That is what makes shipping-with-a-tripwire acceptable rather
-than merely convenient (decision record `docs/development/phase-0-pr5-decisions.md` §Q1).
+**Capability is not.** Nothing yet checks that the principal holds the `x-dkp-permission` the
+operation declares, that a token's scopes reach it, or that the capability floor's
+session-and-step-up operations refuse a token. Until `authz.Check` lands in Wave 0e, **any live
+credential passes every operation**: a member's session can `PATCH /api/v1/guild`, and so can a
+token minted with no scopes at all. That is the property
+[ADR-0011](docs/adr/0011-opaque-pats-no-superadmin-token.md) exists to deny, and for the length of
+one wave it is denied by documentation rather than by code.
+[ADR-0028](docs/adr/0028-authentication-before-authorization.md) records why the split is where it
+is, and what is owed to a reader while the halves are apart.
 
-The gap is pinned by `TestGuild_Unauthenticated_IsAKnownPhase0Gap` in
-`test/integration/guild_test.go`, which asserts that an unauthenticated GET **and** an unauthenticated
-PATCH both currently succeed. When the auth middleware lands (Phase 2), those assertions go red;
-closing the gap is then a deliberate edit of that test to expect `401`, not a silent discovery.
+There is no released binary yet, so the exposure is a developer's laptop rather than a guild's site.
 
-**The published document now describes the credentials in detail, and that made this worse before it
-made it better.** Phase 2 Wave 0c defined the `pat` and `session` security schemes and generated
-`docs/reference/permissions.md` and `scopes.md` — bearer format, cookie name, the scope vocabulary,
-which operations are step-up only. A reader takes a well-described control as evidence the control
-exists, so a security review required the disclosure to travel with the description: every one of
-those surfaces carries `authz.Phase0EnforcementNotice`, which says in as many words that nothing
-enforces any of it yet and points back here. Two tests assert the notice is present
-(`TestArch_SecuritySchemes_DiscloseThePhase0Gap`, `TestDocgen_Pages_DiscloseThePhase0Gap`); all of it
-— the constant, its uses and both tests — is deleted in the same change that lands the middleware.
+**The published document describes the credentials in detail, and that makes the gap harder to
+notice rather than easier.** The `pat` and `session` security schemes,
+`docs/reference/permissions.md` and `docs/reference/scopes.md` all describe the bearer format, the
+cookie name, the scope vocabulary and which operations are step-up only. A reader takes a
+well-described control as evidence the control exists, so the disclosure travels with the
+description: every one of those surfaces carries `authz.AuthorizationGapNotice`, which says in as
+many words that capability is unenforced and points back here. Two tests assert the notice is
+present (`TestArch_SecuritySchemes_DiscloseTheAuthorizationGap`,
+`TestDocgen_Pages_DiscloseTheAuthorizationGap`); the constant, its uses and both tests are deleted
+in the same change that lands `authz.Check`.
+
+### There is no way to obtain a credential yet
+
+Wave 0d ships the credential layer and no endpoint that issues one: there is no login route and no
+first-run bootstrap (issue #264). A fresh instance therefore serves `/healthz`, `/readyz`,
+`/config.json`, the SPA and `GET /api/v1/meta`, and answers `401` to everything else. Sessions and
+tokens can be created through `internal/auth` — which is what the tests do — and by nothing an
+operator can reach. That is a gap in the product's usability rather than in its security posture,
+and it closes with #264.
+
+### Closed in Wave 0d: the unauthenticated guild resource
+
+`GET` and `PATCH /api/v1/guild` were **served with no credential at all** from Phase 0 PR 5a until
+Wave 0d, while the published OpenAPI document declared `security: [{pat: […]}, {session: {}}]` for
+both — and `PATCH` is the product's first mutating endpoint. The gap was pinned by
+`TestGuild_Unauthenticated_IsAKnownPhase0Gap`, a tripwire installed ahead of the code it gated
+(decision record `docs/development/phase-0-pr5-decisions.md` §Q1). Closing it was the deliberate
+deletion of that test and its replacement by `TestGuild_Unauthenticated_Is401`, which asserts the
+`401` **and** that the refused `PATCH` never reached the handler.
+
+It is recorded here rather than removed because the pattern is the point: a tripwire installed
+before the control, red on the day the control lands, and a disclosure that NARROWS rather than
+disappearing while any part of the claim is still unenforced.
