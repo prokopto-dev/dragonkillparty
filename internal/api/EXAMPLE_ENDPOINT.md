@@ -637,8 +637,12 @@ If a future `oasdiff` reports a breaking change, you need the `!breaking-api` la
 Against the real server and a real SQLite database in `t.TempDir()`. **No mocks**: there is no fake
 `store.Queries` implementation and a lint rule forbids adding one. The harness is `store.NewDB(t)` +
 `httptest.NewServer(api.New(...))` over a `TestMain` that calls
-`store.InitTemplate(ctx, store.ApplySchema(fsys))`. **There is no `testenv` package and no `ClientAs`,
-because there is no auth package until ROADMAP Phase 2 — there is no such thing as an officer to be.**
+`store.InitTemplate(ctx, store.ApplySchema(fsys))`. **There is still no `testenv` package and no
+`ClientAs`.** What there IS, since Phase 2 Wave 0d, is `internal/auth`'s seed helpers: a test that
+needs a credential calls `auth.NewTestService`, `auth.SeedUser` and `auth.SeedSession` and sends the
+cookie they hand back — every operation that declares `Security` now answers `401` without one. They
+seed rows through the same minting code the product uses, which is the property a `ClientAs` helper
+that fabricated a session would not have.
 
 ```go
 package guildtestsnippet

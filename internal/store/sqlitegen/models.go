@@ -14,6 +14,48 @@ type Account struct {
 	UpdatedAt int64
 }
 
+type ApiToken struct {
+	ID               string
+	Prefix           string
+	TokenHash        []byte
+	ServiceAccountID string
+	Name             string
+	Scopes           string
+	PepperKid        string
+	ExpiresAt        *int64
+	LastUsedAt       *int64
+	LastUsedIp       string
+	RateLimitRpm     int64
+	CreatedBy        string
+	RevokedAt        *int64
+	RevokedBy        *string
+	RevokeReason     string
+	CreatedAt        int64
+}
+
+type AppUser struct {
+	ID               string
+	Username         string
+	UsernameNorm     string
+	Email            *string
+	EmailNorm        *string
+	EmailVerifiedAt  *int64
+	DisplayName      string
+	Timezone         *string
+	Locale           *string
+	State            string
+	SessionEpoch     int64
+	LastLoginAt      *int64
+	FailedLogins     int64
+	LockedUntilAt    *int64
+	MfaTotpSecretEnc []byte
+	MfaEnrolledAt    *int64
+	MfaRequired      int64
+	DeletedAt        *int64
+	CreatedAt        int64
+	UpdatedAt        int64
+}
+
 type AuditLog struct {
 	ID            string
 	Seq           int64
@@ -69,6 +111,17 @@ type EventOutbox struct {
 	EventType   string
 	ResourceRef string
 	CreatedAt   int64
+}
+
+type FeedToken struct {
+	ID         string
+	TokenHash  []byte
+	UserID     string
+	Kind       string
+	PepperKid  string
+	RevokedAt  *int64
+	LastUsedAt *int64
+	CreatedAt  int64
 }
 
 type Guild struct {
@@ -204,4 +257,52 @@ type RoleAssignment struct {
 type RolePermission struct {
 	RoleID        string
 	PermissionKey string
+}
+
+type ServiceAccount struct {
+	ID          string
+	Name        string
+	NameNorm    string
+	Description string
+	OwnerUserID string
+	State       string
+	CreatedBy   string
+	CreatedAt   int64
+	UpdatedAt   int64
+}
+
+type Session struct {
+	ID                string
+	UserID            string
+	TokenHash         []byte
+	IdentityID        *string
+	SessionEpoch      int64
+	CreatedAt         int64
+	LastSeenAt        int64
+	ExpiresAt         int64
+	AbsoluteExpiresAt int64
+	RevokedAt         *int64
+	Ip                string
+	UserAgent         string
+	MfaSatisfiedAt    *int64
+}
+
+type UserIdentity struct {
+	ID              string
+	UserID          string
+	Provider        string
+	ProviderKey     string
+	Subject         string
+	PasswordHash    *string
+	PasswordAlgo    *string
+	PasswordSetAt   *int64
+	MustReset       int64
+	AccessTokenEnc  []byte
+	RefreshTokenEnc []byte
+	TokenExpiresAt  *int64
+	Scopes          string
+	ProfileJson     string
+	LastUsedAt      *int64
+	CreatedAt       int64
+	UpdatedAt       int64
 }

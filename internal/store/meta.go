@@ -107,6 +107,46 @@ type Queries interface {
 	ListRoles(ctx context.Context) ([]sqlitegen.Role, error)
 	InsertRole(ctx context.Context, arg sqlitegen.InsertRoleParams) error
 	InsertRolePermission(ctx context.Context, arg sqlitegen.InsertRolePermissionParams) error
+
+	// Identity and credentials (Phase 2 Wave 0d, issue #273). The two Resolve methods are the auth
+	// hot path — one indexed lookup each, on ux_session_token and ux_api_token_prefix — and they are
+	// the ONLY reads internal/auth performs per request. The two Touch methods are throttled writes
+	// on the same rows, guarded in SQL so a burst on one credential produces at most one statement on
+	// SQLite's single writer.
+	//
+	// NEITHER RESOLVE FILTERS the row it returns. Expiry, revocation, the account's state and the
+	// session epoch all come back and internal/auth decides, because the middleware must tell those
+	// apart in its logs while returning the same 401 to the caller — and "was this token used, and
+	// when" is the only question worth asking during an incident.
+	//
+	// FIVE MUTATIONS SHIP AHEAD OF THEIR ENDPOINTS — the two revokes, the session-epoch bump, the
+	// account-state change and the soft delete — which is a deliberate exception to "a mutation with no caller is a method the
+	// Postgres target implements for nothing". Each is a branch of the resolver: a revoked session, a
+	// revoked token, a session minted under a superseded epoch, a session whose user is suspended or
+	// disabled, and one whose user has been deleted are all refused — and a branch nobody has watched
+	// go red is a branch nobody knows works.
+	// They are also the statements two headline claims rest on — ADR-0011's "revocation is
+	// instantaneous" and §3.6's "sign out everywhere is one write". Each is the statement its endpoint
+	// will call verbatim, not a test-shaped approximation of it.
+	//
+	// What is genuinely NOT here is anything that EDITS a credential — setting a password, minting a
+	// token, granting a role. Those land with the session-and-step-up endpoints that perform them
+	// (canonical §6's capability floor).
+	InsertAppUser(ctx context.Context, arg sqlitegen.InsertAppUserParams) error
+	GetAppUser(ctx context.Context, id string) (sqlitegen.AppUser, error)
+	BumpSessionEpoch(ctx context.Context, arg sqlitegen.BumpSessionEpochParams) error
+	SetAppUserState(ctx context.Context, arg sqlitegen.SetAppUserStateParams) error
+	SoftDeleteAppUser(ctx context.Context, arg sqlitegen.SoftDeleteAppUserParams) error
+	InsertUserIdentity(ctx context.Context, arg sqlitegen.InsertUserIdentityParams) error
+	InsertSession(ctx context.Context, arg sqlitegen.InsertSessionParams) error
+	ResolveSession(ctx context.Context, tokenHash []byte) (sqlitegen.ResolveSessionRow, error)
+	TouchSession(ctx context.Context, arg sqlitegen.TouchSessionParams) error
+	RevokeSession(ctx context.Context, arg sqlitegen.RevokeSessionParams) error
+	InsertServiceAccount(ctx context.Context, arg sqlitegen.InsertServiceAccountParams) error
+	InsertAPIToken(ctx context.Context, arg sqlitegen.InsertAPITokenParams) error
+	ResolveAPIToken(ctx context.Context, prefix string) (sqlitegen.ResolveAPITokenRow, error)
+	TouchAPIToken(ctx context.Context, arg sqlitegen.TouchAPITokenParams) error
+	RevokeAPIToken(ctx context.Context, arg sqlitegen.RevokeAPITokenParams) error
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

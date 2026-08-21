@@ -71,6 +71,11 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   `internal/api/EXAMPLE_ENDPOINT.md` end to end before writing a new endpoint.
 - `internal/store/` — the **only** package that may hold `*sql.DB` or call `sql.Open`. Every
   mutation goes through `store.Tx`. Query shapes live in `db/RECIPES.md`.
+- `internal/auth/` — identity: the credential tables' catalogues, the `Principal`, and the ONE
+  middleware that resolves a cookie or a bearer into one. It decides AUTHENTICATION only; capability
+  (`authz.Check`, `role permissions ∩ token scopes`, the capability floor) is `internal/authz`'s and
+  lands in Wave 0e (ADR-0028). Reading the session cookie anywhere else is forbidden — one reader is
+  what makes the precedence rule of `03-security.md` §6.3 enforceable at all.
 - `internal/ledger/` — append-only writer + invariant engine. Highest-blast-radius code in the repo.
 - `internal/strategy/` — **pure** point strategies. No DB, no wall clock, no RNG of its own.
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
@@ -102,11 +107,17 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   `internal/ledger/kinds`, the `audit_log` pair (`actor_kind`, `outcome`) from `internal/audit/kinds`,
   the `account` pair (`kind`, `system_key`) from `internal/account/kinds`, the `decay_run` pair
   (`kind`, `state`) from `internal/decay/kinds`, the `role` CHECK (`applies_to`) from
-  `internal/authz/role/kinds` and the `role_assignment` trio (`subject_kind`, `scope_type`,
-  `granted_via`) from `internal/authz/roleassignment/kinds`, all written by
-  `make gen` (canonical §5). The RBAC pair is two packages for two tables because a catalogue owns
+  `internal/authz/role/kinds`, the `role_assignment` trio (`subject_kind`, `scope_type`,
+  `granted_via`) from `internal/authz/roleassignment/kinds`, and the auth quartet — `app_user.state`
+  from `internal/auth/appuser/kinds`, `user_identity` (`provider`, `password_algo`) from
+  `internal/auth/useridentity/kinds`, `service_account.state` from
+  `internal/auth/serviceaccount/kinds` and `feed_token.kind` from `internal/auth/feedtoken/kinds` —
+  all written by `make gen` (canonical §5). The RBAC pair is two packages for two tables, and the
+  auth quartet is four for four, because a catalogue owns
   its region through a `schemaEnumBegin`/`schemaEnumEnd` const pair and `ENUM001` matches those by
-  identifier name — one package cannot declare two. A *new* string-enum CHECK goes in a catalogue too, not in a literal:
+  identifier name — one package cannot declare two (`app_user` and `service_account` both govern a
+  column called `state`, with different vocabularies, which is the case that makes merging them
+  impossible rather than untidy). A *new* string-enum CHECK goes in a catalogue too, not in a literal:
   `ENUM001` fails one written outside the markers, and fails an index predicate that lists a whole
   generated vocabulary — a partial index over a *subset* is the legitimate case and stays quiet.
 - `db/embed.go` — the `go:embed` of the migration set. No logic; `//go:embed` cannot reach

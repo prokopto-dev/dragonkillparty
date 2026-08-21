@@ -7,6 +7,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
+	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -77,6 +78,19 @@ type Config struct {
 	// the shape every test that predates PR 6 constructs, which is why this is a field rather than an
 	// unconditional mount. cmd/dkp passes internal/ui.Handler(); a handler-level test passes nil.
 	WebUI http.Handler
+
+	// Auth resolves the credential on every request into the single Principal a handler sees
+	// (docs/design/03-security.md §5). cmd/dkp builds one from the store, the clock and the keyring
+	// it loaded from <data-dir>/secrets.json.
+	//
+	// A NIL Auth DOES NOT MEAN "NO AUTHENTICATION". It means no operation that declares `Security`
+	// can be served at all: those answer 503, and only operations that declare an explicitly empty
+	// `Security` still work. The alternative — skipping the middleware — is a wiring bug that turns
+	// every gate in the product off silently and passes every test, which is exactly the failure this
+	// field exists to prevent. `dkp openapi` and the architectural tests pass nil deliberately: they
+	// build the registry without serving a request.
+	Auth *auth.Service
+
 	// Authorization is what the boot path learned about this instance's ability to authorize a
 	// request: did cmd/dkp's reconcileOnBoot project the permission catalogue into the database
 	// before the listener opened?
@@ -87,6 +101,12 @@ type Config struct {
 	// and the public operations stay up. Serving them anyway would be an authorization choke point
 	// whose unprepared state is "allow", which is the one way authorization is not allowed to fail.
 	// See AuthorizationState.
+	//
+	// IT IS A DIFFERENT QUESTION FROM Auth, and the two are deliberately separate fields. Auth
+	// answers "who is asking"; this answers "is this instance in a state to decide what they may
+	// do". A process can have a perfectly good credential resolver and an unreconciled catalogue —
+	// that is precisely the boot #272 fails closed on — and collapsing them into one flag would make
+	// a database that came up late look like a missing keyring in the logs.
 	Authorization AuthorizationState
 
 	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
@@ -149,12 +169,24 @@ func New(cfg Config) http.Handler {
 
 	humaAPI := humago.New(mux, humaConfig())
 
-	// The fail-closed authorization gate, installed BEFORE any operation is registered because Huma
+	// THE TWO GATES, in the order they run, installed BEFORE any operation is registered because Huma
 	// captures the middleware chain at huma.Register time (huma.go:881) — one added afterwards is
-	// silently never called. NewHumaAPI does NOT install it: that path builds the registry for
+	// silently never called. NewHumaAPI installs NEITHER: that path builds the registry for
 	// `dkp openapi` and the arch tests, where no request is ever served and a middleware would only
 	// be a second assembly site's worth of difference between the emitted document and this one.
+	//
+	// CAN THIS INSTANCE DECIDE, THEN WHO IS ASKING, and that order is deliberate. The first gate is
+	// about the PROCESS: an instance whose permission catalogue never reached the database cannot
+	// authorize anything, so it answers 503 without reading a credential it could not act on anyway
+	// (#272). The second is about the REQUEST: it resolves the cookie or the bearer into one
+	// Principal and refuses an operation that declares `Security` when no live credential is present
+	// (03-security.md §4.1, §5).
+	//
+	// What is still missing between them is the permission check itself — `authz.Check`, the scope
+	// intersection and the step-up window — which is Wave 0e (#276). Until it lands, a reconciled
+	// instance lets every authenticated principal through every operation.
 	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
+	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth))
 
 	registerOperations(humaAPI, cfg)
 	registerDocs(mux)

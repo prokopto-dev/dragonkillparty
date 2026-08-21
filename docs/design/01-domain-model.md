@@ -166,9 +166,10 @@ CREATE TABLE app_user (
   display_name  TEXT NOT NULL DEFAULT '',
   timezone      TEXT NULL,                        -- NULL ⇒ inherit guild.timezone
   locale        TEXT NULL,
-  avatar_media_id TEXT NULL REFERENCES media(id),
+  avatar_media_id TEXT NULL REFERENCES media(id),  -- lands with internal/cms's media table
   state         TEXT NOT NULL DEFAULT 'active'
                 CHECK (state IN ('pending','active','suspended','disabled')),
+  session_epoch INTEGER NOT NULL DEFAULT 0,       -- bump = sign out everywhere (03-security.md §3.6)
   last_login_at INTEGER NULL,
   failed_logins INTEGER NOT NULL DEFAULT 0,
   locked_until_at INTEGER NULL,
@@ -233,6 +234,7 @@ CREATE TABLE session (
   user_id      TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
   token_hash   BLOB NOT NULL,                     -- SHA-256 of the 32-byte opaque cookie secret
   identity_id  TEXT NULL REFERENCES user_identity(id),
+  session_epoch INTEGER NOT NULL DEFAULT 0,       -- the app_user.session_epoch this was minted under
   created_at   INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
   expires_at   INTEGER NOT NULL,
@@ -248,7 +250,15 @@ CREATE INDEX ix_session_user_active ON session(user_id, expires_at) WHERE revoke
 
 The cookie is `__Host-dkp_session` (conventions §7) — that exact string appears in the OpenAPI
 `securitySchemes`. Rotate `token_hash` (new row, old row `revoked_at`) on login and on any privilege
-change. "Sign out everywhere" is one `UPDATE … WHERE user_id = ?`.
+change.
+
+**"Sign out everywhere" is one `UPDATE` on the USER row, not on the session table.** Each session
+records the `app_user.session_epoch` it was minted under and the resolver requires the two to be
+equal, so `UPDATE app_user SET session_epoch = session_epoch + 1` kills every session that user
+holds, on every device, without touching this table and without racing a session being created
+concurrently — a session opened after the bump simply carries the new epoch (03-security.md §3.6).
+The two columns arrived with the resolver in Wave 0d; the DDL above predates that mechanism being
+written down.
 
 ### 4.3 Service accounts, PATs, feed tokens
 
@@ -272,6 +282,7 @@ CREATE TABLE api_token (
   service_account_id TEXT NOT NULL REFERENCES service_account(id) ON DELETE CASCADE,
   name               TEXT NOT NULL,
   scopes             TEXT NOT NULL,               -- space-separated, closed enum (conventions §6)
+  pepper_kid         TEXT NOT NULL DEFAULT 'v1',  -- which pepper hashed it (03-security.md §9.1)
   expires_at         INTEGER NULL,
   last_used_at       INTEGER NULL, last_used_ip TEXT NOT NULL DEFAULT '',
   rate_limit_rpm     INTEGER NOT NULL DEFAULT 600,
@@ -289,6 +300,7 @@ CREATE TABLE feed_token (          -- single-purpose, path-embedded, never a PAT
   id TEXT NOT NULL PRIMARY KEY, token_hash BLOB NOT NULL,
   user_id TEXT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (kind IN ('raids_ical','calendar_ical','standings_rss','articles_rss')),
+  pepper_kid TEXT NOT NULL DEFAULT 'v1',
   revoked_at INTEGER NULL, last_used_at INTEGER NULL, created_at INTEGER NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX ux_feed_token_hash ON feed_token(token_hash);

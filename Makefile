@@ -1103,7 +1103,7 @@ osv-scan:
 		printf '  (needs a Go patch release at or above the one osv-scanner pins, which is why\n'; \
 		printf '   `make setup` leaves it out — see OSV_SCANNER_VERSION above.)\n'; \
 		exit 1; }; \
-	"$$bin" scan source --config=osv-scanner.toml --lockfile=go.mod --lockfile=web/pnpm-lock.yaml
+	"$$bin" scan source --config=osv-scanner.toml --no-call-analysis=go --lockfile=go.mod --lockfile=web/pnpm-lock.yaml
 
 # Atlas's own migration analyzers over db/migrations-sqlite/ — destructive changes, data-dependent
 # changes and backward-incompatible changes (issue #131). A GATE since issue #136: a diagnostic

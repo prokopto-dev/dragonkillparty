@@ -201,3 +201,120 @@ sql:
             go_type:
               type: "int64"
               pointer: true
+          # The auth tables (Phase 2 Wave 0d, #273). Same affinity loss as every block above, on the
+          # widest set yet: six tables whose whole purpose is optional facts. Each is pinned to what
+          # emit_pointers_for_null_types would have produced, and the three encrypted BLOBs to
+          # []byte, because a ciphertext is bytes and a *string over one invites a UTF-8 assumption
+          # that holds until the day it does not.
+          #
+          # NULL IS A DIFFERENT FACT PER COLUMN HERE, which is why none of them collapses to a zero
+          # value: app_user.email NULL is "this guild has no mail server" (SMTP is optional);
+          # deleted_at NULL is "not deleted", and the two unique indexes are partial over exactly
+          # that; user_identity.password_hash NULL is "this identity cannot authenticate with a
+          # password", which is what the EQdkp importer writes because legacy hashes are never
+          # migrated; api_token.expires_at NULL is the deliberate never-expires token that carries a
+          # permanent warning badge; revoked_at NULL is the one the middleware requires.
+          - column: "app_user.email"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "app_user.email_norm"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "app_user.email_verified_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "app_user.timezone"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "app_user.locale"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "app_user.last_login_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "app_user.locked_until_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "app_user.mfa_totp_secret_enc"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "app_user.mfa_enrolled_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "app_user.deleted_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "user_identity.password_hash"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "user_identity.password_algo"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "user_identity.password_set_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "user_identity.access_token_enc"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "user_identity.refresh_token_enc"
+            go_type:
+              type: "byte"
+              slice: true
+          - column: "user_identity.token_expires_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "user_identity.last_used_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "session.identity_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "session.revoked_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "session.mfa_satisfied_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "api_token.expires_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "api_token.last_used_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "api_token.revoked_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "api_token.revoked_by"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "feed_token.revoked_at"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "feed_token.last_used_at"
+            go_type:
+              type: "int64"
+              pointer: true

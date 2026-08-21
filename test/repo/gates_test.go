@@ -30,6 +30,10 @@ import (
 
 	accountkinds "github.com/prokopto-dev/dragonkillparty/internal/account/kinds"
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
+	appuserkinds "github.com/prokopto-dev/dragonkillparty/internal/auth/appuser/kinds"
+	feedtokenkinds "github.com/prokopto-dev/dragonkillparty/internal/auth/feedtoken/kinds"
+	serviceaccountkinds "github.com/prokopto-dev/dragonkillparty/internal/auth/serviceaccount/kinds"
+	useridentitykinds "github.com/prokopto-dev/dragonkillparty/internal/auth/useridentity/kinds"
 	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
 	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
@@ -1982,12 +1986,13 @@ table "bid_session" {
 // the pairs the registered catalogues own — no fabricated region, and no catalogue whose region has
 // gone missing from the schema.
 //
-// The six catalogues are named here rather than enumerated, which is deliberate: a seventh added to
-// `internal/ledger/enumgen`'s catalogues() puts a seventh marker pair in the schema, and this test
-// then fails until it is listed here too. That is the correct direction for it to break — the
+// The ten catalogues are named here rather than enumerated, which is deliberate: an eleventh added
+// to `internal/ledger/enumgen`'s catalogues() puts an eleventh marker pair in the schema, and this
+// test then fails until it is listed here too. That is the correct direction for it to break — the
 // alternative, reflecting over the tree, would silently accept a catalogue nobody registered. It
 // broke exactly that way when internal/decay/kinds landed with decay_run (#192), which is the
-// evidence the direction is right, and again when the RBAC pair landed with the authz tables (#261).
+// evidence the direction is right; again when the RBAC pair landed with the authz tables (#261); and
+// again when the auth quartet landed with the credential tables (#273).
 func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
 	t.Parallel()
 
@@ -2000,6 +2005,10 @@ func TestEnumMarkers_InSchema_AreExactlyTheRegisteredCatalogues(t *testing.T) {
 		decaykinds.SchemaEnumBlock(),
 		rolekinds.SchemaEnumBlock(),
 		assignmentkinds.SchemaEnumBlock(),
+		appuserkinds.SchemaEnumBlock(),
+		useridentitykinds.SchemaEnumBlock(),
+		serviceaccountkinds.SchemaEnumBlock(),
+		feedtokenkinds.SchemaEnumBlock(),
 	} {
 		lines := strings.Split(block, "\n")
 		require.GreaterOrEqual(t, len(lines), 2, "a generated block is at least its two markers")

@@ -354,6 +354,8 @@ jobs:
               - *api
               - 'go.mod'
               - 'go.sum'
+              - 'internal/audit/kinds/**'
+              - 'internal/auth/**'
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/guild/**'
@@ -370,6 +372,13 @@ jobs:
               - 'go.sum'
               - 'internal/account/kinds/**'
               - 'internal/audit/kinds/**'
+              # The four auth catalogues are here for the same reason internal/*/kinds are: the
+              # point-math suites run `./internal/ledger/...`, which includes internal/ledger/enumgen,
+              # and the generator imports every catalogue in the repository (#273).
+              - 'internal/auth/appuser/kinds/**'
+              - 'internal/auth/feedtoken/kinds/**'
+              - 'internal/auth/serviceaccount/kinds/**'
+              - 'internal/auth/useridentity/kinds/**'
               - 'internal/authz/role/kinds/**'
               - 'internal/authz/roleassignment/kinds/**'
               - 'internal/clock/**'
@@ -686,15 +695,38 @@ jobs:
           #
           # go.mod is the reason osv-scanner does NOT replace `security / govulncheck` above:
           # osv-scanner reports every advisory affecting a pinned version, with no call-graph
-          # analysis, so it is the noisier of the two on the Go side. It is here because the same
-          # blindness is a virtue on the npm side, where nothing else looks at all.
+          # analysis (see `--no-call-analysis=go` below, which is what makes that true rather than
+          # merely intended), so it is the noisier of the two on the Go side. It is here because the
+          # same blindness is a virtue on the npm side, where nothing else looks at all.
           #
           # TestOSV_ScanTargets_AreTheSameInCIAndTheMakefile keeps this list equal to the one in
           # `make osv-scan`, so a lockfile added to one is not missing from the other.
+          #
+          # `--no-call-analysis=go` MAKES THE PARAGRAPH ABOVE TRUE. osv-scanner v2 runs govulncheck
+          # over the Go graph BY DEFAULT to refine its findings, which this job neither wants nor can
+          # do: the scanner ships in a pinned container carrying its own Go (1.26.5), this module
+          # requires 1.26.6, and GOTOOLCHAIN=local — set at the top of this workflow on purpose —
+          # forbids fetching one. The result is `Exit code: 127` from a scan that found nothing:
+          #
+          #     Failed to run code analysis (govulncheck) … go.mod requires go >= 1.26.6
+          #     (running go 1.26.5; GOTOOLCHAIN=local)
+          #     Total 0 packages affected by 0 known vulnerabilities
+          #
+          # IT WENT UNNOTICED BECAUSE THE PATH ONLY RUNS WHEN THERE IS A GO FINDING TO REFINE. The Go
+          # graph had none until #273 added golang.org/x/crypto for argon2id, so the first Go
+          # advisory this repository ever matched was also the first time the analysis was attempted
+          # (#280).
+          #
+          # Turning it off is the right answer rather than the convenient one. `security /
+          # govulncheck` already does reachability analysis over this module, with the toolchain
+          # go.mod pins, as its own required job — so what osv-scanner adds here is exactly the
+          # module-level breadth this comment describes, and a second, weaker copy of the reachability
+          # pass buys nothing. The npm side is unaffected: call analysis is Go-only.
           scan-args: |-
             scan
             source
             --config=osv-scanner.toml
+            --no-call-analysis=go
             --lockfile=go.mod
             --lockfile=web/pnpm-lock.yaml
         # BLOCKING, not advisory (issue #132). Every waiver is an `[[IgnoredVulns]]` entry in

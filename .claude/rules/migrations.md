@@ -46,15 +46,19 @@ The generated enum CHECKs are the parts of `db/schema.hcl` you do not edit: `led
 `ledger_batch.source` from `internal/ledger/kinds`, `audit_log.actor_kind` and `audit_log.outcome`
 from `internal/audit/kinds`, `account.kind` and `account.system_key` from
 `internal/account/kinds`, `decay_run.kind` and `decay_run.state` from `internal/decay/kinds`,
-`role.applies_to` from `internal/authz/role/kinds`, and `role_assignment.subject_kind`,
-`.scope_type` and `.granted_via` from `internal/authz/roleassignment/kinds`. `make gen` writes each
+`role.applies_to` from `internal/authz/role/kinds`, `role_assignment.subject_kind`,
+`.scope_type` and `.granted_via` from `internal/authz/roleassignment/kinds`, and the four auth
+catalogues — `app_user.state`, `user_identity.provider` and `.password_algo`,
+`service_account.state`, `feed_token.kind` — from
+`internal/auth/{appuser,useridentity,serviceaccount,feedtoken}/kinds`. `make gen` writes each
 CHECK expression between its own `BEGIN/END
 GENERATED` markers (canonical §5) — the marker text names the catalogue, because a whole-line match
 is how each render finds its region and only its region. Add the value in Go, run `make gen`, then
 `make migration NAME=<snake_case>`. `TestLedgerKinds_CheckMatchesCatalogue`,
 `TestAuditKinds_CheckMatchesCatalogue`, `TestAccountKinds_CheckMatchesCatalogue`,
-`TestDecayKinds_CheckMatchesCatalogue`, `TestRoleKinds_CheckMatchesCatalogue` and
-`TestRoleAssignmentKinds_CheckMatchesCatalogue` fail on a
+`TestDecayKinds_CheckMatchesCatalogue`, `TestRoleKinds_CheckMatchesCatalogue`,
+`TestRoleAssignmentKinds_CheckMatchesCatalogue` and the four auth catalogues' own
+`…Kinds_CheckMatchesCatalogue` tests fail on a
 hand-edit, and so does `verify-generated` — `db/schema.hcl` is in `GENERATED_PATHS` for exactly those
 regions.
 
@@ -62,8 +66,10 @@ regions.
 owns its region through a `schemaEnumBegin`/`schemaEnumEnd` const pair, and `ENUM001` recognises those
 by identifier NAME — so two pairs cannot live in one Go package, and a region cannot span two `table`
 blocks. Two tables therefore need two packages even when they are one subsystem: `role` and
-`role_assignment` are the worked example (#261), and each package's comment says why the split exists
-so the next reader does not "tidy" them together.
+`role_assignment` are the worked example (#261), and the four auth tables are the second (#273) —
+`app_user` and `service_account` both govern a column called `state` with different vocabularies,
+which is the case that makes merging impossible rather than untidy. Each package's comment says why
+the split exists so the next reader does not "tidy" them together.
 
 A new vocabulary joins them by adding a catalogue package (a stdlib-only leaf over
 `internal/schemaenum`, which owns the CHECK rendering and the region rewrite) and one row in

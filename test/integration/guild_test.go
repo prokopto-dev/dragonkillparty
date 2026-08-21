@@ -5,13 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
@@ -33,7 +36,12 @@ var _ clock.Clock = fixedClock{}
 // it. It returns the server and the store so a test can declare a statement budget. This is the
 // harness the decision record specifies: store.NewDB + httptest.NewServer(api.New(...)), no testenv,
 // no generated client (PR 6 fills in the client).
-func newServer(t *testing.T) (*httptest.Server, *store.Store) {
+//
+// SINCE PHASE 2 WAVE 0d IT ALSO OPENS A SESSION, and the client it returns carries the cookie. Both
+// guild operations declare `Security`, so the middleware refuses them without a credential — which
+// is what TestGuild_Unauthenticated_Is401 below asserts on purpose, and what every other test here
+// would otherwise assert by accident while believing it was testing ETags.
+func newServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client) {
 	t.Helper()
 
 	s := store.NewDB(t)
@@ -56,24 +64,51 @@ func newServer(t *testing.T) (*httptest.Server, *store.Store) {
 	})
 	require.NoError(t, err, "seed the guild row")
 
-	// Authorization is stated, because the zero value fails closed (#272): an instance that never
-	// reconciled its permission catalogue refuses every operation that declares a permission, and
-	// both guild operations do. This harness is the booted, reconciled instance — which is also what
-	// makes the known-Phase-0-gap test below meaningful, since a 503 from the gate would mask the
-	// missing credential check rather than assert it.
+	authService := auth.NewTestService(t, s, fixedClock{})
+
+	// Both gates are stated, because both zero values fail closed. An instance that never reconciled
+	// its permission catalogue refuses every operation that declares a permission (#272); one with no
+	// credential resolver refuses every operation that declares Security. Both guild operations
+	// declare both. This harness is the fully booted instance — which is what makes
+	// TestGuild_Unauthenticated_Is401 below meaningful, since a 503 from either gate would mask the
+	// credential check rather than assert it.
 	srv := httptest.NewServer(api.New(api.Config{
-		Store: s, Clock: fixedClock{}, Authorization: api.AuthorizationReconciled(),
+		Store:         s,
+		Clock:         fixedClock{},
+		Authorization: api.AuthorizationReconciled(),
+		Auth:          authService,
 	}))
 	t.Cleanup(srv.Close)
 
-	return srv, s
+	cookie, _ := auth.SeedSession(t, authService, auth.SeedUser(t, s, fixedClock{}, "officer"))
+
+	return srv, s, clientWithCookie(t, srv.URL, cookie)
+}
+
+// clientWithCookie returns an http.Client that sends cookie to base on every request.
+//
+// A JAR RATHER THAN A HEADER PER CALL, so the request helpers keep their signatures and no test can
+// forget the credential on one of two requests and then explain the resulting 401 as a bug in the
+// thing it was actually testing.
+func clientWithCookie(t *testing.T, base string, cookie *http.Cookie) *http.Client {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
+	require.NoError(t, err)
+
+	u, err := url.Parse(base)
+	require.NoError(t, err)
+
+	jar.SetCookies(u, []*http.Cookie{cookie})
+
+	return &http.Client{Jar: jar}
 }
 
 // getJSON issues GET /api/v1/guild and decodes the body into dst, returning the response.
-func getJSON(t *testing.T, url string, dst any) *http.Response {
+func getJSON(t *testing.T, c *http.Client, url string, dst any) *http.Response {
 	t.Helper()
 
-	res, err := http.Get(url) //nolint:noctx // test client
+	res, err := c.Get(url) //nolint:noctx // test client
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = res.Body.Close() })
 
@@ -85,7 +120,7 @@ func getJSON(t *testing.T, url string, dst any) *http.Response {
 }
 
 // patchJSON issues PATCH /api/v1/guild with the given headers and JSON body.
-func patchJSON(t *testing.T, url string, body map[string]any, header http.Header) *http.Response {
+func patchJSON(t *testing.T, c *http.Client, url string, body map[string]any, header http.Header) *http.Response {
 	t.Helper()
 
 	raw, err := json.Marshal(body)
@@ -101,7 +136,7 @@ func patchJSON(t *testing.T, url string, body map[string]any, header http.Header
 		}
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = res.Body.Close() })
 
@@ -126,14 +161,18 @@ func decodeProblem(t *testing.T, res *http.Response) api.ProblemDetail {
 func TestGetGuild_Singleton_ReturnsETag(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
-	// Declared after the server is built, so boot statements are excluded. A singleton read is one
-	// statement; an N+1 fails here.
-	store.Counted(t).Budget(t, 1)
+	// Declared after the server is built, so boot statements and the session seed are excluded. TWO
+	// statements since Phase 2 Wave 0d: the credential lookup, then the singleton read. ADR-0011 chose
+	// opaque credentials over JWTs to pay exactly one indexed round trip per request in exchange for
+	// instant revocation, and this is where that price is asserted rather than assumed. A third would
+	// be an N+1 — or an authorization layer reading role assignments per request, which is the
+	// pressure Wave 0e should feel here.
+	store.Counted(t).Budget(t, 2)
 
 	var dto api.GuildDTO
-	res := getJSON(t, srv.URL+"/api/v1/guild", &dto)
+	res := getJSON(t, client, srv.URL+"/api/v1/guild", &dto)
 	require.Equal(t, http.StatusOK, res.StatusCode)
 	require.NotEmpty(t, res.Header.Get("ETag"), "a mutable resource must carry an ETag")
 	require.Equal(t, "Kittens Who Say Ni", dto.Name)
@@ -145,9 +184,9 @@ func TestGetGuild_Singleton_ReturnsETag(t *testing.T) {
 func TestUpdateGuild_NoIfMatch_Returns428(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
-	res := patchJSON(t, srv.URL+"/api/v1/guild", map[string]any{"name": "Kittens"}, nil)
+	res := patchJSON(t, client, srv.URL+"/api/v1/guild", map[string]any{"name": "Kittens"}, nil)
 	require.Equal(t, http.StatusPreconditionRequired, res.StatusCode)
 
 	pd := decodeProblem(t, res)
@@ -159,13 +198,13 @@ func TestUpdateGuild_NoIfMatch_Returns428(t *testing.T) {
 func TestUpdateGuild_StaleIfMatch_Returns412(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
 	var cur api.GuildDTO
-	getRes := getJSON(t, srv.URL+"/api/v1/guild", &cur)
+	getRes := getJSON(t, client, srv.URL+"/api/v1/guild", &cur)
 	currentETag := getRes.Header.Get("ETag")
 
-	res := patchJSON(t, srv.URL+"/api/v1/guild",
+	res := patchJSON(t, client, srv.URL+"/api/v1/guild",
 		map[string]any{"name": "Kittens"},
 		http.Header{"If-Match": {`"stale-etag"`}})
 	require.Equal(t, http.StatusPreconditionFailed, res.StatusCode)
@@ -188,13 +227,13 @@ func TestUpdateGuild_StaleIfMatch_Returns412(t *testing.T) {
 func TestUpdateGuild_CurrentIfMatch_Succeeds(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
 	var before api.GuildDTO
-	getRes := getJSON(t, srv.URL+"/api/v1/guild", &before)
+	getRes := getJSON(t, client, srv.URL+"/api/v1/guild", &before)
 	currentETag := getRes.Header.Get("ETag")
 
-	res := patchJSON(t, srv.URL+"/api/v1/guild",
+	res := patchJSON(t, client, srv.URL+"/api/v1/guild",
 		map[string]any{"name": "Kittens"},
 		http.Header{"If-Match": {currentETag}})
 	require.Equal(t, http.StatusOK, res.StatusCode)
@@ -220,12 +259,12 @@ func TestUpdateGuild_CurrentIfMatch_Succeeds(t *testing.T) {
 func TestUpdateGuild_OmittedInactiveAfterDays_IsPreservedOverTheWire(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
 	// Set inactive_after_days to 30 (turn the sweep on).
 	var g0 api.GuildDTO
-	getRes := getJSON(t, srv.URL+"/api/v1/guild", &g0)
-	setRes := patchJSON(t, srv.URL+"/api/v1/guild",
+	getRes := getJSON(t, client, srv.URL+"/api/v1/guild", &g0)
+	setRes := patchJSON(t, client, srv.URL+"/api/v1/guild",
 		map[string]any{"inactive_after_days": 30},
 		http.Header{"If-Match": {getRes.Header.Get("ETag")}})
 	require.Equal(t, http.StatusOK, setRes.StatusCode)
@@ -236,7 +275,7 @@ func TestUpdateGuild_OmittedInactiveAfterDays_IsPreservedOverTheWire(t *testing.
 	require.Equal(t, int64(30), *withDays.InactiveAfterDays)
 
 	// Now PATCH ONLY the name; inactive_after_days is omitted and must be preserved.
-	res := patchJSON(t, srv.URL+"/api/v1/guild",
+	res := patchJSON(t, client, srv.URL+"/api/v1/guild",
 		map[string]any{"name": "Just A Rename"},
 		http.Header{"If-Match": {setRes.Header.Get("ETag")}})
 	require.Equal(t, http.StatusOK, res.StatusCode)
@@ -249,37 +288,75 @@ func TestUpdateGuild_OmittedInactiveAfterDays_IsPreservedOverTheWire(t *testing.
 	require.Equal(t, int64(30), *after.InactiveAfterDays)
 }
 
-// TestGuild_Unauthenticated_IsAKnownPhase0Gap pins the deliberate Phase 0 gap: both operations are
-// served with NO credential, while the published spec declares security: [{pat},{session}]. There is
-// no auth middleware and no authz.Check until ROADMAP Phase 2 deliverable 1 (decision record §Q1).
+// TestGuild_Unauthenticated_Is401 is the CLOSURE of the Phase 0 gap, and it replaces the tripwire
+// that pinned it.
 //
-// This test asserts the CURRENT behaviour — an unauthenticated GET and, more importantly, an
-// unauthenticated PATCH both succeed — so the day the auth middleware lands it goes RED, and closing
-// the gap is a deliberate deletion of this test rather than a silent discovery. The gap is named in
-// SECURITY.md alongside this test. It is the same "tripwire installed ahead of the code it gates"
-// pattern as internal/api/arch_test.go's idempotency test.
-func TestGuild_Unauthenticated_IsAKnownPhase0Gap(t *testing.T) {
+// WHAT WAS HERE. TestGuild_Unauthenticated_IsAKnownPhase0Gap asserted the opposite of this: that an
+// unauthenticated GET and, worse, an unauthenticated PATCH both SUCCEEDED, while the published spec
+// declared `security: [{pat}, {session}]` on both. It was installed deliberately ahead of the code it
+// gates (SECURITY.md, "Known Phase 0 gaps"), so that the day authentication landed it would go red
+// and closing the gap would be a deliberate deletion rather than a silent discovery. Phase 2 Wave 0d
+// is that day, and this is that deletion.
+//
+// THE PATCH HALF IS THE LOAD-BEARING ONE. A 401 on a read is a nuisance; a 401 on the product's
+// first mutating endpoint is the difference between a guild's settings being editable by anyone who
+// can reach the port and not. It is asserted with a CURRENT ETag — fetched with a credential — so
+// the request fails on authentication rather than on a precondition, which is the failure that would
+// have made this test pass for the wrong reason.
+//
+// WHAT IT DOES NOT ASSERT, because Wave 0d does not implement it: that a principal holding no
+// permission is refused. Any live credential passes every operation until authz.Check lands in Wave
+// 0e — a member's session can still PATCH the guild. SECURITY.md names that narrower gap where it
+// named this one.
+func TestGuild_Unauthenticated_Is401(t *testing.T) {
 	t.Parallel()
 
-	srv, _ := newServer(t)
+	srv, _, client := newServer(t)
 
-	// An unauthenticated GET is served.
-	getRes := getJSON(t, srv.URL+"/api/v1/guild", nil)
-	require.Equal(t, http.StatusOK, getRes.StatusCode,
-		"PHASE 0 GAP: GET /api/v1/guild is served with no credential. When auth lands this line must "+
-			"change to expect 401 — see SECURITY.md.")
-
-	// The load-bearing half: an unauthenticated PATCH — the product's first mutating endpoint —
-	// succeeds. When auth lands, an unauthenticated PATCH must be 401, and this assertion goes red.
+	// A credentialled read first, both to prove the fixture works and to get a current ETag.
 	var before api.GuildDTO
-	getRes2 := getJSON(t, srv.URL+"/api/v1/guild", &before)
-	etag := getRes2.Header.Get("ETag")
+	authed := getJSON(t, client, srv.URL+"/api/v1/guild", &before)
+	require.Equal(t, http.StatusOK, authed.StatusCode)
 
-	patchRes := patchJSON(t, srv.URL+"/api/v1/guild",
+	etag := authed.Header.Get("ETag")
+	require.NotEmpty(t, etag)
+
+	anonymous := &http.Client{}
+
+	getRes := getJSON(t, anonymous, srv.URL+"/api/v1/guild", nil)
+	require.Equal(t, http.StatusUnauthorized, getRes.StatusCode,
+		"GET /api/v1/guild declares Security and must refuse an anonymous caller")
+	requireUnauthenticatedProblem(t, getRes)
+
+	patchRes := patchJSON(t, anonymous, srv.URL+"/api/v1/guild",
 		map[string]any{"name": "Unauthenticated Write"},
 		http.Header{"If-Match": {etag}})
-	require.Equal(t, http.StatusOK, patchRes.StatusCode,
-		"PHASE 0 GAP: an unauthenticated PATCH /api/v1/guild currently SUCCEEDS. This is pinned so the "+
-			"day auth middleware lands it goes red and closing the gap is a deliberate change — see "+
-			"SECURITY.md, 'Known Phase 0 gap: the guild resource is unauthenticated'.")
+	require.Equal(t, http.StatusUnauthorized, patchRes.StatusCode,
+		"an unauthenticated PATCH of the guild must be refused before the handler runs")
+	requireUnauthenticatedProblem(t, patchRes)
+
+	// AND THE WRITE DID NOT HAPPEN. A 401 whose handler already ran is not a control, and nothing
+	// about the status code alone would say so.
+	var after api.GuildDTO
+	require.Equal(t, http.StatusOK,
+		getJSON(t, client, srv.URL+"/api/v1/guild", &after).StatusCode)
+	require.Equal(t, before.Name, after.Name,
+		"the refused PATCH must not have reached the handler")
+}
+
+// requireUnauthenticatedProblem asserts the wire shape of a refusal: RFC 9457 problem+json carrying
+// the published `unauthenticated` code, and the WWW-Authenticate header RFC 9110 requires on a 401.
+func requireUnauthenticatedProblem(t *testing.T, res *http.Response) {
+	t.Helper()
+
+	require.Equal(t, api.ContentTypeProblemJSON, res.Header.Get("Content-Type"),
+		"every error body is application/problem+json, including this one")
+	require.Equal(t, `Bearer realm="dkp"`, res.Header.Get("WWW-Authenticate"),
+		"RFC 9110 makes WWW-Authenticate mandatory on a 401")
+
+	var problem api.ProblemDetail
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&problem))
+	require.Equal(t, api.CodeUnauthenticated, problem.Code,
+		"docs/api/errors.md: no credential answers `unauthenticated`")
+	require.Equal(t, http.StatusUnauthorized, problem.Status)
 }

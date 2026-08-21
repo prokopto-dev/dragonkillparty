@@ -22,8 +22,16 @@
 # TO CLEAR A WAIVER: fix the dependency, run `make osv-scan`, then delete the id from BOTH
 # osv-scanner.toml and this file, and close the tracking issue. Deleting from one is a red build.
 #
-# THE LIST IS CURRENTLY EMPTY, which is the intended steady state. It held three ids from the first
-# scan of web/pnpm-lock.yaml this repository ever ran — GHSA-xffm-g5w8-qvg7 (#133),
-# GHSA-g7r4-m6w7-qqqr (#134) and GHSA-5p4m-2wfm-xmqj (#135) — and all three were cleared by the
-# dependency bump that closed those issues, ahead of their 2026-11-09 expiry. An empty list means
-# every finding was fixed rather than ignored; it does not mean the gate stopped running.
+# THE LIST WAS EMPTY UNTIL #273, and the difference between the one id below and the three before it
+# is worth stating. Those three — GHSA-xffm-g5w8-qvg7 (#133), GHSA-g7r4-m6w7-qqqr (#134) and
+# GHSA-5p4m-2wfm-xmqj (#135), from the first scan of web/pnpm-lock.yaml this repository ever ran —
+# were REAL findings in transitive devDependencies, waived while a fix was pending and cleared by the
+# dependency bump that closed those issues, ahead of their 2026-11-09 expiry.
+#
+# GO-2026-5932 is not that shape. It is a permanent advisory about golang.org/x/crypto/openpgp, a
+# package no build graph in this repository contains, attached to a module that is here for argon2id
+# (03-security.md §3.1). There is no version that fixes it and no fix to wait for, so its expiry
+# forces a re-check of the only fact that could make it wrong — that nothing has started importing
+# openpgp — rather than a fix. osv-scanner.toml carries the evidence; #280 tracks it.
+
+GO-2026-5932

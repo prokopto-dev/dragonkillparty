@@ -93,7 +93,7 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 			// preference. A renderer shows the opening of a description in a tooltip or a collapsed
 			// row, so a disclosure at the end is one a reader reaches only after four sentences of
 			// present-tense enforcement they have already believed.
-			Description: authz.Phase0EnforcementNotice + "\n\n" +
+			Description: authz.AuthorizationGapNotice + "\n\n" +
 				"A personal access token belonging to a service account, sent as " +
 				"`Authorization: Bearer dkp_pat_…`. Query-string tokens are rejected (canonical §7); " +
 				"the compat shim's `?atoken=` is the single documented exception and is not part of " +
@@ -110,7 +110,7 @@ func securitySchemes() map[string]*huma.SecurityScheme {
 			Type: "apiKey",
 			In:   "cookie",
 			Name: SessionCookieName,
-			Description: authz.Phase0EnforcementNotice + "\n\n" +
+			Description: authz.AuthorizationGapNotice + "\n\n" +
 				"The browser session cookie: opaque, server-side, `HttpOnly; Secure; " +
 				"SameSite=Lax; Path=/`, no `Domain`. The `__Host-` prefix pins it to the exact origin " +
 				"(03-security.md §3.6). Cookies are ignored entirely when `Authorization` is present. " +

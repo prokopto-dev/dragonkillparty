@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -374,6 +375,29 @@ func newProblemFromHuma(status int, msg string, errs ...error) *ProblemDetail {
 
 	for _, err := range errs {
 		if err == nil {
+			continue
+		}
+
+		// A CALLER THAT ALREADY BUILT A ProblemDetail KNOWS ITS OWN CODE, and codeForStatus cannot:
+		// the status→code mapping is many-to-one, and 401 alone cannot tell `token_expired` from
+		// `token_revoked` from `unauthenticated` — three rows of docs/api/errors.md that a bot author
+		// is told to react to differently ("mint a new token" / "stop, do not retry" / "send a valid
+		// bearer"). Huma's WriteErr gives a middleware no other way to reach the body it will write,
+		// so a problem passed in `errs` is ADOPTED rather than flattened into the `errors` array,
+		// where its code and its meta would both be lost.
+		//
+		// The status stays the caller's — WriteErr reads it from the outer value — and the outer
+		// request_id and instance, which only the huma.Context can supply, are left in place.
+		var carried *ProblemDetail
+		if errors.As(err, &carried) {
+			p.Code = carried.Code
+			p.Type = carried.Type
+			p.Meta = carried.Meta
+
+			if carried.Detail != "" {
+				p.Detail = carried.Detail
+			}
+
 			continue
 		}
 
