@@ -211,8 +211,11 @@ Two more are designed and **do not exist yet**, so do not write a test that assu
   until Phase 0 PR 5, which is the assertion that section forbids, and the claim is removed rather
   than swapped for the other candidate. The middleware itself is ROADMAP Phase 2. Until it lands,
   assert the response body explicitly in the test.
-- **PAT parity.** Replaying an SPA request sequence with a scoped PAT needs tokens, and tokens are
-  ROADMAP Phase 2 deliverable 1. There is no auth package.
+- **PAT parity.** Replaying an SPA request sequence with a scoped PAT needs a token whose SCOPES mean
+  something, and they do not yet: Phase 2 Wave 0d resolves a token into a `Principal` but does not
+  intersect its scopes with anything, so a PAT-parity case would pass today whatever scopes it
+  carried. It becomes a real assertion with the capability floor (#276). Minting a token in a test is
+  already possible — `auth.SeedToken`.
 
 ## Stop and ask if
 

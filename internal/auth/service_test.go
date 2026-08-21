@@ -494,3 +494,27 @@ func TestResolve_DisabledServiceAccount_RefusesItsTokens(t *testing.T) {
 	require.Nil(t, principal)
 	require.ErrorIs(t, err, auth.ErrPrincipalNotActive)
 }
+
+// TestResolve_WiringBugs_FailClosed covers the two nil-shaped mistakes that would otherwise be a
+// panic in the middleware — which reads as a crashed server rather than as a misconfigured one.
+//
+// Neither can happen through the wiring cmd/dkp does: it builds a Service only when the store opened,
+// and humago always hands the middleware a request. That is exactly why the day one of them does
+// happen, the answer must be a named refusal rather than a stack trace in a raid-night log.
+func TestResolve_WiringBugs_FailClosed(t *testing.T) {
+	t.Parallel()
+
+	clk := clock.NewFake(testEpoch)
+
+	noStore := auth.NewService(nil, clk, auth.NewTestKeyring(t))
+
+	principal, err := noStore.ResolveRequest(t.Context(), request(nil, ""))
+	require.Nil(t, principal)
+	require.ErrorIs(t, err, auth.ErrNoStore)
+
+	svc, _ := newResolver(t)
+
+	principal, err = svc.ResolveRequest(t.Context(), nil)
+	require.Nil(t, principal)
+	require.ErrorIs(t, err, auth.ErrMalformedCredential)
+}

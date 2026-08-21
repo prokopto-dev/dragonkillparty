@@ -157,11 +157,32 @@ from mistakes, not from disk failure — set `DKP_S3_BACKUP_URL` on day one.
 | `DKP_OIDC_ISSUER` | none | no | Generic OIDC issuer URL. |
 | `DKP_OIDC_CLIENT_ID` | none | no | Generic OIDC client ID. |
 | `DKP_OIDC_CLIENT_SECRET` | none | yes | Generic OIDC client secret. |
-| `DKP_ARGON2_PROFILE` | `default` | no | Password-hashing cost profile for constrained hardware. |
+| `DKP_ARGON2_PROFILE` | `default` | no | Password-hashing cost profile for constrained hardware: `high`, `default`, `low`, `lower` or `lowest`. |
 | `DKP_HIBP_CHECK` | `false` | no | Check new passwords against the Have I Been Pwned range API, sending only a five-character hash prefix. |
 
 `dkp doctor` measures actual password-hash wall time and warns outside 50–500 ms, naming the profile
 to switch to — for example "set `DKP_ARGON2_PROFILE=low`; your hardware takes 1.4 s per login".
+
+The five profiles are points on OWASP's **equivalent-cost** ladder, so a lower one is not a weaker
+password hash — it is the same work factor bought with less memory and more passes. All five use
+`p=1`, which keeps peak memory predictable when several logins arrive at once.
+
+| Profile | argon2id parameters | For |
+|---|---|---|
+| `high` | `m=47104, t=1, p=1` | a box with memory to spare |
+| `default` | `m=19456, t=2, p=1` | OWASP's password-storage baseline |
+| `low` | `m=12288, t=3, p=1` | a small VPS |
+| `lower` | `m=9216, t=4, p=1` | a Raspberry Pi 4 |
+| `lowest` | `m=7168, t=5, p=1` | the smallest hardware this product targets |
+
+**Changing it does not invalidate anything.** Every stored hash carries the parameters it was made
+with, so existing passwords keep verifying under whatever profile wrote them; each account is
+re-hashed under the new profile the next time its owner logs in.
+
+**Not read yet.** `internal/auth` implements the hashing and the ladder; the variable is wired when
+the login endpoint that sets and checks a password lands (issue #264). A value naming no profile is
+an error there rather than a silent fallback to `default` — somebody who typed `lo` believing their
+Pi was catered for should be told, not left to discover it in login latency.
 
 ## Mail
 

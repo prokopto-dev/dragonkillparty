@@ -63,6 +63,15 @@ var (
 	// here rather than by hunting down rows.
 	ErrPrincipalNotActive = errors.New("principal not active")
 
+	// ErrNoStore means the resolver was built without a database handle, so no credential can be
+	// looked up at all.
+	//
+	// A WIRING BUG, NOT AN INPUT, and it fails closed with a name rather than panicking on a nil
+	// dereference: the middleware maps it to the same refusal every other failure gets, and the log
+	// line says which of the two nil-shaped mistakes it was. cmd/dkp only builds a Service when the
+	// store opened, so reaching this means somebody constructed one by hand.
+	ErrNoStore = errors.New("no store wired")
+
 	// ErrNoPepper means a bearer token was presented and this process has no PAT pepper to verify it
 	// with — the keyring was never wired, or <data-dir>/secrets.json could not be read.
 	//

@@ -86,6 +86,19 @@ func NewService(st *store.Store, clk clock.Clock, keys *Keyring) *Service {
 // A missing credential is ErrNoCredential rather than an error the caller must interpret: on a
 // public operation the middleware proceeds anonymously, and on every other one it answers 401.
 func (s *Service) ResolveRequest(ctx context.Context, r *http.Request) (*Principal, error) {
+	// Both are wiring bugs rather than inputs to validate, and both fail CLOSED with a named error
+	// instead of a panic. A nil store is a Service built without one — the middleware would otherwise
+	// panic on the first authenticated request, which reads as a crash rather than as a misconfigured
+	// server; a nil request cannot happen through humago, which is exactly why the day it does, the
+	// answer should be a refusal.
+	if s == nil || s.store == nil {
+		return nil, fmt.Errorf("no store wired: %w", ErrNoStore)
+	}
+
+	if r == nil {
+		return nil, fmt.Errorf("nil request: %w", ErrMalformedCredential)
+	}
+
 	if param, found := tokenInQueryString(r); found {
 		return nil, fmt.Errorf("credential in ?%s=: %w", param, ErrTokenInQueryString)
 	}

@@ -1054,7 +1054,13 @@ func TestLicenceGate_RealTree_Passes(t *testing.T) {
 
 	// The gate must have actually resolved a module graph. Without this the test would pass on a
 	// tree where `go list` returned nothing, which is the vacuous-pass failure mode.
-	require.NotContains(t, out, "0 runtime dependencies", "the gate resolved no dependencies\n%s", out)
+	//
+	// ANCHORED, because the obvious substring is a trap this test fell into: "0 runtime dependencies"
+	// is also a substring of "30 runtime dependencies", so the assertion started failing on a healthy
+	// tree the moment the dependency count crossed a multiple of ten (#273 added the thirtieth). The
+	// regex requires the count to BE zero rather than to end in one.
+	require.NotRegexp(t, `(^|\s)0 runtime dependencies`, out,
+		"the gate resolved no dependencies\n%s", out)
 
 	// The MPL-2.0 module in `go list -m all` is reachable only through modernc.org/libc's test
 	// binary. It must not be in the runtime set — this is the real-world instance of
