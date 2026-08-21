@@ -63,9 +63,17 @@
 # reachability analysis, reports nothing; the disagreement is granularity, not a difference of
 # opinion about the risk.
 #
-# THE EXPIRY IS NOT A FIX WINDOW. There is no fix to wait for. What one year forces is a re-check of
-# the only fact that could make this waiver wrong: that nothing in the tree has started importing
-# openpgp. Do not extend it without running that grep.
+# THE EXPIRY IS NOT A FIX WINDOW. There is no fix to wait for. What one year forces is a re-read of
+# the DECISION — including the call-analysis alternative recorded on #280 — rather than of the fact
+# below it, because that fact is now checked on every `make test` rather than annually by hand:
+# TestOSVWaiver_OpenPGP_IsInNoBuildGraph (test/repo/osv_scanner_test.go) runs the listing above and
+# fails the moment an openpgp package enters this module's build graph, test files included.
+#
+# It has to be a test, because the scanner cannot notice. osv-scanner matches at MODULE granularity,
+# so it goes on filtering this advisory — printing the reason below back verbatim as it does — for
+# exactly as long as the entry exists, whether or not the reason is still true. Verified by import
+# and re-scan, not assumed. So: do not extend the date without re-reading the decision, and do not
+# delete that test without deleting the waiver and its golden id in the same change.
 # ---------------------------------------------------------------------------------------------
 [[IgnoredVulns]]
 id = "GO-2026-5932"
