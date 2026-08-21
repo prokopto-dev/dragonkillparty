@@ -9,6 +9,7 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 )
 
 // The authentication choke point: ONE middleware, mounted before every Huma operation, that turns a
@@ -21,16 +22,25 @@ import (
 // one the day somebody adds a route. RequestID and Problem stay where they are: they answer
 // questions about a request that has no operation yet.
 //
-// WHAT IT ENFORCES TODAY, STATED PRECISELY, because the gap matters more than the feature:
-// AUTHENTICATION ONLY. An operation declaring `Security` requires a live credential and answers 401
-// without one — which is what closes the Phase 0 gap SECURITY.md named and
-// TestGuild_Unauthenticated_IsAKnownPhase0Gap pinned. It does NOT yet check that the principal holds
-// the operation's `x-dkp-permission`, nor that a token's scopes reach it, nor the capability floor
-// that makes token minting and role edits session-and-step-up only. Those are authz.Check and Wave
-// 0e (issue #273's successor), and until they land EVERY AUTHENTICATED PRINCIPAL PASSES EVERY
-// OPERATION — a member's session can PATCH /api/v1/guild, and so can a zero-scope token. The
-// published security schemes say so, SECURITY.md says so, and both notices are tripwires to delete
-// with 0e.
+// WHAT IT ENFORCES, IN ONE PASS AND IN THIS ORDER (Wave 0e, issue #276):
+//
+//  1. AUTHENTICATION. An operation declaring `Security` requires a live credential and answers 401
+//     without one.
+//  2. CAPABILITY. The resolved Principal must reach the operation's `x-dkp-permission` — its roles
+//     must grant the key, a token's scopes must reach the operation, the capability floor refuses
+//     every token whatever its scopes, and a step-up operation needs a session that re-authenticated
+//     within five minutes. That is authz.Check, called from capability.go, and it runs BEFORE the
+//     handler so a handler cannot forget it (03-security.md §4.1).
+//
+// ONE MIDDLEWARE FOR BOTH, and the issue that specified it said so: "this is a check inside it, not a
+// second middleware". The Principal and the huma.Operation are both in hand here. A second middleware
+// would have to recover the first from the context and the second from the registry — two places that
+// can disagree about whether a request was authenticated, which is the disagreement an authorization
+// bypass lives in.
+//
+// Wave 0d shipped 1 alone and disclosed 2 as a gap on the published surface. This change closes it,
+// and deletes that disclosure — authz.AuthorizationGapNotice and the two tests that asserted it was
+// published — exactly as Wave 0d deleted Phase 0'"'"'s pair (ADR-0028).
 
 // requireCredential reports whether an operation may only be reached with a credential.
 //
@@ -50,6 +60,23 @@ func requireCredential(op *huma.Operation) bool {
 	return op == nil || op.Security == nil || len(op.Security) > 0
 }
 
+// isPublic reports whether an operation may be served with no credential AT ALL.
+//
+// BOTH DECLARATIONS HAVE TO AGREE, and requiring that is what closes a hole neither half sees on its
+// own. An operation states its openness twice — an explicitly empty `Security`, and
+// `x-dkp-permission: public` — and the two are read by different code for different reasons.
+// Trusting `Security` alone would serve an operation declaring `self` or a real catalogue key
+// anonymously, because the capability check only ever runs on a request that HAS a principal; and a
+// contradiction between the two spellings is a declaration bug, so the closed reading wins and the
+// caller gets the 401 that a credential would fix.
+//
+// TestArch_PublicOperations_DeclareItBothWays refuses the contradiction at registration time, so this
+// is defence in depth rather than the only guard — which is the right shape for the one predicate
+// standing between an unauthenticated request and a handler.
+func isPublic(op *huma.Operation) bool {
+	return !requireCredential(op) && !needsAuthorization(op)
+}
+
 // principalMiddleware resolves the request's credential and puts the Principal in the context.
 //
 // A REQUEST THAT PRESENTS SOMETHING INVALID IS REFUSED EVEN ON A PUBLIC OPERATION. An expired cookie
@@ -57,7 +84,11 @@ func requireCredential(op *huma.Operation) bool {
 // session ended somewhere, and a bot whose token was revoked must not be told that everything is
 // fine by whichever endpoint it happens to poll. Only the complete ABSENCE of a credential is
 // anonymous, and only where the operation says it may be.
-func principalMiddleware(humaAPI huma.API, svc *auth.Service) func(huma.Context, func(huma.Context)) {
+func principalMiddleware(
+	humaAPI huma.API,
+	svc *auth.Service,
+	checker *authz.Checker,
+) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		op := ctx.Operation()
 
@@ -80,12 +111,26 @@ func principalMiddleware(humaAPI huma.API, svc *auth.Service) func(huma.Context,
 
 		principal, err := svc.ResolveRequest(ctx.Context(), req)
 		if err == nil {
-			next(huma.WithContext(ctx, auth.NewContext(ctx.Context(), principal)))
+			// The Principal goes into the context BEFORE the capability check, so the check and the
+			// handler see the same one and a refusal is logged against the principal that caused it.
+			authenticated := huma.WithContext(ctx, auth.NewContext(ctx.Context(), principal))
+
+			// authorize writes its own refusal and reports false. Returning without calling next is the
+			// whole enforcement: the handler is never entered, which is what makes "the middleware
+			// enforces it before the handler, so a handler cannot forget to check" structural rather
+			// than a convention (03-security.md §4.1).
+			if !authorize(humaAPI, authenticated, op, checker, principal) {
+				return
+			}
+
+			next(authenticated)
 
 			return
 		}
 
-		if errors.Is(err, auth.ErrNoCredential) && !requireCredential(op) {
+		if errors.Is(err, auth.ErrNoCredential) && isPublic(op) {
+			// Anonymous on a genuinely public operation. There is no capability to check: `public` is
+			// the one x-dkp-permission value meaning no credential at all.
 			next(ctx)
 
 			return

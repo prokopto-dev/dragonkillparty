@@ -73,9 +73,10 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   mutation goes through `store.Tx`. Query shapes live in `db/RECIPES.md`.
 - `internal/auth/` — identity: the credential tables' catalogues, the `Principal`, and the ONE
   middleware that resolves a cookie or a bearer into one. It decides AUTHENTICATION only; capability
-  (`authz.Check`, `role permissions ∩ token scopes`, the capability floor) is `internal/authz`'s and
-  lands in Wave 0e (ADR-0028). Reading the session cookie anywhere else is forbidden — one reader is
-  what makes the precedence rule of `03-security.md` §6.3 enforceable at all.
+  (`authz.Check`, `role permissions ∩ token scopes`, the capability floor) is `internal/authz`'s, and
+  the ONE middleware runs both in one pass — resolve, then check, then the handler (ADR-0028).
+  Reading the session cookie anywhere else is forbidden — one reader is what makes the precedence
+  rule of `03-security.md` §6.3 enforceable at all.
 - `internal/ledger/` — append-only writer + invariant engine. Highest-blast-radius code in the repo.
 - `internal/strategy/` — **pure** point strategies. No DB, no wall clock, no RNG of its own.
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.

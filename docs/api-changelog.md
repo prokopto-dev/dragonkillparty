@@ -58,12 +58,42 @@ version yet, so everything lands under Unreleased until the first tag.
   `token_in_query_string`, refused rather than honoured, because a token in a URL is a token in three
   logs.
 
+- **Authorization is now enforced** (Phase 2 Wave 0e, issue #276). Effective capability is
+  `role permissions ∩ token scopes`, decided at the one choke point before the handler runs. Four
+  refusals, all `403`, each with its own `code` from the published catalogue:
+
+  | `code` | When | `meta` |
+  |---|---|---|
+  | `permission_denied` | The principal's roles do not grant the operation's `x-dkp-permission` | `required_permission` |
+  | `insufficient_scope` | The token's scopes do not reach the operation | `required_scopes`, `token_scopes` |
+  | `session_required` | The operation offers no `pat` alternative — the capability floor, or an operation no scope family covers | — |
+  | `step_up_required` | A session exists and has not re-authenticated within five minutes | — |
+
+  **This is not a breaking change**, because the spec has advertised every one of these since PR 5a
+  and the previous behaviour was the documented gap this entry replaces. What changes for a client
+  that was working is that a token now needs the scopes its operations declare, and the account it
+  belongs to needs a role that grants the permission.
+
+  **A zero-scope token is now refused.** It previously carried its service account's whole role,
+  which is the property [ADR-0011](adr/0011-opaque-pats-no-superadmin-token.md) exists to deny. If
+  you minted a token without scopes, mint a new one naming them — the `403` body's
+  `meta.required_scopes` says which.
+
+  The disclosure both security-scheme descriptions carried — "authentication is enforced;
+  authorization is not yet" — is deleted in the same change, along with the two tests that asserted
+  it was published. That is a description change on the `pat` and `session` schemes and touches no
+  wire surface.
+
+- **`x-dkp-stepup`** — a new OpenAPI extension marking an operation that requires a recent
+  re-authentication. It is emitted on every capability-floor operation. Metadata only; no operation in
+  this release is in the floor, so nothing carries it yet.
+
 ### Known gap
 
-- **Authorization is not enforced yet.** Identity is resolved; capability is not. No permission is
-  checked, token scopes are not intersected with the service account's role, and the capability floor
-  is documented rather than enforced — so **any live credential passes every operation** until Wave
-  0e lands `authz.Check`. The `pat` and `session` security schemes say so in their descriptions, and
-  `SECURITY.md` carries the detail. Nothing in this window should be relied on as scope-limited.
-- **There is no endpoint that issues a credential.** Login and the first-run bootstrap (issue #264)
-  come next; until then a fresh instance answers `401` to every operation that needs one.
+- **There is no endpoint that issues a credential, and nothing grants the first role.** Login and the
+  first-run bootstrap (issue #264) come next. Until then a fresh instance answers `401` to every
+  operation that needs a credential, and a session created by other means answers `403`, because a
+  reconciled catalogue with nine seeded roles and no assignments authorises nobody.
+- **Scope subsetting is not enforced at mint** (issue #281). There is no mint endpoint yet, so this
+  is not reachable; what is enforced is the check-time intersection above, which is what bounds a
+  token's capability regardless of what it was minted with.

@@ -173,35 +173,17 @@ surface is documented where it is offered.
 
 These are deliberate, documented, and pinned by a test that goes red the day the gap closes.
 
-### Authorization is not enforced yet
+### There is no first-run owner, so a fresh instance can authorize nobody
 
-**Authentication IS.** Phase 2 Wave 0d (issue #273) shipped `internal/auth` and the one middleware
-that resolves a session cookie or a `dkp_pat_…` bearer into a single `Principal`, mounted before
-every operation: a request with no credential to an operation that declares `Security` is refused
-with `401`, and the refusal happens before the handler runs.
+Wave 0e enforces capability: a principal reaches an operation only when a **role assignment** grants
+it the operation's permission key. Wave 0b seeds the nine built-in roles, and #264 is what grants one
+to a human for the first time. Until it lands, a fresh instance has a reconciled permission
+catalogue, nine roles, and **no assignments** — so a session that exists can read nothing an
+operation declares a permission for, and answers `403 permission_denied`.
 
-**Capability is not.** Nothing yet checks that the principal holds the `x-dkp-permission` the
-operation declares, that a token's scopes reach it, or that the capability floor's
-session-and-step-up operations refuse a token. Until `authz.Check` lands in Wave 0e, **any live
-credential passes every operation**: a member's session can `PATCH /api/v1/guild`, and so can a
-token minted with no scopes at all. That is the property
-[ADR-0011](docs/adr/0011-opaque-pats-no-superadmin-token.md) exists to deny, and for the length of
-one wave it is denied by documentation rather than by code.
-[ADR-0028](docs/adr/0028-authentication-before-authorization.md) records why the split is where it
-is, and what is owed to a reader while the halves are apart.
-
-There is no released binary yet, so the exposure is a developer's laptop rather than a guild's site.
-
-**The published document describes the credentials in detail, and that makes the gap harder to
-notice rather than easier.** The `pat` and `session` security schemes,
-`docs/reference/permissions.md` and `docs/reference/scopes.md` all describe the bearer format, the
-cookie name, the scope vocabulary and which operations are step-up only. A reader takes a
-well-described control as evidence the control exists, so the disclosure travels with the
-description: every one of those surfaces carries `authz.AuthorizationGapNotice`, which says in as
-many words that capability is unenforced and points back here. Two tests assert the notice is
-present (`TestArch_SecuritySchemes_DiscloseTheAuthorizationGap`,
-`TestDocgen_Pages_DiscloseTheAuthorizationGap`); the constant, its uses and both tests are deleted
-in the same change that lands `authz.Check`.
+That is the correct direction to fail and it is the same gap as the one below rather than a new one:
+there is no way to obtain a credential, and no way to be granted anything once you have. It closes
+with #264, which creates the first `admin.owner` holder.
 
 ### There is no way to obtain a credential yet
 
@@ -211,6 +193,34 @@ first-run bootstrap (issue #264). A fresh instance therefore serves `/healthz`, 
 tokens can be created through `internal/auth` — which is what the tests do — and by nothing an
 operator can reach. That is a gap in the product's usability rather than in its security posture,
 and it closes with #264.
+
+### Closed in Wave 0e: capability was documented and unenforced
+
+From Phase 2 Wave 0d until Wave 0e (issue #276) the server checked **identity and not capability**.
+An operation declaring `Security` refused an anonymous request with `401` — that much Wave 0d
+closed — but nothing checked that the principal held the operation's `x-dkp-permission`, that a
+token's scopes reached it, or that the capability floor's session-and-step-up operations refused a
+token. **Any live credential passed every operation**: a member's session could `PATCH
+/api/v1/guild`, and so could a token minted with no scopes at all — the exact property
+[ADR-0011](docs/adr/0011-opaque-pats-no-superadmin-token.md) exists to deny.
+[ADR-0028](docs/adr/0028-authentication-before-authorization.md) records why the split was made
+there and what was owed to a reader while the halves were apart.
+
+**What made it deliberate rather than a discovery.** The published document described the credentials
+in detail — the bearer format, the cookie name, the scope vocabulary, which operations are step-up
+only — and a well-described control reads as evidence the control exists. So the disclosure travelled
+with the description: the `pat` and `session` security schemes, `docs/reference/permissions.md` and
+`docs/reference/scopes.md` all carried `authz.AuthorizationGapNotice`, and two tests
+(`TestArch_SecuritySchemes_DiscloseTheAuthorizationGap`, `TestDocgen_Pages_DiscloseTheAuthorizationGap`)
+asserted it was present so it could neither quietly outlive the gap nor quietly disappear while it
+was open.
+
+**What closed it.** `authz.Check` evaluates `role permissions ∩ token scopes` at the one choke point,
+inside the middleware that already resolved the `Principal`, before the handler runs. The constant,
+both its consumers and both tests were deleted in the same change — the third time this repository
+has installed a tripwire ahead of a control and pulled it on the day the control landed, after Phase
+0's `TestGuild_Unauthenticated_IsAKnownPhase0Gap` and Wave 0d's narrowing of the notice rather than
+its removal.
 
 ### Closed in Wave 0d: the unauthenticated guild resource
 

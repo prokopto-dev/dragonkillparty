@@ -108,6 +108,20 @@ type Queries interface {
 	InsertRole(ctx context.Context, arg sqlitegen.InsertRoleParams) error
 	InsertRolePermission(ctx context.Context, arg sqlitegen.InsertRolePermissionParams) error
 
+	// Authorization (Phase 2 Wave 0e, issue #276). EffectivePermission is the ONE read the choke
+	// point runs per request that requires a permission — a single statement answering both "does
+	// this subject hold this key, under this scope, right now" and "does this key require step-up".
+	// authz.Checker is its only caller, through Q() on the read pool: a capability check is a read
+	// and must never queue behind the single writer on raid night.
+	//
+	// InsertRoleAssignment ships one wave ahead of the endpoints that call it — the first-run
+	// bootstrap (#264) and the role editor — for the ADR-0028 commitment-3 reason the five auth
+	// mutations above did: it is the statement those will call verbatim, and without it a
+	// reconciled catalogue and a seeded role table authorise nobody, so the check that this wave
+	// exists to add would have exactly one observable answer.
+	EffectivePermission(ctx context.Context, arg sqlitegen.EffectivePermissionParams) (sqlitegen.EffectivePermissionRow, error)
+	InsertRoleAssignment(ctx context.Context, arg sqlitegen.InsertRoleAssignmentParams) error
+
 	// Identity and credentials (Phase 2 Wave 0d, issue #273). The two Resolve methods are the auth
 	// hot path — one indexed lookup each, on ux_session_token and ux_api_token_prefix — and they are
 	// the ONLY reads internal/auth performs per request. The two Touch methods are throttled writes

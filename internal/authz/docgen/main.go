@@ -133,9 +133,6 @@ func permissionsPage() string {
 
 	b.WriteString(generatedBanner + "\n\n")
 	b.WriteString("# Permissions\n\n")
-	// Directly under the heading, before anything describing a control. A disclosure a reader
-	// reaches last is one they reach after believing the page.
-	b.WriteString("> " + authz.AuthorizationGapNotice + "\n\n")
 	fmt.Fprintf(&b,
 		"The %d permission keys a role can grant. They are `<resource>.<action>`, dot-separated and\n"+
 			"lowercase, and this page is generated from `internal/authz/catalogue.go` — the single source\n"+
@@ -189,7 +186,6 @@ func scopesPage() string {
 
 	b.WriteString(generatedBanner + "\n\n")
 	b.WriteString("# PAT scopes\n\n")
-	b.WriteString("> " + authz.AuthorizationGapNotice + "\n\n")
 	fmt.Fprintf(&b,
 		"The %d scopes a personal access token can carry. They are `<family>:<verb>`,\n"+
 			"colon-separated, and this page is generated from `internal/authz/catalogue.go`\n"+

@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
+	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
@@ -82,7 +84,22 @@ func newGuildServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client)
 	}))
 	t.Cleanup(srv.Close)
 
-	cookie, _ := auth.SeedSession(t, authService, auth.SeedUser(t, s, clk, "officer"))
+	// The BOOT STEP, not a fixture convenience. A migrated database has an empty permission table —
+	// the catalogue is projected into it by authz.Reconcile on the boot path, because at migration
+	// time role_permission's foreign key has nothing to resolve against — so without this every
+	// operation below answers 503 "permission key has no live row", which is the fail-closed
+	// behaviour working rather than a harness bug.
+	authz.Boot(t, s, clk)
+
+	// A REAL ROLE, granted through the real assignment statement. Since Wave 0e the middleware checks
+	// capability as well as identity, so a session alone reaches nothing: `admin` is the built-in role
+	// holding both keys this resource declares — roster.read for the GET and admin.settings for the
+	// PATCH. Granting it is what keeps every test below about ETags, validation and patch semantics
+	// rather than about 403; the capability cases live in capability_test.go and auth_test.go.
+	user := auth.SeedUser(t, s, clk, "officer")
+	authz.GrantRole(t, s, clk, assignmentkinds.SubjectKindUser, user, authz.RoleIDAdmin)
+
+	cookie, _ := auth.SeedSession(t, authService, user)
 
 	return srv, s, clientWithCookie(t, srv.URL, cookie)
 }
@@ -177,30 +194,41 @@ func TestGetGuild_ReturnsSingletonWithStrongETag(t *testing.T) {
 	require.Nil(t, dto.InactiveAfterDays, "an unset inactive_after_days must serialise as null")
 }
 
-// TestGetGuild_StatementBudgetIsTwo is the N+1 tripwire: one statement to resolve the credential,
-// one to read the singleton. The budget is declared AFTER the server is built so boot statements are
-// excluded.
+// TestGetGuild_StatementBudgetIsThree is the N+1 tripwire: one statement to resolve the credential,
+// one to decide capability, one to read the singleton. The budget is declared AFTER the server is
+// built so boot statements are excluded.
 //
-// IT WAS ONE UNTIL PHASE 2 WAVE 0d, and the raise is the whole point of writing it down rather than
-// a budget quietly following the code. The second statement is the authentication lookup: ADR-0011
-// chose opaque credentials over JWTs precisely to pay one indexed round trip per request in exchange
-// for instant revocation, and this test is where that price is visible. What it still refuses is a
-// THIRD: an authorization layer that read role assignments per request, or a resolver that looked up
-// the user separately from the session, would fail here — which is the pressure Wave 0e needs to feel
-// when it adds `authz.Check`.
+// IT HAS BEEN ONE, TWO AND NOW THREE, and each raise was written down here rather than letting a
+// budget quietly follow the code:
+//
+//   - PR 5a: one. The read.
+//   - Wave 0d (#273): two. ADR-0011 chose opaque credentials over JWTs precisely to pay one indexed
+//     round trip per request in exchange for instant revocation, and this is where that price shows.
+//   - Wave 0e (#276): three. The capability check. The previous revision of this comment named it in
+//     advance — "what it still refuses is a THIRD ... which is the pressure Wave 0e needs to feel
+//     when it adds authz.Check" — and this is that pressure arriving. The price is the same trade
+//     ADR-0011 made one layer up: nothing is cached, so revoking a role or suspending an assignment
+//     takes effect on the next request rather than on the next cache expiry.
+//
+// THE THIRD IS ONE STATEMENT, AND THAT IS THE ASSERTION WORTH KEEPING. authz.Check answers two
+// questions — does this subject hold this key, and does this key require step-up — in a single
+// EffectivePermission round trip, and a FOURTH still fails here. The obvious ways to acquire one are
+// reading permission.requires_step_up separately from the grant, listing every permission a subject
+// holds and intersecting in Go, or resolving a role scope with its own lookup. Each is a reasonable-
+// looking refactor and each doubles the authorization cost of every request in the product.
 //
 // The touch write is deliberately NOT in the count and must not become a way to sneak past this. The
 // resolver stamps last_seen_at at most once a minute (internal/auth's touchInterval) and the session
 // here was opened by the same fixed clock this request runs under, so its stamp is current and no
 // write is due. A budget that included an occasional write would be a flaky budget.
-func TestGetGuild_StatementBudgetIsTwo(t *testing.T) {
+func TestGetGuild_StatementBudgetIsThree(t *testing.T) {
 	t.Parallel()
 
 	srv, _, client := newGuildServer(t)
 
-	// Declared after the server is built, so boot statements and the session seed are outside the
-	// window.
-	store.Counted(t).Budget(t, 2)
+	// Declared after the server is built, so boot statements, the catalogue reconciliation, the role
+	// grant and the session seed are all outside the window.
+	store.Counted(t).Budget(t, 3)
 
 	res, _ := getGuild(t, client, srv.URL)
 	require.Equal(t, http.StatusOK, res.StatusCode)
