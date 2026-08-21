@@ -53,6 +53,13 @@ api_token(id, prefix, hash, name, service_account_id, user_id, scopes,
   immediately reduces every token they minted.
 - **Scope subsetting is enforced on mint.** You cannot mint a token with a scope you do not hold. An
   architectural test asserts it.
+  > **Not yet, and there is no mint endpoint to reach it through.** What ships today is
+  > `authz.ValidateScopes`, which refuses a scope the catalogue does not define — so `admin:*` cannot
+  > be written onto a token row. Bounding the request against the *minter's* own capability needs a
+  > scope→permission relation, which this project deliberately keeps per-operation rather than as a
+  > table; deriving it from the operation registry lands with `POST /tokens`. Issue #281. The
+  > guarantee that does not wait for it is the line above it: a token's rights are
+  > `owner_role_permissions ∩ token_scopes`, checked on every request.
 
 A person may still mint a token bound to themselves rather than a service account — for the rare
 power user running a personal parser — but it is an escape hatch, not the pattern. A Discord bot that

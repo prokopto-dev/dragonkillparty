@@ -170,27 +170,6 @@ func tableRow(t *testing.T, page, key string) string {
 	return ""
 }
 
-// TestDocgen_Pages_DiscloseThePhase0Gap is the reference-page half of a security review's finding,
-// and a TRIPWIRE TO DELETE rather than a rule to keep.
-//
-// Both pages describe scopes, the capability floor and step-up as though a server enforced them.
-// None of that is enforced yet: Phase 2 Wave 0d (#273) landed AUTHENTICATION — an operation naming a
-// credential requires one — and left CAPABILITY entirely to Wave 0e, so any live credential passes
-// every operation (SECURITY.md's "Known gaps"). A reference page that documents a control well is
-// exactly the thing that stops a reader checking whether it exists.
-//
-// Deleted in the same change that lands authz.Check, alongside authz.AuthorizationGapNotice and the
-// arch test that asserts the same property of the OpenAPI schemes.
-func TestDocgen_Pages_DiscloseTheAuthorizationGap(t *testing.T) {
-	t.Parallel()
-
-	for _, name := range []string{permissionsFile, scopesFile} {
-		require.Containsf(t, committed(t, name), authz.AuthorizationGapNotice,
-			"docs/reference/%s describes scopes, the capability floor and step-up without saying "+
-				"that no capability check runs yet", name)
-	}
-}
-
 // TestDocgen_Pages_CarryTheGeneratedBanner is small and load-bearing.
 //
 // The banner is the only thing standing between a contributor who spots a typo and an edit that the

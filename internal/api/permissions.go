@@ -44,6 +44,28 @@ const ExtensionScopes = "x-dkp-scopes"
 // being in the floor.
 const ExtensionPATForbidden = "x-dkp-pat-forbidden"
 
+// ExtensionStepUp is the OpenAPI extension key marking an operation that requires a recent
+// re-authentication — docs/design/03-security.md §4.1 declares it beside x-dkp-permission, and §3.4
+// gives the set: minting, rotating or revoking a PAT, editing roles or role assignments, changing
+// another user's credentials or email, disabling MFA, downloading a backup, committing an EQdkp
+// import, reversing a ledger batch older than thirty days, changing OAuth/OIDC settings, changing the
+// outbound network policy, and exporting the audit log.
+//
+// IT IS ADDITIVE AND CANNOT TURN STEP-UP OFF. Every permission in canonical §6's capability floor
+// requires step-up from DATA — permission.requires_step_up, which internal/authz reconciles from the
+// catalogue on every boot and which authz.Check reads per request — so an operation whose permission
+// is in the floor is a step-up operation whether or not this extension is present. What the extension
+// adds is the §3.4 operations that are NOT in the floor: `ledger.reverse` on an old batch is the
+// clearest, since it is PAT-callable in general and step-up only past thirty days.
+//
+// THAT SPLIT IS WHY THE ARCH GATE ASSERTS ONE DIRECTION AND NOT BOTH. A floor operation must declare
+// it, because the published document has to tell a bot author which operations need a browser and a
+// re-authentication (scopeCoverageViolations). The reverse — that everything declaring it is in the
+// floor — is FALSE by §3.4, and the whole-set gate that section's "Mechanism" sentence describes needs
+// operations that do not exist yet: there is no token, role, backup, import or reversal route to
+// iterate. Issue #282 carries it.
+const ExtensionStepUp = "x-dkp-stepup"
+
 // Permission sentinels.
 //
 // docs/design/02-api-design.md §4.1 defines exactly two values that appear in the permission column

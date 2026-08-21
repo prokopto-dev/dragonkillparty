@@ -894,29 +894,95 @@ func TestArch_SecuritySchemes_MatchTheCanonicalContract(t *testing.T) {
 			"generates the PAT scope enum, so a second list here is exactly what that forbids.")
 }
 
-// TestArch_SecuritySchemes_DiscloseTheAuthorizationGap is a security review's finding turned into a test,
-// and it is a TRIPWIRE TO DELETE rather than a rule to keep.
+// TestArch_CredentialledOperations_AlwaysOfferASession refuses a PAT-ONLY operation, and it is here
+// because the capability check does not enforce the absence of one.
 //
-// The finding: describing a credential well makes the absence of enforcement HARDER to notice. These
-// two schemes document bearer tokens, session cookies, scopes and step-up in detail, and a bot author
-// reading that reasonably concludes a zero-scope token is refused. It is not.
+// WHAT THE MIDDLEWARE DOES WITH Security. authz.Check reads the `pat` entries to decide what a TOKEN
+// may reach; a session is bounded by its roles alone and is never measured against a scope, because a
+// cookie carries none (03-security.md §4.2). So an operation declaring `[{"pat": [...]}]` and no
+// `session` alternative would still be reachable by a session that held the permission — more
+// permissive than its author wrote.
 //
-// IT HAS ALREADY NARROWED ONCE, which is the shape to keep. Phase 0's notice said nothing was
-// enforced at all; Phase 2 Wave 0d (#273) made an unauthenticated PATCH answer 401, deleted the
-// integration tripwire that pinned that gap, and replaced the notice rather than removing it —
-// because the other half, capability, is still not checked. Wave 0e lands authz.Check, and that is
-// the change that deletes this constant and this test together.
-func TestArch_SecuritySchemes_DiscloseTheAuthorizationGap(t *testing.T) {
+// THE FIX IS TO REFUSE THE SHAPE, NOT TO INVENT A REFUSAL. There is no `token_required` code in the
+// closed enum (internal/api/errors.go, docs/api/errors.md) and no document specifies one, which is the
+// evidence that a PAT-only operation is not a shape this design has: the two classes canonical §6
+// describes are session-only (the capability floor, and operations no scope family covers) and
+// session-or-token. Answering such a request with an invented code would be worse than the gap.
+//
+// So whoever wants the third class adds the error code, the catalogue row and the middleware branch —
+// a deliberate diff a reviewer reads — and until then this fails at registration rather than shipping
+// a route whose declaration and behaviour disagree.
+func TestArch_CredentialledOperations_AlwaysOfferASession(t *testing.T) {
 	t.Parallel()
 
-	schemes := NewHumaAPI(Config{}).OpenAPI().Components.SecuritySchemes
+	for _, op := range registeredOperations(t) {
+		// A public operation declares an explicitly empty Security and needs no alternative at all;
+		// TestArch_PublicOperations_DeclareItBothWays holds that case.
+		if op.Op.Security != nil && len(op.Op.Security) == 0 {
+			continue
+		}
 
-	for name, scheme := range schemes {
-		require.Containsf(t, scheme.Description, authz.AuthorizationGapNotice,
-			"the %q scheme describes scopes and step-up without disclosing that no capability check "+
-				"runs yet. A reader takes a detailed credential description as evidence the server "+
-				"checks it; today any live credential passes every operation. Delete this test with "+
-				"authz.Check, not before.", name)
+		offersSession := false
+
+		for _, requirement := range op.Op.Security {
+			if _, ok := requirement[SchemeSession]; ok {
+				offersSession = true
+			}
+		}
+
+		require.Truef(t, offersSession,
+			"%s requires a credential but offers no `session` alternative. There is no PAT-only class "+
+				"in this design and no `token_required` error code to refuse a cookie with, so a session "+
+				"holding the permission would reach this route anyway — a declaration the server does "+
+				"not honour. Add a session alternative to Security, or make the third class real: an error "+
+				"code in internal/api/errors.go, a row in docs/api/errors.md, and a branch in "+
+				"authz.Check.", op)
+	}
+}
+
+// TestArch_PublicOperations_DeclareItBothWays refuses the one contradiction that would put an
+// unauthenticated request in front of a handler that expects a principal.
+//
+// AN OPERATION STATES ITS OPENNESS TWICE, and the two spellings are read by different code for
+// different reasons. `Security: []map[string][]string{}` — explicitly empty, never omitted — is what
+// OpenAPI understands and what principalMiddleware reads to decide whether a missing credential is
+// allowed. `x-dkp-permission: public` is this repository's vocabulary and is what the boot-state gate
+// and the capability check read (permissions.go, authorization.go). Neither half can see the other.
+//
+// THE FAILURE THEY MISS TOGETHER: an operation with an empty `Security` and a permission of `self`
+// or a real catalogue key. The capability check only ever runs on a request that HAS a principal, so
+// an anonymous caller would sail past it — served, with no credential, on a route whose declared
+// permission says otherwise. The middleware now requires both halves to agree before serving
+// anonymously (api.isPublic), and this asserts the contradiction cannot be registered in the first
+// place, in BOTH directions: empty Security implies `public`, and `public` implies empty Security.
+//
+// The second direction matters as much as the first. A `public` operation that declared a non-empty
+// Security would require a credential it says it does not need, which is a route that works in
+// development — where everyone has a session — and 401s for the anonymous visitor it exists for.
+func TestArch_PublicOperations_DeclareItBothWays(t *testing.T) {
+	t.Parallel()
+
+	for _, op := range registeredOperations(t) {
+		permission, _ := op.Op.Extensions[ExtensionPermission].(string)
+		emptySecurity := op.Op.Security != nil && len(op.Op.Security) == 0
+
+		if emptySecurity {
+			require.Equalf(t, PermissionPublic, permission,
+				"%s declares an explicitly empty Security — no credential required — but its "+
+					"x-dkp-permission is %q. An anonymous request reaches this route with no principal, "+
+					"so nothing checks that permission and the declaration is a promise the server "+
+					"cannot keep. Either declare a Security requirement or declare the permission "+
+					"%q.", op, permission, PermissionPublic)
+		}
+
+		if permission == PermissionPublic {
+			require.Truef(t, emptySecurity,
+				"%s declares x-dkp-permission: %q but its Security is %v. A public operation must "+
+					"declare Security as an explicitly EMPTY slice: in OpenAPI an omitted `security` "+
+					"inherits the document-level requirement and an empty one overrides it, so the two "+
+					"spellings mean opposite things (.claude/rules/api-endpoints.md).",
+				op, PermissionPublic, op.Op.Security)
+		}
 	}
 }
 
@@ -993,6 +1059,21 @@ func scopeCoverageViolations(ops []registeredOp) []string {
 				}
 			}
 
+			// THE EXTENSION MUST BE THE SECURITY REQUIREMENTS, and this is the drift gate between what
+			// the middleware ENFORCES and what the document PROMISES. authz.Check reads `Security`,
+			// because OpenAPI's own semantics are what make "settle needs bids:manage AND loot:award"
+			// expressible — the objects in `security` are alternatives and the scopes within one are
+			// conjunctive. x-dkp-scopes is the flat list a reader and this gate see. Two hand-written
+			// copies of one fact is what canonical §6 exists to forbid, so they are compared rather
+			// than trusted.
+			if declared := scopeUnion(op); !slices.Equal(scopes, declared) {
+				problems = append(problems, fmt.Sprintf(
+					"%s declares x-dkp-scopes %v, but its `pat` Security requirements name %v. The "+
+						"middleware enforces Security; the document publishes x-dkp-scopes. A route whose "+
+						"two halves disagree tells a bot author to mint the wrong scopes.",
+					op, scopes, declared))
+			}
+
 			if patForbidden {
 				problems = append(problems, fmt.Sprintf(
 					"%s is PAT-callable (its Security offers pat) but also declares "+
@@ -1009,6 +1090,24 @@ func scopeCoverageViolations(ops []registeredOp) []string {
 			if hasScopes && len(scopes) > 0 {
 				problems = append(problems, fmt.Sprintf(
 					"%s is in the capability floor and must carry no scopes, but declares %v.", op, scopes))
+			}
+
+			// THE PUBLISHED DOCUMENT HAS TO SAY SO. Step-up is enforced from DATA — the permission
+			// row's requires_step_up, which internal/authz reconciles from the catalogue on every boot
+			// — so this declaration cannot turn the control off and an operation that omitted it would
+			// still require a re-authenticated session. What it would do is leave a bot author and the
+			// SPA reading a document that never mentions the browser round trip they are about to hit.
+			//
+			// ONE DIRECTION ONLY, and 03-security.md §3.4 is why: the step-up set is a SUPERSET of the
+			// capability floor — reversing a ledger batch older than thirty days is step-up and is not
+			// a floor key — so "everything declaring x-dkp-stepup is in the floor" is false by design.
+			// The whole-set gate §3.4's "Mechanism" sentence describes needs operations that do not
+			// exist yet; issue #282 carries it.
+			if stepUp, _ := op.Op.Extensions[ExtensionStepUp].(bool); !stepUp {
+				problems = append(problems, fmt.Sprintf(
+					"%s names capability-floor permission %q but does not declare x-dkp-stepup: true. "+
+						"The floor is session-AND-STEP-UP only, and the published document is where a "+
+						"client learns it needs a recent re-authentication.", op, permission))
 			}
 		default:
 			// Session-only by omission: neither scopes nor pat-forbidden.
@@ -1028,6 +1127,26 @@ func scopeCoverageViolations(ops []registeredOp) []string {
 	}
 
 	return problems
+}
+
+// scopeUnion is the flat list of scopes an operation's `pat` Security requirements name, in
+// declaration order and without repeats — the value x-dkp-scopes must equal.
+//
+// It is computed from patScopeSets, the SAME function the middleware builds its Requirement from, so
+// this gate compares the published extension against the enforced declaration rather than against a
+// second reading of it.
+func scopeUnion(op registeredOp) []string {
+	var union []string
+
+	for _, set := range patScopeSets(op.Op) {
+		for _, scope := range set {
+			if !slices.Contains(union, scope) {
+				union = append(union, scope)
+			}
+		}
+	}
+
+	return union
 }
 
 // stringSlice coerces an Extensions value to a []string, accepting the []string the operations write
@@ -1113,11 +1232,48 @@ func TestArch_ScopeCoverageViolations_FiresPerCase(t *testing.T) {
 			wantReject: false,
 		},
 		{
-			name: "floor operation with pat-forbidden and no scopes is accepted",
+			name: "floor operation without x-dkp-stepup is rejected",
 			op: huma.Operation{
-				OperationID: "mintF", Method: http.MethodPost, Path: "/api/v1/f",
+				OperationID: "mintF2", Method: http.MethodPost, Path: "/api/v1/f2",
 				Security:   []map[string][]string{{"session": {}}},
 				Extensions: map[string]any{ExtensionPermission: "token.mint", ExtensionPATForbidden: true},
+			},
+			wantReject: true, contains: "does not declare x-dkp-stepup",
+		},
+		{
+			name: "x-dkp-scopes disagreeing with the pat Security requirements is rejected",
+			op: huma.Operation{
+				OperationID: "listH", Method: http.MethodGet, Path: "/api/v1/h",
+				Security: []map[string][]string{{"pat": {"roster:read"}}, {"session": {}}},
+				Extensions: map[string]any{
+					ExtensionPermission: "roster.read",
+					// A real scope, in the catalogue, and NOT the one Security names. The middleware
+					// would enforce roster:read while the document promised roster:write.
+					ExtensionScopes: []string{"roster:write"},
+				},
+			},
+			wantReject: true, contains: "its `pat` Security requirements name",
+		},
+		{
+			name: "floor operation with pat-forbidden, step-up and no scopes is accepted",
+			op: huma.Operation{
+				OperationID: "mintF", Method: http.MethodPost, Path: "/api/v1/f",
+				Security: []map[string][]string{{"session": {}}},
+				Extensions: map[string]any{
+					ExtensionPermission: "token.mint", ExtensionPATForbidden: true, ExtensionStepUp: true,
+				},
+			},
+			wantReject: false,
+		},
+		{
+			name: "a conjunctive pat alternative is accepted when x-dkp-scopes names both",
+			op: huma.Operation{
+				OperationID: "settleI", Method: http.MethodPost, Path: "/api/v1/i",
+				Security: []map[string][]string{{"pat": {"bids:manage", "loot:award"}}, {"session": {}}},
+				Extensions: map[string]any{
+					ExtensionPermission: "bid.manage",
+					ExtensionScopes:     []string{"bids:manage", "loot:award"},
+				},
 			},
 			wantReject: false,
 		},

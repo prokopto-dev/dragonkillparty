@@ -42,9 +42,9 @@ const (
 // facts are questions the authorization layer asks rather than shapes it dispatches on.
 //
 // A PRINCIPAL IS PROOF OF IDENTITY AND NOTHING ELSE. It carries no permissions and answers no
-// "may I" question: `authz.Check` (Wave 0e) reads the role assignments for Kind and ID and
-// intersects them with Scopes. Until then, holding one of these means only that the credential was
-// real and live.
+// "may I" question: `authz.Check` reads the role assignments for Kind and ID and intersects them
+// with Scopes, per request and without caching. Holding one of these means the credential was real
+// and live, and nothing about what it may reach.
 //
 // IT IS ALWAYS A POINTER AND NEVER NIL WHEN PRESENT. An unauthenticated request has NO principal —
 // FromContext returns false — rather than a zero-valued one, because a zero Principal has Kind ""
@@ -89,8 +89,8 @@ type Principal struct {
 	//
 	// A SCOPE NARROWS, IT NEVER GRANTS. Effective capability is `role permissions ∩ scopes`, so this
 	// slice can only take capability away from what the service account's roles already allow. There
-	// is no `admin:*` and no all-powerful token; the intersection is Wave 0e's, and this field is the
-	// half of it that the credential decides.
+	// is no `admin:*` and no all-powerful token; authz.Check performs the intersection, and this field
+	// is the half of it that the credential decides. A nil slice therefore reaches nothing.
 	Scopes []string
 
 	// SteppedUpAt is session.mfa_satisfied_at: when this session last re-authenticated. nil means
@@ -112,8 +112,8 @@ func (p *Principal) IsServiceAccount() bool {
 // FALSE FOR A SESSION, ALWAYS, and that is not an oversight to "fix" by returning true. A session's
 // capability is its roles, which this package does not read; a caller asking "does this principal
 // have scope X" is asking a token question, and the authorization layer that wants "may this
-// principal do X" asks authz.Check instead (Wave 0e). Returning true here would make a session look
-// like a token holding every scope, which is the all-powerful token ADR-0011 refuses.
+// principal do X" asks authz.Check instead. Returning true here would make a session look like a
+// token holding every scope, which is the all-powerful token ADR-0011 refuses.
 func (p *Principal) HasScope(scope string) bool {
 	if p == nil || p.Credential != CredentialToken {
 		return false

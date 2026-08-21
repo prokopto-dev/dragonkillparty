@@ -520,6 +520,40 @@ func preconditionFailed(current any, currentETag string) *api.ProblemDetail {
 }
 ```
 
+### The third case: an operation in the capability floor
+
+Neither operation above is one, so here is the shape, because getting it wrong is a red gate whose
+message is easier to read than to guess at. An operation whose `x-dkp-permission` is in
+[`authz.CapabilityFloor()`](../authz/catalogue.go) — `token.mint`, `token.revoke`,
+`admin.security.manage`, `admin.roles.manage`, `admin.backup`, `admin.owner`, `person.pii.read`,
+`audit.read`, `import.commit` — declares **session-only `Security`, no scopes, and both flags**:
+
+```text
+Security: []map[string][]string{
+    {"session": {}},                       // no `pat` alternative, ever
+},
+Extensions: map[string]any{
+    ExtensionPermission:   "token.mint",
+    ExtensionPATForbidden: true,           // "a PAT — any PAT — can never do this"
+    ExtensionStepUp:       true,           // "…and a session must have re-authenticated"
+},
+```
+
+(A `text` fence, not `go`: `TestDocs_ExampleEndpointSnippets_Compile` builds every ```go``` block as a
+standalone file, and this is a fragment of an `huma.Operation` literal rather than one. The complete,
+compiling shape is the `registerGuild` block above — copy that and swap these three lines in.)
+
+Both flags are **published documentation, not the control**. The middleware reads
+`authz.CapabilityFloor()` and the `permission` row's `requires_step_up` column, so an operation that
+omitted them would still refuse every token and still demand a recent re-authentication. What it
+would do is leave a bot author reading a document that never mentions the browser round trip they are
+about to hit — which is why the arch test requires both.
+
+`x-dkp-stepup` may also appear on an operation **outside** the floor: `03-security.md` §3.4 lists
+several, of which reversing a ledger batch older than thirty days is the awkward one, because the
+requirement depends on the resource rather than on the route. Issue #282 carries that decision; until
+it lands, declare the extension only where the requirement is static.
+
 ### What the architectural tests will reject
 
 | Omission | Test |
@@ -529,7 +563,11 @@ func preconditionFailed(current any, currentETag string) *api.ProblemDetail {
 | Missing `x-dkp-permission` | `arch_test.go` permission coverage |
 | A PATCH/transition with no `If-Match` header parameter | `TestArch_StateChangingOperation_RequiresIfMatch` |
 | `x-dkp-scopes` that names a scope not in `authz.Catalogue()`, or on a PAT-forbidden op | `TestArch_ScopeCoverage_MatchesSecurity` |
+| `x-dkp-scopes` that is not exactly the union of the scopes your `pat` `Security` entries name | `TestArch_ScopeCoverage_MatchesSecurity` |
 | `x-dkp-pat-forbidden: true` on an op not in `authz.CapabilityFloor()` (e.g. `admin.settings`) | `TestArch_ScopeCoverage_MatchesSecurity` |
+| An op whose permission IS in `authz.CapabilityFloor()` without `x-dkp-stepup: true` | `TestArch_ScopeCoverage_MatchesSecurity` |
+| An explicitly empty `Security` whose `x-dkp-permission` is not `public`, or the reverse | `TestArch_PublicOperations_DeclareItBothWays` |
+| A mutating op a zero-scope PAT can reach | `TestArch_MutatingOperations_RejectAZeroScopePAT` |
 | A mutating `POST` creating domain state without a required `Idempotency-Key` | `arch_test.go` idempotency coverage |
 | `Hidden: true` outside `api.HiddenOperationAllowlist()` | `arch_test.go` no-hidden-operations |
 | A route declared outside `internal/api` | `arch_test.go` package scan vs registry |
