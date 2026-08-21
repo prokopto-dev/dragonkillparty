@@ -1153,7 +1153,13 @@ table "audit_log" {
     columns = [column.id]
   }
 
-  // dkp:fk-uncovered the parent is append-only: ledger_batch carries trg_ledger_batch_no_update and trg_ledger_batch_no_delete, so no DELETE or key UPDATE can reach this constraint's child lookup, and an index here would be a third B-tree write on the table every mutating request appends to.
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // trg_ledger_batch_no_update and trg_ledger_batch_no_delete abort any UPDATE or DELETE of a batch,
+  // and TestTriggers_MutatingLedger_Raises drives all four on a database that applied every
+  // migration — so no parent row here can ever be deleted or re-keyed, and the child lookup SQLite
+  // would need an index for is unreachable. The index would be a third B-tree write on the table
+  // every mutating request appends to, read by nothing.
   //
   // This is the same argument the deferred §17 indexes below make, sharpened: those are deferred
   // because nothing SELECTS on them yet, and this one is waived because nothing can. The read that
@@ -1438,7 +1444,11 @@ table "pool_config_change" {
     on_delete   = SET_NULL
   }
 
-  // dkp:fk-uncovered the parent is append-only: ledger_batch carries trg_ledger_batch_no_update and trg_ledger_batch_no_delete, so no DELETE or key UPDATE can reach this constraint's child lookup, and an index here would be a write on every config change that nothing can ever read.
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // The same waiver audit_log_batch carries, for the same parent and the same reason: the two
+  // append-only triggers abort every UPDATE and DELETE of a batch, so nothing can provoke the child
+  // scan an index here would serve.
   foreign_key "pool_config_change_batch" {
     columns     = [column.migration_batch_id]
     ref_columns = [table.ledger_batch.column.id]
@@ -1615,7 +1625,11 @@ table "decay_run" {
     on_delete   = NO_ACTION
   }
 
-  // dkp:fk-uncovered the parent is append-only: ledger_batch carries trg_ledger_batch_no_update and trg_ledger_batch_no_delete, so no DELETE or key UPDATE can reach this constraint's child lookup, and an index here would be a write on every decay run that nothing can ever read.
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // The same waiver audit_log_batch carries, for the same parent and the same reason: the two
+  // append-only triggers abort every UPDATE and DELETE of a batch, so nothing can provoke the child
+  // scan an index here would serve.
   foreign_key "decay_run_batch" {
     columns     = [column.ledger_batch_id]
     ref_columns = [table.ledger_batch.column.id]
