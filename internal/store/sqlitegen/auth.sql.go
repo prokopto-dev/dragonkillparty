@@ -9,6 +9,37 @@ import (
 	"context"
 )
 
+const bumpSessionEpoch = `-- name: BumpSessionEpoch :exec
+
+
+UPDATE app_user
+SET session_epoch = session_epoch + 1,
+    updated_at    = CAST(?1 AS INTEGER)
+WHERE id = ?2
+`
+
+type BumpSessionEpochParams struct {
+	UpdatedAt int64
+	ID        string
+}
+
+// InsertUserIdentity writes one credential for a user. password_hash is the argon2id PHC string
+// internal/auth produces; NULL means this identity cannot authenticate with a password, which is
+// what the EQdkp importer writes because legacy hashes are never migrated.
+// BumpSessionEpoch is "sign out everywhere", in one write on one row (03-security.md section 3.6).
+// Every session records the epoch it was minted under and the resolver requires the two to be equal,
+// so incrementing this kills every session the user has, on every device, without touching the
+// session table and without racing a session being created concurrently - a session opened after the
+// bump simply carries the new epoch.
+//
+// Its endpoints are password change, MFA disable, OAuth unlink, role change and deactivation, all of
+// which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
+// epoch, and a branch nobody has watched go red is a branch nobody knows works.
+func (q *Queries) BumpSessionEpoch(ctx context.Context, arg BumpSessionEpochParams) error {
+	_, err := q.db.ExecContext(ctx, bumpSessionEpoch, arg.UpdatedAt, arg.ID)
+	return err
+}
+
 const getAppUser = `-- name: GetAppUser :one
 
 SELECT
@@ -254,7 +285,6 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 }
 
 const insertUserIdentity = `-- name: InsertUserIdentity :exec
-
 INSERT INTO user_identity (
     id, user_id, provider, provider_key, subject, password_hash, password_algo, password_set_at,
     must_reset, access_token_enc, refresh_token_enc, token_expires_at, scopes, profile_json,
@@ -276,9 +306,6 @@ type InsertUserIdentityParams struct {
 	UpdatedAt     int64
 }
 
-// InsertUserIdentity writes one credential for a user. password_hash is the argon2id PHC string
-// internal/auth produces; NULL means this identity cannot authenticate with a password, which is
-// what the EQdkp importer writes because legacy hashes are never migrated.
 func (q *Queries) InsertUserIdentity(ctx context.Context, arg InsertUserIdentityParams) error {
 	_, err := q.db.ExecContext(ctx, insertUserIdentity,
 		arg.ID,
@@ -460,6 +487,58 @@ type RevokeSessionParams struct {
 // second click on "sign out this device" - must not rewrite it.
 func (q *Queries) RevokeSession(ctx context.Context, arg RevokeSessionParams) error {
 	_, err := q.db.ExecContext(ctx, revokeSession, arg.RevokedAt, arg.ID)
+	return err
+}
+
+const setAppUserState = `-- name: SetAppUserState :exec
+
+UPDATE app_user
+SET state      = ?1,
+    updated_at = CAST(?2 AS INTEGER)
+WHERE id = ?3
+`
+
+type SetAppUserStateParams struct {
+	State     string
+	UpdatedAt int64
+	ID        string
+}
+
+// SetAppUserState moves an account between pending, active, suspended and disabled. Suspending or
+// disabling someone is meant to end their access immediately, and it does: the resolver reads state
+// through the join on every request, so the next one from any of their devices is refused.
+//
+// Ships ahead of its endpoint alongside the epoch bump and the soft delete, and for the same reason -
+// the resolver has a branch for it. The caller pairs it with BumpSessionEpoch when the intent is to
+// end sessions rather than only to stop new ones.
+func (q *Queries) SetAppUserState(ctx context.Context, arg SetAppUserStateParams) error {
+	_, err := q.db.ExecContext(ctx, setAppUserState, arg.State, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const softDeleteAppUser = `-- name: SoftDeleteAppUser :exec
+
+UPDATE app_user
+SET deleted_at = CAST(?1 AS INTEGER),
+    updated_at = CAST(?2 AS INTEGER)
+WHERE id = ?3 AND deleted_at IS NULL
+`
+
+type SoftDeleteAppUserParams struct {
+	DeletedAt int64
+	UpdatedAt int64
+	ID        string
+}
+
+// SoftDeleteAppUser stamps deleted_at. A user row is never removed: ledger batches, audit rows and
+// role assignments reference it, and the audit trail's whole value is that it still names who did it.
+// The two unique indexes are PARTIAL over this column, so a deleted username and email become
+// available again while the history stays intact.
+//
+// Ships ahead of its endpoint for the same reason as the two revokes and the epoch bump: the resolver
+// refuses a session whose user is deleted, and that branch needs a row that says so.
+func (q *Queries) SoftDeleteAppUser(ctx context.Context, arg SoftDeleteAppUserParams) error {
+	_, err := q.db.ExecContext(ctx, softDeleteAppUser, arg.DeletedAt, arg.UpdatedAt, arg.ID)
 	return err
 }
 

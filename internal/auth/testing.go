@@ -62,6 +62,23 @@ func NewTestService(tb testing.TB, st *store.Store, clk clock.Clock) *Service {
 func SeedUser(tb testing.TB, st *store.Store, clk clock.Clock, username string) core.ULID {
 	tb.Helper()
 
+	return SeedUserInState(tb, st, clk, username, appuserkinds.StateActive)
+}
+
+// SeedUserInState writes an app_user in a given state — pending, active, suspended or disabled.
+//
+// IT TAKES THE STATE THROUGH THE INSERT rather than through an update, because that is all the
+// resolver's "may this identity act" branch needs and it adds no mutation to the store contract. The
+// states are internal/auth/appuser/kinds', so a test cannot ask for one the CHECK would refuse.
+func SeedUserInState(
+	tb testing.TB, st *store.Store, clk clock.Clock, username, state string,
+) core.ULID {
+	tb.Helper()
+
+	if !appuserkinds.IsState(state) {
+		tb.Fatalf("%q is not an app_user state", state)
+	}
+
 	id := core.NewGenerator(clk).MustNew()
 	now := int64(core.FromTime(clk.Now()))
 
@@ -71,7 +88,7 @@ func SeedUser(tb testing.TB, st *store.Store, clk clock.Clock, username string) 
 			Username:     username,
 			UsernameNorm: username,
 			DisplayName:  username,
-			State:        appuserkinds.StateActive,
+			State:        state,
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		})
@@ -81,6 +98,61 @@ func SeedUser(tb testing.TB, st *store.Store, clk clock.Clock, username string) 
 	}
 
 	return id
+}
+
+// BumpSessionEpoch is "sign out everywhere", through the statement the password-change and
+// deactivation endpoints will call (§3.6).
+func BumpSessionEpoch(tb testing.TB, st *store.Store, clk clock.Clock, user core.ULID) {
+	tb.Helper()
+
+	err := st.Tx(context.Background(), func(ctx context.Context, q store.Queries) error {
+		return q.BumpSessionEpoch(ctx, sqlitegen.BumpSessionEpochParams{
+			UpdatedAt: int64(core.FromTime(clk.Now())),
+			ID:        user.String(),
+		})
+	})
+	if err != nil {
+		tb.Fatalf("bump session epoch for %s: %v", user, err)
+	}
+}
+
+// SetUserState moves an account between the catalogue's states, through the statement the suspend
+// and reinstate endpoints will call.
+func SetUserState(tb testing.TB, st *store.Store, clk clock.Clock, user core.ULID, state string) {
+	tb.Helper()
+
+	if !appuserkinds.IsState(state) {
+		tb.Fatalf("%q is not an app_user state", state)
+	}
+
+	err := st.Tx(context.Background(), func(ctx context.Context, q store.Queries) error {
+		return q.SetAppUserState(ctx, sqlitegen.SetAppUserStateParams{
+			State:     state,
+			UpdatedAt: int64(core.FromTime(clk.Now())),
+			ID:        user.String(),
+		})
+	})
+	if err != nil {
+		tb.Fatalf("set %s state to %s: %v", user, state, err)
+	}
+}
+
+// SoftDeleteUser stamps deleted_at, through the statement user deletion will call.
+func SoftDeleteUser(tb testing.TB, st *store.Store, clk clock.Clock, user core.ULID) {
+	tb.Helper()
+
+	now := int64(core.FromTime(clk.Now()))
+
+	err := st.Tx(context.Background(), func(ctx context.Context, q store.Queries) error {
+		return q.SoftDeleteAppUser(ctx, sqlitegen.SoftDeleteAppUserParams{
+			DeletedAt: now,
+			UpdatedAt: now,
+			ID:        user.String(),
+		})
+	})
+	if err != nil {
+		tb.Fatalf("soft delete %s: %v", user, err)
+	}
 }
 
 // SeedSession opens a session for a user through Service.CreateSession and returns the cookie a
@@ -118,6 +190,21 @@ func SeedServiceAccount(
 ) core.ULID {
 	tb.Helper()
 
+	return SeedServiceAccountInState(tb, st, clk, owner, name, sakinds.StateActive)
+}
+
+// SeedServiceAccountInState writes a service account in a given state, so the resolver's
+// "the bot may not act" branch has a row to refuse. The states are
+// internal/auth/serviceaccount/kinds'.
+func SeedServiceAccountInState(
+	tb testing.TB, st *store.Store, clk clock.Clock, owner core.ULID, name, state string,
+) core.ULID {
+	tb.Helper()
+
+	if !sakinds.IsState(state) {
+		tb.Fatalf("%q is not a service_account state", state)
+	}
+
 	id := core.NewGenerator(clk).MustNew()
 	now := int64(core.FromTime(clk.Now()))
 
@@ -127,7 +214,7 @@ func SeedServiceAccount(
 			Name:        name,
 			NameNorm:    name,
 			OwnerUserID: owner.String(),
-			State:       sakinds.StateActive,
+			State:       state,
 			CreatedBy:   owner.String(),
 			CreatedAt:   now,
 			UpdatedAt:   now,

@@ -119,14 +119,24 @@ type Queries interface {
 	// apart in its logs while returning the same 401 to the caller — and "was this token used, and
 	// when" is the only question worth asking during an incident.
 	//
-	// THE TWO REVOKES SHIP AHEAD OF THEIR ENDPOINTS, which is a deliberate exception to "a mutation
-	// with no caller is a method the Postgres target implements for nothing": the resolver refuses a
-	// revoked session and a revoked token, and a branch nobody has watched go red is a branch nobody
-	// knows works. They are also the statement ADR-0011's "revocation is instantaneous" rests on. What
-	// is genuinely NOT here is UpdateAppUser and anything that edits a credential — those land with the
-	// session-and-step-up endpoints that perform them (canonical §6's capability floor).
+	// FIVE MUTATIONS SHIP AHEAD OF THEIR ENDPOINTS — the two revokes, the session-epoch bump, the
+	// account-state change and the soft delete — which is a deliberate exception to "a mutation with no caller is a method the
+	// Postgres target implements for nothing". Each is a branch of the resolver: a revoked session, a
+	// revoked token, a session minted under a superseded epoch, a session whose user is suspended or
+	// disabled, and one whose user has been deleted are all refused — and a branch nobody has watched
+	// go red is a branch nobody knows works.
+	// They are also the statements two headline claims rest on — ADR-0011's "revocation is
+	// instantaneous" and §3.6's "sign out everywhere is one write". Each is the statement its endpoint
+	// will call verbatim, not a test-shaped approximation of it.
+	//
+	// What is genuinely NOT here is anything that EDITS a credential — setting a password, minting a
+	// token, granting a role. Those land with the session-and-step-up endpoints that perform them
+	// (canonical §6's capability floor).
 	InsertAppUser(ctx context.Context, arg sqlitegen.InsertAppUserParams) error
 	GetAppUser(ctx context.Context, id string) (sqlitegen.AppUser, error)
+	BumpSessionEpoch(ctx context.Context, arg sqlitegen.BumpSessionEpochParams) error
+	SetAppUserState(ctx context.Context, arg sqlitegen.SetAppUserStateParams) error
+	SoftDeleteAppUser(ctx context.Context, arg sqlitegen.SoftDeleteAppUserParams) error
 	InsertUserIdentity(ctx context.Context, arg sqlitegen.InsertUserIdentityParams) error
 	InsertSession(ctx context.Context, arg sqlitegen.InsertSessionParams) error
 	ResolveSession(ctx context.Context, tokenHash []byte) (sqlitegen.ResolveSessionRow, error)

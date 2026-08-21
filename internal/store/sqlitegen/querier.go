@@ -39,6 +39,19 @@ type Querier interface {
 	// that one returns a float and would silently convert the ledger to floating point. sum() over zero
 	// rows is NULL, hence COALESCE(..., 0).
 	BalanceAsOfSeq(ctx context.Context, arg BalanceAsOfSeqParams) (int64, error)
+	// InsertUserIdentity writes one credential for a user. password_hash is the argon2id PHC string
+	// internal/auth produces; NULL means this identity cannot authenticate with a password, which is
+	// what the EQdkp importer writes because legacy hashes are never migrated.
+	// BumpSessionEpoch is "sign out everywhere", in one write on one row (03-security.md section 3.6).
+	// Every session records the epoch it was minted under and the resolver requires the two to be equal,
+	// so incrementing this kills every session the user has, on every device, without touching the
+	// session table and without racing a session being created concurrently - a session opened after the
+	// bump simply carries the new epoch.
+	//
+	// Its endpoints are password change, MFA disable, OAuth unlink, role change and deactivation, all of
+	// which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
+	// epoch, and a branch nobody has watched go red is a branch nobody knows works.
+	BumpSessionEpoch(ctx context.Context, arg BumpSessionEpochParams) error
 	// GetAccount reads one account by id. It backs the "system accounts are addressable by id"
 	// acceptance test and the account reader in internal/ledger.
 	GetAccount(ctx context.Context, id string) (Account, error)
@@ -228,9 +241,6 @@ type Querier interface {
 	InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) error
 	InsertSession(ctx context.Context, arg InsertSessionParams) error
-	// InsertUserIdentity writes one credential for a user. password_hash is the argon2id PHC string
-	// internal/auth produces; NULL means this identity cannot authenticate with a password, which is
-	// what the EQdkp importer writes because legacy hashes are never migrated.
 	InsertUserIdentity(ctx context.Context, arg InsertUserIdentityParams) error
 	// ListAuditRowsAfterSeq is one page of the audit log in seq order, for `dkp verify-ledger` (Phase 1,
 	// issue #198). It is the FIRST read of this table, and it is not the officer-facing forensic view
@@ -410,6 +420,22 @@ type Querier interface {
 	// instant: when a session was revoked is the interesting fact, and a repeated call - a retry, a
 	// second click on "sign out this device" - must not rewrite it.
 	RevokeSession(ctx context.Context, arg RevokeSessionParams) error
+	// SetAppUserState moves an account between pending, active, suspended and disabled. Suspending or
+	// disabling someone is meant to end their access immediately, and it does: the resolver reads state
+	// through the join on every request, so the next one from any of their devices is refused.
+	//
+	// Ships ahead of its endpoint alongside the epoch bump and the soft delete, and for the same reason -
+	// the resolver has a branch for it. The caller pairs it with BumpSessionEpoch when the intent is to
+	// end sessions rather than only to stop new ones.
+	SetAppUserState(ctx context.Context, arg SetAppUserStateParams) error
+	// SoftDeleteAppUser stamps deleted_at. A user row is never removed: ledger batches, audit rows and
+	// role assignments reference it, and the audit trail's whole value is that it still names who did it.
+	// The two unique indexes are PARTIAL over this column, so a deleted username and email become
+	// available again while the history stays intact.
+	//
+	// Ships ahead of its endpoint for the same reason as the two revokes and the epoch bump: the resolver
+	// refuses a session whose user is deleted, and that branch needs a row that says so.
+	SoftDeleteAppUser(ctx context.Context, arg SoftDeleteAppUserParams) error
 	// StandingsFromLedger is the SAME answer computed the definitional way: one grouped SUM over every
 	// entry in the pool up to a seq, with no cache involved. It is the arm V5 measures
 	// StandingsFromSnapshot against, and it is what a replay or a verification job reads.

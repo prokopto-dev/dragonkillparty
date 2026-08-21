@@ -52,6 +52,50 @@ INSERT INTO app_user (
 -- internal/auth produces; NULL means this identity cannot authenticate with a password, which is
 -- what the EQdkp importer writes because legacy hashes are never migrated.
 
+-- BumpSessionEpoch is "sign out everywhere", in one write on one row (03-security.md section 3.6).
+-- Every session records the epoch it was minted under and the resolver requires the two to be equal,
+-- so incrementing this kills every session the user has, on every device, without touching the
+-- session table and without racing a session being created concurrently - a session opened after the
+-- bump simply carries the new epoch.
+--
+-- Its endpoints are password change, MFA disable, OAuth unlink, role change and deactivation, all of
+-- which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
+-- epoch, and a branch nobody has watched go red is a branch nobody knows works.
+
+-- name: BumpSessionEpoch :exec
+UPDATE app_user
+SET session_epoch = session_epoch + 1,
+    updated_at    = CAST(sqlc.arg(updated_at) AS INTEGER)
+WHERE id = sqlc.arg(id);
+
+-- SetAppUserState moves an account between pending, active, suspended and disabled. Suspending or
+-- disabling someone is meant to end their access immediately, and it does: the resolver reads state
+-- through the join on every request, so the next one from any of their devices is refused.
+--
+-- Ships ahead of its endpoint alongside the epoch bump and the soft delete, and for the same reason -
+-- the resolver has a branch for it. The caller pairs it with BumpSessionEpoch when the intent is to
+-- end sessions rather than only to stop new ones.
+
+-- name: SetAppUserState :exec
+UPDATE app_user
+SET state      = sqlc.arg(state),
+    updated_at = CAST(sqlc.arg(updated_at) AS INTEGER)
+WHERE id = sqlc.arg(id);
+
+-- SoftDeleteAppUser stamps deleted_at. A user row is never removed: ledger batches, audit rows and
+-- role assignments reference it, and the audit trail's whole value is that it still names who did it.
+-- The two unique indexes are PARTIAL over this column, so a deleted username and email become
+-- available again while the history stays intact.
+--
+-- Ships ahead of its endpoint for the same reason as the two revokes and the epoch bump: the resolver
+-- refuses a session whose user is deleted, and that branch needs a row that says so.
+
+-- name: SoftDeleteAppUser :exec
+UPDATE app_user
+SET deleted_at = CAST(sqlc.arg(deleted_at) AS INTEGER),
+    updated_at = CAST(sqlc.arg(updated_at) AS INTEGER)
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL;
+
 -- name: InsertUserIdentity :exec
 INSERT INTO user_identity (
     id, user_id, provider, provider_key, subject, password_hash, password_algo, password_set_at,
