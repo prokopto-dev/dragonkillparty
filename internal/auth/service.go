@@ -176,13 +176,17 @@ func (s *Service) resolveToken(ctx context.Context, presented string) (principal
 		return nil, ErrNoPepper
 	}
 
+	// A MISSING ROW AND AN UNREADABLE DATABASE ARE DIFFERENT ANSWERS. The first is "this token does
+	// not exist" and is the caller's problem; the second is "nothing can be looked up right now" and
+	// is ours. Collapsing them — which is what a single `if err != nil` here would do — tells every
+	// bot in the guild that its token is invalid for the duration of an outage.
 	row, err := s.store.Q().ResolveAPIToken(ctx, parsed.prefix)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("token prefix %s: %w", parsed.prefix, ErrUnknownCredential)
 		}
 
-		return nil, fmt.Errorf("resolve token %s: %w", parsed.prefix, err)
+		return nil, fmt.Errorf("resolve token %s: %w: %w", parsed.prefix, ErrLookupUnavailable, err)
 	}
 
 	presentedHash, err := s.keys.TokenHash(row.ApiToken.PepperKid, parsed.secret)
@@ -254,7 +258,7 @@ func (s *Service) resolveSession(ctx context.Context, cookie string) (principal 
 			return nil, fmt.Errorf("session: %w", ErrUnknownCredential)
 		}
 
-		return nil, fmt.Errorf("resolve session: %w", err)
+		return nil, fmt.Errorf("resolve session: %w: %w", ErrLookupUnavailable, err)
 	}
 
 	now := core.FromTime(s.clock.Now())

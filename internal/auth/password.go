@@ -64,6 +64,11 @@ const (
 	maxHashMemoryKiB  = 1 << 20 // 1 GiB
 	maxHashIterations = 32
 
+	// maxHashParallelism bounds `p`. Every rung of the ladder uses 1 and the column is a uint8, so a
+	// stored row asking for 255 lanes is a corrupt row rather than a configuration — and each lane is
+	// a goroutine and a share of the memory block.
+	maxHashParallelism = 16
+
 	// MaxPasswordBytes is a request sanity bound, not a cryptographic need (§3.1). NIST SP 800-63B's
 	// posture is 12–128 characters with no composition rules; the floor and the breached-password
 	// blocklist belong to the endpoint that SETS a password, because they are policy a guild's
@@ -329,10 +334,29 @@ func decodePHC(encoded string) (Argon2Profile, []byte, []byte, error) {
 			parts[3], ErrHashMalformed)
 	}
 
-	if memory > maxHashMemoryKiB || iterations > maxHashIterations {
+	if memory > maxHashMemoryKiB || iterations > maxHashIterations || parallelism > maxHashParallelism {
 		return Argon2Profile{}, nil, nil, fmt.Errorf(
-			"parameters %q exceed the resource ceiling (m<=%d, t<=%d): %w",
-			parts[3], maxHashMemoryKiB, maxHashIterations, ErrHashMalformed)
+			"parameters %q exceed the resource ceiling (m<=%d, t<=%d, p<=%d): %w",
+			parts[3], maxHashMemoryKiB, maxHashIterations, maxHashParallelism, ErrHashMalformed)
+	}
+
+	// RFC 9106 §3.1 REQUIRES m >= 8p, and this is where that requirement is enforced rather than
+	// assumed. golang.org/x/crypto v0.55.0 tolerates a violation by silently clamping memory UP to 8p
+	// — verified rather than read: m=1,t=1,p=1 returns a key rather than panicking — which is worse
+	// than either alternative, in two ways.
+	//
+	// It makes the library's tolerance load-bearing. The same function panics outright on t=0 and on
+	// p=0, so it IS a package that panics on out-of-range parameters; a version that tightened this
+	// one, or returned an error as RFC 9106 would justify, would turn a corrupt or hand-edited
+	// password row into a crashed server on the next login. A guard that depends on a third party
+	// continuing to be lenient is not a guard.
+	//
+	// And it quietly breaks the property this whole file rests on — parameters travel WITH the hash,
+	// so a verify computes what the row says. Under a clamp it does not: the row says m=1 and the
+	// computation uses 8, and nothing anywhere reports the difference.
+	if memory < 8*uint32(parallelism) {
+		return Argon2Profile{}, nil, nil, fmt.Errorf(
+			"parameters %q violate RFC 9106's m >= 8p: %w", parts[3], ErrHashMalformed)
 	}
 
 	salt, err := base64.RawStdEncoding.DecodeString(parts[4])

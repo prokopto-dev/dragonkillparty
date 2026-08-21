@@ -403,6 +403,9 @@ CREATE TABLE role_permission (
   permission_key TEXT NOT NULL REFERENCES permission(key),   -- FK ⇒ a bad key is a BOOT FAILURE
   PRIMARY KEY (role_id, permission_key)
 ) STRICT, WITHOUT ROWID;
+-- The primary key cannot find rows by its SECOND column, so without this the FK above enforces
+-- itself with a full scan of the grants table, inside the write transaction (#271).
+CREATE INDEX ix_role_permission_permission ON role_permission(permission_key);
 
 CREATE TABLE role_assignment (
   id           TEXT NOT NULL PRIMARY KEY,

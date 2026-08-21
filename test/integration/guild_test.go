@@ -66,7 +66,18 @@ func newServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client) {
 
 	authService := auth.NewTestService(t, s, fixedClock{})
 
-	srv := httptest.NewServer(api.New(api.Config{Store: s, Clock: fixedClock{}, Auth: authService}))
+	// Both gates are stated, because both zero values fail closed. An instance that never reconciled
+	// its permission catalogue refuses every operation that declares a permission (#272); one with no
+	// credential resolver refuses every operation that declares Security. Both guild operations
+	// declare both. This harness is the fully booted instance — which is what makes
+	// TestGuild_Unauthenticated_Is401 below meaningful, since a 503 from either gate would mask the
+	// credential check rather than assert it.
+	srv := httptest.NewServer(api.New(api.Config{
+		Store:         s,
+		Clock:         fixedClock{},
+		Authorization: api.AuthorizationReconciled(),
+		Auth:          authService,
+	}))
 	t.Cleanup(srv.Close)
 
 	cookie, _ := auth.SeedSession(t, authService, auth.SeedUser(t, s, fixedClock{}, "officer"))

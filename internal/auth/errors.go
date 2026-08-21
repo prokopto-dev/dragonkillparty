@@ -63,6 +63,17 @@ var (
 	// here rather than by hunting down rows.
 	ErrPrincipalNotActive = errors.New("principal not active")
 
+	// ErrLookupUnavailable means the credential could not be LOOKED UP: the database is locked,
+	// closed, corrupt, or otherwise unable to answer. It says nothing about the credential itself.
+	//
+	// IT IS NOT A CREDENTIAL FAILURE AND MUST NOT BE REPORTED AS ONE. Everything else in this list
+	// answers 401, which tells a caller to present a different credential; this one means no
+	// credential could succeed, so 401 would send a browser to the login screen and a bot into a
+	// re-authenticate loop during an outage — turning a database problem into a mass sign-out that
+	// looks like a security event. The middleware maps it to 503, which is both true and the status a
+	// client already knows to retry.
+	ErrLookupUnavailable = errors.New("credential lookup unavailable")
+
 	// ErrNoStore means the resolver was built without a database handle, so no credential can be
 	// looked up at all.
 	//

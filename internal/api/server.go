@@ -91,6 +91,24 @@ type Config struct {
 	// build the registry without serving a request.
 	Auth *auth.Service
 
+	// Authorization is what the boot path learned about this instance's ability to authorize a
+	// request: did cmd/dkp's reconcileOnBoot project the permission catalogue into the database
+	// before the listener opened?
+	//
+	// THE ZERO VALUE REFUSES every operation that requires a permission (issue #272). A Config that
+	// does not mention this field describes a process that never reconciled anything, so the
+	// operations that need a permission answer 503 while /healthz, /readyz, /config.json, the docs
+	// and the public operations stay up. Serving them anyway would be an authorization choke point
+	// whose unprepared state is "allow", which is the one way authorization is not allowed to fail.
+	// See AuthorizationState.
+	//
+	// IT IS A DIFFERENT QUESTION FROM Auth, and the two are deliberately separate fields. Auth
+	// answers "who is asking"; this answers "is this instance in a state to decide what they may
+	// do". A process can have a perfectly good credential resolver and an unreconciled catalogue —
+	// that is precisely the boot #272 fails closed on — and collapsing them into one flag would make
+	// a database that came up late look like a missing keyring in the logs.
+	Authorization AuthorizationState
+
 	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
 	// It is nil when New is called only to build the spec (NewHumaAPI): the operations still register
 	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
@@ -150,6 +168,25 @@ func New(cfg Config) http.Handler {
 	registerConfigJSON(mux, cfg.APIBase)
 
 	humaAPI := humago.New(mux, humaConfig())
+
+	// THE TWO GATES, in the order they run, installed BEFORE any operation is registered because Huma
+	// captures the middleware chain at huma.Register time (huma.go:881) — one added afterwards is
+	// silently never called. NewHumaAPI installs NEITHER: that path builds the registry for
+	// `dkp openapi` and the arch tests, where no request is ever served and a middleware would only
+	// be a second assembly site's worth of difference between the emitted document and this one.
+	//
+	// CAN THIS INSTANCE DECIDE, THEN WHO IS ASKING, and that order is deliberate. The first gate is
+	// about the PROCESS: an instance whose permission catalogue never reached the database cannot
+	// authorize anything, so it answers 503 without reading a credential it could not act on anyway
+	// (#272). The second is about the REQUEST: it resolves the cookie or the bearer into one
+	// Principal and refuses an operation that declares `Security` when no live credential is present
+	// (03-security.md §4.1, §5).
+	//
+	// What is still missing between them is the permission check itself — `authz.Check`, the scope
+	// intersection and the step-up window — which is Wave 0e (#276). Until it lands, a reconciled
+	// instance lets every authenticated principal through every operation.
+	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
+	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth))
 
 	registerOperations(humaAPI, cfg)
 	registerDocs(mux)
@@ -222,16 +259,6 @@ func registerOperations(humaAPI huma.API, cfg Config) {
 	if clk == nil {
 		clk = clock.System{}
 	}
-
-	// THE CHOKE POINT, INSTALLED BEFORE ANY OPERATION IS REGISTERED (03-security.md §4.1). It runs
-	// for every Huma operation, resolves the cookie or the bearer into one Principal, and refuses an
-	// operation that declares `Security` when no live credential is present.
-	//
-	// It is installed HERE, beside the registrations, rather than in New: the operations and the
-	// middleware that guards them are one assembly, and a second site is how a served tree comes to
-	// differ from the tree the tests build. The /healthz, /readyz, /config.json, docs and SPA routes
-	// are not Huma operations and are deliberately outside it — none of them reads a credential.
-	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth))
 
 	registerMeta(humaAPI, cfg)
 	registerGuild(humaAPI, guild.NewService(cfg.Store, clk))

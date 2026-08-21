@@ -124,8 +124,20 @@ func unconfigured(humaAPI huma.API, ctx huma.Context, op *huma.Operation) {
 func refuse(humaAPI huma.API, ctx huma.Context, op *huma.Operation, err error) {
 	problem := problemForResolution(err)
 
-	middleware.Logger(ctx.Context()).WarnContext(ctx.Context(), "credential refused",
+	// The LEVEL follows the status, because the two say different things to whoever is on call. A 401
+	// is routine — an expired cookie, a mistyped token, a scanner — and a wall of them at ERROR
+	// teaches an operator to filter the level out. A 5xx here is the server failing to answer a
+	// question it should have been able to answer, and it is the line that explains the sign-outs.
+	log := middleware.Logger(ctx.Context())
+	record := log.WarnContext
+
+	if problem.Status >= http.StatusInternalServerError {
+		record = log.ErrorContext
+	}
+
+	record(ctx.Context(), "credential refused",
 		"operation", operationID(op),
+		"status", problem.Status,
 		"code", string(problem.Code),
 		"reason", err.Error())
 
@@ -155,6 +167,19 @@ func problemForResolution(err error) *ProblemDetail {
 	var failure *auth.ResolutionError
 
 	hasFailure := errors.As(err, &failure)
+
+	// INFRASTRUCTURE FIRST, AND THE ORDER IS THE FIX. Everything below this block answers 401, which
+	// tells a caller to present a different credential. A database that cannot be read means NO
+	// credential can succeed, so answering 401 there sends every browser to the login screen and every
+	// bot into a re-authenticate loop for the duration of an outage — a database problem rendered as a
+	// mass sign-out, which is both wrong and alarming. 503 is true, and it is the status clients
+	// already know to retry.
+	switch {
+	case errors.Is(err, auth.ErrLookupUnavailable), errors.Is(err, auth.ErrNoStore):
+		return NewProblem(http.StatusServiceUnavailable, CodeServiceUnavailable,
+			"This instance cannot verify credentials right now. Retry shortly; your credential is "+
+				"not the problem.")
+	}
 
 	switch {
 	case errors.Is(err, auth.ErrTokenInQueryString):

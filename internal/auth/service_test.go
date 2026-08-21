@@ -518,3 +518,59 @@ func TestResolve_WiringBugs_FailClosed(t *testing.T) {
 	require.Nil(t, principal)
 	require.ErrorIs(t, err, auth.ErrMalformedCredential)
 }
+
+// TestResolve_DatabaseUnavailable_IsNotACredentialFailure is a review finding turned into a test
+// (PR #279).
+//
+// A query failure — a locked, closed or corrupt database — was being wrapped as a credential failure
+// and answered `401`. That is wrong in the way that matters operationally: `401` tells a caller to
+// present a DIFFERENT credential, so during an outage every browser is sent to the login screen and
+// every bot into a re-authenticate loop, turning a database problem into a mass sign-out that looks
+// like a security event. No credential could have succeeded.
+//
+// The store is CLOSED rather than mocked: there is no fake Queries implementation in this repository
+// and a lint rule forbids adding one, and a closed handle is the real shape of the failure — the same
+// error database/sql returns when the file is gone or the pool is shut down.
+func TestResolve_DatabaseUnavailable_IsNotACredentialFailure(t *testing.T) {
+	t.Parallel()
+
+	svc, env := newResolver(t)
+
+	// Both credentials work first, so the assertions below cannot pass because the fixture was
+	// broken all along.
+	_, err := svc.ResolveRequest(t.Context(), request(env.cookie, ""))
+	require.NoError(t, err)
+
+	_, err = svc.ResolveRequest(t.Context(), request(nil, env.token))
+	require.NoError(t, err)
+
+	require.NoError(t, env.store.Close())
+
+	for _, tt := range []struct {
+		name string
+		req  *http.Request
+	}{
+		{name: "session", req: request(env.cookie, "")},
+		{name: "token", req: request(nil, env.token)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			principal, resolveErr := svc.ResolveRequest(t.Context(), tt.req)
+			require.Nil(t, principal)
+			require.ErrorIs(t, resolveErr, auth.ErrLookupUnavailable)
+
+			// And it is NOT any of the sentinels that mean "your credential is bad". This is the
+			// assertion the middleware's status mapping depends on.
+			for _, credentialFailure := range []error{
+				auth.ErrUnknownCredential,
+				auth.ErrExpiredCredential,
+				auth.ErrRevokedCredential,
+				auth.ErrMalformedCredential,
+				auth.ErrPrincipalNotActive,
+				auth.ErrStaleSessionEpoch,
+			} {
+				require.NotErrorIsf(t, resolveErr, credentialFailure,
+					"an unreadable database must not be reported as %v", credentialFailure)
+			}
+		})
+	}
+}

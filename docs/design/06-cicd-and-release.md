@@ -981,9 +981,9 @@ it**, plus a `lint / repo` grep banning those identifiers as `slog` attribute ke
 only a convention is not redaction.
 
 **Health endpoints** follow canonical conventions §13 exactly: `/healthz` never touches the database
-and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, the ledger's
-append-only protection, worker heartbeat, free disk and outbox lag, and returns 503 with a JSON body
-naming the failing check *and its fix*.
+and is the container `HEALTHCHECK`; `/readyz` checks DB reachability, schema version, whether the
+permission catalogue reconciled at boot, the ledger's append-only protection, worker heartbeat, free
+disk and outbox lag, and returns 503 with a JSON body naming the failing check *and its fix*.
 
 The checks are an **ordered ladder** and the body reports the first one that is not ready, because the
 migrations-pending body below is a wire contract that a pending instance has to keep answering
@@ -994,6 +994,12 @@ until a human acts. The ledger's append-only protection is the first `degraded` 
 one of the four triggers, but a database that *arrived* without one boots anyway, and logs it once.
 Reporting it on every probe is the difference between detecting that a guild's ledger became editable
 and somebody finding out.
+
+`{"check":"authorization","state":"failed"}` is the rung above it: a boot that could not project the
+permission catalogue into the database serves `/healthz` and refuses every operation that declares a
+permission (`503 service_unavailable`), and says so here until a boot reconciles. `failed` rather than
+`degraded` — the check could not be established at all, and nothing after startup re-establishes it,
+so the fix is to repair the database and restart.
 
 **Detail is disclosed to nobody until the operator says otherwise.** `DKP_READYZ_DETAIL` takes
 `never` (the default), `local` or `always`, and nothing else grants a `detail` — not the peer address,

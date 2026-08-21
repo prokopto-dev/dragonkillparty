@@ -198,6 +198,12 @@ func TestVerifyPassword_MalformedHash_IsNotAWrongPassword(t *testing.T) {
 		{name: "unparseable params", encoded: strings.Replace(good, "m=19456,t=2,p=1", "m=lots", 1)},
 		{name: "memory beyond the ceiling", encoded: strings.Replace(good, "m=19456", "m=4194304", 1)},
 		{name: "iterations beyond the ceiling", encoded: strings.Replace(good, "t=2", "t=9999", 1)},
+		{name: "parallelism beyond the ceiling", encoded: strings.Replace(good, "p=1", "p=255", 1)},
+		// RFC 9106 §3.1's m >= 8p. golang.org/x/crypto tolerates these by clamping memory upward, so
+		// nothing outside this package refuses them — and a clamp means the verify computes with
+		// parameters the row does not name, which is the one property the PHC string exists to give.
+		{name: "memory below 8p, one lane", encoded: strings.Replace(good, "m=19456,t=2,p=1", "m=1,t=1,p=1", 1)},
+		{name: "memory below 8p, four lanes", encoded: strings.Replace(good, "m=19456,t=2,p=1", "m=31,t=1,p=4", 1)},
 		{name: "truncated salt", encoded: "$argon2id$v=19$m=19456,t=2,p=1$YWJj$" + fields[5]},
 		{name: "truncated tag", encoded: "$argon2id$v=19$m=19456,t=2,p=1$" + fields[4] + "$YWJj"},
 		{name: "salt is not base64", encoded: "$argon2id$v=19$m=19456,t=2,p=1$!!!!!!!!!!!!!!!!!!!!!!$" + fields[5]},
@@ -227,6 +233,33 @@ func TestVerifyPassword_MalformedHash_IsNotAWrongPassword(t *testing.T) {
 	ok, err := auth.VerifyPassword(weakened, "a password")
 	require.NoError(t, err, "weakened parameters are readable; they are not corruption")
 	require.False(t, ok, "the tag was derived under the original parameters, so it cannot match")
+}
+
+// TestVerifyPassword_RFC9106Minimum_IsRefusedRatherThanClamped is the boundary of the check above,
+// and it is a boundary worth pinning because the two sides are one KiB apart: m=32 with p=4 is
+// exactly 8p and must WORK, while m=31 must not.
+//
+// A test that only asserted the refusal would be satisfied by a check that refused everything.
+func TestVerifyPassword_RFC9106Minimum_IsRefusedRatherThanClamped(t *testing.T) {
+	t.Parallel()
+
+	// Exactly 8p: legal, and it must verify against a hash actually derived with those parameters.
+	legal := auth.Argon2Profile{Name: "boundary", MemoryKiB: 32, Iterations: 1, Parallelism: 4}
+
+	encoded, err := auth.HashPassword(legal, "a password at the boundary")
+	require.NoError(t, err)
+
+	ok, err := auth.VerifyPassword(encoded, "a password at the boundary")
+	require.NoError(t, err)
+	require.True(t, ok, "m == 8p is legal under RFC 9106 and must not be refused")
+
+	// One below: refused, rather than handed to a library that would clamp it.
+	below := strings.Replace(encoded, "m=32,t=1,p=4", "m=31,t=1,p=4", 1)
+	require.NotEqual(t, encoded, below, "fixture is stale")
+
+	ok, err = auth.VerifyPassword(below, "a password at the boundary")
+	require.False(t, ok)
+	require.ErrorIs(t, err, auth.ErrHashMalformed)
 }
 
 // TestHashPassword_InputBounds. The 128-byte ceiling is §3.1's request sanity bound — argon2's cost

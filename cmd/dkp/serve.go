@@ -96,6 +96,15 @@ const (
 	// TABLE takes its triggers with it — which is exactly the way through a triggers-only check
 	// (internal/store.AppendOnlyState).
 	checkLedgerAppendOnly = "ledger_append_only"
+
+	// checkAuthorization is the `check` value of the authorization bootstrap: did this process
+	// project the permission catalogue into the database before it opened the listener?
+	//
+	// Named for the capability rather than for the table, as checkLedgerAppendOnly is: a monitoring
+	// rule that fires on `check=authorization` should not have to know that the fact is stored in a
+	// `permission` table, and the thing an operator needs to be told is that this instance cannot
+	// authorize anybody rather than which query failed.
+	checkAuthorization = "authorization"
 )
 
 // serveConfig is the resolved configuration for one `dkp serve` invocation.
@@ -142,7 +151,18 @@ func readyDetailPolicy(ctx context.Context) api.ReadyDetailPolicy {
 // The adapter lives here rather than on either side of it so that internal/api does not import the
 // migrator and internal/migrate does not import the API. cmd/ is where wiring belongs; both
 // packages stay independently testable.
-type readiness struct{ runner *migrate.Runner }
+type readiness struct {
+	runner *migrate.Runner
+
+	// authz is the boot reconciliation's verdict, decided once by reconcileOnBoot and carried here
+	// unchanged for the life of the process.
+	//
+	// A BOOT FACT, NOT A PROBE, and that is deliberate: reconciliation writes, and a readiness
+	// endpoint a load balancer calls every few seconds must not open a write transaction. So an
+	// instance that failed to reconcile keeps saying so until it is restarted — which is also the
+	// truth about it, because nothing after boot projects the catalogue.
+	authz api.AuthorizationState
+}
 
 // Ready answers GET /readyz.
 //
@@ -158,6 +178,10 @@ type readiness struct{ runner *migrate.Runner }
 // A nil runner means the boot path could not build one at all — an unset or unusable DKP_DB_PATH.
 // That reports failed rather than ready: the whole reason /readyz exists separately from /healthz
 // is to be the endpoint that is allowed to say no.
+//
+// The rungs below migrations are, in order: can this instance authorize a request (issue #272), and
+// is the ledger still protected against being rewritten (#59). Each function that owns a rung says
+// why it sits where it does.
 func (r readiness) Ready() api.ReadyReport {
 	if r.runner == nil {
 		return api.ReadyReport{
@@ -196,6 +220,10 @@ func (r readiness) Ready() api.ReadyReport {
 			Detail: "database schema is newer than this binary",
 		}
 	case migrate.StateUpToDate:
+		if report, unavailable := authorizationReport(r.authz); unavailable {
+			return report
+		}
+
 		if report, notIntact := appendOnlyReport(status.Protection); notIntact {
 			return report
 		}
@@ -206,7 +234,42 @@ func (r readiness) Ready() api.ReadyReport {
 	return api.ReadyReport{Check: checkMigrations, State: api.ReadyStateFailed, Detail: "unknown state"}
 }
 
-// appendOnlyReport is the second rung of the ladder: is the ledger still protected against being
+// authorizationReport is the second rung of the ladder: can this instance authorize a request at
+// all? It reports (report, true) when the answer is no.
+//
+// This is issue #272's readiness half. Before it, the boot path logged a failed reconciliation once
+// and started the listener, and /readyz — which consumes the migration state and nothing else —
+// answered ready: an instance that could not resolve a single permission key was in the load
+// balancer's rotation and looked identical to a healthy one.
+//
+// AFTER MIGRATIONS, and that order is the wire contract rather than a preference. An unmigrated
+// database is the ordinary cause of a failed reconciliation — there is no permission table yet — and
+// the body {"check":"migrations","state":"pending","command":"dkp migrate"} is specified literally in
+// two documents and rendered verbatim by the SPA's upgrade banner. Reporting this rung first would
+// replace the one message that tells the operator what to type with a consequence of not having
+// typed it.
+//
+// BEFORE the append-only rung, and that order is a judgement: both answer 503, and this is the one
+// that describes what the instance is doing to requests arriving right now. A degraded ledger is
+// serving; an instance with no authorization state is refusing every operation that needs a
+// permission, and the operator reading /readyz to find out why is looking at this.
+//
+// `failed` rather than `degraded`: degraded is an evaluated check with a bad answer on an instance
+// still doing its job — the ledger's case. This one could not be established at all, and until the
+// process is restarted successfully there is nothing that can establish it.
+func authorizationReport(state api.AuthorizationState) (api.ReadyReport, bool) {
+	if state.Available() {
+		return api.ReadyReport{}, false
+	}
+
+	return api.ReadyReport{
+		Check:  checkAuthorization,
+		State:  api.ReadyStateFailed,
+		Detail: state.Reason(),
+	}, true
+}
+
+// appendOnlyReport is the third rung of the ladder: is the ledger still protected against being
 // rewritten? It reports (report, true) when the answer is anything other than yes.
 //
 // This is the whole of issue #59. The boot path already asks this question and logs the answer — once,
@@ -329,11 +392,14 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 
 	// The permission catalogue, projected into the database before the listener opens. A route whose
 	// permission key does not resolve is an operation the middleware cannot authorize, and canonical §6
-	// makes that a boot failure rather than a 403 discovered by a member.
+	// makes that a boot failure rather than a 403 discovered by a member. Every OTHER way this can fail
+	// keeps the process up and refuses the operations that declare a permission — see reconcileOnBoot,
+	// and api.AuthorizationState for what the handler tree does with the verdict.
 	// api.DeclaredPermissions() reads the registry this binary serves, with the `public` and `self`
 	// sentinels already dropped. cmd/ is the wiring point because internal/authz must not import
 	// internal/api — internal/api's own tests import internal/authz, so the cycle would be immediate.
-	if err := reconcileOnBoot(ctx, st, api.DeclaredPermissions()); err != nil {
+	authorization, err := reconcileOnBoot(ctx, st, api.DeclaredPermissions())
+	if err != nil {
 		return err
 	}
 
@@ -390,7 +456,7 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			Commit:    commit,
 			BuildDate: date,
 			Clock:     clock.System{},
-			Readiness: readiness{runner: runner},
+			Readiness: readiness{runner: runner, authz: authorization},
 			// Who may see a /readyz detail. Never, unless DKP_READYZ_DETAIL says otherwise: the
 			// peer address is not a trust signal behind a reverse proxy (#74).
 			ReadyDetail: cfg.readyDetail,
@@ -398,10 +464,18 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			// same-origin, which is what a co-hosted binary serves.
 			APIBase: os.Getenv(apiBaseEnv),
 			WebUI:   webUI,
+			Store:   st,
 			// The authentication choke point. Nil only when the database could not be opened, in
 			// which case every operation declaring Security answers 503 (api.Config).
-			Auth:  authService,
-			Store: st,
+			Auth: authService,
+			// The fail-closed half of the boot split (#272). Unavailable here means every operation
+			// that declares a permission answers 503 while /healthz, /readyz, /config.json, the docs
+			// and the public operations keep serving.
+			//
+			// The two are independent gates on the same request and both must be open: Auth decides
+			// WHO is asking, Authorization decides whether this instance is in a state to answer that
+			// question at all. Nothing yet joins them — the permission check itself is Wave 0e (#276).
+			Authorization: authorization,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
@@ -444,46 +518,58 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 	return closedOrErr(<-serveErr, bound)
 }
 
-// reconcileOnBoot projects internal/authz's permission catalogue into the database, and decides
-// whether a failure is fatal.
+// reconcileOnBoot projects internal/authz's permission catalogue into the database, and decides what
+// a failure costs.
 //
-// THE SPLIT IS THE SAME SHAPE AS migrateOnBoot'S, AND IT IS NOT SYMMETRIC:
+// It returns the authorization state the handler tree is built with, and an error only when the boot
+// must not continue at all. THE THREE OUTCOMES ARE NOT SYMMETRIC:
 //
-//   - A MISSING REQUIRED KEY is fatal. A route declares a permission this binary's catalogue does not
-//     ship, so there is a registered operation whose authorization cannot be resolved against the
-//     table role_permission is FK-constrained to. Canonical §6 calls that a boot failure in as many
-//     words, and serving anyway would mean answering requests for an operation nobody can be
-//     authorized for — silently permissive is the one way authorization is allowed to fail, so it is
-//     the one this refuses.
+//   - RECONCILED. Every required key resolves to a live row in this officer's database. The listener
+//     opens and operations that declare a permission are served.
+//
+//   - A MISSING REQUIRED KEY is fatal, and it is the one failure that aborts the boot. A route
+//     declares a permission this binary's catalogue does not ship, so there is a registered operation
+//     whose authorization cannot be resolved against the table role_permission is FK-constrained to.
+//     Canonical §6 calls that a boot failure in as many words. It is a defect in the build rather
+//     than in the officer's database — no restart, no repair and no amount of waiting fixes it — so
+//     there is nothing for a running process to report that exiting does not say better.
 //
 //   - ANY OTHER ERROR — no store at all, an unreadable database, a permission table that does not
-//     exist because DKP_AUTO_MIGRATE is false and the migration has not run — is logged and the
-//     server starts anyway. That is canonical §13: /healthz must answer 200 so Docker's HEALTHCHECK
-//     does not kill the container, and /readyz already reports the pending migration that explains it.
+//     exist because DKP_AUTO_MIGRATE is false and the migration has not run, a transient failure
+//     inside the transaction — serves, and FAILS CLOSED (issue #272). The process stays up because
+//     canonical §13 requires /healthz to answer 200 whatever the database is doing: Docker's
+//     HEALTHCHECK calls it, and a container killed here is a container killed mid-upgrade. What does
+//     NOT stay up is anything that needs a permission. Before #272 this branch logged and served
+//     everything, which made an instance whose authorization source had never been prepared
+//     indistinguishable from a healthy one — /readyz included, because it consumed the migration
+//     state and never this result.
 //
-// Returning an error from here aborts the boot; returning nil serves.
+// The state also reaches /readyz, which reports `authorization` `failed` until a boot reconciles.
+// Nothing re-reconciles afterwards, so the way out is to fix the database and restart.
 //
 // required is a parameter rather than a call to api.DeclaredPermissions() inside the body so that the
 // fatal branch is reachable from a test. The registry and the catalogue agree — SPEC005 keeps them
 // agreeing — so the only way to watch that branch execute is to hand it a key that is not there.
-func reconcileOnBoot(ctx context.Context, st *store.Store, required []string) error {
+func reconcileOnBoot(ctx context.Context, st *store.Store, required []string) (api.AuthorizationState, error) {
 	// The report is not logged here: Reconcile already logs the counts, and a boot that says the same
 	// thing twice is a boot log an operator stops reading.
 	_, err := authz.NewReconciler(st, clock.System{}).Reconcile(ctx, required)
 	if err == nil {
-		return nil
+		return api.AuthorizationReconciled(), nil
 	}
 
 	if errors.Is(err, authz.ErrMissingPermission) {
-		return err
+		return api.AuthorizationState{}, err
 	}
 
-	// Logged at ERROR, never discarded. Every operation that needs a permission will fail once the
-	// listener opens, and this line plus the /readyz body are the only two places that say why.
-	slog.ErrorContext(ctx, "could not reconcile the permission catalogue; serving anyway so /healthz stays up",
-		"error", err, "readyz", "will report the underlying database state")
+	// Logged at ERROR, once, with the underlying error in full — this is the operator's copy. The
+	// refused requests carry a fixed sentence and no database detail, and the /readyz detail is
+	// gated by DKP_READYZ_DETAIL, so this line is the only place the actual fault is written down.
+	slog.ErrorContext(ctx, "could not reconcile the permission catalogue; refusing every operation "+
+		"that requires a permission, so /healthz stays up and /readyz can say why",
+		"error", err, "readyz", "reports check=authorization state=failed until a boot reconciles")
 
-	return nil
+	return api.AuthorizationUnavailable(err.Error()), nil
 }
 
 // closedOrErr maps the sentinel http.ErrServerClosed to nil — a deliberate shutdown is not a

@@ -47,6 +47,37 @@ ledger history and nothing will refuse it.
 Report it with a support bundle. The log line names exactly which triggers are absent, which is what
 tells us how the database got there.
 
+## Every API call answers `503 service_unavailable`, but `/healthz` is green
+
+```json
+{"check":"authorization","state":"failed"}
+```
+
+The server could not prepare its permission catalogue when it started, so it refuses every operation
+that requires a permission. The public ones — `GET /api/v1/meta`, `/config.json`, the reference docs
+and the web UI shell — still answer, and so does `/healthz`, which is what stops Docker killing the
+container over a fault a restart does not fix.
+
+This is deliberate. The permission table is what every authorization decision resolves against; an
+instance that could not write it has no way to tell an officer from a stranger, and serving anyway
+would be a guess in the one place this product must not guess.
+
+**The cause is in your log, at error level, on the boot that failed** — the response does not repeat
+it, because that response goes to anyone who asks. In order of likelihood:
+
+| Log line contains | What happened | Fix |
+|---|---|---|
+| `no such table: permission` | The migration that creates it has not run — usually `DKP_AUTO_MIGRATE=false` | Run `dkp migrate`, then **restart**. `/readyz` reports the pending migration in the meantime. |
+| `attempt to write a readonly database`, `unable to open database file` | The data directory or the file is not writable by the container user (`65532:65532`) | `chown` the volume and restart. |
+| `database is locked` | Something else held the write lock while this instance booted | Restart. If it repeats, find the other process — two instances must not share one file. |
+| `required permission key is not in the catalogue` | Not this: that one **exits** rather than serving, and the message names the keys. It is a bug in the build, not in your database | Report it; do not downgrade to work around it. |
+
+Nothing re-runs after startup, so a fixed database does not clear this by itself — **restart the
+process**. `/readyz` goes green when a boot reconciles.
+
+To see the reason in the `/readyz` body as well as in the log, set `DKP_READYZ_DETAIL` — see the next
+section for what that discloses and to whom.
+
 ## `/readyz` says `degraded` but will not tell me what is wrong
 
 ```json

@@ -70,7 +70,15 @@ func newGuildServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client)
 	srv := httptest.NewServer(New(Config{
 		Store: s,
 		Clock: clk,
-		Auth:  authService,
+		// The state a booted instance has, on both gates: cmd/dkp reconciled the permission catalogue
+		// before the listener opened, and it wired a credential resolver. Both are stated rather than
+		// defaulted because both zero values REFUSE — an unreconciled catalogue answers 503 to every
+		// operation that declares a permission (#272), and a nil resolver answers 503 to every
+		// operation that declares Security — which is both guild operations either way. A harness that
+		// omitted either would be testing a gate rather than the resource. authorization_test.go and
+		// auth_test.go are where the omitted cases belong, and each asserts exactly that.
+		Authorization: AuthorizationReconciled(),
+		Auth:          authService,
 	}))
 	t.Cleanup(srv.Close)
 

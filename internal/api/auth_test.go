@@ -62,7 +62,16 @@ func newAuthFixture(t *testing.T) authFixture {
 		ServiceAccount: bot, CreatedBy: user, Scopes: "roster:read",
 	})
 
-	srv := httptest.NewServer(api.New(api.Config{Store: st, Clock: clk, Auth: svc}))
+	// Authorization is stated, not defaulted, and that matters MORE here than in the guild harness:
+	// its zero value answers 503 (#272) and so does a missing auth service, so a fixture that omitted
+	// it would let every assertion below pass against the wrong gate. This is the fully booted
+	// instance; auth is the only thing under test.
+	srv := httptest.NewServer(api.New(api.Config{
+		Store:         st,
+		Clock:         clk,
+		Auth:          svc,
+		Authorization: api.AuthorizationReconciled(),
+	}))
 	t.Cleanup(srv.Close)
 
 	return authFixture{
@@ -285,7 +294,14 @@ func TestMiddleware_NoAuthService_FailsClosed(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	srv := httptest.NewServer(api.New(api.Config{Store: st}))
+	// Reconciled, and NO Auth. The two gates answer the same status, so isolating this one is the
+	// whole design of the fixture: with Authorization left at its zero value the 503 below would
+	// arrive whether or not the auth middleware existed, and the test would pass for the wrong reason
+	// on the day somebody deleted it.
+	srv := httptest.NewServer(api.New(api.Config{
+		Store:         st,
+		Authorization: api.AuthorizationReconciled(),
+	}))
 	t.Cleanup(srv.Close)
 
 	res, err := http.Get(srv.URL + "/api/v1/guild") //nolint:noctx // test client
@@ -323,4 +339,39 @@ func decodeProblem(t *testing.T, res *http.Response) api.ProblemDetail {
 // assertion rather than three.
 func decodeJSON(res *http.Response, dst any) error {
 	return json.NewDecoder(res.Body).Decode(dst)
+}
+
+// TestMiddleware_DatabaseUnavailable_Is503NotA401 is the wire half of the same review finding
+// (PR #279): the status a client actually receives during a database outage.
+//
+// 401 tells a caller to present a different credential. During an outage there is no credential that
+// would work, so the SPA would sign its user out and a bot would re-authenticate in a loop — a
+// database problem rendered as a mass sign-out. 503 is true, is what a client already knows to retry,
+// and carries no WWW-Authenticate challenge, because there is nothing to challenge.
+func TestMiddleware_DatabaseUnavailable_Is503NotA401(t *testing.T) {
+	t.Parallel()
+
+	f := newAuthFixture(t)
+
+	require.Equal(t, http.StatusOK, f.do(t, "/api/v1/guild", f.cookie, "").StatusCode,
+		"the credential works before the database goes away")
+
+	require.NoError(t, f.store.Close())
+
+	for _, tt := range []struct {
+		name   string
+		cookie *http.Cookie
+		bearer string
+	}{
+		{name: "session", cookie: f.cookie},
+		{name: "token", bearer: f.token},
+	} {
+		res := f.do(t, "/api/v1/guild", tt.cookie, tt.bearer)
+
+		require.Equalf(t, http.StatusServiceUnavailable, res.StatusCode,
+			"a %s during a database outage must not be told to reauthenticate", tt.name)
+		require.Equal(t, api.CodeServiceUnavailable, decodeProblem(t, res).Code)
+		require.Empty(t, res.Header.Get("WWW-Authenticate"),
+			"there is nothing to challenge: the credential was never the problem")
+	}
 }

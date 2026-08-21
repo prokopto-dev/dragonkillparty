@@ -1903,6 +1903,19 @@ table "role_permission" {
     on_delete   = NO_ACTION
   }
 
+  // THE COVERING INDEX FOR THAT FOREIGN KEY, and it is the NO ACTION above that needs it (#271). The
+  // primary key is (role_id, permission_key) and SQLite cannot use a left-prefixed key to find rows by
+  // the second column, so without this index every enforcement of "a permission row is never deleted"
+  // reads the whole of role_permission — inside the write transaction, holding the single write
+  // connection's lock. The FK is deliberately the authorization safety boundary; making it cost a table
+  // scan is how a boundary stops being one that anybody keeps.
+  //
+  // Non-unique, because one permission key is granted to many roles. It is the same index the role
+  // editor's "which roles hold this key?" read wants, so it is not carrying the FK alone.
+  index "ix_role_permission_permission" {
+    columns = [column.permission_key]
+  }
+
   without_rowid = true
   strict        = true
 }
