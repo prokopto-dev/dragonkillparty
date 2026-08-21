@@ -27,14 +27,19 @@ package repo_test
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/licence"
 )
 
 // The two lockfiles the gate exists to cover. go.mod is the graph govulncheck already reads
@@ -508,40 +513,113 @@ func osvWaivesID(t *testing.T, id string) bool {
 	return false
 }
 
-// moduleBuildGraph returns every package `go list -deps -test ./...` reports for this module.
+// platformGraph pairs one release platform with the package listing `go list` resolved for it.
+type platformGraph struct {
+	platform licence.Platform
+	listing  string
+}
+
+// releaseBuildGraphs returns one `go list -deps -test ./...` listing per platform the release ships.
 //
-// `-test` is deliberate and is the stronger reading of the waiver's own words. The reason string
-// says no openpgp package appears in any build graph here, and a test-only import is still one:
-// osv-scanner reads go.mod, so it would keep filtering GO-2026-5932 whether the import sat in
-// cmd/dkp or in a _test.go file. Only the claim would have changed.
+// EVERY RELEASE TARGET, NOT THE HOST. `go list` resolves build constraints for one GOOS/GOARCH at a
+// time, so an import behind `//go:build windows` is invisible to a query run on the linux CI runner
+// — while osv-scanner's module-level ignore would go on suppressing GO-2026-5932 for the Windows
+// binary that shipped it. A host-only check is green in exactly the case the waiver is most wrong.
+// The licence gate met this first and its comment on gatePlatforms carries the measurement: a
+// linux-only query resolves 11 modules where the union resolves 14, so "a GPL dependency behind
+// `//go:build windows` would ship unnoticed".
 //
-// Offline and fast (~0.15s over ~485 packages): it reads the module graph the toolchain already
-// resolved, which is why this can be an ordinary `make test` assertion rather than a scanner job.
-func moduleBuildGraph(t *testing.T) string {
+// The platform list is internal/licence's, which owns the ONE enumeration of it — issue #130
+// consolidated two shell copies that had already drifted, and a third copy here would be that bug
+// again. TestLicencePlatforms_CoverTheGoreleaserBuildMatrix ties it to what actually ships.
+//
+// It is the FULL release matrix rather than licence.GatePlatforms(). That subset is one GOARCH per
+// GOOS, on the measured ground that a build constraint which adds a MODULE is GOOS-gated, and
+// TestLicenceGate_PlatformSubset_CoversTheFullMatrix holds it to that at module granularity. This
+// test asks a PACKAGE-level question, where an import behind `//go:build amd64` needs no new module
+// and that proof does not carry.
+//
+// `-test` is deliberate too, and is the stronger reading of the waiver's own words: the reason says
+// no openpgp package appears in any build graph here, and a test-only import is still one, which
+// osv-scanner would keep filtering just the same.
+func releaseBuildGraphs(t *testing.T) []platformGraph {
 	t.Helper()
 
-	cmd := exec.Command("go", "list", "-deps", "-test", "./...")
-	cmd.Dir = repoRoot(t)
+	platforms := licence.ReleasePlatforms()
+	if testing.Short() {
+		// The inner loop keeps the host platform only: `make test-unit`'s budget is under five
+		// seconds and seven graph resolutions do not fit in it. `make test` — what `make check`
+		// runs and what CI gates on — resolves the whole matrix, so the cross-platform hole above
+		// is closed by the gate rather than by the fast lane.
+		platforms = []licence.Platform{{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH}}
+	}
 
-	var stderr bytes.Buffer
+	root := repoRoot(t)
 
-	cmd.Stderr = &stderr
+	type result struct {
+		listing string
+		stderr  string
+		err     error
+	}
 
-	out, err := cmd.Output()
-	require.NoErrorf(t, err, "go list -deps -test ./...: %s", stderr.String())
+	var (
+		wg      sync.WaitGroup
+		results = make([]result, len(platforms))
+	)
 
-	listing := string(out)
+	// Concurrently, for licence.RuntimeModules's reason: the queries are independent, and serially
+	// this is the kind of thing that becomes the slowest part of `make check`.
+	for i, p := range platforms {
+		wg.Add(1)
 
-	// A graph without argon2 in it is not the graph this test means to read — an empty or truncated
-	// listing would otherwise pass the assertion below for the wrong reason, which is the same
-	// vacuity TestOSVConfig_BlockParser_StillMatches guards against upstream of it.
-	require.Containsf(t, listing, "golang.org/x/crypto/argon2",
-		"`go list -deps -test ./...` reported a graph with no golang.org/x/crypto/argon2 in it, so "+
-			"this test is not reading what it thinks it is. argon2id is why x/crypto is required at "+
-			"all (03-security.md §3.1); if it has genuinely gone, the %s waiver goes with it.",
-		openPGPWaiverID)
+		go func() {
+			defer wg.Done()
 
-	return listing
+			var stdout, stderr bytes.Buffer
+
+			cmd := exec.Command("go", "list", "-deps", "-test", "./...")
+			cmd.Dir = root
+			// GOWORK=off and GOFLAGS= are load-bearing for licence.RuntimeModules's reasons: a
+			// go.work file or a GOFLAGS carrying -tags or -mod=vendor changes which packages
+			// resolve, and a developer's environment must not decide which graph a supply-chain
+			// claim is checked against.
+			cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOOS="+p.GOOS, "GOARCH="+p.GOARCH)
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+
+			err := cmd.Run()
+			results[i] = result{listing: stdout.String(), stderr: stderr.String(), err: err}
+		}()
+	}
+
+	wg.Wait()
+
+	graphs := make([]platformGraph, 0, len(platforms))
+
+	for i, p := range platforms {
+		r := results[i]
+
+		// A hard failure rather than `-e`: a partial listing is exactly the vacuity this test
+		// exists to rule out. If a package here is ever legitimately buildable on only some
+		// platforms, the answer is `-e` plus a check that the union still resolved — not a
+		// narrower platform list, which would put the hole back.
+		require.NoErrorf(t, r.err,
+			"go list -deps -test ./... could not resolve the graph for %s\n%s", p, r.stderr)
+
+		// A graph without argon2 in it is not the graph this test means to read — an empty or
+		// truncated listing would otherwise pass the assertion below for the wrong reason, and
+		// `go list` EXITS ZERO when it matches no packages, warning only on stderr. That is the
+		// same vacuity TestOSVConfig_BlockParser_StillMatches guards against upstream of it.
+		require.Containsf(t, r.listing, "golang.org/x/crypto/argon2",
+			"`go list -deps -test ./...` resolved a graph for %s with no golang.org/x/crypto/argon2 "+
+				"in it, so this test is not reading what it thinks it is. argon2id is why x/crypto is "+
+				"required at all (03-security.md §3.1); if it has genuinely gone, the %s waiver goes "+
+				"with it.\nstderr: %s", p, openPGPWaiverID, r.stderr)
+
+		graphs = append(graphs, platformGraph{platform: p, listing: r.listing})
+	}
+
+	return graphs
 }
 
 // openPGPPackages returns the packages in `go list -deps` output that GO-2026-5932 is about.
@@ -579,8 +657,10 @@ func openPGPPackages(listing string) []string {
 //     Go call analysis was enabled and the finding stopped needing one (#280) — this test is a rule
 //     with nothing behind it, and says so rather than standing as an unexplained ban on a package
 //     somebody may one day have a reason to import.
-//  2. No openpgp package is in the module's build graph. This is the fact the waiver rests on, and
-//     the only one that can make it wrong.
+//  2. No openpgp package is in the build graph of any platform the release ships. This is the fact
+//     the waiver rests on, and the only one that can make it wrong. Every release target is
+//     queried rather than the host alone, because a build-constrained import is invisible to the
+//     one and shipped by the other — see releaseBuildGraphs.
 func TestOSVWaiver_OpenPGP_IsInNoBuildGraph(t *testing.T) {
 	t.Parallel()
 
@@ -592,20 +672,29 @@ func TestOSVWaiver_OpenPGP_IsInNoBuildGraph(t *testing.T) {
 			"standing ban on %s that no longer has a reason attached to it.",
 		openPGPWaiverID, openPGPImportPath)
 
-	found := openPGPPackages(moduleBuildGraph(t))
+	var offenders []string
 
-	require.Emptyf(t, found,
-		"%s is now in this module's build graph (%s), and osv-scanner.toml waives %s on the "+
-			"explicit ground that it is not.\n\n"+
+	for _, g := range releaseBuildGraphs(t) {
+		for _, pkg := range openPGPPackages(g.listing) {
+			offenders = append(offenders, g.platform.String()+": "+pkg)
+		}
+	}
+
+	require.Emptyf(t, offenders,
+		"%s is now in a shipped build graph, and osv-scanner.toml waives %s on the explicit ground "+
+			"that it is not:\n\n  %s\n\n"+
 			"osv-scanner matches at MODULE granularity, so it will keep filtering that advisory and "+
 			"`security / osv` will stay green — the waiver is now hiding a finding about code this "+
-			"repository really does build. The advisory has no fixed version, because the package "+
-			"is permanently deprecated rather than patchable, so upgrading is not an exit.\n\n"+
+			"repository really does build. If the platforms above are not the one you develop on, "+
+			"that is the point: an import behind a build constraint ships to those targets while "+
+			"every host-only check stays green. The advisory has no fixed version, because the "+
+			"package is permanently deprecated rather than patchable, so upgrading is not an "+
+			"exit.\n\n"+
 			"Remove the import, or take the decision deliberately: delete the waiver from "+
 			"osv-scanner.toml AND the id from test/golden/supply-chain/osv-waivers.txt, let the "+
 			"gate go red, and say on #280 why an unmaintained OpenPGP implementation is the right "+
 			"dependency. Do not widen the waiver to cover it.",
-		openPGPImportPath, strings.Join(found, ", "), openPGPWaiverID)
+		openPGPImportPath, openPGPWaiverID, strings.Join(offenders, "\n  "))
 }
 
 // TestOSVWaiver_OpenPGPMatcher_StillMatches keeps the test above from going silently vacuous, the

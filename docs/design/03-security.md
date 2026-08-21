@@ -1291,7 +1291,9 @@ three were then cleared by the dependency bump that closed them. One waiver stan
 than patchable, and reached by nothing here. x/crypto is a runtime dependency for argon2id (§3.1); the
 packages the advisory is about are in no build graph, which is why `govulncheck` reports nothing while
 osv-scanner, matching at module granularity, reports it. That single fact is the entire waiver, so
-`TestOSVWaiver_OpenPGP_IsInNoBuildGraph` re-derives it on every `make test` instead of trusting it —
+`TestOSVWaiver_OpenPGP_IsInNoBuildGraph` re-derives it on every `make test`, once per release
+platform (a build-constrained import is invisible to a host-only query and ships anyway), instead of
+trusting it —
 the scanner would go on filtering the advisory, reason string and all, on the day it stopped being
 true (#280).
 
