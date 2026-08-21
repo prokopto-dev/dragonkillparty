@@ -126,6 +126,57 @@ CI additionally runs `atlas schema inspect` on both dialects after applying both
 asserts the normalised logical schemas match a committed fingerprint — that is what keeps the
 Postgres target honest without a Postgres runtime.
 
+## Every foreign key carries a covering index, or a reasoned waiver
+
+`TestMigrate_FreshInstall_EveryForeignKeyIsCovered` (`test/migrations/foreign_key_coverage_test.go`,
+#274) walks every constraint in the schema a fresh install produces and requires SQLite to answer the
+child lookup with a SEARCH rather than a SCAN. **Add a foreign key and you add an index**, unless you
+can say why the lookup can never happen.
+
+SQLite enforces a foreign key by finding the child rows, through the ordinary query planner: delete a
+parent row and the child table is searched for what referenced it — CASCADE to remove them, SET NULL
+to blank them, NO ACTION to refuse the delete. With no usable index that search is a full table scan,
+taken inside the write transaction, on the single write connection every other request is queued
+behind. Three properties of "usable" are worth knowing before you reach for an index you already have:
+
+- **The child columns must be the index's LEADING columns.** `role_permission`'s primary key is
+  `(role_id, permission_key)` and could not find rows by the second column, which was #271.
+- **A PARTIAL index cannot carry a foreign key**, because the enforcement lookup implies nothing about
+  the predicate. `ix_api_token_sa` and `ix_session_user_active` both led with the right column, were
+  both `WHERE revoked_at IS NULL`, and covered nothing; #274 widened both.
+- **The gate reads the query PLAN, not the index names.** An index that exists and is not chosen buys
+  nothing, and `SCAN <table> USING COVERING INDEX <x>` is a full walk, not a lookup.
+
+The waiver is a comment in `db/schema.hcl`, on the line above the `foreign_key` block, in the shape
+`// dkp:enum-literal` already uses — in the schema rather than in an allowlist inside the test,
+because that is the file a reviewer reads and CODEOWNERS protects:
+
+```hcl
+// dkp:fk-uncovered the parent is append-only: ledger_batch carries trg_ledger_batch_no_update and trg_ledger_batch_no_delete, so no DELETE or key UPDATE can reach this constraint's child lookup.
+foreign_key "audit_log_batch" { … }
+```
+
+A reason is required; a bare marker fails. It is checked in BOTH directions — an uncovered constraint
+with no waiver fails, and a waiver on a constraint that has since been covered fails too, so the list
+cannot accumulate as sentences nobody re-reads. The three that stand today are the three children of
+`ledger_batch`, and they stand on the append-only triggers rather than on a cost argument: a parent
+that can be neither deleted nor re-keyed cannot provoke the scan.
+
+**Adding a foreign key to an existing table is a 12-step rebuild** — SQLite has no `ADD CONSTRAINT` —
+so the rules below about rebuilds apply to it in full. `000010_wire_app_user_fks_and_cover_foreign_keys.sql`
+is the worked example (#277: three childless tables, rebuilt inside goose's transaction), and
+`test/migrations/deferred_user_fks_test.go` is what holds it, on populated tables rather than on a
+fresh install. Note what that test pins about the transaction: the copy runs with the NEW constraint
+ENFORCED, because Atlas's `PRAGMA foreign_keys = off` is the silent no-op described below — so a
+pre-existing row whose attribution names a parent that does not exist STOPS the upgrade. That is the
+correct outcome, and the reason to release a deferred foreign key while nothing writes the column yet.
+
+**Changing an index in place rebuilds its whole table.** Atlas answers "this index's definition
+changed" on SQLite with the 12-step rebuild, so dropping a predicate while keeping the name would have
+rebuilt `api_token` — every PAT in the guild — to alter one index. Rename it instead
+(`ix_api_token_sa` → `ix_api_token_service_account`) and the diff is the `DROP INDEX` / `CREATE INDEX`
+pair it actually is. Read the generated SQL for `CREATE TABLE "new_…"` you did not expect.
+
 ## The hand-edit allowlist
 
 Atlas cannot express four things this schema requires. Hand-editing a generated migration is

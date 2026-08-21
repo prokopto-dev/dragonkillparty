@@ -218,9 +218,10 @@ func TestDecayRun_StateOutsideTheCatalogue_IsRejected(t *testing.T) {
 // outside the database (domain model §7, parity row 15), which is the failure this table exists to
 // close.
 //
-// It also pins the deferred FK. changed_by references app_user, a Phase 2 table, so the column is
-// nullable TEXT with NO constraint today: a non-existent user id must be storable, or the first
-// writer cannot record an import's config change at all.
+// changed_by is NULL on both rows here, which is the value an import or a boot-time migration writes
+// and the one this test needs: the column is a real foreign key to app_user since #277, so a
+// fabricated user id would now be refused for a reason that has nothing to do with what this test is
+// about. deferred_user_fks_test.go is where that constraint is exercised.
 func TestPoolConfigChange_HistoryAccumulates(t *testing.T) {
 	t.Parallel()
 
@@ -261,9 +262,10 @@ func TestPoolConfigChange_HistoryAccumulates(t *testing.T) {
 // TestPoolConfigChange_UnknownPool_IsRejected proves the one foreign key that is NOT deferred does
 // what it says.
 //
-// The pool FK is real because `pool` exists; changed_by's is not because `app_user` does not. A test
-// that only inserted valid rows could not tell a real constraint from a comment, and this table's
-// value is entirely in being a trustworthy record of a specific pool's history.
+// A test that only inserted valid rows could not tell a real constraint from a comment, and this
+// table's value is entirely in being a trustworthy record of a SPECIFIC pool's history. Its sibling
+// constraint on changed_by was deferred until app_user existed and is real since #277; this one has
+// been real since the table shipped, and both are asserted rather than assumed.
 func TestPoolConfigChange_UnknownPool_IsRejected(t *testing.T) {
 	t.Parallel()
 

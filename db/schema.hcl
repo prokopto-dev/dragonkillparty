@@ -223,9 +223,13 @@ table "guild" {
 // creates minimal, forward-compatible pool + account, because the ledger cannot exist without
 // them and the four system accounts need a table. Columns that reference tables which do not
 // exist yet (person, app_user, api_token, character, item, item_award, raid, raid_tick) ship as
-// nullable TEXT with NO foreign key; the FK is added when that table lands (a cheap ADD COLUMN /
-// ADD CONSTRAINT forward migration, never a remove or a retype). Every such column is commented
-// as a tracked deferral below.
+// nullable TEXT with NO foreign key; the FK is added when that table lands, and never by removing or
+// retyping the column. The releasing migration is NOT the "cheap ADD CONSTRAINT" this note used to
+// promise — SQLite has no such statement, so adding a foreign key to an existing table is the 12-step
+// rebuild, which is cheap on a childless table and is .claude/rules/migrations.md's most dangerous
+// shape on one with children. #277 released the three on role_assignment, pool_config_change and
+// decay_run, all childless; ledger_batch's two are still here, and they are the other kind.
+// Every such column is commented as a tracked deferral below.
 // ============================================================================
 
 // pool — a currency (docs/design/01-domain-model.md §7). MINIMAL for PR 9, plus the one column
@@ -1003,6 +1007,22 @@ table "balance_snapshot" {
     }
   }
 
+  // THE COVERING INDEX FOR balance_snapshot_account (#274). The primary key is
+  // (pool_id, account_id, balance_kind) and ix_snapshot_standings starts with pool_id, so neither can
+  // find rows by account_id: deleting an account scanned every snapshot row in the instance, and this
+  // is the table ADR-0023 measured at 13 pages to serve standings from — the largest cache the
+  // product keeps, growing with accounts × pools × kinds.
+  //
+  // IT COSTS A B-TREE WRITE ON EVERY BATCH COMMIT, which is the reason to state the trade rather than
+  // sweep it in. The snapshot upsert is on the commit path; the index makes it one page-write wider
+  // per (account, kind) touched. That is worth paying because the alternative is an unbounded scan
+  // holding the single write connection, and because balance_snapshot is WITHOUT ROWID — an index on
+  // (account_id) carries the whole primary key as its payload, so it answers "this account's balances
+  // across every pool" with no table access at all.
+  index "ix_snapshot_account" {
+    columns = [column.account_id]
+  }
+
   without_rowid = true
   strict        = true
 }
@@ -1133,6 +1153,18 @@ table "audit_log" {
     columns = [column.id]
   }
 
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // trg_ledger_batch_no_update and trg_ledger_batch_no_delete abort any UPDATE or DELETE of a batch,
+  // and TestTriggers_MutatingLedger_Raises drives all four on a database that applied every
+  // migration — so no parent row here can ever be deleted or re-keyed, and the child lookup SQLite
+  // would need an index for is unreachable. The index would be a third B-tree write on the table
+  // every mutating request appends to, read by nothing.
+  //
+  // This is the same argument the deferred §17 indexes below make, sharpened: those are deferred
+  // because nothing SELECTS on them yet, and this one is waived because nothing can. The read that
+  // would want it — a dispute walking from a batch to the actor — is §17.1's, and the day an endpoint
+  // serves it, the index lands with that endpoint and this waiver comes out.
   foreign_key "audit_log_batch" {
     columns     = [column.ledger_batch_id]
     ref_columns = [table.ledger_batch.column.id]
@@ -1327,9 +1359,9 @@ table "pool_config_change" {
     type = integer
   }
 
-  // DEFERRED FK -> app_user(id). app_user is a Phase 2 table (docs/design/01-domain-model.md §5).
-  // Nullable TEXT, no foreign key until it lands. NULL is also the honest value for a change made by
-  // the importer or by a boot-time migration, which have no user behind them.
+  // Real FK -> app_user(id) since #277, which released the deferral 000009 made good on. NULL is also
+  // the honest value for a change made by the importer or by a boot-time migration, which have no
+  // user behind them.
   column "changed_by" {
     null = true
     type = text
@@ -1399,6 +1431,24 @@ table "pool_config_change" {
     on_delete   = NO_ACTION
   }
 
+  // SET NULL, for the reason role_assignment_granted_by carries in full: attribution on a history row
+  // is not a live capability, and a config change made by an officer who has since been erased is
+  // still a change that happened. The row's from→to pair and its reason — everything this table
+  // exists to record — are untouched; what a hard user delete clears is the pointer to a person the
+  // database no longer holds, which is what erasure means. NO ACTION here would make an immutable
+  // history table permanently veto the erasure path.
+  foreign_key "pool_config_change_changed_by" {
+    columns     = [column.changed_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = SET_NULL
+  }
+
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // The same waiver audit_log_batch carries, for the same parent and the same reason: the two
+  // append-only triggers abort every UPDATE and DELETE of a batch, so nothing can provoke the child
+  // scan an index here would serve.
   foreign_key "pool_config_change_batch" {
     columns     = [column.migration_batch_id]
     ref_columns = [table.ledger_batch.column.id]
@@ -1418,6 +1468,13 @@ table "pool_config_change" {
       column = column.changed_at
       desc   = true
     }
+  }
+
+  // The covering index for pool_config_change_changed_by (#274, #277). Cheap where the ledger-batch
+  // one above would not be: this table is appended to when an officer changes a pool's rules, which
+  // is a handful of rows a year, not a row per commit.
+  index "ix_pcc_changed_by" {
+    columns = [column.changed_by]
   }
 
   strict = true
@@ -1530,8 +1587,8 @@ table "decay_run" {
     type = text
   }
 
-  // DEFERRED FK -> app_user(id). app_user is a Phase 2 table. Nullable TEXT, no foreign key until it
-  // lands — and NULL is the correct value for the periodic job, which is the expected trigger.
+  // Real FK -> app_user(id) since #277, which released the deferral 000009 made good on — and NULL is
+  // still the correct value for the periodic job, which is the expected trigger.
   column "triggered_by" {
     null = true
     type = text
@@ -1568,11 +1625,26 @@ table "decay_run" {
     on_delete   = NO_ACTION
   }
 
+  // dkp:fk-uncovered ledger_batch is append-only, so this lookup can never run (#274).
+  //
+  // The same waiver audit_log_batch carries, for the same parent and the same reason: the two
+  // append-only triggers abort every UPDATE and DELETE of a batch, so nothing can provoke the child
+  // scan an index here would serve.
   foreign_key "decay_run_batch" {
     columns     = [column.ledger_batch_id]
     ref_columns = [table.ledger_batch.column.id]
     on_update   = NO_ACTION
     on_delete   = NO_ACTION
+  }
+
+  // SET NULL, for the reason role_assignment_granted_by carries in full: a run triggered by an
+  // officer who has since been erased is still a run that happened, and the points it posted are in
+  // the ledger either way. NULL is already this column's spelling of "the periodic job did it".
+  foreign_key "decay_run_triggered_by" {
+    columns     = [column.triggered_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = SET_NULL
   }
 
   // BEGIN GENERATED — decay_run enum CHECKs, from internal/decay/kinds. Run `make gen`.
@@ -1622,6 +1694,13 @@ table "decay_run" {
   // pool's schedule, and a family filter over one pool's runs is a cheap residual.
   index "ix_decay_pool" {
     columns = [column.pool_id, column.scheduled_for_at]
+  }
+
+  // The covering index for decay_run_triggered_by (#274, #277). One row per pool per cadence period
+  // is a slow-growing table, and the alternative to the index is that erasing a user scans every
+  // decay run the guild has ever performed.
+  index "ix_decay_triggered_by" {
+    columns = [column.triggered_by]
   }
 
   strict = true
@@ -1978,9 +2057,8 @@ table "role_assignment" {
     type = integer
   }
 
-  // DEFERRED FK -> app_user(id). app_user is a Phase 2 auth table and lands with sessions and PATs
-  // (ROADMAP Phase 2 deliverable 1); nullable TEXT with no constraint until then, exactly as
-  // pool_config_change.changed_by and decay_run.triggered_by are. NULL for a grant no user made — the
+  // Real FK -> app_user(id) since #277; the deferral this column carried was released when
+  // 000009_auth_identity_and_credentials.sql created app_user. NULL for a grant no user made — the
   // bootstrap owner, a Discord sync, an import.
   column "granted_by" {
     null = true
@@ -2024,6 +2102,25 @@ table "role_assignment" {
     ref_columns = [table.role.column.id]
     on_update   = NO_ACTION
     on_delete   = CASCADE
+  }
+
+  // SET NULL, AND THE CONTRAST WITH service_account_owner IS THE DESIGN (#277). That one is
+  // NO ACTION because a bot whose owner leaves must not leave with them — the owner is a LIVE
+  // capability, and refusing the delete is what forces the reassignment conversation. This is the
+  // opposite case: who granted a role is HISTORY, and the grant does not stop being valid because
+  // the officer who made it was erased. Refusing here would mean a user row could never be removed
+  // once they had granted anything, so the erasure path would end in hand-editing the very table
+  // that records who holds power — and NULL is already this column's spelling of "no user did this"
+  // (the bootstrap owner, a Discord sync, an import), so the erased case reads as the shape the
+  // column already has rather than as a new one.
+  //
+  // The product's own delete is app_user.deleted_at; reaching this cascade takes a hard DELETE, so
+  // it is for `dkp` maintenance and for erasure, not for the user admin screen.
+  foreign_key "role_assignment_granted_by" {
+    columns     = [column.granted_by]
+    ref_columns = [table.app_user.column.id]
+    on_update   = NO_ACTION
+    on_delete   = SET_NULL
   }
 
   // BEGIN GENERATED — role_assignment enum CHECKs, from internal/authz/roleassignment/kinds. Run `make gen`.
@@ -2079,6 +2176,25 @@ table "role_assignment" {
   // request and caches on the Principal.
   index "ix_role_assign_subject" {
     columns = [column.subject_kind, column.subject_id]
+  }
+
+  // THE COVERING INDEX FOR role_assignment_role (#274), and of the five findings in that issue this is
+  // the one to look at first: it is the CASCADE. Deleting a role has to find every assignment that
+  // holds it, and the only key starting with role_id was ux_role_assign — which starts with
+  // subject_kind — so the cascade read the whole assignment table, inside the write transaction, on
+  // two tables that both grow with the guild rather than staying constant.
+  //
+  // It is also the role editor's "who holds this role?", which is the list an officer sees before
+  // deleting one, so it is not carrying the foreign key alone.
+  index "ix_role_assign_role" {
+    columns = [column.role_id]
+  }
+
+  // The covering index for role_assignment_granted_by (#274, #277). SET NULL is enforced the same way
+  // CASCADE is — SQLite looks up the child rows — so wiring the foreign key above without this would
+  // have made erasing one user a full scan of every grant ever made.
+  index "ix_role_assign_granted_by" {
+    columns = [column.granted_by]
   }
 
   strict = true
@@ -2587,10 +2703,29 @@ table "session" {
     columns = [column.token_hash]
   }
 
-  // The session-list read, and the sweep that deletes expired rows.
-  index "ix_session_user_active" {
+  // The session-list read, the sweep that deletes expired rows, AND the covering index for
+  // session_user (#274).
+  //
+  // IT LOST ITS `WHERE revoked_at IS NULL` PREDICATE TO CARRY THE FOREIGN KEY, and that is the whole
+  // of the change: SQLite's foreign-key enforcement finds the child rows through the ordinary query
+  // planner, and the planner may only use a partial index when the query implies its predicate. A
+  // CASCADE delete's lookup is `user_id = <the deleted user>` and implies nothing about revoked_at, so
+  // the partial form covered the read and left the cascade scanning the whole session table.
+  //
+  // Widened rather than joined by a second plain index on user_id, which was the other way to satisfy
+  // the gate: two indexes on the same leading column would be two B-tree writes per login instead of
+  // one, forever, to save the list read from skipping the rows a revoked session leaves behind. The
+  // predicate was an optimisation; the cascade is a correctness cost, and one index now serves both.
+  index "ix_session_user" {
     columns = [column.user_id, column.expires_at]
-    where   = "revoked_at IS NULL"
+  }
+
+  // The covering index for session_identity (#274). SET NULL: unlinking a Discord identity has to
+  // find the sessions it opened, and without this that is a scan of every session ever created —
+  // this table is never DELETEd from (db/queries/auth.sql: a session is revoked, never removed), so
+  // "every session ever created" is what the table holds.
+  index "ix_session_identity" {
+    columns = [column.identity_id]
   }
 
   strict = true
@@ -2692,6 +2827,18 @@ table "service_account" {
   index "ux_service_account_name" {
     unique  = true
     columns = [column.name_norm]
+  }
+
+  // The covering indexes for the two foreign keys above (#274). NO ACTION is enforced by looking the
+  // child rows up, so without these the delete that is SUPPOSED to fail — the officer who still owns
+  // the raid bot — fails only after scanning the table, and the "list this user's bots" screen that
+  // makes the refusal actionable scans it too.
+  index "ix_service_account_owner" {
+    columns = [column.owner_user_id]
+  }
+
+  index "ix_service_account_creator" {
+    columns = [column.created_by]
   }
 
   strict = true
@@ -2862,9 +3009,30 @@ table "api_token" {
     columns = [column.token_hash]
   }
 
-  index "ix_api_token_sa" {
+  // The token list for one service account, AND the covering index for api_token_service_account
+  // (#274). It lost the `WHERE revoked_at IS NULL` predicate its predecessor ix_api_token_sa carried,
+  // for the reason ix_session_user lost the identical one: a partial index cannot carry a foreign key,
+  // because the cascade's lookup implies nothing about revoked_at. Nothing is lost by including
+  // revoked rows — this table is never DELETEd from, so a revoked token stays a row, and the screen
+  // that lists a bot's tokens wants the revoked ones on it anyway.
+  //
+  // RENAMED rather than redefined in place, and that is about the migration rather than the name:
+  // Atlas answers "this index changed" on SQLite with a 12-step rebuild of the whole table, so keeping
+  // the old name would have dropped and re-created api_token — every PAT in the guild — to change one
+  // index. A new name makes it the DROP INDEX / CREATE INDEX pair it actually is.
+  index "ix_api_token_service_account" {
     columns = [column.service_account_id]
-    where   = "revoked_at IS NULL"
+  }
+
+  // The covering indexes for the two app_user foreign keys (#274). The columns are written once at
+  // mint and once at revoke and never touched again — in particular TouchAPIToken, the write on the
+  // bearer hot path, updates only last_used_at and so pays nothing for either of these.
+  index "ix_api_token_creator" {
+    columns = [column.created_by]
+  }
+
+  index "ix_api_token_revoker" {
+    columns = [column.revoked_by]
   }
 
   strict = true
@@ -2952,6 +3120,13 @@ table "feed_token" {
   index "ux_feed_token_hash" {
     unique  = true
     columns = [column.token_hash]
+  }
+
+  // The covering index for feed_token_user (#274), and the "revoke my calendar feeds" read. CASCADE:
+  // deleting a user has to find their feed tokens, and a path-embedded credential is exactly the kind
+  // whose revocation must not be the slow thing during an incident.
+  index "ix_feed_token_user" {
+    columns = [column.user_id]
   }
 
   strict = true
