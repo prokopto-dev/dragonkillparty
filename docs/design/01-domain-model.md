@@ -245,7 +245,12 @@ CREATE TABLE session (
   mfa_satisfied_at INTEGER NULL                   -- step-up clock: re-auth within 5 min
 ) STRICT;
 CREATE UNIQUE INDEX ux_session_token ON session(token_hash);
-CREATE INDEX ix_session_user_active ON session(user_id, expires_at) WHERE revoked_at IS NULL;
+-- NOT partial, and the missing `WHERE revoked_at IS NULL` is the point (#274). SQLite enforces
+-- session.user_id's CASCADE by looking the child rows up through the query planner, which may only
+-- use a partial index when the query implies its predicate — and a cascade's lookup implies nothing
+-- about revoked_at. The predicate was an optimisation; carrying the foreign key is not.
+CREATE INDEX ix_session_user ON session(user_id, expires_at);
+CREATE INDEX ix_session_identity ON session(identity_id);   -- covers the SET NULL on unlink
 ```
 
 The cookie is `__Host-dkp_session` (conventions §7) — that exact string appears in the OpenAPI
@@ -273,6 +278,10 @@ CREATE TABLE service_account (
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX ux_service_account_name ON service_account(name_norm);
+-- Both FKs above are NO ACTION, which SQLite enforces by scanning for the child rows: deleting a
+-- user who still owns or created a bot must FAIL, and without these it fails only after a scan.
+CREATE INDEX ix_service_account_owner   ON service_account(owner_user_id);
+CREATE INDEX ix_service_account_creator ON service_account(created_by);
 
 CREATE TABLE api_token (
   id                 TEXT NOT NULL PRIMARY KEY,
@@ -294,7 +303,10 @@ CREATE TABLE api_token (
 ) STRICT;
 CREATE UNIQUE INDEX ux_api_token_prefix ON api_token(prefix);
 CREATE UNIQUE INDEX ux_api_token_hash   ON api_token(token_hash);
-CREATE INDEX ix_api_token_sa ON api_token(service_account_id) WHERE revoked_at IS NULL;
+-- NOT partial, for the reason ix_session_user is not: a partial index cannot carry a foreign key.
+CREATE INDEX ix_api_token_service_account ON api_token(service_account_id);
+CREATE INDEX ix_api_token_creator ON api_token(created_by);
+CREATE INDEX ix_api_token_revoker ON api_token(revoked_by);
 
 CREATE TABLE feed_token (          -- single-purpose, path-embedded, never a PAT
   id TEXT NOT NULL PRIMARY KEY, token_hash BLOB NOT NULL,
@@ -304,6 +316,7 @@ CREATE TABLE feed_token (          -- single-purpose, path-embedded, never a PAT
   revoked_at INTEGER NULL, last_used_at INTEGER NULL, created_at INTEGER NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX ux_feed_token_hash ON feed_token(token_hash);
+CREATE INDEX ix_feed_token_user ON feed_token(user_id);      -- covers the CASCADE on user delete
 ```
 
 > ✗ **Not copied:** `__config.api_key` — one global token that impersonates the first superadmin,
@@ -415,7 +428,7 @@ CREATE TABLE role_assignment (
   scope_type   TEXT NOT NULL DEFAULT 'global' CHECK (scope_type IN ('global','pool','raid_group')),
   scope_id     TEXT NULL,                         -- NULL iff scope_type = 'global'
   suspended_until_at INTEGER NULL,                -- temporary revocation; no deny needed
-  granted_by   TEXT NULL REFERENCES app_user(id),
+  granted_by   TEXT NULL REFERENCES app_user(id) ON DELETE SET NULL,   -- attribution, not capability
   granted_via  TEXT NOT NULL DEFAULT 'manual'
                CHECK (granted_via IN ('manual','invitation','discord_sync','import','bootstrap')),
   expires_at   INTEGER NULL,
@@ -425,6 +438,10 @@ CREATE TABLE role_assignment (
 CREATE UNIQUE INDEX ux_role_assign
   ON role_assignment(subject_kind, subject_id, role_id, scope_type, COALESCE(scope_id,''));
 CREATE INDEX ix_role_assign_subject ON role_assignment(subject_kind, subject_id);
+-- ux_role_assign starts with subject_kind, so it cannot find rows by role_id: without this, deleting
+-- a role CASCADEs by scanning every assignment, on two tables that grow with the guild (#274).
+CREATE INDEX ix_role_assign_role ON role_assignment(role_id);
+CREATE INDEX ix_role_assign_granted_by ON role_assignment(granted_by);
 ```
 
 **Effective permission check** — one query, cached per request on the `Principal`:
@@ -847,13 +864,15 @@ CREATE UNIQUE INDEX ux_pool_name ON pool(name_norm);
 CREATE TABLE pool_config_change (  -- config is versioned as events, never overwritten silently
   id TEXT NOT NULL PRIMARY KEY,
   pool_id TEXT NOT NULL REFERENCES pool(id),
-  changed_at INTEGER NOT NULL, changed_by TEXT NULL REFERENCES app_user(id),
+  changed_at INTEGER NOT NULL,
+  changed_by TEXT NULL REFERENCES app_user(id) ON DELETE SET NULL,
   from_strategy_id TEXT NOT NULL, from_strategy_version TEXT NOT NULL, from_config_json TEXT NOT NULL,
   to_strategy_id   TEXT NOT NULL, to_strategy_version   TEXT NOT NULL, to_config_json   TEXT NOT NULL,
   reason TEXT NOT NULL DEFAULT '',
   migration_batch_id TEXT NULL REFERENCES ledger_batch(id)
 ) STRICT;
 CREATE INDEX ix_pcc_pool ON pool_config_change(pool_id, changed_at DESC);
+CREATE INDEX ix_pcc_changed_by ON pool_config_change(changed_by);   -- covers the SET NULL
 
 CREATE TABLE item_pool (           -- which items are purchasable from which currency
   id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, name_norm TEXT NOT NULL,
@@ -1271,6 +1290,9 @@ CREATE TABLE balance_snapshot (    -- a CACHE. Droppable. Rebuildable. Verified 
   PRIMARY KEY (pool_id, account_id, balance_kind)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX ix_snapshot_standings ON balance_snapshot(pool_id, balance_kind, amount_cp DESC);
+-- Neither the primary key nor the index above starts with account_id, so deleting an account
+-- scanned the whole cache. WITHOUT ROWID means this index carries the full PK as its payload (#274).
+CREATE INDEX ix_snapshot_account ON balance_snapshot(account_id);
 ```
 
 **Materialised synchronously, in the same transaction as the batch.** A batch has at most ~70
@@ -1818,11 +1840,13 @@ CREATE TABLE decay_run (          -- decay, cap AND start-points runs: one table
   dry_run_result_json  TEXT NOT NULL DEFAULT '{}',
   config_snapshot_json TEXT NOT NULL DEFAULT '{}',
   ledger_batch_id TEXT NULL REFERENCES ledger_batch(id),
-  triggered_by TEXT NULL REFERENCES app_user(id),
+  triggered_by TEXT NULL REFERENCES app_user(id) ON DELETE SET NULL,
   error TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ) STRICT;
 CREATE UNIQUE INDEX ux_decay_period ON decay_run(pool_id, kind, cadence_period);
+CREATE INDEX ix_decay_pool ON decay_run(pool_id, scheduled_for_at);
+CREATE INDEX ix_decay_triggered_by ON decay_run(triggered_by);      -- covers the SET NULL
 ```
 
 **`kind` is inside the unique index, and that is [ADR-0024](../adr/0024-one-run-table-scoped-by-kind.md).**
