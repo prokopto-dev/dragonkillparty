@@ -474,7 +474,10 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			//
 			// The two are independent gates on the same request and both must be open: Auth decides
 			// WHO is asking, Authorization decides whether this instance is in a state to answer that
-			// question at all. Nothing yet joins them — the permission check itself is Wave 0e (#276).
+			// question at all. What JOINS them is authz.Check, which api.New builds from Store and
+			// Clock and runs inside the credential middleware (Wave 0e, #276) — so a request that gets
+			// past both gates has been checked against its operation's permission, scopes and step-up
+			// requirement before any handler sees it.
 			Authorization: authorization,
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,

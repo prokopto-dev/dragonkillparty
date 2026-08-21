@@ -2,8 +2,6 @@
 
 # PAT scopes
 
-> **AUTHENTICATION IS ENFORCED; AUTHORIZATION IS NOT YET.** An operation that names a credential requires one — an anonymous request is refused with `401`. What the server does not check yet is CAPABILITY: no permission is verified, scopes are not intersected with the service account's role, and the capability floor is documented rather than enforced. Until the authorization middleware lands, any live credential passes every operation. See "Known gaps" in SECURITY.md.
-
 The 27 scopes a personal access token can carry. They are `<family>:<verb>`,
 colon-separated, and this page is generated from `internal/authz/catalogue.go`
 ([canonical §6](../design/00-canonical-conventions.md)). The same list is published in the

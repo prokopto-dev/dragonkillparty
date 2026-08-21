@@ -8,6 +8,7 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -114,6 +115,12 @@ type Config struct {
 	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
 	// reaching a handler at runtime is a wiring bug, not an input to guard, so the service is built
 	// from a nil Store here and the arch tests exercise the spec with it absent.
+	//
+	// SINCE WAVE 0e IT ALSO BACKS THE CAPABILITY CHECK, and that path does NOT get the same treatment.
+	// authz.Checker reads role assignments through it, so a nil Store means no request can be
+	// authorized — and authz.Check answers ErrNoChecker, which the middleware renders as 503 rather
+	// than letting the operation through. Every gate in this Config fails the same way: an authorization
+	// input that is missing refuses, it never defaults to allow.
 	Store *store.Store
 }
 
@@ -182,11 +189,14 @@ func New(cfg Config) http.Handler {
 	// Principal and refuses an operation that declares `Security` when no live credential is present
 	// (03-security.md §4.1, §5).
 	//
-	// What is still missing between them is the permission check itself — `authz.Check`, the scope
-	// intersection and the step-up window — which is Wave 0e (#276). Until it lands, a reconciled
-	// instance lets every authenticated principal through every operation.
+	// The second gate answers BOTH request questions in one pass, which is why there are two
+	// middleware here and not three: it resolves the credential into one Principal, and then — with
+	// that Principal and the operation both in hand — runs authz.Check for the permission, the scope
+	// intersection and the step-up window (Wave 0e, #276). A third middleware would have to recover
+	// the Principal from the context and the operation from the registry, which is two places that can
+	// disagree about whether a request was authenticated.
 	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
-	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth))
+	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth, authz.NewChecker(cfg.Store, clk)))
 
 	registerOperations(humaAPI, cfg)
 	registerDocs(mux)

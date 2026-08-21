@@ -52,6 +52,52 @@ type Querier interface {
 	// which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
 	// epoch, and a branch nobody has watched go red is a branch nobody knows works.
 	BumpSessionEpoch(ctx context.Context, arg BumpSessionEpochParams) error
+	// EffectivePermission is THE authorization read: the one statement the choke point runs per request
+	// that requires a permission (docs/design/03-security.md section 4.1).
+	//
+	// IT ANSWERS TWO QUESTIONS IN ONE ROUND TRIP, because the middleware needs both and the second is a
+	// column on the row the first joins through anyway. `granted` is whether this subject holds the key;
+	// `requires_step_up` is the permission row's own flag, which internal/authz reconciles from the Go
+	// catalogue on every boot and which docs/design/01-domain-model.md section 5 makes the value the
+	// middleware reads. Reading the flag from the row rather than from the catalogue in memory is what
+	// keeps "the database is the authority" true for a patched or partially-upgraded binary.
+	//
+	// NO ROW MEANS FAIL CLOSED, and the WHERE clause is why there are two ways to get there: a key with
+	// no permission row at all, and a key whose row is ORPHANED - stamped because the running binary
+	// stopped shipping it. Boot reconciliation refuses to start when a registered route declares either
+	// (internal/authz.requireKeys), so reaching this state at request time means the database changed
+	// under a running process. The caller answers 503 rather than 403: it cannot decide, and a caller
+	// who did nothing wrong should not be told they lack a permission nobody can hold.
+	//
+	// THE FOUR CONDITIONS ON AN ASSIGNMENT are each a documented control rather than defensive
+	// filtering:
+	//
+	//   role.deleted_at IS NULL   a soft-deleted role grants nothing (role.deleted_at is the product's
+	//                             delete; there is no hard DELETE on the table). This is the one
+	//                             condition here with no negative fixture, and it is unreachable rather
+	//                             than untested: no statement in this file sets deleted_at, because
+	//                             soft-deleting a role is the role editor's operation and it has not
+	//                             shipped. Issue #286 carries the fixture, to land with it.
+	//   expires_at                compared against now rather than swept, so a grant stops working at
+	//                             the instant it expires whether or not a job has run (db/schema.hcl).
+	//   suspended_until_at        temporary revocation - an officer on leave or under review - which is
+	//                             why this schema needs no deny rule. `<= now` means a suspension whose
+	//                             date has passed is over.
+	//   the scope pair            a global assignment reaches everything; a scoped one reaches only its
+	//                             own target. scope_id is NULL exactly when scope_type is 'global'
+	//                             (CHECK role_assignment_scope_shape), so the first branch never needs
+	//                             to inspect it and the second always can.
+	//
+	// THERE IS NO BRANCH FOR admin.owner, HERE OR IN GO. The owner capability is a permission row
+	// granted to a role like any other (docs/design/03-security.md section 4.3): EQdkp Plus's "group id
+	// 2 short-circuits the ACL" is a named anti-pattern, and the single place it could be reintroduced
+	// cheaply is this statement.
+	//
+	// CAST(EXISTS(...) AS INTEGER) rather than COUNT(*): EXISTS stops at the first matching assignment,
+	// and the cast pins the result to the INTEGER both dialects agree on - sqlc's SQLite engine takes a
+	// bare boolean expression's Go type from an affinity a predicate does not have. It is the same
+	// reason ResolveSession casts `u.deleted_at IS NOT NULL`.
+	EffectivePermission(ctx context.Context, arg EffectivePermissionParams) (EffectivePermissionRow, error)
 	// GetAccount reads one account by id. It backs the "system accounts are addressable by id"
 	// acceptance test and the account reader in internal/ledger.
 	GetAccount(ctx context.Context, id string) (Account, error)
@@ -238,6 +284,18 @@ type Querier interface {
 	// otherwise fail the foreign key on a fresh install - which is also why the seed cannot live in the
 	// migration beside pool and account: at migration time the permission table is empty.
 	InsertRole(ctx context.Context, arg InsertRoleParams) error
+	// Role assignments (Phase 2 Wave 0e, issue #276) - who holds which role, and how far it reaches.
+	//
+	// InsertRoleAssignment is the statement the first-run bootstrap (issue #264) and the role editor
+	// both call, written here now because authz.Check has nothing to read without it: a permission
+	// catalogue and a role seed with no assignments authorise nobody, so the check would be a function
+	// whose only observed answer is "no". It is the ADR-0028 commitment-3 shape - the statement its
+	// endpoint will call verbatim, landing one wave ahead of the endpoint - and not test scaffolding.
+	//
+	// There is no UpdateRoleAssignment and no DeleteRoleAssignment yet. Revocation is
+	// suspended_until_at or expires_at, both of which the read below already honours, and the role
+	// editor decides between a soft revoke and a hard delete when it ships.
+	InsertRoleAssignment(ctx context.Context, arg InsertRoleAssignmentParams) error
 	InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) error
 	InsertSession(ctx context.Context, arg InsertSessionParams) error

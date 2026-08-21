@@ -29,14 +29,21 @@
 // meaningful — permission, role, role_permission, role_assignment — which is ROADMAP Phase 2
 // deliverable 3.
 //
+// authz.Check ARRIVED IN WAVE 0e (#276) and is the other half of this package: check.go reads
+// role_assignment → role_permission → permission for a Principal's Kind and ID, intersects the
+// result with the token's scopes through the operation's own scope declaration, refuses every token
+// on a capability-floor key, and requires a session that re-authenticated within five minutes where
+// the permission row says so. internal/api calls it once, inside the one middleware, before the
+// handler. There is no superadmin branch in it and a test reads the source to prove there is not.
+//
 // Still NOT here, and each has a reason rather than an omission:
 //
 //   - The admin.owner HOLDER, and the first-run bootstrap that creates it. The owner ROLE is seeded
 //     here; who holds it cannot be, because a role_assignment names an app_user or a service_account
 //     and both are Phase 2 deliverable 1. Issue #264.
-//   - authz.Check. Phase 2 Wave 0d (#273) built the Principal and the middleware that resolves one,
-//     so the missing half is now the CHECK itself: the permission lookup, the role-permission
-//     intersection with a token's scopes, and the capability floor. Wave 0e.
+//   - The GRANT side of role_assignment beyond InsertRoleAssignment. Editing an assignment,
+//     suspending one, revoking one: those are the role editor's, and they are session-and-step-up
+//     operations that need endpoints (#265, #267).
 //   - The GENERATED OUTPUTS canonical §6 lists — the OpenAPI x-dkp-permission metadata, the PAT scope
 //     enum, the authorization matrix and docs/reference/permissions.md.
 //
@@ -62,36 +69,3 @@
 // because the literal "raid.tick.create" never appears in the source. This was measured, both
 // directions (see the decision record §Q1). Do not "tidy" the catalogue into Resource/Action fields.
 package authz
-
-// AuthorizationGapNotice is the disclosure every published description of a credential carries until
-// the authorization middleware exists.
-//
-// IT IS A TRIPWIRE, AND IT IS MEANT TO BE DELETED. It is also the SECOND of them: the first,
-// Phase0EnforcementNotice, said that nothing was enforced at all, and it was deleted by Phase 2 Wave
-// 0d (issue #273) together with TestGuild_Unauthenticated_IsAKnownPhase0Gap, in the change that made
-// an unauthenticated `PATCH /api/v1/guild` answer 401. Narrowing a disclosure is not the same as
-// removing it, and replacing it rather than deleting it is what keeps the remaining half visible.
-//
-// WHAT IS TRUE NOW: an operation that declares `Security` requires a live credential. What is still
-// NOT true is anything about capability. internal/auth resolves identity; nothing yet checks that the
-// principal HOLDS the `x-dkp-permission` the operation declares, that a token's scopes reach it, or
-// that the capability floor's session-and-step-up operations refuse a token. Any live credential
-// passes every operation — a member's session can `PATCH /api/v1/guild`, and so can a zero-scope
-// token.
-//
-// WHY IT HAS TO BE ON THE PUBLISHED SURFACE, and this is a security review's finding rather than a
-// tidiness one: the OpenAPI security schemes and the generated reference pages describe scopes,
-// intersection and step-up in detail. A bot author reading that reasonably concludes a zero-scope
-// token is refused. It is not. Describing a control well makes its absence HARDER to notice, not
-// easier, so the description has to say so itself.
-//
-// Delete this constant and its uses in the same change that lands authz.Check and the capability
-// floor (Wave 0e). Its consumers are internal/api's security schemes and internal/authz/docgen's two
-// reference pages; both have tests asserting the notice is present, which is what makes the deletion
-// deliberate rather than a silent drift back to over-promising.
-const AuthorizationGapNotice = "**AUTHENTICATION IS ENFORCED; AUTHORIZATION IS NOT YET.** An " +
-	"operation that names a credential requires one — an anonymous request is refused with `401`. " +
-	"What the server does not check yet is CAPABILITY: no permission is verified, scopes are not " +
-	"intersected with the service account's role, and the capability floor is documented rather than " +
-	"enforced. Until the authorization middleware lands, any live credential passes every operation. " +
-	"See \"Known gaps\" in SECURITY.md."

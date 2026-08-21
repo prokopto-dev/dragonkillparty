@@ -13,11 +13,14 @@
 // at all. It does not decide AUTHORIZATION — whether the principal holds the permission the
 // operation declares, and whether the token's scopes reach it. That is internal/authz's
 // `authz.Check` and the capability floor (`effective capability = role permissions ∩ token scopes`),
-// which land in Wave 0e against the permission and role tables Wave 0b already reconciles. The split
-// is the deliberate wave boundary of issue #273, and while it is open EVERY AUTHENTICATED PRINCIPAL
-// PASSES EVERY OPERATION'S PERMISSION CHECK, because there is no permission check yet. SECURITY.md
-// names that gap and the published security schemes disclose it; both are tripwires to delete with
-// 0e, exactly as the Phase-0 pair this wave deletes were tripwires for this one.
+// which landed in Wave 0e (#276) against the permission and role tables Wave 0b reconciles.
+//
+// THE BOUNDARY SURVIVED THE JOIN, and that is what made 0e an addition rather than a rewrite
+// (ADR-0028, commitment 4). This package still imports nothing from internal/authz, holds no
+// permissions on the Principal, and answers no "may this principal do X" question. The dependency
+// runs the other way: internal/authz reads a *Principal. A capability field on the struct below
+// would make every consumer of an identity a consumer of a policy decision taken at resolution time,
+// which is a cache with none of the invalidation.
 //
 // THE FOUR PROPERTIES THAT MAKE A CREDENTIAL SAFE HERE:
 //

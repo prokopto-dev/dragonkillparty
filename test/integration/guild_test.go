@@ -15,6 +15,8 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
+	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
@@ -80,7 +82,21 @@ func newServer(t *testing.T) (*httptest.Server, *store.Store, *http.Client) {
 	}))
 	t.Cleanup(srv.Close)
 
-	cookie, _ := auth.SeedSession(t, authService, auth.SeedUser(t, s, fixedClock{}, "officer"))
+	// The BOOT STEP the api.Config field above only DECLARES. AuthorizationReconciled() says an
+	// instance reconciled its catalogue; this is the reconciliation. A migrated database has an empty
+	// permission table — the projection happens on the boot path, not in a migration, because at
+	// migration time role_permission's foreign key has nothing to resolve against — so without this
+	// every operation answers 503 "permission key has no live row" and the two statements disagree.
+	authz.Boot(t, s, fixedClock{})
+
+	// SINCE WAVE 0e A LIVE CREDENTIAL IS NOT ENOUGH. `admin` is the built-in role holding both keys
+	// this resource declares (roster.read, admin.settings), granted through the same statement the
+	// role editor will use. Without it every test here would assert 403 while believing it was
+	// testing ETags — the same trap the session comment above describes, one layer up.
+	user := auth.SeedUser(t, s, fixedClock{}, "officer")
+	authz.GrantRole(t, s, fixedClock{}, assignmentkinds.SubjectKindUser, user, authz.RoleIDAdmin)
+
+	cookie, _ := auth.SeedSession(t, authService, user)
 
 	return srv, s, clientWithCookie(t, srv.URL, cookie)
 }
@@ -156,20 +172,25 @@ func decodeProblem(t *testing.T, res *http.Response) api.ProblemDetail {
 	return p
 }
 
-// TestGetGuild_Singleton_ReturnsETag reads the guild over the real server, at a statement budget of
-// one, and checks the strong ETag.
+// TestGetGuild_Singleton_ReturnsETag reads the guild over the real server, at a fixed statement
+// budget, and checks the strong ETag.
 func TestGetGuild_Singleton_ReturnsETag(t *testing.T) {
 	t.Parallel()
 
 	srv, _, client := newServer(t)
 
-	// Declared after the server is built, so boot statements and the session seed are excluded. TWO
-	// statements since Phase 2 Wave 0d: the credential lookup, then the singleton read. ADR-0011 chose
-	// opaque credentials over JWTs to pay exactly one indexed round trip per request in exchange for
-	// instant revocation, and this is where that price is asserted rather than assumed. A third would
-	// be an N+1 — or an authorization layer reading role assignments per request, which is the
-	// pressure Wave 0e should feel here.
-	store.Counted(t).Budget(t, 2)
+	// Declared after the server is built, so boot statements, the reconciliation, the role grant and
+	// the session seed are all excluded. THREE statements since Phase 2 Wave 0e: the credential
+	// lookup, the capability check, then the singleton read.
+	//
+	// The previous revision budgeted two and named the third in advance — "an authorization layer
+	// reading role assignments per request, which is the pressure Wave 0e should feel here" — so this
+	// raise is the anticipated one arriving, not a budget following the code. What it still refuses is
+	// a FOURTH: authz.Check answers both of its questions in one EffectivePermission round trip, and
+	// nothing is cached, so a second authorization statement would mean the check grew an N+1 rather
+	// than that authorization got more careful. internal/api/guild_test.go carries the same budget and
+	// the full reasoning.
+	store.Counted(t).Budget(t, 3)
 
 	var dto api.GuildDTO
 	res := getJSON(t, client, srv.URL+"/api/v1/guild", &dto)
@@ -304,10 +325,10 @@ func TestUpdateGuild_OmittedInactiveAfterDays_IsPreservedOverTheWire(t *testing.
 // the request fails on authentication rather than on a precondition, which is the failure that would
 // have made this test pass for the wrong reason.
 //
-// WHAT IT DOES NOT ASSERT, because Wave 0d does not implement it: that a principal holding no
-// permission is refused. Any live credential passes every operation until authz.Check lands in Wave
-// 0e — a member's session can still PATCH the guild. SECURITY.md names that narrower gap where it
-// named this one.
+// WHAT IT DOES NOT ASSERT is capability, which is a different refusal with a different status:
+// an anonymous request is 401 because there is nobody to authorize, and a principal who holds nothing
+// is 403. Wave 0e (#276) closed that half; TestGuild_ZeroScopeToken_Is403 below is its counterpart
+// here, and the two together are the whole choke point over the wire.
 func TestGuild_Unauthenticated_Is401(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +363,117 @@ func TestGuild_Unauthenticated_Is401(t *testing.T) {
 		getJSON(t, client, srv.URL+"/api/v1/guild", &after).StatusCode)
 	require.Equal(t, before.Name, after.Name,
 		"the refused PATCH must not have reached the handler")
+}
+
+// TestGuild_ZeroScopeToken_Is403 is the capability half of the same story, and the property
+// [ADR-0011](../../docs/adr/0011-opaque-pats-no-superadmin-token.md) exists to state: there is no
+// all-powerful token.
+//
+// THE SERVICE ACCOUNT HOLDS THE PERMISSION. It is granted `bot_readonly`, whose six read keys include
+// `roster.read` — the key `GET /api/v1/guild` declares — so its ROLE reaches this operation and the
+// only thing stopping it is that the token was minted with no scopes. Effective capability is
+// `role permissions ∩ token scopes` (canonical §6), and an empty scope set intersects to nothing.
+// Without the intersection this request is a 200, which is exactly what it was between Wave 0d and
+// Wave 0e.
+//
+// It runs at the integration layer, over a real HTTP server and a real database, because that is
+// where "the SPA has no privileged channel" is testable: the same route, the same handler, two
+// credentials, two answers decided by one middleware.
+func TestGuild_ZeroScopeToken_Is403(t *testing.T) {
+	t.Parallel()
+
+	srv, s, client := newServer(t)
+
+	var before api.GuildDTO
+	authed := getJSON(t, client, srv.URL+"/api/v1/guild", &before)
+	require.Equal(t, http.StatusOK, authed.StatusCode)
+
+	etag := authed.Header.Get("ETag")
+	require.NotEmpty(t, etag)
+
+	// A bot whose ROLE grants roster.read, and a token minted with nothing.
+	keys := auth.NewTestKeyring(t)
+	owner := auth.SeedUser(t, s, fixedClock{}, "botowner")
+	bot := auth.SeedServiceAccount(t, s, fixedClock{}, owner, "readonlybot")
+	authz.GrantRole(t, s, fixedClock{}, assignmentkinds.SubjectKindServiceAccount, bot,
+		authz.RoleIDBotReadonly)
+
+	zeroScope := auth.SeedToken(t, s, keys, fixedClock{}, auth.SeedTokenParams{
+		ServiceAccount: bot, CreatedBy: owner, Scopes: "",
+	})
+
+	getRes := getWithBearer(t, srv.URL+"/api/v1/guild", zeroScope)
+	require.Equal(t, http.StatusForbidden, getRes.StatusCode,
+		"a token minted with no scopes must be refused even where its service account's role grants "+
+			"the key: effective capability is role permissions INTERSECTED with token scopes")
+
+	require.Equal(t, api.ContentTypeProblemJSON, getRes.Header.Get("Content-Type"))
+
+	var problem api.ProblemDetail
+	require.NoError(t, json.NewDecoder(getRes.Body).Decode(&problem))
+	require.Equal(t, api.CodeInsufficientScope, problem.Code)
+	require.Equal(t, http.StatusForbidden, problem.Status)
+	require.Equal(t, []any{"roster:read"}, problem.Meta["required_scopes"],
+		"the catalogue promises the message always says exactly what is missing")
+
+	// The MUTATING half. PATCH declares admin.settings and offers no `pat` alternative at all, so no
+	// token reaches it whatever its scopes — and the answer names that rather than asking for a scope
+	// which does not exist.
+	patchRes := patchWithBearer(t, srv.URL+"/api/v1/guild", zeroScope,
+		map[string]any{"name": "Token Write That Should Not Land"}, etag)
+	require.Equal(t, http.StatusForbidden, patchRes.StatusCode)
+
+	var patchProblem api.ProblemDetail
+	require.NoError(t, json.NewDecoder(patchRes.Body).Decode(&patchProblem))
+	require.Equal(t, api.CodeSessionRequired, patchProblem.Code)
+
+	// AND THE WRITE DID NOT HAPPEN, for the reason the 401 case gives: a 403 whose handler already ran
+	// is a status code rather than a control.
+	var after api.GuildDTO
+	require.Equal(t, http.StatusOK,
+		getJSON(t, client, srv.URL+"/api/v1/guild", &after).StatusCode)
+	require.Equal(t, before.Name, after.Name,
+		"the refused PATCH must not have reached the handler")
+}
+
+// getWithBearer and patchWithBearer issue a request carrying a PAT rather than the fixture's session
+// cookie. A separate client, with no jar, so a cookie cannot leak into a token case and make it pass
+// for the wrong reason.
+func getWithBearer(t *testing.T, url, bearer string) *http.Response {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+bearer)
+
+	res, err := (&http.Client{}).Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = res.Body.Close() })
+
+	return res
+}
+
+func patchWithBearer(
+	t *testing.T, url, bearer string, body map[string]any, etag string,
+) *http.Response {
+	t.Helper()
+
+	encoded, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPatch, url,
+		bytes.NewReader(encoded))
+	require.NoError(t, err)
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	req.Header.Set("If-Match", etag)
+
+	res, err := (&http.Client{}).Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = res.Body.Close() })
+
+	return res
 }
 
 // requireUnauthenticatedProblem asserts the wire shape of a refusal: RFC 9457 problem+json carrying

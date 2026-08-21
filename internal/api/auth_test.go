@@ -12,6 +12,8 @@ import (
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/authz"
+	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
@@ -29,6 +31,11 @@ type authFixture struct {
 	clock  *clock.Fake
 	store  *store.Store
 	keys   *auth.Keyring
+
+	// auth is the resolver, so a test can open a SECOND session — a member alongside the fixture's
+	// officer, which is what the capability cases need in order to compare two principals against one
+	// operation.
+	auth   *auth.Service
 	user   core.ULID
 	cookie *http.Cookie
 	bot    core.ULID
@@ -54,9 +61,22 @@ func newAuthFixture(t *testing.T) authFixture {
 	})
 	require.NoError(t, err, "seed the guild row")
 
+	// The BOOT STEP. A migrated database has an empty permission table — the catalogue is projected
+	// into it by authz.Reconcile on the boot path, not by a migration — so without this every
+	// operation here answers 503 rather than exercising the middleware.
+	authz.Boot(t, st, clk)
+
 	user := auth.SeedUser(t, st, clk, "officer")
 	cookie, _ := auth.SeedSession(t, svc, user)
 	bot := auth.SeedServiceAccount(t, st, clk, user, "raidbot")
+
+	// CAPABILITY, granted through the real assignment statement, because since Wave 0e a live
+	// credential is no longer enough. `admin` gives the human both keys the guild resource declares;
+	// `bot_readonly` gives the service account roster.read and nothing that writes, which is the
+	// shape a raid bot's read token actually has. The token's `roster:read` scope then narrows that
+	// role — the intersection this wave exists to enforce — and getGuild is reachable by both.
+	authz.GrantRole(t, st, clk, assignmentkinds.SubjectKindUser, user, authz.RoleIDAdmin)
+	authz.GrantRole(t, st, clk, assignmentkinds.SubjectKindServiceAccount, bot, authz.RoleIDBotReadonly)
 
 	token := auth.SeedToken(t, st, keys, clk, auth.SeedTokenParams{
 		ServiceAccount: bot, CreatedBy: user, Scopes: "roster:read",
@@ -75,7 +95,7 @@ func newAuthFixture(t *testing.T) authFixture {
 	t.Cleanup(srv.Close)
 
 	return authFixture{
-		server: srv, clock: clk, store: st, keys: keys,
+		server: srv, clock: clk, store: st, keys: keys, auth: svc,
 		user: user, cookie: cookie, bot: bot, token: token,
 	}
 }
