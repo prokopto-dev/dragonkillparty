@@ -42,3 +42,32 @@
 # TestOSVConfig_WaiverSet_MatchesTheOwnedGoldenFile fails when the two disagree, so cutting a hole
 # in a required supply-chain gate cannot happen without a code owner agreeing the reason is good.
 # ---------------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------------------------
+# GO-2026-5932 — `golang.org/x/crypto/openpgp` is unmaintained and unsafe by design.
+#
+# THIS IS THE EDGE THE "NOT FOR RUNTIME DEPENDENCIES" RULE ABOVE DOES NOT COVER, and it is written
+# out here rather than left to the reason string alone. x/crypto IS a runtime dependency of the
+# shipped binary — argon2id password storage, locked by 03-security.md §3.1, which the standard
+# library does not provide. The package the advisory is ABOUT is in no build of anything here:
+#
+#     $ go list -deps ./... | grep 'x/crypto'
+#     golang.org/x/crypto/blake2b     # argon2's own dependency
+#     golang.org/x/crypto/argon2
+#     $ go list -deps ./cmd/dkp/... | grep -c openpgp
+#     0
+#
+# The advisory carries `introduced: 0` and NO fixed version, because openpgp is permanently
+# deprecated rather than patchable — so there is no upgrade that clears this and no "fix it in the
+# PR that added the waiver" available. `security / govulncheck`, the required job that DOES do
+# reachability analysis, reports nothing; the disagreement is granularity, not a difference of
+# opinion about the risk.
+#
+# THE EXPIRY IS NOT A FIX WINDOW. There is no fix to wait for. What one year forces is a re-check of
+# the only fact that could make this waiver wrong: that nothing in the tree has started importing
+# openpgp. Do not extend it without running that grep.
+# ---------------------------------------------------------------------------------------------
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "golang.org/x/crypto/openpgp is unmaintained; this repository imports only argon2 and blake2b and no openpgp package appears in any build graph, so the advisory is unreachable. There is no fixed version - the package is permanently deprecated. Tracked in #280; the expiry forces a re-check that we still do not import it."
+ignoreUntil = 2027-08-20
