@@ -1279,7 +1279,8 @@ index-range `SUM` with no table access.
 ### 9.5 `balance_snapshot` — when it is materialised
 
 ```sql
-CREATE TABLE balance_snapshot (    -- a CACHE. Droppable. Rebuildable. Verified nightly.
+CREATE TABLE balance_snapshot (    -- a CACHE, rebuildable and verified nightly -- but NOT
+                                   -- droppable: ADR-0023, and the two paragraphs around this block.
   pool_id      TEXT NOT NULL REFERENCES pool(id),
   account_id   TEXT NOT NULL REFERENCES account(id),
   balance_kind TEXT NOT NULL,
