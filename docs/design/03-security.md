@@ -1284,8 +1284,18 @@ The two vulnerability scanners are deliberately kept as two. `govulncheck` is re
 Go-only; `osv-scanner` is reachability-blind and reads both `go.mod` and `web/pnpm-lock.yaml`. On the
 Go graph that makes `osv-scanner` the noisier of the pair, which is precisely why it does not replace
 `govulncheck` — and on the npm graph, where nothing looked at all before it, blindness beats absence.
-Its first run found three advisories in transitive devDependencies (#133, #134, #135); each is waived
-in `osv-scanner.toml` with a filed issue and an expiry date rather than by relaxing the gate.
+Its first run found three advisories in transitive devDependencies (#133, #134, #135); each was waived
+in `osv-scanner.toml` with a filed issue and an expiry date rather than by relaxing the gate, and all
+three were then cleared by the dependency bump that closed them. One waiver stands today: GO-2026-5932,
+`golang.org/x/crypto/openpgp` — unmaintained, no fixed version because the package is deprecated rather
+than patchable, and reached by nothing here. x/crypto is a runtime dependency for argon2id (§3.1); the
+packages the advisory is about are in no build graph, which is why `govulncheck` reports nothing while
+osv-scanner, matching at module granularity, reports it. That single fact is the entire waiver, so
+`TestOSVWaiver_OpenPGP_IsInNoBuildGraph` re-derives it on every `make test`, once per release
+platform (a build-constrained import is invisible to a host-only query and ships anyway), instead of
+trusting it —
+the scanner would go on filtering the advisory, reason string and all, on the day it stopped being
+true (#280).
 
 **Vulnerability response** (`SECURITY.md`, short and actually followed): GitHub Private Vulnerability
 Reporting or `security@`; acknowledgement 3 business days; triage 7 days with CVSS **and** a
