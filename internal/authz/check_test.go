@@ -13,6 +13,7 @@ import (
 	auditkinds "github.com/prokopto-dev/dragonkillparty/internal/audit/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
+	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
 	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
@@ -534,4 +535,130 @@ func TestCheck_OwnerIsEvaluatedAsData(t *testing.T) {
 		"the owner role holds exactly the keys the seed grants it and no more. If this row is ever "+
 			"allowed, either the seed widened (a deliberate, reviewable change — see issue #267) or a "+
 			"superadmin branch was reintroduced (the thing 03-security.md §4.3 forbids).")
+}
+
+// TestCheck_RoleAppliesTo_IsEnforced is a review finding turned into a test.
+//
+// THE HOLE: `role.applies_to` says which kind of principal may hold a role — `user`,
+// `service_account`, or `both` (internal/authz/role/kinds) — and SQLite cannot enforce it, because
+// the constraint spans two tables and `role_assignment` carries no foreign key to either subject
+// table (the subject is polymorphic; db/schema.hcl says so). So the rule has exactly one place it can
+// live: the effective-permission read.
+//
+// WHAT IT COSTS TO OMIT: a service account assigned `owner` — a role whose applies_to is `user` —
+// evaluates with owner's permissions. The capability floor still refuses that token every operation
+// that alters authentication, authorization or bulk-export state, so the blast radius is not "a bot
+// becomes the owner"; it is every non-floor key the role holds, which for `admin` includes
+// `dkp.decay.run`, `ledger.reverse`, `cms.moderate` and `webhook.manage`. A raid bot is specified to
+// hold `raid.*` and `item.award` and explicitly NOT `dkp.adjust` (docs/design/01-domain-model.md
+// §5.1); a misdirected grant that hands it the admin role should grant nothing, not most of it.
+//
+// The wrong-kind assignment is written through the real statement, because that is the row the role
+// editor and the first-run bootstrap can produce: neither the schema nor the insert can refuse it.
+func TestCheck_RoleAppliesTo_IsEnforced(t *testing.T) {
+	t.Parallel()
+
+	f := newCheckFixture(t)
+
+	// A bot handed the OWNER role, which applies to users only.
+	bot := f.grant(t, assignmentkinds.SubjectKindServiceAccount, authz.RoleIDOwner)
+
+	// A human handed a SERVICE-ACCOUNT role, the same mistake in the other direction.
+	human := f.grant(t, assignmentkinds.SubjectKindUser, authz.RoleIDBotRaid)
+
+	tests := []struct {
+		name      string
+		principal *auth.Principal
+		req       authz.Requirement
+		want      authz.Outcome
+	}{
+		{
+			name:      "a service account holding a user-only role gets none of its permissions",
+			principal: bearer(bot, "dkp:adjust"),
+			req: authz.Requirement{
+				Permission: "dkp.adjust",
+				ScopeSets:  [][]string{{"dkp:adjust"}},
+			},
+			want: authz.OutcomePermissionDenied,
+		},
+		{
+			name:      "not even the read keys the role also grants",
+			principal: bearer(bot, "roster:read"),
+			req: authz.Requirement{
+				Permission: "roster.read",
+				ScopeSets:  [][]string{{"roster:read"}},
+			},
+			want: authz.OutcomePermissionDenied,
+		},
+		{
+			name:      "and a user holding a service-account role gets none of its permissions either",
+			principal: session(human, nil),
+			req: authz.Requirement{
+				Permission: "raid.create",
+				ScopeSets:  [][]string{{"raids:write"}},
+			},
+			want: authz.OutcomePermissionDenied,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			decision, err := f.checker.Check(t.Context(), tc.principal, tc.req)
+			require.NoError(t, err)
+			require.Equal(t, tc.want.String(), decision.Outcome.String(),
+				"role.applies_to is the only statement of which principal kind may hold a role, and "+
+					"no database constraint can enforce it across the two tables — so the "+
+					"effective-permission read is where it has to hold")
+		})
+	}
+}
+
+// TestCheck_RoleAppliesToBoth_ReachesEitherKind is the other half of the applicability rule, and
+// without it the fix for TestCheck_RoleAppliesTo_IsEnforced would be indistinguishable from
+// "service accounts get nothing".
+//
+// `both` is the schema's DEFAULT for role.applies_to and therefore the ordinary shape of a guild's
+// OWN role (internal/authz/role/kinds: "a guild's own custom role is ordinarily assignable to
+// either"). No built-in exercises it — all nine declare a single kind — so this is also what pins the
+// literal the query hardcodes: if `both` ever stopped being the catalogue's word for it, this test
+// goes red rather than every custom role silently granting nothing.
+func TestCheck_RoleAppliesToBoth_ReachesEitherKind(t *testing.T) {
+	t.Parallel()
+
+	f := newCheckFixture(t)
+
+	const eitherRoleID = "0000000000000000DKPRB000EI"
+
+	authz.SeedRole(t, f.store, f.clock, authz.SeedRoleParams{
+		ID:          eitherRoleID,
+		Name:        "Either",
+		AppliesTo:   rolekinds.AppliesToBoth,
+		Permissions: []string{"roster.read"},
+	})
+
+	human := f.grant(t, assignmentkinds.SubjectKindUser, eitherRoleID)
+	bot := f.grant(t, assignmentkinds.SubjectKindServiceAccount, eitherRoleID)
+
+	req := authz.Requirement{Permission: "roster.read", ScopeSets: [][]string{{"roster:read"}}}
+
+	for _, tc := range []struct {
+		name      string
+		principal *auth.Principal
+	}{
+		{name: "a user holding it", principal: session(human, nil)},
+		{name: "a service account holding it", principal: bearer(bot, "roster:read")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			decision, err := f.checker.Check(t.Context(), tc.principal, req)
+			require.NoError(t, err)
+			require.Equal(t, authz.OutcomeAllowed.String(), decision.Outcome.String(),
+				"applies_to = both is the schema default and means either principal kind may hold the "+
+					"role; refusing one of them would make the applicability rule a ban on service "+
+					"accounts rather than the check it is")
+		})
+	}
 }

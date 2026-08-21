@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
 	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/core"
@@ -81,6 +82,13 @@ type GrantParams struct {
 // It goes through InsertRoleAssignment — the statement the role editor and #264's first-run bootstrap
 // will call — rather than assembling a row here, so a test proves the real assignment shape resolves
 // through the real effective-permission query.
+//
+// IT DOES NOT CHECK THE ROLE'S applies_to, AND MUST NOT START. A grant whose subject kind the role
+// does not admit — a service account handed `owner` — is exactly the row this helper has to be able
+// to produce, because no database constraint can refuse it (the constraint spans two tables and the
+// subject is polymorphic) and therefore neither can the statement. TestCheck_RoleAppliesTo_IsEnforced
+// writes one and requires the evaluation to grant nothing. Validating here would move the rule into
+// the fixture and leave the authorization source untested against the case it exists to refuse.
 func Grant(tb testing.TB, st *store.Store, clk clock.Clock, p GrantParams) core.ULID {
 	tb.Helper()
 
@@ -152,4 +160,68 @@ func microsPtr(m *core.Micros) *int64 {
 	v := int64(*m)
 
 	return &v
+}
+
+// SeedRoleParams is a guild's OWN role — the kind the role editor creates, as distinct from the nine
+// built-ins Boot seeds.
+//
+// It exists for one property no built-in can exercise: `applies_to = "both"`. All nine built-ins
+// declare a single kind (seven `user`, two `service_account`, docs/design/01-domain-model.md §5.1),
+// while the schema's DEFAULT is `both` — so a role assignable to either principal kind is the
+// ordinary custom role and the one shape the seed cannot produce.
+type SeedRoleParams struct {
+	// ID, Key and Name identify the role. Key is empty for a guild's own role: a non-NULL key is what
+	// MARKS a role built-in, so a custom role must not carry one.
+	ID   string
+	Name string
+
+	// AppliesTo is internal/authz/role/kinds' vocabulary — user, service_account or both.
+	AppliesTo string
+
+	// Permissions are the catalogue keys the role grants. Each must be a live permission row; the FK
+	// from role_permission to permission(key) refuses anything else, which is the point.
+	Permissions []string
+}
+
+// SeedRole writes one custom role and its grants, through the same statements the built-in seed uses.
+func SeedRole(tb testing.TB, st *store.Store, clk clock.Clock, p SeedRoleParams) {
+	tb.Helper()
+
+	if !rolekinds.IsAppliesTo(p.AppliesTo) {
+		tb.Fatalf("%q is not a role applies_to value", p.AppliesTo)
+	}
+
+	now := int64(core.FromTime(clk.Now()))
+
+	err := st.Tx(context.Background(), func(ctx context.Context, q store.Queries) error {
+		if err := q.InsertRole(ctx, sqlitegen.InsertRoleParams{
+			ID: p.ID,
+			// NULL: a non-NULL key is what marks a role built-in, and this is the guild's own.
+			Key:         nil,
+			Name:        p.Name,
+			NameNorm:    p.Name,
+			Description: "a guild's own role, seeded by a test",
+			IsBuiltin:   0,
+			AppliesTo:   p.AppliesTo,
+			SortOrder:   100,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}); err != nil {
+			return err
+		}
+
+		for _, permission := range p.Permissions {
+			if err := q.InsertRolePermission(ctx, sqlitegen.InsertRolePermissionParams{
+				RoleID:        p.ID,
+				PermissionKey: permission,
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		tb.Fatalf("seed role %s: %v", p.Name, err)
+	}
 }

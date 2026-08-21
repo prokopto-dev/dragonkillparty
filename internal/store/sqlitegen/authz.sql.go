@@ -22,6 +22,7 @@ SELECT
           AND ra.subject_id = ?2
           AND rp.permission_key = p.key
           AND r.deleted_at IS NULL
+          AND (r.applies_to = 'both' OR r.applies_to = ra.subject_kind)
           AND (ra.expires_at IS NULL OR ra.expires_at > CAST(?3 AS INTEGER))
           AND (ra.suspended_until_at IS NULL
                OR ra.suspended_until_at <= CAST(?3 AS INTEGER))
@@ -81,6 +82,26 @@ type EffectivePermissionRow struct {
 //	                          own target. scope_id is NULL exactly when scope_type is 'global'
 //	                          (CHECK role_assignment_scope_shape), so the first branch never needs
 //	                          to inspect it and the second always can.
+//	applicability             role.applies_to says which KIND of principal may hold the role -
+//	                          'user', 'service_account' or 'both' (internal/authz/role/kinds) - and
+//	                          an assignment whose subject_kind is not among them grants nothing.
+//
+// THE APPLICABILITY CLAUSE HAS EXACTLY ONE PLACE IT CAN LIVE, and this is it. The constraint spans
+// two tables, and role_assignment carries no foreign key to either subject table because the subject
+// is polymorphic and SQLite has no polymorphic reference - so no CHECK, no trigger and no FK can
+// express it. Leaving it to the assignment editor would put the rule in the caller and leave the
+// authorization SOURCE permissive: a row with subject_kind = 'service_account' and the owner role's
+// id is one INSERT away, from a bootstrap, an import, a Discord sync or a bug, and without this
+// clause it reads as a valid grant. The floor still refuses that token every operation that alters
+// authentication, authorization or bulk-export state, so what it would leak is the role's non-floor
+// keys - for `admin` that is dkp.decay.run, ledger.reverse, cms.moderate and webhook.manage, on a
+// bot the domain model specifies as unable to adjust points at all (section 5.1).
+//
+// 'both' IS A LITERAL AND IT DRIFTS SAFELY. role.applies_to's CHECK is generated from the same
+// catalogue, so a renamed value would make this predicate match NOTHING and every `both` role would
+// grant nothing - closed, not open. TestCheck_RoleAppliesTo_IsEnforced covers both directions of the
+// mismatch and TestCheck_RoleAppliesToBoth_ReachesEitherKind covers the value itself, so a rename
+// goes red rather than silent.
 //
 // THERE IS NO BRANCH FOR admin.owner, HERE OR IN GO. The owner capability is a permission row
 // granted to a role like any other (docs/design/03-security.md section 4.3): EQdkp Plus's "group id
