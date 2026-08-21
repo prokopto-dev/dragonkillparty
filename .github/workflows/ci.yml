@@ -354,6 +354,8 @@ jobs:
               - *api
               - 'go.mod'
               - 'go.sum'
+              - 'internal/audit/kinds/**'
+              - 'internal/auth/**'
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/guild/**'
@@ -370,6 +372,13 @@ jobs:
               - 'go.sum'
               - 'internal/account/kinds/**'
               - 'internal/audit/kinds/**'
+              # The four auth catalogues are here for the same reason internal/*/kinds are: the
+              # point-math suites run `./internal/ledger/...`, which includes internal/ledger/enumgen,
+              # and the generator imports every catalogue in the repository (#273).
+              - 'internal/auth/appuser/kinds/**'
+              - 'internal/auth/feedtoken/kinds/**'
+              - 'internal/auth/serviceaccount/kinds/**'
+              - 'internal/auth/useridentity/kinds/**'
               - 'internal/authz/role/kinds/**'
               - 'internal/authz/roleassignment/kinds/**'
               - 'internal/clock/**'
