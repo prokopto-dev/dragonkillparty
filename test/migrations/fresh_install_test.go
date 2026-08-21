@@ -170,6 +170,13 @@ func TestMigrate_FreshInstall_NoGuildIDColumn(t *testing.T) {
 // permission row is never deleted by this product (see permission.orphaned_at), so the query that
 // belongs in a test is the read the constraint is made of. It is also the role editor's "which roles
 // hold this key?" read, which is the other caller that would have scanned.
+//
+// THE GENERAL CASE IS NOW A GATE, and this test is deliberately not folded into it.
+// TestMigrate_FreshInstall_EveryForeignKeyIsCovered (#274) walks every foreign key in the schema and
+// requires a covering index or a reasoned waiver; it does not know or care WHICH index answers, which
+// is what makes it able to cover keys nobody has thought about. This one names ix_role_permission_permission,
+// because the authorization safety boundary is worth an assertion that says out loud which index is
+// holding it up.
 func TestMigrate_FreshInstall_RolePermissionByPermissionKey_IsIndexed(t *testing.T) {
 	t.Parallel()
 
