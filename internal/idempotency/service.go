@@ -300,10 +300,14 @@ func (s *Service) Abandon(ctx context.Context, recordID core.ULID) error {
 // Sweep deletes every record past its TTL and returns how many went, for the retention job.
 //
 // IT IS RETENTION, NOT CORRECTNESS. Begin reclaims an expired record in place, so a table nobody
-// swept still answers every request correctly — it just grows. This is the statement the scheduled
-// prune calls; until the job runner exists (Phase 3) its caller is `dkp` operator tooling and this
-// package's own test, which is the honest shape: a DELETE nobody has watched run is a DELETE nobody
-// knows is bounded to the rows it names.
+// swept still answers every request correctly — it just grows, at one row per fenced write per day.
+//
+// IT HAS NO SCHEDULED CALLER YET, and that is a deferral rather than an omission: nothing in this
+// repository runs periodic work (the `jobs.Queue` the ROADMAP's risk R6 describes is not built), so
+// there is nowhere to hang it. It ships now because it is the statement that prune will call
+// verbatim, and because a DELETE nobody has watched run is a DELETE nobody knows is bounded to the
+// rows it names — TestSweep_RemovesOnlyExpiredRecords is what watches it. Issue #310 tracks the
+// wiring.
 func (s *Service) Sweep(ctx context.Context) (int64, error) {
 	if s.store == nil {
 		return 0, fmt.Errorf("sweep idempotency records: %w", ErrNoStore)
