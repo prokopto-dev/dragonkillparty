@@ -103,3 +103,70 @@ func TestServe_UnreadableDatabasePath_HealthzStillReturns200(t *testing.T) {
 
 	require.NoError(t, <-serveErr, "serve must shut down cleanly when its context is cancelled")
 }
+
+// TestServe_MalformedTrustedProxies_RefusesToStart is the "fail the parse loudly" half of issue #98.
+//
+// THE ASYMMETRY WITH DKP_READYZ_DETAIL IS THE POINT. That variable is a disclosure preference, so an
+// unrecognised value logs and falls back to the closed setting — the process keeps serving and
+// /healthz keeps answering, which canonical §13 requires. DKP_TRUSTED_PROXIES is a TRUST BOUNDARY,
+// and both of its failure modes are silent from outside: an operator who typoed a CIDR would get
+// "trust nothing", which is every client behind their proxy sharing one rate-limit bucket and one
+// recorded address, with nothing but their own memory to say why. §9.1 already refuses to start on a
+// malformed secrets file for the same reason, and an environment variable is fixed in the time it
+// takes to read the message.
+//
+// No t.Parallel: t.Setenv panics in a parallel test, and the variable is the subject.
+func TestServe_MalformedTrustedProxies_RefusesToStart(t *testing.T) {
+	t.Setenv(dbPathEnv, filepath.Join(t.TempDir(), "dkp.db"))
+	t.Setenv(trustedProxiesEnv, "127.0.0.1/32, proxy.example.com")
+
+	bound := make(chan net.Addr, 1)
+
+	cmd := newServeCmd(func(addr net.Addr) { bound <- addr })
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--addr", "127.0.0.1:0"})
+
+	err := cmd.ExecuteContext(t.Context())
+
+	require.Error(t, err, "a malformed trust list must stop the boot, not be silently discarded")
+	require.Contains(t, err.Error(), trustedProxiesEnv,
+		"the error must name the variable; an operator reading it has to know what to fix")
+	require.Contains(t, err.Error(), "proxy.example.com",
+		"the error must name the entry that failed, not just that something did")
+	require.Empty(t, bound, "the listener was bound despite an unusable trust list")
+}
+
+// TestServe_WellFormedTrustedProxies_Boots keeps the fatal branch above from becoming a boot failure
+// for the operators who configured the variable correctly.
+//
+// A test that only ever watches a gate refuse is a test that would still pass if the gate refused
+// everything, which for this one means every proxied deployment crash-looping.
+func TestServe_WellFormedTrustedProxies_Boots(t *testing.T) {
+	t.Setenv(dbPathEnv, filepath.Join(t.TempDir(), "dkp.db"))
+	t.Setenv(trustedProxiesEnv, " 127.0.0.1 , 10.0.0.0/8 ,")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	addrCh := make(chan net.Addr, 1)
+
+	cmd := newServeCmd(func(addr net.Addr) { addrCh <- addr })
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--addr", "127.0.0.1:0"})
+
+	serveErr := make(chan error, 1)
+
+	go func() { serveErr <- cmd.ExecuteContext(ctx) }()
+
+	select {
+	case <-addrCh:
+	case err := <-serveErr:
+		require.FailNowf(t, "server exited instead of binding", "error: %v", err)
+	}
+
+	cancel()
+
+	require.NoError(t, <-serveErr)
+}

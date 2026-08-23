@@ -155,7 +155,48 @@ Send the **same key with the same body** to retry safely: you get the original r
 `Idempotency-Replayed: true` and nothing happens twice. See
 [idempotency-and-concurrency](idempotency-and-concurrency.md).
 
-## 6. Find the spec
+## 6. Stay inside the rate limit
+
+**Every** response carries your budget, not only the ones that refuse you. Read it and you will never
+see a `429`.
+
+```http
+HTTP/1.1 200 OK
+RateLimit-Policy: "read";q=600;w=60
+RateLimit: "read";r=573;t=57
+X-RateLimit-Limit: 600
+X-RateLimit-Remaining: 573
+X-RateLimit-Reset: 1754524857
+```
+
+Two families, on purpose. The IETF pair is the one to write new code against; the `X-` triplet is
+there because every bot library already parses it.
+
+| Field | Means |
+|---|---|
+| `RateLimit-Policy` `q` / `w` | the policy: `q` requests per `w` seconds |
+| `RateLimit` `r` | requests left in this bucket |
+| `RateLimit` `t` | seconds until the bucket is full again — a **delta** |
+| `X-RateLimit-Limit` / `-Remaining` | the same `q` and `r` |
+| `X-RateLimit-Reset` | the same moment as `t`, as a **Unix timestamp** rather than a delta |
+
+Reads and writes have separate buckets, so a burst of writes never sheds your polling. Exceeding one
+is `429 rate_limited` with `Retry-After` in seconds — obey it rather than backing off blindly, because
+the bucket refills continuously and it is usually a much shorter wait than the window suggests.
+
+```json
+{ "type": "https://docs.dragonkillparty.org/errors/rate_limited",
+  "title": "Too Many Requests", "status": 429, "code": "rate_limited",
+  "detail": "This client has used its request budget for now. …",
+  "request_id": "01JZ8QKB4N7Y3F0S6M2W9D5H1T" }
+```
+
+Unauthenticated callers share a bucket keyed on the client address. If your instance sits behind a
+reverse proxy, the operator has to set `DKP_TRUSTED_PROXIES` or **every** caller resolves to the proxy
+and the whole guild shares one budget — see
+[Configuration](../operations/configuration.md#reverse-proxy).
+
+## 7. Find the spec
 
 | What | Where |
 |---|---|

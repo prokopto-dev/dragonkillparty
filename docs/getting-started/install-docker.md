@@ -99,6 +99,12 @@ DKP_TRUSTED_PROXIES=127.0.0.1/32
 `X-Forwarded-Proto` are ignored entirely. That is deliberate: a trusted-by-default forwarded header
 lets anyone spoof their client IP past your rate limits.
 
+Set it and the instance believes `X-Forwarded-For` **from those CIDRs only**, walking the chain right
+to left and taking the first entry that is not itself a trusted proxy. Leave it unset if nothing sits
+in front of the binary. A value it cannot parse stops the boot rather than being ignored, so a typo
+tells you at once instead of quietly putting your whole guild into one rate-limit bucket — which is
+what happens if you run behind the proxy above and never set it.
+
 `dkp doctor` tests the whole path end to end — it opens an SSE stream through your actual proxy and
 names `proxy_buffering` explicitly if the frames do not arrive.
 

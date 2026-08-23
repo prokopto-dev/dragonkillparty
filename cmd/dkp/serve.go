@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/api"
+	"github.com/prokopto-dev/dragonkillparty/internal/api/middleware"
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
@@ -49,6 +50,19 @@ const (
 	// api.ParseReadyDetailPolicy; an unrecognised value logs and falls back to never.
 	readyDetailEnv = "DKP_READYZ_DETAIL"
 
+	// trustedProxiesEnv names the CIDRs whose forwarded headers this instance believes
+	// (docs/design/03-security.md §8.3, issue #98). Empty is the default and means trust nothing:
+	// X-Forwarded-For is ignored entirely and the client IP is the socket's peer address.
+	//
+	// A MALFORMED VALUE IS FATAL, unlike DKP_READYZ_DETAIL above, and the asymmetry is the point.
+	// That one is a disclosure preference, so falling back to the closed setting is a complete
+	// answer. This one is a TRUST BOUNDARY, and both of its failure modes are silent: an operator
+	// who typoed a CIDR would get "trust nothing" — every client behind the proxy sharing one
+	// rate-limit bucket and one recorded address — with nothing but their own memory to say why.
+	// §9.1 already refuses to start on a malformed secrets file for the same reason, and an
+	// environment variable is fixed in the time it takes to read the message.
+	trustedProxiesEnv = "DKP_TRUSTED_PROXIES"
+
 	// readHeaderTimeout bounds how long a client may take to send its request headers. Required:
 	// an http.Server without it is a Slowloris target and a gosec G112 failure.
 	readHeaderTimeout = 10 * time.Second
@@ -73,6 +87,15 @@ const (
 	// open connections, complete one legitimate request on each, then hold them open indefinitely,
 	// consuming a goroutine and a file descriptor apiece until the fd table is exhausted.
 	idleTimeout = 120 * time.Second
+
+	// maxHeaderBytes bounds the request header block, as docs/design/03-security.md §10 specifies.
+	//
+	// Go's default is 1 MiB, which is three orders of magnitude more header than any client of this
+	// API sends and is the budget an attacker gets for the one header this process now PARSES: with
+	// a trusted proxy configured, X-Forwarded-For is split and walked. The walk itself is bounded
+	// separately (middleware.maxForwardedHops); this bounds what has to be read and split before the
+	// walk starts.
+	maxHeaderBytes = 32 * 1024
 
 	// shutdownTimeout bounds the graceful drain after the first signal. A second signal is not
 	// caught — signal.NotifyContext restores the default disposition, so it kills the process.
@@ -127,6 +150,9 @@ type serveConfig struct {
 
 	// readyDetail is DKP_READYZ_DETAIL, resolved and already failed closed.
 	readyDetail api.ReadyDetailPolicy
+
+	// trustedProxies is DKP_TRUSTED_PROXIES, already parsed. The zero value trusts nothing.
+	trustedProxies middleware.TrustedProxies
 }
 
 // readyDetailPolicy resolves DKP_READYZ_DETAIL.
@@ -316,7 +342,9 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 			"container healthcheck endpoint /healthz.\n\n" +
 			"DKP_DB_PATH selects the SQLite database file.\n" +
 			"DKP_READYZ_DETAIL (never|local|always) says who may see a /readyz detail; the\n" +
-			"default withholds it from everyone.",
+			"default withholds it from everyone.\n" +
+			"DKP_TRUSTED_PROXIES is a comma-separated CIDR list whose X-Forwarded-For this\n" +
+			"instance believes; empty (the default) ignores the header entirely.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// The signal context is derived from the command context, so a caller that cancels its
@@ -324,12 +352,21 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			// Parsed here, before anything is opened or bound, so a typo in the trust list costs a
+			// message and an exit rather than a running instance whose forwarded headers are
+			// silently ignored. Cobra prints the error and exits non-zero.
+			trustedProxies, err := middleware.ParseTrustedProxies(os.Getenv(trustedProxiesEnv))
+			if err != nil {
+				return fmt.Errorf("%s: %w", trustedProxiesEnv, err)
+			}
+
 			cfg := serveConfig{
-				addr:        addr,
-				dbPath:      os.Getenv(dbPathEnv),
-				dataDir:     resolveDataDir(os.Getenv(dbPathEnv)),
-				autoMigrate: autoMigrateEnabled(),
-				readyDetail: readyDetailPolicy(ctx),
+				addr:           addr,
+				dbPath:         os.Getenv(dbPathEnv),
+				dataDir:        resolveDataDir(os.Getenv(dbPathEnv)),
+				autoMigrate:    autoMigrateEnabled(),
+				readyDetail:    readyDetailPolicy(ctx),
+				trustedProxies: trustedProxies,
 			}
 
 			return runServe(ctx, cfg, ready)
@@ -465,6 +502,10 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			APIBase: os.Getenv(apiBaseEnv),
 			WebUI:   webUI,
 			Store:   st,
+			// Who this instance believes about the client's address. Empty by default, so an
+			// unconfigured instance keys its rate limits on the socket's peer address and never
+			// on a header the caller wrote (§8.3, #98).
+			TrustedProxies: cfg.trustedProxies,
 			// The authentication choke point. Nil only when the database could not be opened, in
 			// which case every operation declaring Security answers 503 (api.Config).
 			Auth: authService,
@@ -484,6 +525,7 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	bound := ln.Addr()

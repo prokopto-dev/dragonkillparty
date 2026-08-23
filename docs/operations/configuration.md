@@ -237,8 +237,35 @@ relax the policy and then pivot.
 
 While `DKP_TRUSTED_PROXIES` is empty, `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Real-IP` and
 `Forwarded` are **ignored entirely** and the client IP is the socket's remote address. When it is
-configured, the forwarded chain is walked right to left, popping trusted entries; the first untrusted
-entry is the client. The leftmost entry is never taken, because it is attacker-controlled.
+configured, the `X-Forwarded-For` chain is walked right to left, popping trusted entries; the first
+untrusted entry is the client. The leftmost entry is never taken, because it is attacker-controlled.
+The header is also ignored — whatever the list says — when the request did not arrive **from** one of
+these CIDRs, because a forwarded header from a direct caller is a claim by that caller.
+
+Accepted entries are comma-separated CIDRs (`10.0.0.0/8`) or bare addresses (`127.0.0.1`, treated as
+`/32` or `/128`). **A malformed entry stops the boot**, naming the entry: a trust boundary that
+silently is not there looks exactly like one that is, and the symptom — every client sharing one
+rate-limit bucket — surfaces days later as "the API keeps returning 429".
+
+`X-Real-IP` and RFC 7239 `Forwarded` are **not read in any configuration** in this release. Neither
+carries a chain, so neither can be walked, and believing one outright is the same attacker-controlled
+value the right-to-left walk exists to avoid. They are ignored rather than rejected, so nginx's usual
+config — which sets both `X-Forwarded-For` and `X-Real-IP` — works unchanged: the first is read and
+the second is not.
+
+`X-Forwarded-Proto` is **not read yet** either. Nothing in this release depends on the effective
+scheme; it becomes load-bearing when session cookies land, and it is tracked separately.
+
+**Your proxy has to append, not overwrite or pass through.** The right-to-left walk is only safe if
+each hop added the address it actually received from. nginx's `$proxy_add_x_forwarded_for` (used in
+the [Docker install guide](../getting-started/install-docker.md#behind-a-reverse-proxy)) does that;
+`$http_x_forwarded_for` forwards the client's own header unchanged, which hands every caller the
+ability to name themselves. No header-based check can tell the two apart, so this is a deployment
+requirement rather than something the binary can verify.
+
+**What reads the resolved client IP today:** the rate limiter. Behind a proxy with this variable
+unset, every request resolves to the proxy's own address, so the whole guild shares one bucket — the
+instance logs a one-time warning naming this variable the first time a forwarded header arrives.
 
 **There is no in-process ACME setting.** `autocert` is on the roadmap's deliberately-deferred list:
 it needs ports 80 and 443, has four common failure modes behind Cloudflare or an existing reverse

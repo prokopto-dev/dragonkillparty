@@ -110,6 +110,17 @@ type Config struct {
 	// a database that came up late look like a missing keyring in the logs.
 	Authorization AuthorizationState
 
+	// TrustedProxies is DKP_TRUSTED_PROXIES: the CIDRs whose forwarded headers this instance
+	// believes (docs/design/03-security.md §8.3, issue #98).
+	//
+	// THE ZERO VALUE TRUSTS NOTHING, which is the documented default and the safe one. Every
+	// forwarded header is ignored and the client IP is the socket's peer address — so a Config that
+	// does not mention this field, which is every test that predates Wave 1, cannot be told who its
+	// clients are by its clients. cmd/dkp parses the variable at boot and refuses to start on a
+	// malformed entry, because a trust boundary that silently is not there is worse than one that
+	// stops the process.
+	TrustedProxies middleware.TrustedProxies
+
 	// Store backs the query-backed operations — PR 5's GET and PATCH /api/v1/guild are the first.
 	// It is nil when New is called only to build the spec (NewHumaAPI): the operations still register
 	// so they appear in the document, and their handlers are never invoked in that path. A nil Store
@@ -143,8 +154,11 @@ type Config struct {
 //
 //  1. RequestID — so the id exists before anything can log or fail, including /healthz and /readyz,
 //     which are raw handlers Huma never sees.
-//  2. Problem — so an unrouted path, a method mismatch or a panic still answers problem+json.
-//  3. the router.
+//  2. ClientIP — so the one resolved client address exists before anything keys on it, for the same
+//     reason: /readyz, the audit log and session binding each need it and must not each answer it
+//     (issue #98). Inside RequestID, so its one-time misconfiguration warning carries a request id.
+//  3. Problem — so an unrouted path, a method mismatch or a panic still answers problem+json.
+//  4. the router.
 func New(cfg Config) http.Handler {
 	clk := cfg.Clock
 	if clk == nil {
@@ -195,6 +209,15 @@ func New(cfg Config) http.Handler {
 	// intersection and the step-up window (Wave 0e, #276). A third middleware would have to recover
 	// the Principal from the context and the operation from the registry, which is two places that can
 	// disagree about whether a request was authenticated.
+	// THE RATE LIMIT RUNS BEFORE BOTH GATES, and that order is the security argument rather than a
+	// preference: a flood must be shed before it costs a session lookup, a token hash or an argon2
+	// verification. A limiter mounted after authentication protects everything except the expensive
+	// part. It is also the reason the limiter keys on the client IP and not on the Principal — there
+	// is no Principal yet at this point, by construction (internal/api/ratelimit.go).
+	//
+	// One Limiter per handler tree, built here rather than passed in: it holds live state for the
+	// process, and two servers in one test process must not share a budget.
+	humaAPI.UseMiddleware(rateLimitMiddleware(humaAPI, middleware.NewLimiter(clk, 0)))
 	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
 	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth, authz.NewChecker(cfg.Store, clk)))
 
@@ -228,6 +251,11 @@ func New(cfg Config) http.Handler {
 	// it. Two parameters rather than one because the Matcher it needs is an interface and the
 	// handler it wraps is not — a single parameter would force every caller to satisfy both.
 	handler := middleware.Problem(mux, problemRenderer{}, mux)
+
+	// One resolution of "who is the client, really", for every consumer of the answer. Outside
+	// Problem so that an unrouted path and a recovered panic are handled by a request that already
+	// carries the resolved address, and inside RequestID so the one-time warning is correlatable.
+	handler = middleware.ClientIP(cfg.TrustedProxies, handler)
 
 	return middleware.RequestID(clk, handler)
 }

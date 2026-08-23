@@ -134,7 +134,9 @@ subscribed and which were denied.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Every client appears to come from one address | Behind a proxy with `DKP_TRUSTED_PROXIES` unset | Set it to the proxy's CIDR. While it is empty, forwarded headers are ignored entirely — deliberately, because a trusted-by-default forwarded header lets anyone spoof past your limits. |
+| Every client appears to come from one address | Behind a proxy with `DKP_TRUSTED_PROXIES` unset | Set it to the proxy's CIDR. While it is empty, forwarded headers are ignored entirely — deliberately, because a trusted-by-default forwarded header lets anyone spoof past your limits. The logs carry a one-time warning naming the variable the first time a forwarded header arrives. |
+| Everyone gets `429 rate_limited` at once, on a normal raid night | Same cause: with `DKP_TRUSTED_PROXIES` unset behind a proxy, every request resolves to the proxy's address, so the whole guild shares one bucket | Set `DKP_TRUSTED_PROXIES` to the proxy's CIDR and restart. The `RateLimit` and `X-RateLimit-*` headers on **every** response show which bucket a caller is spending. |
+| The instance exits at startup naming `DKP_TRUSTED_PROXIES` | An entry in the list is not a CIDR or an IP address | Fix the entry the message names. This is fatal on purpose: a trust list that silently failed to parse behaves exactly like an unset one, and the symptom appears days later as the row above. |
 | Rate limits trip for everyone at once | Same cause | Same fix. |
 | Links are `http://` behind TLS termination | `X-Forwarded-Proto` is being ignored | Same fix. |
 
