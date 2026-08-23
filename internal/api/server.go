@@ -11,6 +11,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
+	"github.com/prokopto-dev/dragonkillparty/internal/idempotency"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
 
@@ -116,6 +117,11 @@ type Config struct {
 	// reaching a handler at runtime is a wiring bug, not an input to guard, so the service is built
 	// from a nil Store here and the arch tests exercise the spec with it absent.
 	//
+	// SINCE #290 IT ALSO BACKS THE IDEMPOTENCY RECORD, on the same terms as the capability check
+	// below: a nil Store means no fenced operation can be claimed, so those answer 503 rather than
+	// executing unkeyed. Serving a mutating POST with no record is the double-write the record exists
+	// to prevent, so "no store" cannot mean "no idempotency".
+	//
 	// SINCE WAVE 0e IT ALSO BACKS THE CAPABILITY CHECK, and that path does NOT get the same treatment.
 	// authz.Checker reads role assignments through it, so a nil Store means no request can be
 	// authorized — and authz.Check answers ErrNoChecker, which the middleware renders as 503 rather
@@ -146,6 +152,24 @@ type Config struct {
 //  2. Problem — so an unrouted path, a method mismatch or a panic still answers problem+json.
 //  3. the router.
 func New(cfg Config) http.Handler {
+	return newServer(cfg, nil)
+}
+
+// newServer is New with one extra parameter: a registrar for operations the product does not
+// declare.
+//
+// IT EXISTS FOR ONE REASON AND HAS ONE OTHER CALLER — NewWithOperations, in export_test.go, which
+// does not ship. Canonical §7 fences every mutating POST that creates domain state behind an
+// Idempotency-Key, and issue #290 builds that middleware two waves before the first such endpoint
+// exists. A test therefore has to supply the fenced operation, and the only version of that test
+// worth having drives the REAL assembly: the same middleware, in the same order, installed by the
+// same lines. A test that stood up its own Huma API and installed the middleware itself would prove
+// the middleware works and say nothing about whether it is mounted — which is the exact shape of the
+// vacuity #290 was filed to end.
+//
+// `extra` is nil in the product. When the first roster endpoint lands it stays nil, and the tests
+// that use it become tests of a real route.
+func newServer(cfg Config, extra func(huma.API)) http.Handler {
 	clk := cfg.Clock
 	if clk == nil {
 		clk = clock.System{}
@@ -176,29 +200,44 @@ func New(cfg Config) http.Handler {
 
 	humaAPI := humago.New(mux, humaConfig())
 
-	// THE TWO GATES, in the order they run, installed BEFORE any operation is registered because Huma
-	// captures the middleware chain at huma.Register time (huma.go:881) — one added afterwards is
-	// silently never called. NewHumaAPI installs NEITHER: that path builds the registry for
+	// THE FOUR GATES, in the order they run, installed BEFORE any operation is registered because
+	// Huma captures the middleware chain at huma.Register time (huma.go:881) — one added afterwards is
+	// silently never called. NewHumaAPI installs NONE of them: that path builds the registry for
 	// `dkp openapi` and the arch tests, where no request is ever served and a middleware would only
 	// be a second assembly site's worth of difference between the emitted document and this one.
 	//
-	// CAN THIS INSTANCE DECIDE, THEN WHO IS ASKING, and that order is deliberate. The first gate is
-	// about the PROCESS: an instance whose permission catalogue never reached the database cannot
-	// authorize anything, so it answers 503 without reading a credential it could not act on anyway
-	// (#272). The second is about the REQUEST: it resolves the cookie or the bearer into one
-	// Principal and refuses an operation that declares `Security` when no live credential is present
-	// (03-security.md §4.1, §5).
+	// CAN THIS INSTANCE DECIDE, THEN WHO IS ASKING, THEN MAY THIS WRITE PROCEED — 03-security.md
+	// §4.1's chain (`… → authz → idempotency → handler`), with the precondition slotted between the
+	// last two. Each position is a decision:
 	//
-	// The second gate answers BOTH request questions in one pass, which is why there are two
-	// middleware here and not three: it resolves the credential into one Principal, and then — with
-	// that Principal and the operation both in hand — runs authz.Check for the permission, the scope
-	// intersection and the step-up window (Wave 0e, #276). A third middleware would have to recover
-	// the Principal from the context and the operation from the registry, which is two places that can
-	// disagree about whether a request was authenticated.
+	//  1. AUTHORIZATION STATE, about the PROCESS: an instance whose permission catalogue never
+	//     reached the database cannot authorize anything, so it answers 503 without reading a
+	//     credential it could not act on anyway (#272).
+	//  2. PRINCIPAL AND CAPABILITY, about the REQUEST: it resolves the cookie or the bearer into one
+	//     Principal, then — with that Principal and the operation both in hand — runs authz.Check for
+	//     the permission, the scope intersection and the step-up window (Wave 0e, #276). ONE
+	//     middleware for both, because a second would have to recover the Principal from the context
+	//     and the operation from the registry, which is two places that can disagree about whether a
+	//     request was authenticated.
+	//  3. PRECONDITION: a declared If-Match that was not sent is 428, before the handler, so no route
+	//     can ship a lost-update window by forgetting to check (#290).
+	//  4. IDEMPOTENCY: a declared Idempotency-Key is claimed, and the handler runs at most once per
+	//     key (#290).
+	//
+	// 3 BEFORE 4, and that is the only ordering here that is not simply 03-security.md's. A request
+	// refused for a missing precondition must not consume the caller's key: burning one on a request
+	// that never executed would make the corrected retry replay the 428 forever.
 	humaAPI.UseMiddleware(authorizationGate(humaAPI, cfg.Authorization))
 	humaAPI.UseMiddleware(principalMiddleware(humaAPI, cfg.Auth, authz.NewChecker(cfg.Store, clk)))
+	humaAPI.UseMiddleware(preconditionMiddleware(humaAPI))
+	humaAPI.UseMiddleware(idempotencyMiddleware(humaAPI, idempotency.NewService(cfg.Store, clk)))
 
 	registerOperations(humaAPI, cfg)
+
+	if extra != nil {
+		extra(humaAPI)
+	}
+
 	registerDocs(mux)
 
 	// The SPA catch-all, mounted LAST and only when a WebUI is supplied.

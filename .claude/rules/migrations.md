@@ -50,7 +50,8 @@ from `internal/audit/kinds`, `account.kind` and `account.system_key` from
 `.scope_type` and `.granted_via` from `internal/authz/roleassignment/kinds`, and the four auth
 catalogues — `app_user.state`, `user_identity.provider` and `.password_algo`,
 `service_account.state`, `feed_token.kind` — from
-`internal/auth/{appuser,useridentity,serviceaccount,feedtoken}/kinds`. `make gen` writes each
+`internal/auth/{appuser,useridentity,serviceaccount,feedtoken}/kinds`, and
+`idempotency_record.state` from `internal/idempotency/kinds`. `make gen` writes each
 CHECK expression between its own `BEGIN/END
 GENERATED` markers (canonical §5) — the marker text names the catalogue, because a whole-line match
 is how each render finds its region and only its region. Add the value in Go, run `make gen`, then

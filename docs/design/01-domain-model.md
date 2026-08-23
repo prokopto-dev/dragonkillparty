@@ -2119,20 +2119,25 @@ CREATE INDEX ix_outbox_topic ON event_outbox(topic, event_seq);
 question. Sharing the name would guarantee that bot authors mix them.
 
 ```sql
-CREATE TABLE idempotency_key (
+-- SHIPPED as db/migrations-sqlite/000011_idempotency_record.sql (issue #290). The table is named
+-- idempotency_record, which is what docs/api/idempotency-and-concurrency.md publishes to bot
+-- authors; the sketch this replaced called it idempotency_key and spelled the terminal state
+-- 'completed'.
+CREATE TABLE idempotency_record (
   id            TEXT NOT NULL PRIMARY KEY,
   principal_ref TEXT NOT NULL,                    -- 'user:<ulid>' | 'service_account:<ulid>'
                                                   -- NEVER 'token:<ulid>': rotation mid-retry must replay
   key    TEXT NOT NULL,
-  method TEXT NOT NULL, path TEXT NOT NULL,       -- the path TEMPLATE
-  request_hash BLOB NOT NULL,                     -- method + path template + body
-  state  TEXT NOT NULL DEFAULT 'in_flight' CHECK (state IN ('in_flight','completed')),
-  status_code   INTEGER NULL,
-  response_body TEXT NULL,
+  method TEXT NOT NULL, path_template TEXT NOT NULL,
+  request_hash BLOB NOT NULL,                     -- method + path template + resolved path + query + body
+  state  TEXT NOT NULL CHECK (state IN ('in_flight','complete')),   -- internal/idempotency/kinds
+  response_status       INTEGER NULL,
+  response_headers_json TEXT NOT NULL DEFAULT '{}',  -- Content-Type, ETag, Location. NEVER Set-Cookie
+  response_body         BLOB NULL,
   created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL   -- 24 h TTL
 ) STRICT;
-CREATE UNIQUE INDEX ux_idem        ON idempotency_key(principal_ref, key);
-CREATE INDEX        ix_idem_expiry ON idempotency_key(expires_at);
+CREATE UNIQUE INDEX ux_idempotency_record_principal_key ON idempotency_record(principal_ref, key);
+CREATE INDEX        ix_idempotency_record_expiry        ON idempotency_record(expires_at);
 
 CREATE TABLE webhook_endpoint (
   id  TEXT NOT NULL PRIMARY KEY,
@@ -2866,7 +2871,7 @@ partial, FKs stop meaning what they say, and "deleted" rows keep turning up in a
 | **Immutable** (DB trigger) | `ledger_batch`, `ledger_entry`, `bid` (amount/account/seq), `audit_log` | Deleting corrupts balances or destroys forensics. Corrections are appends. |
 | **Void/tombstone** (`voided_at` + a mandatory reversal batch in the same transaction) | `raid_tick`, `raid_tick_credit`, `item_award` | These carry money. They stay visible, struck through. Test-enforced pairing. |
 | **Soft delete** (`deleted_at`, **partial** unique indexes, every read filters) | `person`, `character`, `item`, `raid`, `event_type`, `guild_rank`, `raid_role`, `raid_group`, `item_pool`, `calendar`, `calendar_event`, `calendar_raid_template`, `app_user`, `role`, `article`, `article_category`, `article_comment`, `media`, `shoutbox_message`, `guild_bank_item`, `item_priority_list`, `character_field_def` | All are referenced by immutable ledger or audit rows. Hard-deleting them breaks the statement view: "who was this award for?" |
-| **Hard delete** | `session`, `idempotency_key`, `event_outbox`, `webhook_delivery`, `parse_line`, `parse_run`, `stg_*`, `import_id_map` (with its run), `balance_snapshot`, `attendance_rollup`, `search_doc`, `bid_hold`, `notification`, `raid_submission` (expired previews) | Caches, transient state or replaceable derivations. Pruned by retention jobs. |
+| **Hard delete** | `session`, `idempotency_record`, `event_outbox`, `webhook_delivery`, `parse_line`, `parse_run`, `stg_*`, `import_id_map` (with its run), `balance_snapshot`, `attendance_rollup`, `search_doc`, `bid_hold`, `notification`, `raid_submission` (expired previews) | Caches, transient state or replaceable derivations. Pruned by retention jobs. |
 | **Hard delete, cascading** | `role_permission`, `role_assignment`, `pool_event_type`, `pool_item_pool`, `raid_pool`, `raid_officer`, `raid_artifact`, `raid_role_class`, `game_race_class`, `raid_attendance` (with its tick), `article_tag`, `application_answer` | Pure junctions with no independent identity. |
 
 Rules that make this workable:
@@ -2890,7 +2895,7 @@ Rules that make this workable:
 | `parse_line` | 90 days after commit | See the FK note below. |
 | `audit_log` | 3 years | Pruning writes an `audit_gap_marker`; IP octets are truncated at 90 days via `ip_truncated_at`. |
 | `event_outbox` | 24 h | `AUTOINCREMENT` keeps `Last-Event-ID` sound past the prune. |
-| `idempotency_key` | 24 h | |
+| `idempotency_record` | 24 h | `internal/idempotency.Service.Sweep`; an expired record is also reclaimed in place by the next use of its key |
 | `webhook_delivery` | 30 days | |
 | `session` | 30 days past expiry | |
 | `raid_submission` | `expires_at`, 24 h, for `preview`; committed submissions are kept | The receipt is the audit trail for a commit. |

@@ -2,15 +2,12 @@ package guild
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 )
@@ -266,49 +263,28 @@ func boolToInt(b bool) int64 {
 // what makes the positive-control test meaningful: without updated_at in the hash, a no-op PATCH
 // would return the same ETag and "the PATCH succeeded and the ETag changed" could not be asserted.
 //
-// SHA-256 over a deterministic, length-prefixed encoding of every field, rather than fmt.Sprintf of
-// the struct: length-prefixing means a Name of "ab"+tag "c" cannot collide with Name "a"+tag "bc",
-// which a naive concatenation would allow and which would let two distinct representations share an
-// ETag. The first 16 bytes of the digest are rendered as hex — 128 bits is far more than enough to
-// make an accidental collision impossible, and a shorter tag keeps the header small.
+// THE COMPUTATION IS core.ETagBuilder's; what lives here is the FIELD LIST, which is the half a
+// resource owns. PR 5a wrote the digest out by hand because there was one mutable resource and
+// nowhere shared to put it; issue #290 needed the same computation for the second, and two copies of
+// a length-prefixed hash is two places for a field boundary to be got wrong. The encoding is
+// unchanged — same order, same widths, same "null" sentinel — so this returns the same bytes it
+// always did and no client's stored ETag goes stale across the upgrade.
+//
+// EVERY FIELD OF THE REPRESENTATION IS HERE, and adding a column to Guild means adding a line. A
+// field omitted from the tag is a field an If-Match cannot detect a change in, which is a lost
+// update; TestETagOf_IsDeterministicAndFieldSensitive is what notices.
 func ETagOf(g Guild) string {
-	h := sha256.New()
-
-	writeField := func(b []byte) {
-		var lenBuf [8]byte
-		binary.BigEndian.PutUint64(lenBuf[:], uint64(len(b)))
-		_, _ = h.Write(lenBuf[:])
-		_, _ = h.Write(b)
-	}
-
-	writeInt := func(n int64) {
-		var buf [8]byte
-		binary.BigEndian.PutUint64(buf[:], uint64(n))
-		writeField(buf[:])
-	}
-
-	writeField([]byte(g.Name))
-	writeField([]byte(g.Tag))
-	writeField([]byte(g.Timezone))
-	writeInt(g.WeekStart)
-	writeField([]byte(g.PointsLabel))
-	writeInt(g.PointsPrecision)
-
-	// The nullable field: a distinct sentinel for NULL, so "unset" and any value hash differently.
-	if g.InactiveAfterDays == nil {
-		writeField([]byte("null"))
-	} else {
-		writeField([]byte(strconv.FormatInt(*g.InactiveAfterDays, 10)))
-	}
-
-	writeInt(boolToInt(g.AutoSetInactive))
-	writeInt(boolToInt(g.HideInactive))
-	writeInt(g.CreatedAt)
-	writeInt(g.UpdatedAt)
-
-	sum := h.Sum(nil)
-
-	// A strong validator is a quoted string; the hex digest contains only [0-9a-f], so it needs no
-	// escaping and the quotes are literal.
-	return fmt.Sprintf("%q", hex.EncodeToString(sum[:16]))
+	return core.NewETagBuilder().
+		Text(g.Name).
+		Text(g.Tag).
+		Text(g.Timezone).
+		Int(g.WeekStart).
+		Text(g.PointsLabel).
+		Int(g.PointsPrecision).
+		OptionalInt(g.InactiveAfterDays).
+		Bool(g.AutoSetInactive).
+		Bool(g.HideInactive).
+		Int(g.CreatedAt).
+		Int(g.UpdatedAt).
+		ETag()
 }

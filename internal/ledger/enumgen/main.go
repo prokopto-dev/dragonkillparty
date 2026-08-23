@@ -8,7 +8,8 @@
 // role_assignment's subject_kind, scope_type and granted_via, and the auth quartet holds one table
 // each — internal/auth/appuser/kinds (app_user.state), internal/auth/useridentity/kinds
 // (user_identity.provider and password_algo), internal/auth/serviceaccount/kinds
-// (service_account.state) and internal/auth/feedtoken/kinds (feed_token.kind); this rewrites their
+// (service_account.state) and internal/auth/feedtoken/kinds (feed_token.kind), and
+// internal/idempotency/kinds holds idempotency_record.state; this rewrites their
 // CHECK constraints from them, and
 // `make migration` turns the resulting schema into SQL. It never writes a migration itself, for
 // the reason scripts/gen-db.sh gives — `make gen` runs reflexively and must not create numbered,
@@ -18,17 +19,17 @@
 // TestLedgerKinds_CheckMatchesCatalogue, TestAuditKinds_CheckMatchesCatalogue,
 // TestAccountKinds_CheckMatchesCatalogue, TestDecayKinds_CheckMatchesCatalogue,
 // TestRoleKinds_CheckMatchesCatalogue, TestRoleAssignmentKinds_CheckMatchesCatalogue, the four
-// auth catalogues' own CheckMatchesCatalogue tests and
+// auth catalogues' own CheckMatchesCatalogue tests, TestIdempotencyKinds_CheckMatchesCatalogue and
 // `make verify-generated`. Keeping the two apart is what
 // lets `make gen` be the fix rather than another thing to interpret.
 //
 // It lives beside the ledger catalogue rather than in cmd/dkp because it is dev tooling: cmd/dkp is
 // the product binary and an officer never runs a code generator. It stays here, rather than moving
-// somewhere neutral now that it serves ten catalogues, because moving a command renames the path in
+// somewhere neutral now that it serves eleven catalogues, because moving a command renames the path in
 // scripts/gen-enums.sh, the Makefile and test/repo/verify_generated_test.go to buy tidiness and
 // nothing else — and its name, not its parent directory, is what a reader looks up.
 //
-// It imports the ten catalogues and NOTHING ELSE from this repository. Importing internal/ledger,
+// It imports the eleven catalogues and NOTHING ELSE from this repository. Importing internal/ledger,
 // internal/authz, internal/auth or internal/audit's future service package would pull in
 // internal/store/sqlitegen —
 // generated code — and make `make gen` unable to repair a tree whose generated code does not build.
@@ -50,6 +51,7 @@ import (
 	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
 	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
+	idempotencykinds "github.com/prokopto-dev/dragonkillparty/internal/idempotency/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/schemaenum"
 )
@@ -107,6 +109,11 @@ func catalogues() []catalogue {
 		{name: "internal/auth/useridentity/kinds", render: useridentitykinds.RenderSchemaHCL},
 		{name: "internal/auth/serviceaccount/kinds", render: serviceaccountkinds.RenderSchemaHCL},
 		{name: "internal/auth/feedtoken/kinds", render: feedtokenkinds.RenderSchemaHCL},
+		// idempotency_record.state (Phase 2, issue #290). An eleventh table with a string enum, and
+		// an eleventh package for the reason every one above it is its own: a region cannot span two
+		// `table` blocks, and ENUM001 matches a region to its catalogue by the identifier name of the
+		// marker const pair.
+		{name: "internal/idempotency/kinds", render: idempotencykinds.RenderSchemaHCL},
 	}
 }
 

@@ -30,33 +30,59 @@ drift from the implementation.
 
 ```
 idempotency_record(
-  scope_key       TEXT PRIMARY KEY,  -- sha256(principal_id ‖ method ‖ path_template ‖ key)
-  request_hash    TEXT,              -- sha256 of canonical-JSON body + resolved path params
-  state           TEXT,              -- 'in_flight' | 'complete'
-  response_status INTEGER,
-  response_body   BLOB,
-  created_at      INTEGER,
-  expires_at      INTEGER            -- +24h
+  id                    TEXT PRIMARY KEY,
+  principal_ref         TEXT,     -- 'user:<ulid>' | 'service_account:<ulid>'
+  key                   TEXT,     -- your Idempotency-Key, verbatim
+  method                TEXT,
+  path_template         TEXT,
+  request_hash          BLOB,     -- sha256 of method ‖ path template ‖ resolved path ‖ query ‖ body
+  state                 TEXT,     -- 'in_flight' | 'complete'
+  response_status       INTEGER,
+  response_headers_json TEXT,     -- Content-Type, ETag and Location only
+  response_body         BLOB,
+  created_at            INTEGER,
+  expires_at            INTEGER   -- +24h
 )
+UNIQUE (principal_ref, key)
 ```
 
-`principal_id` is the **service account or user — never the token id**. That matters concretely: if
+**Uniqueness is `(principal_ref, key)`** — the principal and the key, and nothing else. One key
+reused on a *different* route therefore collides here and is refused as `idempotency_key_reused`
+rather than quietly opening a second record; a route-scoped key would let a key-generation bug run
+for months.
+
+`principal_ref` is the **service account or user — never the token id**. That matters concretely: if
 your token is rotated in the middle of a retry sequence, the retry still replays instead of writing a
 second time. A token-scoped key would silently break the rotation guarantee documented in
 [auth-and-scopes](auth-and-scopes.md).
 
-Two bots cannot collide, because their principals differ. Keys are 16–255 opaque characters; use a
-UUIDv4 or a ULID.
+**The request hash covers the resolved path, not only the template.** Two ticks on two different
+raids carrying the same body are different requests, so the same key on the second one is refused
+instead of replaying the first — a missed tick is a duplicated tick with the sign flipped, and it is
+the quieter of the two.
+
+**The body is hashed as the bytes you sent**, not as canonicalised JSON. A retry sends the same
+bytes, which is what a retry is; if your client re-serialises with a different key order between
+attempts you will get `422 idempotency_key_reused`, which is loud and true rather than silent and
+probably fine.
+
+Two bots cannot collide, because their principals differ. Keys are 16–255 opaque, printable-ASCII
+characters; use a UUIDv4 or a ULID.
 
 ### What happens on replay
 
 | Situation | Result |
 |---|---|
-| First request | The record is inserted `in_flight` **in the same transaction as the mutation**; on commit it becomes `complete` |
-| Replay, same body | The original status and body are returned, plus `Idempotency-Replayed: true` |
+| First request | The record is claimed `in_flight` **before the handler runs**; when the handler answers it becomes `complete` and carries the response |
+| Replay, same body | The original status and body are returned, plus `Idempotency-Replayed: true`, and the original `Content-Type`, `ETag` and `Location` |
 | Replay, different body | `422 idempotency_key_reused`, with `meta.original_request_hash` |
 | Concurrent duplicate still in flight | `409 idempotency_key_in_flight` with `Retry-After: 1` |
-| The original failed with a 5xx | The record rolled back with the transaction; your retry executes normally |
+| The original failed with a 5xx | The record is released; your retry executes normally |
+
+A `4xx` **is** recorded and replayed. It is deterministic for a given body, so replaying it is both
+cheap and true — and once you fix the body you are sending a different request, which collides as
+`422 idempotency_key_reused` and tells you to use a fresh key. Only server faults release the key,
+because only they mean the operation has not happened yet.
 
 Records expire after 24 hours. Reusing a key after that writes again — pick fresh keys per logical
 operation, not per bot lifetime.

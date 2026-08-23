@@ -3131,3 +3131,144 @@ table "feed_token" {
 
   strict = true
 }
+
+// ============================================================================
+// Idempotency — Phase 2 deliverable 5, issue #290.
+//
+// The record behind `Idempotency-Key` (canonical §7, docs/api/idempotency-and-concurrency.md). One
+// row per (principal, key): claimed before the handler runs, completed with the response, deleted
+// when the request ended 5xx so the caller's retry executes rather than replaying a failure.
+//
+// IT IS A CONVENIENCE LAYER OVER REAL UNIQUENESS CONSTRAINTS, never a substitute for one. A tick is
+// still unique on (raid_id, content_sha256) and a settlement still on ledger_batch.source_ref; this
+// table is what makes a bot's retry cheap and loud instead of merely harmless, and what lets a
+// double POST answer with the ORIGINAL response instead of a second one.
+// ============================================================================
+
+// idempotency_record — one claimed Idempotency-Key and the response it produced.
+table "idempotency_record" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // WHO the key belongs to: 'user:<ulid>' or 'service_account:<ulid>'. NEVER 'token:<ulid>' —
+  // canonical §7 is explicit, and the reason is concrete: a token rotated in the middle of a retry
+  // sequence must still replay rather than execute a second time. A token-scoped key would silently
+  // break the rotation guarantee docs/api/auth-and-scopes.md publishes.
+  //
+  // A COMPOSITE REF RATHER THAN A (kind, id) PAIR, and therefore not a foreign key. The two parents
+  // are different tables, so no single constraint can express it — the same shape event_outbox.topic
+  // uses. Nothing joins on it: every read is an equality lookup on the unique index below, and a
+  // record whose principal was deleted expires within the day on its own.
+  column "principal_ref" {
+    null = false
+    type = text
+  }
+
+  // The caller's Idempotency-Key, verbatim and opaque: 16-255 characters, a UUIDv4 or a ULID by
+  // convention. Stored as sent so the 422 on a reused key can name what was reused.
+  column "key" {
+    null = false
+    type = text
+  }
+
+  // The request this key was claimed for. Both are DIAGNOSTIC — they are already inside request_hash
+  // — and they are stored anyway because "this key was used for POST /api/v1/awards" is the sentence
+  // that fixes a bot's key-generation bug, and a hash is not that sentence.
+  column "method" {
+    null = false
+    type = text
+  }
+
+  column "path_template" {
+    null = false
+    type = text
+  }
+
+  // sha256 over method, path template, resolved path, query and body — canonical §7's "method + path
+  // template + body", widened by the two the resolved request also varies over. BLOB rather than hex
+  // TEXT: 32 bytes instead of 64, and there is nothing to read by eye.
+  column "request_hash" {
+    null = false
+    type = blob
+  }
+
+  // Values are internal/idempotency/kinds' (CHECK generated below). No default: a record's state is
+  // decided by the writer that claimed it, and a default would let an INSERT that forgot the column
+  // look like a claim.
+  column "state" {
+    null = false
+    type = text
+  }
+
+  // The recorded response, NULL exactly while the state is in_flight. The headers are an ALLOWLIST
+  // rendered as a JSON object (Content-Type, ETag, Location) rather than the whole header set:
+  // replaying an arbitrary header set would replay Set-Cookie, and a response that re-issues a
+  // session cookie minted for one request into another is not a thing this table should be able to
+  // do. Read whole, never queried into (.claude/rules/store-and-sql.md).
+  column "response_status" {
+    null = true
+    type = integer
+  }
+
+  column "response_headers_json" {
+    null    = false
+    type    = text
+    default = "{}"
+  }
+
+  column "response_body" {
+    null = true
+    type = blob
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  // 24 h after created_at (domain model §22's retention row). A key reused after that writes again,
+  // which is why the bot documentation says one key per logical operation and not one per bot
+  // lifetime.
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // BEGIN GENERATED — idempotency_record enum CHECK, from internal/idempotency/kinds. Run `make gen`.
+  //
+  // Canonical §5: the wire value is the database value, and both the CHECK and the OpenAPI
+  // enum are generated from one Go catalogue. Adding a value here by hand is drift that
+  // TestIdempotencyKinds_CheckMatchesCatalogue fails on.
+  check "idempotency_record_state_enum" {
+    expr = "state IN ('in_flight', 'complete')"
+  }
+  // END GENERATED — idempotency_record enum CHECK.
+
+  // THE UNIQUENESS CANONICAL §7 NAMES: (principal_id, key). Not (principal, method, path, key) —
+  // docs/api/idempotency-and-concurrency.md sketched a scope_key including the route, and the
+  // narrower form is both what canonical says and the safer of the two: one key reused across two
+  // routes collides here and answers 422 idempotency_key_reused, where a route-scoped key would
+  // silently open a second record and let a client's key-generation bug run for months.
+  //
+  // It is also the claim itself. The INSERT that takes this index is what makes "N replays, one
+  // effect" true — the loser of a race sees a live row rather than executing a second time.
+  index "ux_idempotency_record_principal_key" {
+    unique  = true
+    columns = [column.principal_ref, column.key]
+  }
+
+  // The sweep's read: everything past its TTL, in expiry order.
+  index "ix_idempotency_record_expiry" {
+    columns = [column.expires_at]
+  }
+
+  strict = true
+}

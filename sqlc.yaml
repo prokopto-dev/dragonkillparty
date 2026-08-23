@@ -318,3 +318,18 @@ sql:
             go_type:
               type: "int64"
               pointer: true
+          # idempotency_record (Phase 2, #290). The same affinity loss once more, on the two columns
+          # that are NULL for exactly as long as a claimed request is still executing: without these
+          # the generated row struct and the complete-params struct both carry `interface{}` for the
+          # response, and `any` in the middle of the typed boundaries is what
+          # .claude/rules/go-idioms.md bans. The body is []byte because a recorded response is bytes
+          # replayed verbatim — a *string over one invites a UTF-8 assumption that holds until the
+          # day a handler emits something that is not JSON.
+          - column: "idempotency_record.response_status"
+            go_type:
+              type: "int64"
+              pointer: true
+          - column: "idempotency_record.response_body"
+            go_type:
+              type: "byte"
+              slice: true

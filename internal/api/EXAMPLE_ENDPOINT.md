@@ -460,11 +460,18 @@ that one declaration. **The spec is derived from these types**, which is why it 
 
 ### 5a. If-Match: optional tag, explicit 428 — do not "simplify" it
 
-`If-Match` MUST be declared **optional** (no `required:"true"`), with the presence check in the
-handler. Huma v2.39.1 raises a **missing required parameter as 422** (`errStatus` initialised to
-`http.StatusUnprocessableEntity`), so a `required:"true"` If-Match would answer a missing precondition
-with `422 validation_failed` instead of the `428 precondition_required` canonical §7 requires. A test
-asserts the status **and** the code, because a 422 would otherwise look like a passing negative test.
+`If-Match` MUST be declared **optional** (no `required:"true"`). Huma v2.39.1 raises a **missing
+required parameter as 422** (`errStatus` initialised to `http.StatusUnprocessableEntity`), so a
+`required:"true"` If-Match would answer a missing precondition with `422 validation_failed` instead of
+the `428 precondition_required` canonical §7 requires. A test asserts the status **and** the code,
+because a 422 would otherwise look like a passing negative test.
+
+**Since issue #290 the 428 is also enforced by middleware** (`internal/api/precondition.go`): an
+operation that DECLARES an If-Match parameter and receives none is refused before the handler runs.
+The handler check above is defence in depth and calls the same `requireIfMatch`, so the two cannot
+answer differently. Declaring the parameter is therefore the whole of what a new transition has to
+remember; forgetting the handler check no longer ships a silent lost-update window.
+
 `api.NewProblem` (**not** `problem.From` — no such function exists) builds the body:
 
 ```go

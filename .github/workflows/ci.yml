@@ -359,6 +359,7 @@ jobs:
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/guild/**'
+              - 'internal/idempotency/**'
               - 'internal/schemaenum/**'
               - 'internal/store/**'
             # The point-math suites: `make test-property` and `make test-coverage-floor`. Same
@@ -384,6 +385,7 @@ jobs:
               - 'internal/clock/**'
               - 'internal/core/**'
               - 'internal/decay/kinds/**'
+              - 'internal/idempotency/kinds/**'
               - 'internal/ledger/**'
               - 'internal/schemaenum/**'
               - 'internal/store/**'

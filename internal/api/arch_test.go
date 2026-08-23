@@ -287,15 +287,13 @@ func idempotencyViolations(ops []registeredOp) []string {
 			continue
 		}
 
-		var found bool
+		// headerParameter is the PRODUCT's reader of the declaration (precondition.go), not a second
+		// one written for the test, and that sharing is what stops this gate going vacuous again.
+		// idempotencyMiddleware fences on exactly `declared && required`; a gate reading the
+		// declaration any other way would pass while the middleware skipped the operation.
+		_, required := headerParameter(op.Op, headerIdempotencyKey)
 
-		for _, param := range op.Op.Parameters {
-			if param != nil && strings.EqualFold(param.Name, "Idempotency-Key") && param.In == "header" {
-				found = param.Required
-			}
-		}
-
-		if !found {
+		if !required {
 			problems = append(problems, fmt.Sprintf(
 				"%s creates domain state under a fenced prefix but does not require an "+
 					"Idempotency-Key header. Add an IdempotencyKey field to its input struct, tagged "+
@@ -767,15 +765,12 @@ func ifMatchViolations(ops []registeredOp) []string {
 			continue
 		}
 
-		var found bool
+		// The product's reader again (precondition.go), for the reason idempotencyViolations gives:
+		// preconditionMiddleware enforces exactly what `declared` means here, so the gate and the
+		// enforcement cannot disagree about which operations are covered.
+		declared, _ := headerParameter(op.Op, headerIfMatch)
 
-		for _, param := range op.Op.Parameters {
-			if param != nil && strings.EqualFold(param.Name, "If-Match") && param.In == "header" {
-				found = true
-			}
-		}
-
-		if !found {
+		if !declared {
 			problems = append(problems, fmt.Sprintf(
 				"%s changes state but declares no If-Match header parameter. Add an IfMatch field to "+
 					"its input struct, tagged `header:\"If-Match\"` (optional — the 428 for an absent "+

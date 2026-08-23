@@ -258,6 +258,48 @@ ORDER BY account_id, balance_kind
 LIMIT sqlc.arg(page_limit);
 ```
 
+## Read-then-claim under one writer — `idempotency_record` (Phase 2, live in `db/queries/idempotency.sql`)
+
+The shape behind `Idempotency-Key`: decide whether a key is taken, and take it, without any other
+request getting between the two. It is worth reading because the obvious alternatives are both wrong.
+
+**Not a bare `INSERT … ON CONFLICT DO NOTHING`.** The loser of that race learns only "somebody else
+has it" and still has to read the row to find out whether to replay a response, refuse a mismatched
+body or wait — so the read happens either way, and doing it FIRST is what lets the expired case be
+told from the absent one.
+
+**Not a `WHERE expires_at > ?` predicate on the read.** A predicate that hid an expired record would
+turn the reclaim into an INSERT that fails the unique index. Expiry is decided in Go against the
+injected clock, and the caller then claims unconditionally.
+
+**The atomicity is `store.Tx`, not the statements.** The write pool is capped at one connection and
+its DSN carries `_txlock=immediate`, so the lock is taken at `BEGIN`: two concurrent duplicates queue
+at the door rather than interleaving between the read and the claim. That is the whole of why "100
+concurrent duplicates, one effect" holds, and it is the property that does **not** survive the
+Postgres port unchanged — see the divergences below.
+
+```text
+-- name: GetIdempotencyRecord :one
+SELECT id, principal_ref, "key", method, path_template, request_hash, state,
+       response_status, response_headers_json, response_body, created_at, expires_at
+FROM idempotency_record
+WHERE principal_ref = ? AND "key" = ?;
+
+-- name: ClaimIdempotencyRecord :exec
+INSERT INTO idempotency_record (…) VALUES (…)
+ON CONFLICT (principal_ref, "key") DO UPDATE SET
+    id = excluded.id, request_hash = excluded.request_hash, state = excluded.state,
+    response_status = NULL, response_headers_json = '{}', response_body = NULL,
+    created_at = excluded.created_at, expires_at = excluded.expires_at;
+```
+
+`"key"` is quoted throughout. It is a column name here and reads as a keyword everywhere else, and
+the quoting is what keeps the two apart in a dialect that would otherwise be free to change its mind.
+
+**The conflict arm clears the response columns explicitly.** It is the expired-reclaim path, and a
+version that overwrote only the request columns would leave a fresh `in_flight` claim carrying the
+PREVIOUS request's recorded response — which the next duplicate would replay.
+
 ## Full-text search — `item_fts` (Phase 3)
 
 FTS5 with **external content** (`content='item'`), not contentless — contentless tables cannot return

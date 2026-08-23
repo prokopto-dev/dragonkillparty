@@ -82,6 +82,9 @@ reads, so a cached pass there would be a gate reporting green on the change it e
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
+- `internal/idempotency/` — the `Idempotency-Key` record and its replay decision. One row per
+  (principal, key), claimed before the handler runs and completed with the response; the middleware
+  that calls it is `internal/api/idempotency.go`, because a route may only be known about there.
 - `internal/seed/` — the synthetic-dataset generator behind `make seed`. Every row it writes goes
   through `ledger.Service.Commit`, never a bulk insert: a dataset built by a side door proves nothing
   about the door the product uses, and the budgets in `.claude/rules/seed-profiles.md` are measured
@@ -113,6 +116,7 @@ reads, so a cached pass there would be a gate reporting green on the change it e
   from `internal/auth/appuser/kinds`, `user_identity` (`provider`, `password_algo`) from
   `internal/auth/useridentity/kinds`, `service_account.state` from
   `internal/auth/serviceaccount/kinds` and `feed_token.kind` from `internal/auth/feedtoken/kinds` —
+  and `idempotency_record.state` from `internal/idempotency/kinds` —
   all written by `make gen` (canonical §5). The RBAC pair is two packages for two tables, and the
   auth quartet is four for four, because a catalogue owns
   its region through a `schemaEnumBegin`/`schemaEnumEnd` const pair and `ENUM001` matches those by

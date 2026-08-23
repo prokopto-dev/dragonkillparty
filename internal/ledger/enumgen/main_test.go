@@ -17,6 +17,7 @@ import (
 	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
 	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
 	decaykinds "github.com/prokopto-dev/dragonkillparty/internal/decay/kinds"
+	idempotencykinds "github.com/prokopto-dev/dragonkillparty/internal/idempotency/kinds"
 	"github.com/prokopto-dev/dragonkillparty/internal/ledger/kinds"
 )
 
@@ -41,11 +42,11 @@ func fixture(t *testing.T, body string) string {
 	return path
 }
 
-// markedSchema returns a fixture body whose ten generated regions ALL hold stale values: each
+// markedSchema returns a fixture body whose eleven generated regions ALL hold stale values: each
 // catalogue's real rendered block with one value dropped from its CHECK. Every marker survives, so
-// the generator's job is to notice all ten regions are out of date and replace them.
+// the generator's job is to notice all eleven regions are out of date and replace them.
 //
-// All ten are stale rather than one, because the failure this shape catches is a generator that
+// All eleven are stale rather than one, because the failure this shape catches is a generator that
 // stops after the first render — which would leave the later regions frozen while reporting success.
 func markedSchema(t *testing.T) string {
 	t.Helper()
@@ -68,7 +69,9 @@ func markedSchema(t *testing.T) string {
 		"table \"app_user\" {\n" + stale(appuserkinds.SchemaEnumBlock(), "'suspended', ") + "\n}\n\n" +
 		"table \"user_identity\" {\n" + stale(useridentitykinds.SchemaEnumBlock(), "'discord', ") + "\n}\n\n" +
 		"table \"service_account\" {\n" + stale(serviceaccountkinds.SchemaEnumBlock(), ", 'disabled'") + "\n}\n\n" +
-		"table \"feed_token\" {\n" + stale(feedtokenkinds.SchemaEnumBlock(), "'calendar_ical', ") + "\n}\n"
+		"table \"feed_token\" {\n" + stale(feedtokenkinds.SchemaEnumBlock(), "'calendar_ical', ") + "\n}\n\n" +
+		"table \"idempotency_record\" {\n" +
+		stale(idempotencykinds.SchemaEnumBlock(), "'in_flight', ") + "\n}\n"
 }
 
 func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
@@ -97,6 +100,7 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	require.Contains(t, string(got), useridentitykinds.PasswordAlgoCheckExpr())
 	require.Contains(t, string(got), serviceaccountkinds.StateCheckExpr())
 	require.Contains(t, string(got), feedtokenkinds.KindCheckExpr())
+	require.Contains(t, string(got), idempotencykinds.StateCheckExpr())
 
 	// And the rewrite is exactly what rendering the ORIGINAL through every catalogue would produce —
 	// no drift between the generator's write path and the drift tests' comparison.
@@ -128,6 +132,9 @@ func TestRun_StaleRegion_IsRewrittenFromTheCatalogue(t *testing.T) {
 	require.NoError(t, err)
 
 	want, err = feedtokenkinds.RenderSchemaHCL(want)
+	require.NoError(t, err)
+
+	want, err = idempotencykinds.RenderSchemaHCL(want)
 	require.NoError(t, err)
 
 	require.Equal(t, want, string(got))

@@ -114,7 +114,34 @@ type RaidTickOutput struct {
 | Enums | lowercase `snake_case`, identical to the DB `CHECK` value. No translation layer |
 | Optional patch fields | `*T` with `,omitempty` so "absent" and "set to zero" are distinguishable |
 | `Idempotency-Key` | `required:"true"` on every POST that creates domain state |
-| `If-Match` | `required:"true"` on state transitions and on PATCH of raids, ticks and pools |
+| `If-Match` | declared on state transitions and on PATCH of raids, ticks and pools — **optional**, never `required:"true"` (see below) |
+
+## Declaring the two write-safety headers is enough — middleware enforces them
+
+Since issue #290 both are enforced by middleware installed in `internal/api/server.go`, keyed off
+what the operation itself declares. There is no path list anywhere: `headerParameter`
+(`internal/api/precondition.go`) is the one reader, shared by the middleware and by the arch gates,
+so the gate and the enforcement cannot disagree about which operations are covered.
+
+| You declare | What happens without you writing a line of handler code |
+|---|---|
+| `IdempotencyKey string` tagged as a **required** `Idempotency-Key` header | The key is claimed before the handler; a duplicate replays the original response, a mismatched body is `422 idempotency_key_reused`, a concurrent duplicate is `409 idempotency_key_in_flight`, an absent or unusable key is `400 idempotency_key_required`. A `5xx` or a panic releases the claim so the retry executes |
+| `IfMatch string` tagged as an **optional** `If-Match` header | An absent precondition is `428 precondition_required`, before the handler |
+
+**`If-Match` must stay OPTIONAL.** Huma v2.39.1 answers a missing *required* parameter with 422, so
+`required:"true"` would produce `validation_failed` where canonical §7 requires
+`precondition_required`. The presence check lives in the middleware for exactly that reason
+(`internal/api/etag.go` carries the line numbers).
+
+**What the middleware cannot do for you is the 412.** Whether the caller's tag matches is a domain
+question answered under the same transaction as the write, so the service returns its
+precondition-failed sentinel carrying the current representation and the handler renders it with
+`preconditionFailed(current, currentETag)` — `meta.current` and `meta.current_etag`, so a bot merges
+in one round trip. `internal/guild` is the worked example, and `core.ETagBuilder` is the strong-tag
+computation every resource shares.
+
+**Order in the chain:** authorization → precondition → idempotency → handler. A `428` therefore never
+consumes a caller's key, and a `403` never reaches a record.
 
 ## The shared envelopes — use the helper, never a bespoke shape
 

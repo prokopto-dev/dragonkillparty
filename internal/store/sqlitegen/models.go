@@ -139,6 +139,21 @@ type Guild struct {
 	UpdatedAt         int64
 }
 
+type IdempotencyRecord struct {
+	ID                  string
+	PrincipalRef        string
+	Key                 string
+	Method              string
+	PathTemplate        string
+	RequestHash         []byte
+	State               string
+	ResponseStatus      *int64
+	ResponseHeadersJson string
+	ResponseBody        []byte
+	CreatedAt           int64
+	ExpiresAt           int64
+}
+
 type LedgerBatch struct {
 	ID                 string
 	PoolID             string

@@ -161,6 +161,23 @@ type Queries interface {
 	ResolveAPIToken(ctx context.Context, prefix string) (sqlitegen.ResolveAPITokenRow, error)
 	TouchAPIToken(ctx context.Context, arg sqlitegen.TouchAPITokenParams) error
 	RevokeAPIToken(ctx context.Context, arg sqlitegen.RevokeAPITokenParams) error
+
+	// The Idempotency-Key record (Phase 2, issue #290). All five are called from exactly one place —
+	// idempotency.Service — and the read-then-claim pair runs inside a single store.Tx, because the
+	// gap between "is this key taken" and "take it" is the whole race the record exists to lose
+	// safely. The single-writer pool is what closes that gap: two concurrent duplicates queue at
+	// BEGIN, so one claims and the rest read a live row rather than both executing.
+	//
+	// COMPLETE AND ABANDON ARE KEYED ON THE RECORD ID, not on (principal_ref, key), and that is the
+	// one shape decision worth stating. They run after the handler returned, by which time the claim
+	// may have expired and been reclaimed by a different request; an id names THIS request's claim,
+	// so a stale completion writes nothing instead of handing somebody else's caller this request's
+	// response.
+	GetIdempotencyRecord(ctx context.Context, arg sqlitegen.GetIdempotencyRecordParams) (sqlitegen.IdempotencyRecord, error)
+	ClaimIdempotencyRecord(ctx context.Context, arg sqlitegen.ClaimIdempotencyRecordParams) error
+	CompleteIdempotencyRecord(ctx context.Context, arg sqlitegen.CompleteIdempotencyRecordParams) error
+	AbandonIdempotencyRecord(ctx context.Context, id string) error
+	DeleteExpiredIdempotencyRecords(ctx context.Context, expiresAt int64) (int64, error)
 }
 
 // The compile-time proof. It costs nothing and `go build` checks it on every save.

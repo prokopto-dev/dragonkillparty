@@ -9,6 +9,13 @@ import (
 )
 
 type Querier interface {
+	// AbandonIdempotencyRecord deletes a claim whose request did not produce a recordable response - a
+	// 5xx, or a panic. docs/api/idempotency-and-concurrency.md promises the caller's retry executes
+	// normally after a 5xx, and absence is how this table says "retry me": a third state would mean the
+	// same thing while keeping a row that only ever answers "pretend I am not here".
+	//
+	// Keyed on the id for the same reason CompleteIdempotencyRecord is.
+	AbandonIdempotencyRecord(ctx context.Context, id string) error
 	// Ledger reads and the snapshot upsert - Phase 0 PR 9. Shapes follow db/RECIPES.md.
 	//
 	// Every statement that reaches SQLite in this project is generated from a file like this one:
@@ -52,6 +59,25 @@ type Querier interface {
 	// which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
 	// epoch, and a branch nobody has watched go red is a branch nobody knows works.
 	BumpSessionEpoch(ctx context.Context, arg BumpSessionEpochParams) error
+	// ClaimIdempotencyRecord takes the (principal, key) pair for a request that is about to execute.
+	//
+	// The ON CONFLICT arm is the EXPIRED-RECLAIM path and nothing else. The caller reads first and only
+	// claims when there is no record or the one it found is past its TTL, so a conflict here means a
+	// record the reader saw as expired - and the reclaim must overwrite the whole row, response columns
+	// included, or a fresh in_flight claim would carry the previous request's recorded response and
+	// replay it the moment it completed.
+	ClaimIdempotencyRecord(ctx context.Context, arg ClaimIdempotencyRecordParams) error
+	// CompleteIdempotencyRecord records the response the claimed request produced, so every later
+	// duplicate replays it instead of executing.
+	//
+	// It is keyed on the record id rather than on (principal, key), and that is what makes it safe to
+	// run after the handler returned: an id names the claim THIS request took, so a record that expired
+	// and was reclaimed by somebody else in the meantime is not overwritten with a stale response.
+	CompleteIdempotencyRecord(ctx context.Context, arg CompleteIdempotencyRecordParams) error
+	// DeleteExpiredIdempotencyRecords is the retention sweep (domain model section 22: 24 h). Served by
+	// ix_idempotency_record_expiry, so it is a range scan over the records that are actually due rather
+	// than a walk of the table.
+	DeleteExpiredIdempotencyRecords(ctx context.Context, expiresAt int64) (int64, error)
 	// EffectivePermission is THE authorization read: the one statement the choke point runs per request
 	// that requires a permission (docs/design/03-security.md section 4.1).
 	//
@@ -162,6 +188,20 @@ type Querier interface {
 	// that many trailing characters off the generated query string. The failure is silent at generate
 	// time and shows up as a syntax error only when the query runs.
 	GetGuild(ctx context.Context) (Guild, error)
+	// Idempotency records - the `Idempotency-Key` replay layer (canonical section 7, issue #290).
+	//
+	// Shapes follow db/RECIPES.md. Every statement runs inside one store.Tx on the single-writer pool,
+	// which is what makes the claim below a claim: two concurrent duplicates queue at BEGIN rather than
+	// racing, so exactly one of them inserts and the rest read a live row.
+	//
+	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+	// by rune count, so a multibyte character in a preceding comment lops that many trailing characters
+	// off the generated query string - silent at generate time, a syntax error at runtime.
+	// GetIdempotencyRecord reads the record a (principal, key) pair holds, live or expired. Expiry is
+	// decided in Go against the injected clock rather than by a `expires_at > ?` predicate here: the
+	// caller has to tell "no record" from "an expired record it may reclaim" apart, and a predicate that
+	// hid the second would make the reclaim an INSERT that fails the unique index instead.
+	GetIdempotencyRecord(ctx context.Context, arg GetIdempotencyRecordParams) (IdempotencyRecord, error)
 	// GetLedgerBatch reads one batch by id. It backs the reversal-linkage check: before a reversal is
 	// written, the commit path loads the batch it claims to reverse and requires it to be in the SAME
 	// POOL, because balances are per-pool and a cross-pool reversal undoes nothing while still marking

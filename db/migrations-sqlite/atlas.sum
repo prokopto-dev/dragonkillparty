@@ -1,4 +1,4 @@
-h1:JtC3sHFKEfcU+BfdAefUyp2+zqWCGeh6BwhQshJmRxU=
+h1:JmBtBE2F9auQ/0BXkHXvDPiLA6SOgnWb8D32XRq6iGY=
 000001_init.sql h1:UMsCmmIF5G5wxeHGQTsgMAPLuLvDkOg6vIAd/Rz8++4=
 000002_guild.sql h1:4gdQL5sE6k70sPRQzogoSEiNiecofnW98fUebWTMsJ0=
 000003_ledger.sql h1:v9XDJyjKrshdZJbhu0CdNNS0HH2cLn9hqbd4CCsXEyE=
@@ -9,3 +9,4 @@ h1:JtC3sHFKEfcU+BfdAefUyp2+zqWCGeh6BwhQshJmRxU=
 000008_index_role_permission_permission_key.sql h1:BmHg4NEoQL48zjiF4NOmf21wBseQBV4y8iDOPBBtU5U=
 000009_auth_identity_and_credentials.sql h1:miuNpCcjtY7EIa7giB0RaDMBekhmnCrvDqbYshGqR28=
 000010_wire_app_user_fks_and_cover_foreign_keys.sql h1:vwstq4VuFEiomR5WsrR0RBQ4h0s1fk10iR+i3Gcug6c=
+000011_idempotency_record.sql h1:9XQTHy4HU+c1fCSax2g6IbP35ONdePj1pS4YSI1dZIM=
