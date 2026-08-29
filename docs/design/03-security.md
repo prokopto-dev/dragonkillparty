@@ -818,6 +818,28 @@ forbids.
 | Response | Size cap 1 MiB, total timeout 10 s, connect timeout 3 s, no `HTTP_PROXY` inheritance unless explicitly configured |
 | Errors | Never echoed verbatim — a raw dial error is an SSRF oracle. Mapped to `502 upstream_unreachable` with the failure *class* only. |
 
+**What Phase 2 shipped, where it differs from the table** (ADR-0029, issue #289). Two rows are
+stricter than specified and one control is not wired yet; nothing here is looser.
+
+- **Redirects: zero, for every caller**, not three. The first consumer is a JWKS fetch against an
+  endpoint pinned from the discovery document, and the redirect-following variant — with the
+  cross-host credential stripping that is the delicate part — arrives with the first surface that
+  needs it (issue #296). Every hop would be re-validated by the same dialer regardless.
+- **The denied set is a superset of the row above.** Teredo (`2001::/32`), 6to4 (`2002::/16`),
+  local-use NAT64 (`64:ff9b:1::/48`), the discard prefix (`100::/64`), IPv4-compatible IPv6
+  (`::/96`) and the IETF protocol assignments (`192.0.0.0/24`) are denied too: each carries an IPv4
+  destination inside an IPv6 address, so on a host configured for any of them it is a route to
+  `127.0.0.1` that does not look like one. `DKP_OUTBOUND_ALLOW_PRIVATE` relaxes the LAN classes and
+  deliberately **not** link-local — `169.254.169.254` needs the operator to type it into
+  `DKP_OUTBOUND_ALLOW_CIDRS`.
+- **`502 upstream_unreachable` is not in the error enum yet** (issue #297). `safehttp` ships its
+  half — a refusal carries the failure class in its message and the address in a struct field — but
+  no endpoint makes an outbound request to map, so the code would be published and unreachable.
+- **`dkp healthcheck` uses `safehttp.NewLoopback`**, a client that can reach loopback and nothing
+  else. The container HEALTHCHECK's `GET http://127.0.0.1:8080/healthz` is a request this policy
+  denies, correctly; the named constructor is the exception instead of an allowlisted file, which
+  is why the grep gate ships with no path exemption but `_test.go`.
+
 `DKP_OUTBOUND_ALLOW_PRIVATE=false` by default. A deployment that genuinely needs an internal endpoint
 sets a narrow CIDR allowlist (`DKP_OUTBOUND_ALLOW_CIDRS=10.0.5.0/24`), surfaced at `/ops`. Changing
 it requires `admin.security.manage` + step-up, is audited, and is PAT-forbidden — so a leaked token

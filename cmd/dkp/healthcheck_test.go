@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/net/safehttp"
 )
 
 // TestHealthcheck_UnreadableDatabase_StillSucceeds is the PR 7 acceptance criterion for the
@@ -111,4 +113,36 @@ func TestHealthcheck_Non200_Fails(t *testing.T) {
 
 	require.Error(t, hc.ExecuteContext(t.Context()),
 		"dkp healthcheck must fail on a non-200 response")
+}
+
+// TestHealthcheck_NonLoopbackURL_IsRefused pins the one behaviour that changed when this command
+// stopped building its own client (issue #289): `--url` now reaches loopback and nothing else.
+//
+// The refusal happens in safehttp's dialer check, so no connection is attempted and the test needs
+// no network — which is also the point. `dkp healthcheck` probes the process it runs beside; a
+// remote probe was never what the container HEALTHCHECK does, and a command that can be pointed at
+// an arbitrary host is an SSRF primitive shipped inside the binary.
+func TestHealthcheck_NonLoopbackURL_IsRefused(t *testing.T) {
+	t.Parallel()
+
+	// Address literals, never names: the refusal must be the policy's, and a hostname would make
+	// this test depend on a resolver answering — which on a CI runner with no egress it would not.
+	for _, url := range []string{
+		"http://10.0.0.5:8080/healthz",
+		"http://169.254.169.254/latest/meta-data/",
+		"https://203.0.113.9/healthz",
+	} {
+		t.Run(url, func(t *testing.T) {
+			t.Parallel()
+
+			hc := newHealthcheckCmd()
+			hc.SetOut(io.Discard)
+			hc.SetErr(io.Discard)
+			hc.SetArgs([]string{"--url", url})
+
+			err := hc.ExecuteContext(t.Context())
+			require.ErrorIs(t, err, safehttp.ErrBlocked,
+				"dkp healthcheck must refuse a destination that is not this process")
+		})
+	}
 }

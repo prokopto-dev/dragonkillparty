@@ -250,3 +250,101 @@ func TestReport_TruncatedHits_SaysHowManyItDropped(t *testing.T) {
 	require.Contains(t, buf.String(), "… and 3 more", "%s", buf.String())
 	require.Equal(t, maxHits, strings.Count(buf.String(), "file.go:1:hit"), "%s", buf.String())
 }
+
+// TestRun_OutboundHTTPClient_FiresOutsideSafeHTTPAndOnlyThere covers NET001 and NET002, in both
+// directions at once — because the direction that would quietly kill this rule is the false
+// positive, not the miss.
+//
+// safehttp.New RETURNS an *http.Client. Every caller therefore holds one, passes one and keeps one
+// in a struct field, and a rule that fired on the TYPE rather than on its CONSTRUCTION would make
+// the package it protects unusable — which is how a rule ends up with a nolint next to it. The
+// three permitted files below are the assertion that it does not.
+func TestRun_OutboundHTTPClient_FiresOutsideSafeHTTPAndOnlyThere(t *testing.T) {
+	t.Parallel()
+
+	tree := t.TempDir()
+
+	// Aliased, the way somebody writes it after a gate has complained once.
+	write(t, tree, "internal/webhook/deliver.go", `package webhook
+
+import nh "net/http"
+
+func deliver(url string) error {
+	client := &nh.Client{}
+	_, err := client.Head(url)
+
+	return err
+}
+`)
+
+	// The package-level shortcut: http.DefaultClient with no timeout, no dialer control and
+	// HTTP_PROXY inherited, in nine characters.
+	write(t, tree, "cmd/dkp/update.go", `package main
+
+import "net/http"
+
+func check() {
+	resp, err := http.Get("https://example.com/latest")
+	_, _ = resp, err
+}
+`)
+
+	// A bare transport makes an outbound request with no client involved at all.
+	write(t, tree, "internal/importer/avatar.go", `package importer
+
+import "net/http"
+
+func fetch() {
+	transport := new(http.Transport)
+	_ = transport
+}
+`)
+
+	// The one place a client may be built.
+	write(t, tree, "internal/net/safehttp/client.go", `package safehttp
+
+import "net/http"
+
+func New() *http.Client {
+	return &http.Client{Transport: &http.Transport{}}
+}
+`)
+
+	// HOLDING one is what every caller does, and must never be a violation.
+	write(t, tree, "internal/auth/oidc/jwks.go", `package oidc
+
+import "net/http"
+
+type Fetcher struct{ client *http.Client }
+
+func NewFetcher(client *http.Client) *Fetcher { return &Fetcher{client: client} }
+`)
+
+	// A test client points at an httptest server on 127.0.0.1 — the address the outbound policy
+	// denies, and denies correctly. Gating _test.go would mean deleting either the control or the
+	// rule; the boundary is drawn at code that ships.
+	write(t, tree, "internal/api/server_test.go", `package api
+
+import "net/http"
+
+func probe(url string) { _, _ = http.Get(url) }
+`)
+
+	out, failed := run(t, tree)
+
+	require.True(t, failed, "an outbound client built outside safehttp must fail\n%s", out)
+
+	for _, want := range []string{
+		"NET001", "internal/webhook/deliver.go:", "internal/importer/avatar.go:",
+		"NET002", "cmd/dkp/update.go:",
+	} {
+		require.Contains(t, out, want, "%s", out)
+	}
+
+	require.NotContains(t, out, "internal/net/safehttp/client.go",
+		"internal/net/safehttp is where a client is SUPPOSED to be built — the allowlist is not working\n%s", out)
+	require.NotContains(t, out, "internal/auth/oidc/jwks.go",
+		"holding the client safehttp returned is the entire point of the package\n%s", out)
+	require.NotContains(t, out, "internal/api/server_test.go",
+		"a _test.go client points at 127.0.0.1, which is what the policy denies\n%s", out)
+}

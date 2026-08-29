@@ -82,6 +82,12 @@ reads, so a cached pass there would be a gate reporting green on the change it e
 - `internal/importer/` — EQdkp Plus ETL. Two phases: stage verbatim, then transform.
 - `internal/parse/` — P99 log adapters. One file + one golden dir per format. Stdlib only.
 - `internal/cms/` — articles, comments, media, portal blocks. Untrusted rich text lives here.
+- `internal/net/safehttp/` — the **only** package that may construct an `*http.Client`. SSRF
+  containment: the address check runs in `net.Dialer.Control`, on the IP the socket is about to
+  connect to, so DNS rebinding has no window. Gate `NET001`/`NET002` fails a client, a transport or
+  an `http.Get` anywhere else under `internal/` or `cmd/` (`_test.go` excepted — those point at
+  127.0.0.1, which is what the policy denies). `dkp healthcheck`'s loopback probe is
+  `safehttp.NewLoopback`, not an allowlisted file (ADR-0029).
 - `internal/seed/` — the synthetic-dataset generator behind `make seed`. Every row it writes goes
   through `ledger.Service.Commit`, never a bulk insert: a dataset built by a side door proves nothing
   about the door the product uses, and the budgets in `.claude/rules/seed-profiles.md` are measured

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/net/safehttp"
 )
 
 const (
@@ -50,17 +52,24 @@ func newHealthcheckCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&url, "url", healthcheckDefaultURL,
-		"the /healthz URL to probe (loopback by default)")
+		"the /healthz URL to probe (loopback only — this command probes this process)")
 
 	return cmd
 }
 
 // runHealthcheck issues one GET and maps a 200 to a nil error and anything else to a failure.
 //
-// It uses its own http.Client with an explicit timeout rather than http.DefaultClient, which has
-// none: a hung server must make the probe fail, not the probe hang.
+// The client comes from safehttp, which is the only place in the repository allowed to build one
+// (NET001). It is the LOOPBACK client specifically: this command probes the process it is running
+// beside, and 127.0.0.1 is an address the outbound policy denies — correctly, since that is exactly
+// where an SSRF wants to land. safehttp.NewLoopback is the complement of that policy rather than a
+// hole in it (it can reach nothing BUT loopback), so `--url` pointed at a LAN or internet address is
+// refused. A remote probe is `curl`'s job, not the container HEALTHCHECK's.
+//
+// The explicit timeout is the other half, and it predates safehttp: http.DefaultClient has none, and
+// a hung server must make the probe fail rather than make the probe hang.
 func runHealthcheck(cmd *cobra.Command, url string) error {
-	client := &http.Client{Timeout: healthcheckTimeout}
+	client := safehttp.NewLoopback(healthcheckTimeout)
 
 	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, url, nil)
 	if err != nil {

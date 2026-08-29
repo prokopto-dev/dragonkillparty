@@ -225,9 +225,25 @@ cannot hurt the other nineteen.
 | `DKP_IMPORT_ALLOW_PRIVATE` | `false` | no | Allow the EQdkp importer to connect to a MySQL server on a private address. |
 
 `DKP_IMPORT_ALLOW_PRIVATE=true` is the common case for a LAN MySQL box, which is why it is a
-documented deliberate opt-in rather than a silent default. Changing any of these requires
-`admin.settings` plus step-up, is audited, and cannot be done by a token — so a leaked token cannot
-relax the policy and then pivot.
+documented deliberate opt-in rather than a silent default. Changing the two outbound variables
+requires `admin.security.manage` plus step-up (the importer's own switch is `admin.settings`), is
+audited, and cannot be done by a token — so a leaked token cannot relax the policy and then pivot.
+
+Outbound requests go through `internal/net/safehttp`, which is the only place in the binary an HTTP
+client is built. By default it speaks HTTPS only, on ports 80 and 443, follows no redirects, caps a
+response at 1 MiB and a request at 10 seconds, ignores `HTTP_PROXY`, and refuses any connection to a
+loopback, private, unique-local, CGNAT, link-local, multicast or reserved address — decided on the
+address the socket connects to, not on the hostname, so a name that resolves to `127.0.0.1` is
+refused however it was spelled. `DKP_OUTBOUND_ALLOW_PRIVATE=true` relaxes the LAN classes and
+deliberately **not** link-local: reaching `169.254.169.254`, the cloud metadata address, requires
+naming it in `DKP_OUTBOUND_ALLOW_CIDRS`.
+
+> **Not yet read by the binary.** Nothing outbound ships in this release — the first outbound request
+> is OIDC's JWKS fetch — so both variables are parsed and documented but not yet wired into
+> `dkp serve` ([issue #295](https://github.com/prokopto-dev/dragonkillparty/issues/295)). Setting
+> them today has no effect; they are documented here because the policy they configure is already
+> enforced for the code that will read them. `dkp healthcheck` is unaffected either way: it uses a
+> loopback-only client that can reach this process and nothing else.
 
 ## Reverse proxy
 

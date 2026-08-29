@@ -442,6 +442,84 @@ func Plan() time.Time { return c.System{}.Now() }
 	requireFired(t, findings(t, root), "CLOCK002", "internal/strategy/plan.go")
 }
 
+// TestNET001_DotImportedClient_Fires — SSRF containment, in the shape the syntax twin cannot see.
+//
+// `import . "net/http"` makes `&Client{}` a composite literal with no selector at all, so NET001 in
+// internal/repogate has nothing to match and an outbound client with no dialer control, no redirect
+// limit and no timeout is built in a file that never says http. Resolving the literal's TYPE asks
+// the question the law is actually asking.
+func TestNET001_DotImportedClient_Fires(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureModule(t, map[string]string{
+		"internal/webhook/deliver.go": `package webhook
+
+import . "net/http"
+
+// New returns an outbound client, and the word http appears nowhere in this file.
+func New() *Client { return &Client{} }
+`,
+	})
+
+	requireFired(t, findings(t, root), "NET001", "internal/webhook/deliver.go")
+}
+
+// TestNET001_HoldingAClient_DoesNotFire is the control that keeps the rule usable.
+//
+// safehttp.New RETURNS an *http.Client. A parameter of that type, a struct field holding one and a
+// function returning one are how every caller uses the package, and a law that fired on the type
+// rather than on its construction would be waived within a week — which is the same failure mode
+// SQL002 avoids by not firing on r.URL.Query().
+func TestNET001_HoldingAClient_DoesNotFire(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureModule(t, map[string]string{
+		"internal/auth/oidc/jwks.go": `package oidc
+
+import "net/http"
+
+// Fetcher holds the client it was given; it does not build one.
+type Fetcher struct{ client *http.Client }
+
+// NewFetcher takes the client safehttp built.
+func NewFetcher(client *http.Client) *Fetcher { return &Fetcher{client: client} }
+
+// Do uses it.
+func (f *Fetcher) Do(req *http.Request) (*http.Response, error) { return f.client.Do(req) }
+`,
+	})
+
+	got := findings(t, root)
+	require.NotContainsf(t, keys(got), "NET001",
+		"holding the client safehttp returned must not be a violation: %v", got)
+}
+
+// TestNET002_DotImportedGet_Fires — the package-level shortcut, reached without a selector.
+//
+// http.Get runs on http.DefaultClient: no timeout, no dialer control, no redirect limit, and
+// HTTP_PROXY inherited. It is the outbound policy's exact negation, and a dot-import spells it in
+// three characters.
+func TestNET002_DotImportedGet_Fires(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureModule(t, map[string]string{
+		"internal/update/check.go": `package update
+
+import . "net/http"
+
+// Latest fetches over the default client, with no policy of any kind.
+func Latest(url string) error {
+	resp, err := Get(url)
+	_ = resp
+
+	return err
+}
+`,
+	})
+
+	requireFired(t, findings(t, root), "NET002", "internal/update/check.go")
+}
+
 // TestCleanTree_ReportsNothing is the control for the whole file. A pass that fires on everything
 // gets turned off rather than obeyed.
 func TestCleanTree_ReportsNothing(t *testing.T) {

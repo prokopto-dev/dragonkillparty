@@ -92,6 +92,8 @@
 //	PURE002   internal/strategy reaches math/rand transitively                    (law 3)
 //	CLOCK001  time.Now reached outside internal/clock, by OBJECT
 //	CLOCK002  clock.System reached inside internal/strategy, by OBJECT
+//	NET001    an http.Client or http.Transport CONSTRUCTED outside internal/net/safehttp
+//	NET002    net/http's package-level request helpers reached outside internal/net/safehttp
 //	MONEY001  an expression whose TYPE is a float in internal/ledger or internal/strategy
 //
 // SQL004 is the only id that is not already in internal/repogate, and it is the law as AGENTS.md

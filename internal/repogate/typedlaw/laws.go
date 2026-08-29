@@ -1,6 +1,7 @@
 package typedlaw
 
 import (
+	"go/ast"
 	"go/types"
 	"strings"
 )
@@ -35,6 +36,8 @@ func laws() []law {
 		strategyRandLaw(),
 		clockNowLaw(),
 		clockSystemLaw(),
+		netClientLaw(),
+		netShortcutLaw(),
 		moneyFloatLaw(),
 	}
 }
@@ -339,6 +342,129 @@ func clockSystemLaw() law {
 			})
 		},
 	}
+}
+
+// --- SSRF containment: one *http.Client, built in one place -------------------------------------
+
+// isNetHTTP reports whether an import path is the standard library's net/http.
+func isNetHTTP(path string) bool { return path == "net/http" }
+
+// httpShortcuts are net/http's package-level request helpers. Every one of them runs on
+// http.DefaultClient: no timeout, no dialer control, no redirect limit, HTTP_PROXY inherited.
+var httpShortcuts = map[string]bool{"Get": true, "Post": true, "Head": true, "PostForm": true}
+
+// netClientLaw is NET001, decided by the TYPE of the thing being constructed.
+//
+// The hole it closes is the one CLOCK001's dot-import closes: `import . "net/http"` makes
+// `&Client{}` a composite literal with no selector at all, so the syntax rule has nothing to match
+// and an outbound client with no policy is built in a file that never mentions http. A type alias
+// (`type client = http.Client`) is the same shape from the other direction.
+//
+// CONSTRUCTION, not mention, exactly as in internal/repogate: safehttp.New RETURNS an *http.Client,
+// so a parameter, a field or a result of that type is how every caller uses the package. What is
+// reported is a composite literal of the type, a new() of it, and a non-pointer declaration — whose
+// zero value is a working client that dials through http.DefaultTransport.
+func netClientLaw() law {
+	return law{
+		id:   "NET001",
+		desc: "an http.Client or http.Transport constructed outside internal/net/safehttp",
+		run: func(p *pkg) []string {
+			if p.under("internal/net/safehttp") {
+				return nil
+			}
+
+			var hits []string
+
+			for expr, tv := range p.info.Types {
+				switch node := expr.(type) {
+				case *ast.CompositeLit:
+					if isOutboundHTTPType(tv.Type) {
+						hits = append(hits, p.hit(node))
+					}
+				case *ast.CallExpr:
+					// new(http.Client): the expression's type is a POINTER to the constructed one,
+					// which is why the pointer is stripped here and nowhere else — a *declared*
+					// pointer is a caller holding what safehttp handed it.
+					if isBuiltinNew(p, node) {
+						if ptr, ok := types.Unalias(tv.Type).(*types.Pointer); ok && isOutboundHTTPType(ptr.Elem()) {
+							hits = append(hits, p.hit(node))
+						}
+					}
+				}
+			}
+
+			for ident, obj := range p.info.Defs {
+				if v, ok := obj.(*types.Var); ok && isOutboundHTTPType(v.Type()) {
+					hits = append(hits, p.hit(ident))
+				}
+			}
+
+			return hits
+		},
+	}
+}
+
+// netShortcutLaw is NET002: net/http's package-level helpers and the default client behind them,
+// by object identity.
+//
+// `import . "net/http"` again, and `get := http.Get` handed to another package — neither produces a
+// selector for the syntax twin to see, and both make an unpoliced outbound request.
+func netShortcutLaw() law {
+	return law{
+		id:   "NET002",
+		desc: "http.Get/Post/Head/PostForm/DefaultClient/DefaultTransport reached outside internal/net/safehttp",
+		run: func(p *pkg) []string {
+			if p.under("internal/net/safehttp") {
+				return nil
+			}
+
+			return p.usesOf(func(obj types.Object) bool {
+				if !isNetHTTP(pkgPath(obj)) {
+					return false
+				}
+
+				switch typed := obj.(type) {
+				case *types.Func:
+					return isFuncIn(typed, typed.Name(), isNetHTTP) && httpShortcuts[typed.Name()]
+				case *types.Var:
+					return typed.Name() == "DefaultClient" || typed.Name() == "DefaultTransport"
+				}
+
+				return false
+			})
+		},
+	}
+}
+
+// isOutboundHTTPType reports whether a type IS net/http's Client or Transport — not a pointer to
+// one, and not something that merely contains one. Holding the client safehttp returned is the
+// point of the package; bringing a second one into existence is the violation.
+func isOutboundHTTPType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+
+	obj := named.Obj()
+
+	return obj != nil && (obj.Name() == "Client" || obj.Name() == "Transport") && isNetHTTP(pkgPath(obj))
+}
+
+// isBuiltinNew reports whether a call is the universe-scope new(), resolved rather than assumed: a
+// local function called new would otherwise be read as the builtin.
+func isBuiltinNew(p *pkg, call *ast.CallExpr) bool {
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || ident.Name != "new" || len(call.Args) != 1 {
+		return false
+	}
+
+	_, isBuiltin := p.info.Uses[ident].(*types.Builtin)
+
+	return isBuiltin
 }
 
 // --- Money: the point path is an integer --------------------------------------------------------

@@ -24,6 +24,9 @@
 //	PURE002   math/rand in internal/strategy                                      (law 3)
 //	CLOCK001  time.Now outside internal/clock
 //	CLOCK002  clock.System constructed in internal/strategy
+//	NET001    an http.Client or http.Transport constructed outside internal/net/safehttp
+//	NET002    http.Get / http.DefaultClient and the rest of net/http's package-level shortcuts,
+//	          which run on http.DefaultClient, outside internal/net/safehttp
 //	MONEY001  a float type in internal/ledger or internal/strategy
 //	MONEY002  SQLite's total() — it returns a float where sum() returns an integer
 //	MONEY003  a REAL / NUMERIC / DECIMAL column type

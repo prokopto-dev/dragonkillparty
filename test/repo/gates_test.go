@@ -535,6 +535,102 @@ var wall = clock.System{}
 		"CLOCK002 is scoped to internal/strategy; main wiring is where a real clock comes from\n%s", out)
 }
 
+// TestRepoGates_OutboundClientOutsideSafeHTTP_FailsGate is the SSRF containment gate (issue #289,
+// 03-security.md §8.1 control B5) as a negative fixture: an *http.Client built anywhere but
+// internal/net/safehttp must make repo-gates.sh exit non-zero, naming NET001 or NET002.
+//
+// The rule ships in the same change as the package it protects, deliberately. A gate installed
+// after clients already exist elsewhere has to grandfather them, and a grandfathered SSRF exception
+// is the thing that design document forbids by name.
+//
+// Both directions are asserted in one run, because the false positive is what would kill this rule:
+// safehttp.New RETURNS an *http.Client, so holding one is what every caller does, and a gate that
+// fired on the type rather than on the construction would be waived within a week.
+func TestRepoGates_OutboundClientOutsideSafeHTTP_FailsGate(t *testing.T) {
+	t.Parallel()
+
+	script := scriptPath(t, "repo-gates.sh")
+	tree := t.TempDir()
+
+	// The violation: an outbound client with no dialer control, no redirect limit and no timeout,
+	// in the package whose URLs a guild officer types.
+	writeGo(t, tree, "internal/webhook/deliver.go", `package webhook
+
+func deliver(url string, body io.Reader) error {
+	client := &http.Client{}
+	resp, err := client.Post(url, "application/json", body)
+	_ = resp
+	return err
+}
+`)
+
+	// The same violation aliased, which is the first thing anybody reaches for once a gate has
+	// complained. NET001 resolves the import, so the alias does not help.
+	writeGo(t, tree, "internal/cms/avatar.go", `package cms
+
+import nh "net/http"
+
+func fetch(url string) error {
+	transport := &nh.Transport{}
+	_, err := transport.RoundTrip(&nh.Request{})
+	return err
+}
+`)
+
+	// The package-level shortcut: http.DefaultClient, which has no timeout and inherits HTTP_PROXY.
+	writeGo(t, tree, "cmd/dkp/update.go", `package main
+
+func latest() error {
+	resp, err := http.Get("https://updates.example.com/latest")
+	_ = resp
+	return err
+}
+`)
+
+	// Permitted: the one package allowed to build one.
+	writeGo(t, tree, "internal/net/safehttp/client.go", `package safehttp
+
+func New() *http.Client {
+	return &http.Client{Transport: &http.Transport{}}
+}
+`)
+
+	// Permitted, and the assertion that matters most: HOLDING the client safehttp returned.
+	writeGo(t, tree, "internal/auth/oidc/jwks.go", `package oidc
+
+type Fetcher struct{ client *http.Client }
+
+func NewFetcher(client *http.Client) *Fetcher { return &Fetcher{client: client} }
+`)
+
+	// Permitted: a test client, which points at an httptest server on 127.0.0.1 — precisely the
+	// address the outbound policy denies. Gating _test.go would mean deleting either the control or
+	// the rule, so the boundary is drawn at code that ships.
+	writeGo(t, tree, "internal/api/server_test.go", `package api
+
+func probe(url string) { _, _ = http.Get(url) }
+`)
+
+	out, code := runGateScript(t, script, tree)
+
+	require.NotZero(t, code, "an outbound client built outside safehttp must fail the gates\n%s", out)
+	require.Contains(t, out, "NET001", "a constructed http.Client must fire NET001\n%s", out)
+	require.Contains(t, out, "NET002", "http.Get must fire NET002\n%s", out)
+	require.Contains(t, out, "internal/webhook/deliver.go:",
+		"the failure must name the offending file, repo-root-relative\n%s", out)
+	require.Contains(t, out, "internal/cms/avatar.go:",
+		"an aliased net/http import must not defeat NET001\n%s", out)
+	require.Contains(t, out, "cmd/dkp/update.go:",
+		"cmd/ is gated too — a CLI subcommand reaches the network like anything else\n%s", out)
+
+	require.NotContains(t, out, "internal/net/safehttp/client.go",
+		"internal/net/safehttp is where a client is SUPPOSED to be built — the allowlist is not working\n%s", out)
+	require.NotContains(t, out, "internal/auth/oidc/jwks.go",
+		"holding the client safehttp returned is the entire point of the package\n%s", out)
+	require.NotContains(t, out, "internal/api/server_test.go",
+		"a _test.go client points at 127.0.0.1, which is what the policy denies\n%s", out)
+}
+
 // TestRecipes_TotalIsBanned is the db/*.sql half of the total() ban, and the anchor for the bold note
 // in db/RECIPES.md. The Go half above (TestRepoGates_TotalInGoSQL_FailsGate) proves the ban reaches
 // SQL embedded in Go; this proves it reaches a recipe written the way db/RECIPES.md shows them — a

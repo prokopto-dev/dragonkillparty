@@ -172,6 +172,7 @@ func astRules() []astRule {
 	rules = append(rules, routeRules()...)
 	rules = append(rules, storeRules()...)
 	rules = append(rules, purityRules()...)
+	rules = append(rules, netRules()...)
 
 	return rules
 }
@@ -406,6 +407,110 @@ func purityRules() []astRule {
 	}
 
 	return rules
+}
+
+// --- SSRF containment: one *http.Client, built in one place -------------------------------------
+
+func netRules() []astRule {
+	// internal/net/safehttp is the only place an outbound client may be built, and _test.go is the
+	// only other place one may exist.
+	//
+	// The test carve-out is not a hole, and it is not "tests are exempt from the laws". A client in
+	// a _test.go file is not in the shipped binary, and every one of them in this repository points
+	// at an httptest server on 127.0.0.1 — which is PRECISELY the address the outbound policy
+	// denies, and denies correctly. Gating them would mean either a policy that permits loopback
+	// (deleting the control) or a per-file allowlist that grows (deleting the rule), so the
+	// boundary is drawn where the risk is: code that ships.
+	//
+	// Both patterns are anchored to the PATH portion of the rendered `path:line:text` hit. An
+	// unanchored `_test\.go:` would also drop a real violation on a line whose text happens to
+	// mention one — a comment pointing at `server_test.go:42` beside a constructed client — and a
+	// security gate that can be silenced by a comment is not one.
+	allow := []*regexp.Regexp{
+		regexp.MustCompile(`^internal/net/safehttp/`),
+		regexp.MustCompile(`^[^:]*_test\.go:`),
+	}
+
+	isNetHTTP := func(path string) bool { return path == "net/http" }
+
+	// CONSTRUCTION, not mention. safehttp.New RETURNS an *http.Client, so holding one, taking one
+	// as a parameter and keeping one in a struct field are all how a caller is supposed to use this
+	// package — a rule that fired on the type would make the package unusable and be deleted within
+	// a week. What is banned is bringing a second one into existence.
+	//
+	// http.Transport is banned on the same terms and for a sharper reason: a hand-built transport
+	// has no Control hook, and RoundTrip on it makes an outbound request with no client involved at
+	// all. Banning only http.Client would leave the dialer check one struct literal away.
+	construction := func(gf *goFile) []int {
+		locals := gf.locals("http", isNetHTTP)
+
+		var lines []int
+
+		ast.Inspect(gf.file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.CompositeLit:
+				// http.Client{…} and &http.Client{…}: the unary & wraps this node, so both arrive
+				// here.
+				if isOutboundType(node.Type, locals) {
+					lines = append(lines, gf.line(node.Pos()))
+				}
+			case *ast.ValueSpec:
+				// `var c http.Client` — the zero value is a WORKING client that dials through
+				// http.DefaultTransport. A pointer declaration (`var c *http.Client`) is holding,
+				// not constructing, and its type is a StarExpr rather than a selector, so it is not
+				// reported here.
+				if isOutboundType(node.Type, locals) {
+					lines = append(lines, gf.line(node.Pos()))
+				}
+			case *ast.CallExpr:
+				if ident, ok := node.Fun.(*ast.Ident); ok && ident.Name == "new" &&
+					len(node.Args) == 1 && isOutboundType(node.Args[0], locals) {
+					lines = append(lines, gf.line(node.Pos()))
+				}
+			}
+
+			return true
+		})
+
+		return lines
+	}
+
+	// The package-level shortcuts. Every one of them runs on http.DefaultClient, which has no
+	// timeout, no dialer control, no redirect limit and inherits HTTP_PROXY — it is the outbound
+	// policy's exact negation, reachable in eight characters.
+	shortcuts := func(gf *goFile) []int {
+		return selectorLines(gf, gf.locals("http", isNetHTTP),
+			"DefaultClient", "DefaultTransport", "Get", "Post", "Head", "PostForm")
+	}
+
+	var rules []astRule
+
+	for _, tree := range []string{"internal", "cmd"} {
+		rules = append(rules,
+			astRule{
+				id: "NET001", desc: "an http.Client or http.Transport constructed outside internal/net/safehttp",
+				tree: tree, reject: allow, inspect: construction,
+			},
+			astRule{
+				id: "NET002", desc: "http.Get/Post/Head/PostForm/DefaultClient/DefaultTransport outside internal/net/safehttp",
+				tree: tree, reject: allow, inspect: shortcuts,
+			},
+		)
+	}
+
+	return rules
+}
+
+// isOutboundType reports whether an expression names net/http's client or transport type.
+func isOutboundType(expr ast.Expr, locals map[string]bool) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || (sel.Sel.Name != "Client" && sel.Sel.Name != "Transport") {
+		return false
+	}
+
+	ident, ok := sel.X.(*ast.Ident)
+
+	return ok && locals[ident.Name]
 }
 
 // runASTRules evaluates every Go-syntax law against the tree.
