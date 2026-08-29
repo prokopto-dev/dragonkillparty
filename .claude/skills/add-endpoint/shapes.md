@@ -81,13 +81,17 @@ Missing where mandatory → `428 precondition_required`. Mismatch → `412 preco
 
 ```go
 type ListRaidsInput struct {
-    Cursor      string `query:"cursor"`
-    Limit       int    `query:"limit" default:"50" minimum:"1" maximum:"200"`
+    api.ListParams                                   // ?cursor and ?limit — EMBED, never retype
+
     Sort        string `query:"sort" default:"-started_at"`
     StateIn     string `query:"state__in"`          // enumerated filter, never a DSL
     StartedGTE  string `query:"started_at__gte" format:"date-time"`
 }
 ```
+
+`api.ListParams` is `?cursor` plus `?limit` with `default:"50" minimum:"1" maximum:"200"`. Retyping
+those tags publishes a second page-size contract with the same name, and
+`TestArch_Collections_UseTheSharedEnvelope` rejects it.
 
 Filters are explicit typed parameters with the operator suffixes `__ne`, `__gte`, `__lte`, `__in`,
 `__contains`, `__isnull`. A generic query DSL cannot be expressed in OpenAPI, so every generated SDK
@@ -101,19 +105,26 @@ type RaidOutput struct {
     Body RaidDTO
 }
 
-type ListRaidsOutput struct {
-    Body struct {
-        Items      []RaidDTO `json:"items"`
-        NextCursor *string   `json:"next_cursor"`   // null at the end
-        HasMore    bool      `json:"has_more"`      // authoritative
-    }
-}
+// The envelope. api.ListOutput[T] IS this struct — do not re-declare it per resource.
+type ListRaidsOutput = api.ListOutput[RaidDTO]   // { items, next_cursor, has_more }
 ```
 
-Use the shared envelope helper rather than re-declaring this struct per resource. `has_more` is
-authoritative; `next_cursor` is `null` at the end. Offset is not offered anywhere — it drifts under
-concurrent inserts and is the source of the duplicate-and-skip bugs in every bot that has ever polled
-EQdkp.
+Use `api.ListOutput[T]` rather than re-declaring the body per resource. `has_more` is authoritative;
+`next_cursor` is `null` at the end; `items` is `[]` and never `null`. Offset is not offered anywhere —
+it drifts under concurrent inserts and is the source of the duplicate-and-skip bugs in every bot that
+has ever polled EQdkp.
+
+The handler builds the page with the two `api.Paginator` calls — `Request` decodes `?cursor` and
+clamps `?limit`, `NewPage` trims the over-fetch and mints the next token:
+
+```go
+req, err := h.pages.Request(in.ListParams, class, core.FilterFingerprint(canonicalFilters))
+rows, err := h.svc.List(ctx, req.After, req.Fetch())        // Fetch() == limit + 1
+page, err := api.NewPage(h.pages, req, dtos, keyOf)         // trims to limit, mints from the last kept row
+```
+
+`req` remembers the class and filter it was verified against, so `NewPage` cannot mint under a
+different pair. A `Request` error is already an `*api.ProblemDetail` — return it.
 
 The cursor is base64url of
 `{v, k:[sort keys], id:[tiebreak ULID], f:[hash of filter+sort], pc:[principal class]}`, HMAC-signed.

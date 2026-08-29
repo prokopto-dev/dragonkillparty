@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 )
 
 // TestKeyring_ShortRootKey_IsAnError. HKDF accepts any length of input keying material happily, so a
@@ -74,6 +75,102 @@ func TestKeyring_NilKeyring_HasNoPepper(t *testing.T) {
 	hash, err := ring.TokenHash(auth.PepperKIDv1, []byte("secret"))
 	require.Nil(t, hash)
 	require.ErrorIs(t, err, auth.ErrNoPepper)
+}
+
+// TestKeyring_CursorCodec_IsDeterministicAndKeyed is the property the cursor's tamper detection
+// rests on: two processes booted from the same secrets.json verify each other's cursors, and a
+// process booted from a different one verifies none of them.
+//
+// The first half is what makes a cursor survive a restart, which docs/api/pagination-and-sync.md
+// promises a bot author. The second is the whole point of signing it.
+func TestKeyring_CursorCodec_IsDeterministicAndKeyed(t *testing.T) {
+	t.Parallel()
+
+	cursor := core.Cursor{
+		// Version 1 explicitly, because Encode stamps the current codec version and Decode refuses
+		// any other. Written out rather than left zero so a future bump fails HERE, next to the
+		// "cursors survive a restart" promise it would break, rather than in a bot's logs.
+		Version:        1,
+		Key:            core.ULID("01JZ0RAW000000000000000001"),
+		ID:             core.ULID("01JZ0RAW000000000000000001"),
+		Filter:         core.FilterFingerprint("pool=01JZ0RAW000000000000000009"),
+		PrincipalClass: core.PrincipalClass("member"),
+	}
+
+	first, err := auth.NewTestKeyring(t).CursorCodec()
+	require.NoError(t, err)
+
+	token, err := first.Encode(cursor)
+	require.NoError(t, err)
+
+	// Same root key, separately derived: a restart must not invalidate outstanding cursors.
+	restarted, err := auth.NewTestKeyring(t).CursorCodec()
+	require.NoError(t, err)
+
+	got, err := restarted.Decode(token, cursor.PrincipalClass, cursor.Filter)
+	require.NoError(t, err)
+	require.Equal(t, cursor, got)
+
+	// A different root key: the same token must not verify.
+	otherRing, err := auth.NewKeyring(bytes.Repeat([]byte("z"), auth.RootKeyLen))
+	require.NoError(t, err)
+
+	other, err := otherRing.CursorCodec()
+	require.NoError(t, err)
+
+	_, err = other.Decode(token, cursor.PrincipalClass, cursor.Filter)
+	require.ErrorIs(t, err, core.ErrCursorInvalid)
+}
+
+// TestKeyring_CursorCodec_DoesNotSignWithTheRootKey proves the subkey is DERIVED.
+//
+// §9.1's tree exists so that a compromise of one purpose does not hand over the others; a codec that
+// signed with the root key directly would satisfy every other test in this file while making the
+// cursor signature and the PAT pepper the same secret. Comparing against a codec built from the raw
+// root is the cheapest way to say so out loud.
+func TestKeyring_CursorCodec_DoesNotSignWithTheRootKey(t *testing.T) {
+	t.Parallel()
+
+	root := bytes.Repeat([]byte("k"), auth.RootKeyLen)
+
+	ring, err := auth.NewKeyring(root)
+	require.NoError(t, err)
+
+	derived, err := ring.CursorCodec()
+	require.NoError(t, err)
+
+	raw, err := core.NewCursorCodec(root)
+	require.NoError(t, err)
+
+	cursor := core.Cursor{
+		Key:            core.ULID("01JZ0RAW000000000000000001"),
+		ID:             core.ULID("01JZ0RAW000000000000000001"),
+		PrincipalClass: core.PrincipalClass("member"),
+	}
+
+	fromDerived, err := derived.Encode(cursor)
+	require.NoError(t, err)
+
+	fromRoot, err := raw.Encode(cursor)
+	require.NoError(t, err)
+
+	require.NotEqual(t, fromRoot, fromDerived,
+		"the cursor codec signs with the root key itself rather than the state-signing subkey")
+}
+
+// TestKeyring_NilKeyring_HasNoCursorCodec: the spec-only construction path must refuse to build a
+// codec rather than hand back one that "signs" with an empty key.
+//
+// An empty-key codec is the dangerous failure: it would verify anything any instance ever minted,
+// so the tamper detection would be absent rather than broken, and nothing would say so.
+func TestKeyring_NilKeyring_HasNoCursorCodec(t *testing.T) {
+	t.Parallel()
+
+	var ring *auth.Keyring
+
+	codec, err := ring.CursorCodec()
+	require.Nil(t, codec)
+	require.ErrorIs(t, err, auth.ErrNoKeyring)
 }
 
 // TestNewToken_SecretHalf_ContainsUnderscores is the regression test for the parser hazard, and it

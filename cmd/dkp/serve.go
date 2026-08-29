@@ -19,6 +19,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/migrate"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 	"github.com/prokopto-dev/dragonkillparty/internal/ui"
@@ -416,7 +417,15 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 	// A nil store means no resolver, and api.Config's contract takes it from there: operations that
 	// declare Security answer 503 rather than being served unauthenticated. That is the same
 	// degradation the store-backed operations get, applied to the thing that guards them.
-	var authService *auth.Service
+	//
+	// The cursor codec comes off the same keyring, for the same reason and with the same
+	// consequence: it signs the opaque pagination cursors, its key is the state-signing subkey of
+	// the one root key (§9.1), and a nil codec makes paginated collections answer 503 rather than
+	// mint cursors nobody signed.
+	var (
+		authService *auth.Service
+		cursors     *core.CursorCodec
+	)
 
 	if st != nil {
 		keyring, keyErr := auth.LoadOrCreateKeyring(cfg.dataDir)
@@ -425,6 +434,15 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 		}
 
 		authService = auth.NewService(st, clock.System{}, keyring)
+
+		// A keyring that loaded cannot fail to yield a codec — it only refuses when underived — so
+		// this error is a wiring mistake rather than an operator one, and it stops the boot for the
+		// same reason an unreadable secrets file does: serving collections whose cursors nobody can
+		// verify is worse than not serving them.
+		cursors, keyErr = keyring.CursorCodec()
+		if keyErr != nil {
+			return fmt.Errorf("build cursor codec: %w", keyErr)
+		}
 	}
 
 	var lc net.ListenConfig
@@ -468,6 +486,9 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 			// The authentication choke point. Nil only when the database could not be opened, in
 			// which case every operation declaring Security answers 503 (api.Config).
 			Auth: authService,
+			// The cursor signing key, nil under the same degraded boot, with the same shape of
+			// consequence: paginated collections answer 503 rather than issuing unsigned cursors.
+			Cursors: cursors,
 			// The fail-closed half of the boot split (#272). Unavailable here means every operation
 			// that declares a permission answers 503 while /healthz, /readyz, /config.json, the docs
 			// and the public operations keep serving.

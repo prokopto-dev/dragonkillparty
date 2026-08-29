@@ -128,6 +128,51 @@ type RaidTickOutput struct {
 cursor is base64url of `{v, k, id, f, pc}`, HMAC-signed — build it with the helper so tamper
 detection and `cursor_filter_mismatch` come for free.
 
+**The helper is three types in `internal/api/pagination.go`, and using them is not optional** —
+`TestArch_Collections_UseTheSharedEnvelope` reads the registry and rejects anything else:
+
+```go
+type ListRaidsInput struct {
+    api.ListParams                          // ?cursor and ?limit, with the one page-size contract
+    StateIn string `query:"state__in"`      // filters are explicit typed params alongside it
+}
+
+func (h *handler) listRaids(ctx context.Context, in *ListRaidsInput) (*api.ListOutput[RaidDTO], error) {
+    filter := core.FilterFingerprint(in.canonicalFilters())
+
+    req, err := h.pages.Request(in.ListParams, class, filter)   // decodes ?cursor, clamps ?limit
+    if err != nil {
+        return nil, err                                        // already a *api.ProblemDetail
+    }
+
+    rows, err := h.svc.List(ctx, req.After, req.Fetch())        // Fetch() is limit+1 — the over-fetch
+    if err != nil {
+        return nil, ...
+    }
+
+    page, err := api.NewPage(h.pages, req, toDTOs(rows), func(r RaidDTO) (core.ULID, core.ULID) {
+        return core.ULID(r.ID), core.ULID(r.ID)
+    })
+    if err != nil {
+        return nil, err
+    }
+
+    return &api.ListOutput[RaidDTO]{Body: page}, nil
+}
+```
+
+`api.Paginator` comes from `api.NewPaginator(cfg.Cursors)`; `cmd/dkp` builds the codec with
+`auth.Keyring.CursorCodec()`, so the signing key is the state-signing subkey of the one root key
+(03-security.md §9.1) rather than a second secret. **A nil codec refuses with 503 rather than
+minting unsigned cursors** — an unsigned cursor is a client-editable `WHERE` clause.
+
+`PageRequest` carries the principal class and filter fingerprint it was VERIFIED against, unexported,
+so `NewPage` mints the next cursor under the same binding. Do not rebuild them for the mint: that is
+two chances to pass a different pair the second time. `NewPage` also owns the trim — it serves
+`req.Limit` rows out of the `Fetch()` it asked for, and mints from the last row that SURVIVED the
+trim. Minting from the extra row hands the caller a position past a row it never saw, and that row
+is then silently missing from the walk.
+
 `pc` is the principal class the cursor was minted for, and it is a **named signed field, not
 something you fold into the filter fingerprint**. `core.Cursor.PrincipalClass` is required:
 `Encode` refuses to mint a cursor without one and `Decode(token, wantPrincipal, wantFilter)`
@@ -197,7 +242,8 @@ with `meta.current` and `meta.current_etag` so a bot merges in one round trip),
 | Mutating POST under `/raids`, `/awards`, `/adjustments`, `/bids`, `/raid-submissions`, `/ledger` without a required `Idempotency-Key` | idempotency coverage |
 | State transition or PATCH without `If-Match` | precondition coverage |
 | `Hidden: true` outside the allowlist | no-hidden-operations |
-| A bespoke list envelope or error shape | envelope shape |
+| A bespoke list envelope, an `?offset=`/`?page=` parameter, a retyped `limit`, a `Link` header, or `?since_seq=` off the three permitted prefixes | `TestArch_Collections_UseTheSharedEnvelope` (`arch_pagination_test.go`) |
+| A bespoke error shape | envelope shape |
 | A route declared outside `internal/api` | package scan vs registry |
 
 Beyond the arch tests, two CI gates apply today: the committed `openapi/openapi.json` is regenerated

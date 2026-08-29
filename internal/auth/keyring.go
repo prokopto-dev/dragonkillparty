@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 )
 
 // RootKeyLen is the size of the one root key everything else is derived from: 32 bytes from
@@ -24,11 +26,27 @@ const RootKeyLen = 32
 //	                        ├─ info="dkp/sse-ticket/v1"      → SSE handshake ticket signing
 //	                        └─ info="dkp/backup-enc/v1"      → optional backup encryption
 //
-// ONLY THE FIRST IS DERIVED HERE. Deriving the other six now would be six unused keys with six
-// places to get an info string subtly wrong, and each one arrives with the subsystem that uses it —
-// the tree above is the map, not a to-do list. `crypto/hkdf` is standard library as of Go 1.24, so
-// none of this needs a dependency.
-const patPepperInfo = "dkp/pat-pepper/v1"
+// TWO OF THE SEVEN ARE DERIVED HERE, and the rule for the rest is unchanged: each one arrives with
+// the subsystem that uses it, because five unused keys are five places to get an info string subtly
+// wrong with nothing exercising them. The tree above is the map, not a to-do list. `crypto/hkdf` is
+// standard library as of Go 1.24, so none of this needs a dependency.
+//
+// state-sign is the second, and it arrives now because cursor pagination is the first of its three
+// consumers to ship (#291). Its info string covers OAuth state, CSRF and cursor signing TOGETHER, as
+// §9.1 specifies: one purpose — "prove this server minted this short-lived opaque token" — three
+// places that need it.
+//
+// SHARING ONE SUBKEY BETWEEN THEM CARRIES A CONDITION, and it is on whoever adds the second consumer
+// rather than on this line. It is safe only while the three signed payloads cannot be mistaken for
+// one another, so an OAuth-state or CSRF codec must domain-separate its own MAC input — a purpose
+// tag inside the signed bytes. core.CursorCodec signs over `<ulid>\x00<base64url body>`, which is a
+// shape no sensible state token would also produce, but "no sensible one would" is a property of
+// today's single consumer and not a guarantee. If separating cleanly ever looks awkward, the honest
+// answer is a fourth info string, not a cleverer payload.
+const (
+	patPepperInfo = "dkp/pat-pepper/v1"
+	stateSignInfo = "dkp/state-sign/v1"
+)
 
 // PepperKIDv1 is the pepper_kid stamped on every api_token and feed_token row this binary writes.
 //
@@ -50,6 +68,14 @@ var ErrUnknownPepperKID = errors.New("unknown pepper kid")
 // ErrRootKeyLength reports a root key that is not RootKeyLen bytes.
 var ErrRootKeyLength = errors.New("root key must be 32 bytes")
 
+// ErrNoKeyring reports a subkey asked of a nil or underived keyring.
+//
+// It is DISTINCT from ErrNoPepper, which is the bearer path's "this process cannot verify a token".
+// Both mean "no keyring", but they surface in different places to different readers — one in a 401
+// on a bot's request, one in a 503 on a paginated collection — and a single sentinel would put the
+// words "pat pepper" in front of an operator whose cursor key is what is actually missing.
+var ErrNoKeyring = errors.New("keyring not derived")
+
 // Keyring holds the subkeys derived from the instance root key.
 //
 // It holds the DERIVED pepper and not the root key itself: nothing in this package needs the root,
@@ -57,6 +83,7 @@ var ErrRootKeyLength = errors.New("root key must be 32 bytes")
 // String() somebody adds without thinking.
 type Keyring struct {
 	patPepper []byte
+	stateSign []byte
 }
 
 // NewKeyring derives the subkeys from a 32-byte root key.
@@ -75,7 +102,37 @@ func NewKeyring(rootKey []byte) (*Keyring, error) {
 		return nil, fmt.Errorf("derive pat pepper: %w", err)
 	}
 
-	return &Keyring{patPepper: pepper}, nil
+	stateSign, err := hkdf.Key(sha256.New, rootKey, nil, stateSignInfo, sha256.Size)
+	if err != nil {
+		return nil, fmt.Errorf("derive state signing key: %w", err)
+	}
+
+	return &Keyring{patPepper: pepper, stateSign: stateSign}, nil
+}
+
+// CursorCodec builds the pagination cursor codec from the state-signing subkey.
+//
+// IT RETURNS A CODEC AND NOT THE KEY, which is the same rule the PAT pepper follows: this struct
+// performs the keyed operation rather than lending its material out, so there is exactly one place
+// in the process where a state-signing key exists as bytes and no call site can accidentally reuse
+// it for a second purpose. core.NewCursorCodec copies what it is given, so the slice below never
+// escapes.
+//
+// A NIL OR UNDERIVED KEYRING IS AN ERROR, NOT AN UNSIGNED CODEC. `dkp openapi` and the architectural
+// tests construct services from a nil keyring deliberately; if this handed one of them a codec that
+// "signed" with an empty key, every cursor it minted would verify against every other instance and
+// the tamper detection the whole design rests on would be absent rather than broken.
+func (k *Keyring) CursorCodec() (*core.CursorCodec, error) {
+	if k == nil || len(k.stateSign) == 0 {
+		return nil, ErrNoKeyring
+	}
+
+	codec, err := core.NewCursorCodec(k.stateSign)
+	if err != nil {
+		return nil, fmt.Errorf("build cursor codec: %w", err)
+	}
+
+	return codec, nil
 }
 
 // TokenHash returns HMAC-SHA256(pepper(kid), secret) — what api_token.token_hash and

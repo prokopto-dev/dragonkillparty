@@ -10,6 +10,7 @@ import (
 	"github.com/prokopto-dev/dragonkillparty/internal/auth"
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 	"github.com/prokopto-dev/dragonkillparty/internal/guild"
 	"github.com/prokopto-dev/dragonkillparty/internal/store"
 )
@@ -122,6 +123,21 @@ type Config struct {
 	// than letting the operation through. Every gate in this Config fails the same way: an authorization
 	// input that is missing refuses, it never defaults to allow.
 	Store *store.Store
+
+	// Cursors signs and verifies the opaque pagination cursors every collection returns. cmd/dkp
+	// builds one with auth.Keyring.CursorCodec() from the same secrets file the credential layer
+	// reads, so the signing key is a subkey of the one root key an officer backs up (§9.1) rather
+	// than a second secret to manage.
+	//
+	// A NIL CODEC REFUSES, it does not mint unsigned cursors. Paginator answers 503 without one — an
+	// unsigned cursor is a client-editable WHERE clause, and "the key was not wired" has to look like
+	// an outage rather than like a working endpoint. Same rule as Auth and Authorization above: a
+	// missing input refuses.
+	//
+	// It is a RUNTIME value like every other field here and must not influence the emitted document:
+	// no operation's schema mentions it, and TestOpenAPI_ConfigVariation_ProducesIdenticalSpec holds
+	// that line.
+	Cursors *core.CursorCodec
 }
 
 // New builds the complete HTTP handler tree: routes, Huma mount, and middleware.

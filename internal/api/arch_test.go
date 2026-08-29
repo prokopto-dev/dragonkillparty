@@ -63,9 +63,35 @@ func (o registeredOp) String() string { return o.Method + " " + o.Path }
 func registeredOperations(t *testing.T) []registeredOp {
 	t.Helper()
 
+	ops := operationsOf(registeredDocument(t))
+
+	require.NotEmpty(t, ops,
+		"the registry is empty, so every assertion in this file would pass without checking anything")
+
+	return ops
+}
+
+// registeredDocument is the OpenAPI document of the operations this binary serves.
+//
+// Separate from registeredOperations because a gate that has to resolve a `$ref` needs the schema
+// registry as well as the operations, and both must come from the SAME document — resolving a
+// response schema against a registry built by a second NewHumaAPI call would compare an operation
+// with a schema no served operation references.
+func registeredDocument(t *testing.T) *huma.OpenAPI {
+	t.Helper()
+
 	doc := NewHumaAPI(Config{}).OpenAPI()
 	require.NotNil(t, doc, "the Huma API has no OpenAPI document")
 
+	return doc
+}
+
+// operationsOf flattens a document's path items into one sorted slice.
+//
+// One walk, shared by every gate in this package, because the method map below is the kind of list
+// that grows a missing entry silently: an operation under a method nobody enumerated is an operation
+// every assertion here skips.
+func operationsOf(doc *huma.OpenAPI) []registeredOp {
 	var ops []registeredOp
 
 	for path, item := range doc.Paths {
@@ -84,9 +110,6 @@ func registeredOperations(t *testing.T) []registeredOp {
 			}
 		}
 	}
-
-	require.NotEmpty(t, ops,
-		"the registry is empty, so every assertion in this file would pass without checking anything")
 
 	// Sorted so a failure message is stable across runs; Paths is a map.
 	slices.SortFunc(ops, func(a, b registeredOp) int { return strings.Compare(a.String(), b.String()) })

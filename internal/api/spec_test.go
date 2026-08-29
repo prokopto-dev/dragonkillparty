@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
 )
 
 // committedSpec reads openapi/openapi.json from the working tree.
@@ -85,6 +87,11 @@ func TestOpenAPI_ConfigVariation_ProducesIdenticalSpec(t *testing.T) {
 		// request at all (#272). It gates requests at the middleware and must not reach the document
 		// — an operation's declared statuses are the same on a healthy instance and a fail-closed one.
 		{Authorization: AuthorizationReconciled()},
+		// The cursor signing key. It decides whether a paginated collection can be served at all, so
+		// it is exactly the kind of runtime value that looks like it might belong in the document —
+		// and it does not: a collection's declared schema is the same on an instance whose key was
+		// wired and one whose was not, only the answers differ.
+		{Cursors: mustCursorCodec(t)},
 	} {
 		doc, err := NewHumaAPI(cfg).OpenAPI().MarshalJSON()
 		require.NoError(t, err)
@@ -97,6 +104,17 @@ func TestOpenAPI_ConfigVariation_ProducesIdenticalSpec(t *testing.T) {
 			"Config{Version: %q} changed the OpenAPI document. Nothing in the spec may depend on a "+
 				"runtime value.", cfg.Version)
 	}
+}
+
+// mustCursorCodec builds a codec for the config-variation table above. The key is arbitrary: nothing
+// here signs anything, the point is that a non-nil codec is present.
+func mustCursorCodec(t *testing.T) *core.CursorCodec {
+	t.Helper()
+
+	codec, err := core.NewCursorCodec([]byte("a-thirty-two-byte-instance-key!!"))
+	require.NoError(t, err)
+
+	return codec
 }
 
 // TestOpenAPI_Document_IsOpenAPI31 pins the version the whole toolchain assumes.

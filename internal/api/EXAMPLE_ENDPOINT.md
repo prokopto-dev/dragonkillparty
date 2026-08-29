@@ -571,6 +571,8 @@ it lands, declare the extension only where the requirement is static.
 | A mutating `POST` creating domain state without a required `Idempotency-Key` | `arch_test.go` idempotency coverage |
 | `Hidden: true` outside `api.HiddenOperationAllowlist()` | `arch_test.go` no-hidden-operations |
 | A route declared outside `internal/api` | `arch_test.go` package scan vs registry |
+| A collection returning anything but `{items, next_cursor, has_more}` — a bare array, `{results, page, total_pages}`, camelCase keys, a `Link` header, an `?offset=`/`?page=` parameter, or a `limit` whose default and cap are not 50 and 200 | `TestArch_Collections_UseTheSharedEnvelope` |
+| `?since_seq=` outside `/ledger/*`, `/audit` and `/events/replay` | `TestArch_SinceSeq_IsAllowlistedToThreePrefixes` |
 
 ## 6. `make gen` again
 
