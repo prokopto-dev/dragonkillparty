@@ -41,6 +41,7 @@ and one link is cheaper than one argument.
 | [0026](0026-three-rules-per-pool.md) | Three rules per pool | accepted | A pool composes an earn, a spend and an over-time rule, each with its own config; `ledger_batch.strategy_id` names which of the three planned the batch, and a reversal routes on it |
 | [0027](0027-type-aware-second-opinion-on-the-laws.md) | A type-aware second opinion on the laws | accepted | `go/types` over `go list -export`, standard library only — no `golang.org/x/tools`. Advisory by construction; `make lint-repo` stays the gate because it reads a tree that does not build |
 | [0028](0028-authentication-before-authorization.md) | Authentication before authorization | accepted | Wave 0d ships the credential tables, `internal/auth` and the cookie-or-bearer middleware; capability (`authz.Check`, `role ∩ scopes`, the floor) is Wave 0e, and the published disclosure narrows rather than being deleted |
+| [0029](0029-response-validation-on-libopenapi-validator.md) | Response validation on `pb33f/libopenapi-validator` | proposed | Measured: kin-openapi silently falls back from JSON Schema 2020-12 to its legacy walker on any schema with a nested `$ref`. One engine costs 8 MB and buys a gate whose semantics can be stated |
 
 ## When an ADR is required
 
