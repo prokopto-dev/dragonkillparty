@@ -33,6 +33,9 @@ func newRootCmd() *cobra.Command {
 		// balance from the log to check the cache (issue #198). Read-only.
 		newVerifyLedgerCmd(),
 		newOpenAPICmd(),
+		// `dkp admin` — the host-access half of first-run: `create` makes the account that holds
+		// admin.owner, `bootstrap --new-token` re-arms the one-time token (issue #264).
+		newAdminCmd(),
 		// The container HEALTHCHECK. A loopback GET /healthz that touches no database — canonical
 		// §13 — so it stays green through a migration while /readyz reports not-ready.
 		newHealthcheckCmd(),

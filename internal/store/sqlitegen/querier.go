@@ -52,6 +52,42 @@ type Querier interface {
 	// which are later waves. It ships now for the reason the two revokes do: the resolver refuses a stale
 	// epoch, and a branch nobody has watched go red is a branch nobody knows works.
 	BumpSessionEpoch(ctx context.Context, arg BumpSessionEpochParams) error
+	// ConsumeBootstrapToken retires a token: redeemed if consumed_at is the redeeming instant.
+	//
+	// The `consumed_at IS NULL` guard keeps the FIRST instant and makes the statement idempotent, as
+	// RevokeSession's and RevokeAPIToken's do. It runs in the SAME transaction as the owner it creates,
+	// so a token cannot be spent without an owner existing or an owner exist without the token being
+	// spent.
+	ConsumeBootstrapToken(ctx context.Context, arg ConsumeBootstrapTokenParams) error
+	// CountOwnerHolders answers the one question first-run turns on: does this instance have an owner?
+	//
+	// docs/design/01-domain-model.md section 4 requires at least one non-suspended account to hold
+	// admin.owner, and docs/design/03-security.md section 4.3 makes the last one undemotable. Both need
+	// the same count, and so does the boot path that decides whether to arm a bootstrap token, so it is
+	// one statement rather than three readings of the same sentence.
+	//
+	// IT IS THE TRIGGERS' PREDICATE, IN SQL THE PRODUCT CAN READ.
+	// 000011_bootstrap_token_and_last_owner_guard.sql enforces the invariant with eight triggers that
+	// carry this same shape inline, because a trigger body cannot be parameterised; this is the version
+	// Go asks. The two are held together from both ends: TestOwner_SuspendedHolder_IsNotAHolder in
+	// internal/authz suspends one of two owners and requires this count AND the triggers to agree that
+	// the other is now the last, and TestOwnerTriggers_EveryWritePath_RefusesTheLastHolder in
+	// test/migrations asks the same question of a raw handle after every refusal.
+	//
+	// WHY IT IGNORES expires_at AND suspended_until_at ROWS: an assignment counts here only when both
+	// are NULL. That is the triggers' definition and it is deliberate - a trigger cannot read a clock
+	// without making a schema-level guarantee depend on wall time, so "holds admin.owner" is structural,
+	// and a time-boxed grant is never the thing that keeps an instance open. It is conservative in the
+	// safe direction: this count can be lower than the number of accounts that could authorise right
+	// now, never higher.
+	//
+	// DISTINCT over the subject: two assignments to one account through two owner-granting roles are one
+	// holder, and "how many people can unlock this instance" is the question being asked.
+	//
+	// The permission key, the subject kind and the active state are PARAMETERS rather than literals, so
+	// internal/authz and internal/auth/appuser/kinds stay the one place each is spelled. 'both' is a
+	// literal for the reason EffectivePermission's is, and it drifts the same safe way.
+	CountOwnerHolders(ctx context.Context, arg CountOwnerHoldersParams) (int64, error)
 	// EffectivePermission is THE authorization read: the one statement the choke point runs per request
 	// that requires a permission (docs/design/03-security.md section 4.1).
 	//
@@ -162,6 +198,17 @@ type Querier interface {
 	// that many trailing characters off the generated query string. The failure is silent at generate
 	// time and shows up as a syntax error only when the query runs.
 	GetGuild(ctx context.Context) (Guild, error)
+	// GetLatestBootstrapToken reads the most recently armed row, whatever state it is in.
+	//
+	// UNFILTERED, for the reason auth.sql's two resolves are: the caller has to tell "no token was ever
+	// armed" from "it expired" from "it was already redeemed" from "five attempts have been spent",
+	// because the operator reading the log needs the difference and the caller on the wire gets the same
+	// refusal either way.
+	//
+	// ORDER BY created_at DESC, id DESC: re-arming writes a new row rather than editing the old one, so
+	// the newest row is the live one and every earlier row is superseded by construction. The id tiebreak
+	// is a ULID, so it is monotonic within a microsecond and the order is total.
+	GetLatestBootstrapToken(ctx context.Context) (BootstrapToken, error)
 	// GetLedgerBatch reads one batch by id. It backs the reversal-linkage check: before a reversal is
 	// written, the commit path loads the batch it claims to reverse and requires it to be in the SAME
 	// POOL, because balances are per-pool and a cross-pool reversal undoes nothing while still marking
@@ -179,6 +226,30 @@ type Querier interface {
 	// a new query enters the codebase is by being written here first and reviewed as SQL.
 	GetMetaValue(ctx context.Context, key string) (string, error)
 	GetPermission(ctx context.Context, key string) (Permission, error)
+	// Role assignments (Phase 2 Wave 0e, issue #276) - who holds which role, and how far it reaches.
+	//
+	// InsertRoleAssignment is the statement the first-run bootstrap (issue #264) and the role editor
+	// both call, written here now because authz.Check has nothing to read without it: a permission
+	// catalogue and a role seed with no assignments authorise nobody, so the check would be a function
+	// whose only observed answer is "no". It is the ADR-0028 commitment-3 shape - the statement its
+	// endpoint will call verbatim, landing one wave ahead of the endpoint - and not test scaffolding.
+	//
+	// There is no UpdateRoleAssignment and no DeleteRoleAssignment yet. Revocation is
+	// suspended_until_at or expires_at, both of which the read below already honours, and the role
+	// editor decides between a soft revoke and a hard delete when it ships.
+	// GetRoleAssignment reads one assignment back by id.
+	//
+	// THE READ-AFTER-WRITE THE ROLE EDITOR AND THE AUDIT SURFACE BOTH NEED, and it lands here for the
+	// reason InsertRoleAssignment did one wave earlier: it is the statement those will call verbatim,
+	// and a writer whose result nothing can read is a writer nobody can hold to a shape. Its caller
+	// today is the test that holds issue #264's acceptance criterion - that first run produces a
+	// GLOBAL, UNCONDITIONAL grant carrying granted_via = bootstrap - which is a claim about the row and
+	// cannot honestly be checked against the Go that wrote it.
+	//
+	// BY ID RATHER THAN BY SUBJECT. "Every role this person holds" is a list with a scope filter and a
+	// deleted-role join, which is the role editor's screen and arrives with it; this is the single-row
+	// read, and it is the one shape that cannot become a different question later.
+	GetRoleAssignment(ctx context.Context, id string) (RoleAssignment, error)
 	// GetSystemAccount reads one system account by its system_key ('residue', 'guild_bank', ...). It is
 	// how a service or a test resolves the four seeded accounts by name rather than by their ULID.
 	GetSystemAccount(ctx context.Context, systemKey *string) (Account, error)
@@ -249,6 +320,34 @@ type Querier interface {
 	// computed by internal/ledger/hashchain.go and mirrored into dkp_meta('audit_head') in the same
 	// transaction.
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// The one-time first-run credential (docs/design/03-security.md section 9.2).
+	//
+	// Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated from
+	// a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate SQL002),
+	// so the only way a new query enters the codebase is by being written here first and reviewed as
+	// SQL.
+	//
+	// THERE IS NO LOOKUP BY HASH, and that is the difference between this file and the two resolves in
+	// auth.sql. A session or a PAT is one of thousands and has to be found by an indexed lookup on its
+	// own hash; there is at most one live bootstrap token on an instance, so the read is "the most
+	// recently armed row" and the comparison happens in Go, in constant time, against a row that was
+	// already going to be read. Section 9.2 asks for a constant-time comparison in as many words, and a
+	// lookup keyed on the presented secret's hash cannot be one - the index decides, and it decides in a
+	// time that depends on the value.
+	//
+	// THE ROW IS STAMPED, NEVER DELETED, so there is no DELETE here. "Delete the token" in section 9.2
+	// means the credential stops working, which ConsumeBootstrapToken does; the row goes on carrying the
+	// record that first-run happened and after how many attempts. What it stores is a SHA-256 of 256
+	// bits of entropy, which discloses nothing.
+	//
+	// Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+	// by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
+	// that many trailing characters off the generated query string. The failure is silent at generate
+	// time and shows up as a syntax error only when the query runs.
+	// InsertBootstrapToken arms an instance. The caller has already generated 32 bytes from
+	// crypto/rand, hashed them, printed the plaintext once and written it to first-run-token.txt; the
+	// plaintext never reaches this statement and is not recoverable from what it stores.
+	InsertBootstrapToken(ctx context.Context, arg InsertBootstrapTokenParams) error
 	// InsertGuild creates the singleton row. It exists for the setup flow that Phase 2 builds, which
 	// writes the initial guild once, and for the tests that need a row to read and patch. It always
 	// writes id = 1 (the CHECK enforces it), so a second call fails the primary key rather than creating
@@ -304,17 +403,6 @@ type Querier interface {
 	// otherwise fail the foreign key on a fresh install - which is also why the seed cannot live in the
 	// migration beside pool and account: at migration time the permission table is empty.
 	InsertRole(ctx context.Context, arg InsertRoleParams) error
-	// Role assignments (Phase 2 Wave 0e, issue #276) - who holds which role, and how far it reaches.
-	//
-	// InsertRoleAssignment is the statement the first-run bootstrap (issue #264) and the role editor
-	// both call, written here now because authz.Check has nothing to read without it: a permission
-	// catalogue and a role seed with no assignments authorise nobody, so the check would be a function
-	// whose only observed answer is "no". It is the ADR-0028 commitment-3 shape - the statement its
-	// endpoint will call verbatim, landing one wave ahead of the endpoint - and not test scaffolding.
-	//
-	// There is no UpdateRoleAssignment and no DeleteRoleAssignment yet. Revocation is
-	// suspended_until_at or expires_at, both of which the read below already honours, and the role
-	// editor decides between a soft revoke and a hard delete when it ships.
 	InsertRoleAssignment(ctx context.Context, arg InsertRoleAssignmentParams) error
 	InsertRolePermission(ctx context.Context, arg InsertRolePermissionParams) error
 	InsertServiceAccount(ctx context.Context, arg InsertServiceAccountParams) error
@@ -463,6 +551,18 @@ type Querier interface {
 	// being shipped, not when the instance was last restarted, and every boot after a downgrade would
 	// otherwise rewrite it.
 	OrphanPermission(ctx context.Context, arg OrphanPermissionParams) error
+	// RecordBootstrapTokenAttempt spends one of the five attempts section 9.2 allows.
+	//
+	// IT RUNS BEFORE THE COMPARISON, not after a failure, and the difference is the whole point: a
+	// process killed between the compare and the increment would otherwise hand the next attempt back
+	// for free, and an attacker who can crash the server has unlimited guesses. Spending the attempt
+	// first makes a crash cost an attempt, which is the safe direction to be wrong in.
+	//
+	// THE GUARD IS WHAT MAKES THE LIMIT REAL rather than advisory. `attempts < max_attempts` in the
+	// WHERE clause means the sixth concurrent attempt updates no row whatever two callers do at once,
+	// and `consumed_at IS NULL` means a redeemed token cannot have its counter moved afterwards. The
+	// caller reads the row back to learn whether it won.
+	RecordBootstrapTokenAttempt(ctx context.Context, arg RecordBootstrapTokenAttemptParams) error
 	// ResolveAPIToken is the bearer half: one lookup on the PUBLIC prefix, joined to the service account
 	// for its state and its human owner.
 	//

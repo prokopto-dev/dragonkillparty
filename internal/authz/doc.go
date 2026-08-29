@@ -36,14 +36,26 @@
 // the permission row says so. internal/api calls it once, inside the one middleware, before the
 // handler. There is no superadmin branch in it and a test reads the source to prove there is not.
 //
+// THE admin.owner HOLDER AND THE FIRST-RUN BOOTSTRAP ARRIVED IN #264, and they are bootstrap.go: an
+// instance with no owner arms a one-time token (32 bytes, sixty minutes, five attempts, only its
+// SHA-256 stored), `dkp admin create` and Redeem both write the account and its global, unconditional
+// `owner` assignment in ONE transaction, and eight database triggers keep the last holder from being
+// demoted, disabled or deleted. The account rows are internal/auth's — this package composes
+// auth.InsertLocalAccount rather than reimplementing them — because what first run PRODUCES is a
+// role_assignment, and that is this package's row. ADR-0029.
+//
 // Still NOT here, and each has a reason rather than an omission:
 //
-//   - The admin.owner HOLDER, and the first-run bootstrap that creates it. The owner ROLE is seeded
-//     here; who holds it cannot be, because a role_assignment names an app_user or a service_account
-//     and both are Phase 2 deliverable 1. Issue #264.
-//   - The GRANT side of role_assignment beyond InsertRoleAssignment. Editing an assignment,
-//     suspending one, revoking one: those are the role editor's, and they are session-and-step-up
-//     operations that need endpoints (#265, #267).
+//   - The /setup SURFACE that redeems the token in a browser: the server-rendered form, the
+//     `503 setup_required` gate over every other route while unbootstrapped, and the `410 Gone`
+//     afterwards. That is the web slice, issue #307; Redeem is the function it calls, landing one
+//     wave ahead of it in ADR-0028 commitment 3's shape.
+//   - The AUDIT ROW first run owes (03-security.md §9.2 item 6). The audit hash chain is written
+//     inside internal/ledger.Service.Commit and there is no writer for a non-ledger action yet;
+//     issue #308.
+//   - The GRANT side of role_assignment beyond InsertRoleAssignment and GetRoleAssignment. Editing
+//     an assignment, suspending one, revoking one: those are the role editor's, and they are
+//     session-and-step-up operations that need endpoints (#265, #267).
 //   - The GENERATED OUTPUTS canonical §6 lists — the OpenAPI x-dkp-permission metadata, the PAT scope
 //     enum, the authorization matrix and docs/reference/permissions.md.
 //

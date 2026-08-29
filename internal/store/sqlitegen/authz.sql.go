@@ -9,6 +9,64 @@ import (
 	"context"
 )
 
+const countOwnerHolders = `-- name: CountOwnerHolders :one
+
+SELECT CAST(COUNT(DISTINCT ra.subject_id) AS INTEGER) AS holders
+FROM role_assignment ra
+JOIN role r ON r.id = ra.role_id
+JOIN role_permission rp
+  ON rp.role_id = ra.role_id AND rp.permission_key = ?1
+JOIN app_user u ON u.id = ra.subject_id
+WHERE ra.subject_kind = ?2
+  AND ra.expires_at IS NULL
+  AND ra.suspended_until_at IS NULL
+  AND r.deleted_at IS NULL
+  AND (r.applies_to = 'both' OR r.applies_to = ra.subject_kind)
+  AND u.state = ?3
+  AND u.deleted_at IS NULL
+`
+
+type CountOwnerHoldersParams struct {
+	PermissionKey string
+	SubjectKind   string
+	ActiveState   string
+}
+
+// CountOwnerHolders answers the one question first-run turns on: does this instance have an owner?
+//
+// docs/design/01-domain-model.md section 4 requires at least one non-suspended account to hold
+// admin.owner, and docs/design/03-security.md section 4.3 makes the last one undemotable. Both need
+// the same count, and so does the boot path that decides whether to arm a bootstrap token, so it is
+// one statement rather than three readings of the same sentence.
+//
+// IT IS THE TRIGGERS' PREDICATE, IN SQL THE PRODUCT CAN READ.
+// 000011_bootstrap_token_and_last_owner_guard.sql enforces the invariant with eight triggers that
+// carry this same shape inline, because a trigger body cannot be parameterised; this is the version
+// Go asks. The two are held together from both ends: TestOwner_SuspendedHolder_IsNotAHolder in
+// internal/authz suspends one of two owners and requires this count AND the triggers to agree that
+// the other is now the last, and TestOwnerTriggers_EveryWritePath_RefusesTheLastHolder in
+// test/migrations asks the same question of a raw handle after every refusal.
+//
+// WHY IT IGNORES expires_at AND suspended_until_at ROWS: an assignment counts here only when both
+// are NULL. That is the triggers' definition and it is deliberate - a trigger cannot read a clock
+// without making a schema-level guarantee depend on wall time, so "holds admin.owner" is structural,
+// and a time-boxed grant is never the thing that keeps an instance open. It is conservative in the
+// safe direction: this count can be lower than the number of accounts that could authorise right
+// now, never higher.
+//
+// DISTINCT over the subject: two assignments to one account through two owner-granting roles are one
+// holder, and "how many people can unlock this instance" is the question being asked.
+//
+// The permission key, the subject kind and the active state are PARAMETERS rather than literals, so
+// internal/authz and internal/auth/appuser/kinds stay the one place each is spelled. 'both' is a
+// literal for the reason EffectivePermission's is, and it drifts the same safe way.
+func (q *Queries) CountOwnerHolders(ctx context.Context, arg CountOwnerHoldersParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOwnerHolders, arg.PermissionKey, arg.SubjectKind, arg.ActiveState)
+	var holders int64
+	err := row.Scan(&holders)
+	return holders, err
+}
+
 const effectivePermission = `-- name: EffectivePermission :one
 
 SELECT
@@ -150,6 +208,59 @@ func (q *Queries) GetPermission(ctx context.Context, key string) (Permission, er
 	return i, err
 }
 
+const getRoleAssignment = `-- name: GetRoleAssignment :one
+
+
+SELECT
+    id, subject_kind, subject_id, role_id, scope_type, scope_id,
+    suspended_until_at, granted_by, granted_via, expires_at, created_at, updated_at
+FROM role_assignment
+WHERE id = ?
+`
+
+// Role assignments (Phase 2 Wave 0e, issue #276) - who holds which role, and how far it reaches.
+//
+// InsertRoleAssignment is the statement the first-run bootstrap (issue #264) and the role editor
+// both call, written here now because authz.Check has nothing to read without it: a permission
+// catalogue and a role seed with no assignments authorise nobody, so the check would be a function
+// whose only observed answer is "no". It is the ADR-0028 commitment-3 shape - the statement its
+// endpoint will call verbatim, landing one wave ahead of the endpoint - and not test scaffolding.
+//
+// There is no UpdateRoleAssignment and no DeleteRoleAssignment yet. Revocation is
+// suspended_until_at or expires_at, both of which the read below already honours, and the role
+// editor decides between a soft revoke and a hard delete when it ships.
+// GetRoleAssignment reads one assignment back by id.
+//
+// THE READ-AFTER-WRITE THE ROLE EDITOR AND THE AUDIT SURFACE BOTH NEED, and it lands here for the
+// reason InsertRoleAssignment did one wave earlier: it is the statement those will call verbatim,
+// and a writer whose result nothing can read is a writer nobody can hold to a shape. Its caller
+// today is the test that holds issue #264's acceptance criterion - that first run produces a
+// GLOBAL, UNCONDITIONAL grant carrying granted_via = bootstrap - which is a claim about the row and
+// cannot honestly be checked against the Go that wrote it.
+//
+// BY ID RATHER THAN BY SUBJECT. "Every role this person holds" is a list with a scope filter and a
+// deleted-role join, which is the role editor's screen and arrives with it; this is the single-row
+// read, and it is the one shape that cannot become a different question later.
+func (q *Queries) GetRoleAssignment(ctx context.Context, id string) (RoleAssignment, error) {
+	row := q.db.QueryRowContext(ctx, getRoleAssignment, id)
+	var i RoleAssignment
+	err := row.Scan(
+		&i.ID,
+		&i.SubjectKind,
+		&i.SubjectID,
+		&i.RoleID,
+		&i.ScopeType,
+		&i.ScopeID,
+		&i.SuspendedUntilAt,
+		&i.GrantedBy,
+		&i.GrantedVia,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertRole = `-- name: InsertRole :exec
 
 INSERT INTO role (
@@ -192,7 +303,6 @@ func (q *Queries) InsertRole(ctx context.Context, arg InsertRoleParams) error {
 }
 
 const insertRoleAssignment = `-- name: InsertRoleAssignment :exec
-
 INSERT INTO role_assignment (
     id, subject_kind, subject_id, role_id, scope_type, scope_id,
     suspended_until_at, granted_by, granted_via, expires_at, created_at, updated_at
@@ -214,17 +324,6 @@ type InsertRoleAssignmentParams struct {
 	UpdatedAt        int64
 }
 
-// Role assignments (Phase 2 Wave 0e, issue #276) - who holds which role, and how far it reaches.
-//
-// InsertRoleAssignment is the statement the first-run bootstrap (issue #264) and the role editor
-// both call, written here now because authz.Check has nothing to read without it: a permission
-// catalogue and a role seed with no assignments authorise nobody, so the check would be a function
-// whose only observed answer is "no". It is the ADR-0028 commitment-3 shape - the statement its
-// endpoint will call verbatim, landing one wave ahead of the endpoint - and not test scaffolding.
-//
-// There is no UpdateRoleAssignment and no DeleteRoleAssignment yet. Revocation is
-// suspended_until_at or expires_at, both of which the read below already honours, and the role
-// editor decides between a soft revoke and a hard delete when it ships.
 func (q *Queries) InsertRoleAssignment(ctx context.Context, arg InsertRoleAssignmentParams) error {
 	_, err := q.db.ExecContext(ctx, insertRoleAssignment,
 		arg.ID,

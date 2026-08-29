@@ -81,6 +81,15 @@ type BalanceSnapshot struct {
 	UpdatedAt   int64
 }
 
+type BootstrapToken struct {
+	ID         string
+	TokenHash  []byte
+	ExpiresAt  int64
+	Attempts   int64
+	ConsumedAt *int64
+	CreatedAt  int64
+}
+
 type DecayRun struct {
 	ID                 string
 	PoolID             string

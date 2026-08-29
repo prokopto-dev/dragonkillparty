@@ -3131,3 +3131,108 @@ table "feed_token" {
 
   strict = true
 }
+
+// bootstrap_token — the one-time first-run credential (docs/design/03-security.md §9.2).
+//
+// THERE IS NO DEFAULT PASSWORD, EVER, and this table is the whole of the alternative. On a boot that
+// finds no account holding admin.owner the binary generates 32 bytes from crypto/rand, prints them
+// once, writes them to <data-dir>/first-run-token.txt at 0600, and stores ONLY their SHA-256 here.
+// The operator pastes the token back; whoever holds the database holds a hash of 256 bits of entropy
+// and nothing else.
+//
+// A TABLE RATHER THAN THREE dkp_meta ROWS, and the reason is the attempt counter. §9.2 allows five
+// attempts in total before the token self-destructs, which means the count has to be incremented by
+// a guarded UPDATE that cannot lose a race — `attempts = attempts + 1 WHERE attempts < 5` is one
+// statement here and a read-parse-write over untyped TEXT there. The expiry is INTEGER micros for
+// the same reason: dkp_meta.value is TEXT by design (a REAL there would be the first float in a
+// database whose central invariant is that there are none), and a second spelling of a timestamp is
+// a second thing to get wrong. Every other credential in this schema — session, api_token,
+// feed_token — keeps its hash in its own table too.
+//
+// THE ROW IS STAMPED, NOT DELETED, when a token is redeemed or superseded. "Delete the token" in
+// §9.2 means the credential stops working, which consumed_at does; what the row goes on carrying is
+// the record that first-run happened, when, and after how many attempts — which is the first thing
+// asked when an instance turns out to have an owner nobody remembers creating. The stored value is a
+// SHA-256 of 256 bits of entropy, so retaining it discloses nothing.
+//
+// WHETHER AN INSTANCE IS BOOTSTRAPPED IS NOT A COLUMN HERE. It is derived: does any active,
+// non-deleted account hold admin.owner through a role_assignment (CountOwnerHolders in
+// db/queries/authz.sql). A boolean in this table would be a second source of truth for a fact the
+// authorization tables already answer, and the two would disagree the first time somebody restored a
+// backup.
+table "bootstrap_token" {
+  schema = schema.main
+
+  column "id" {
+    null = false
+    type = text
+  }
+
+  // SHA-256 of the 32-byte secret, unkeyed. Unkeyed where api_token's hash is peppered, and the
+  // difference is the threat: a PAT pepper defends a database-only leak of long-lived credentials,
+  // while this token lives for sixty minutes on an instance that has no accounts yet — and deriving
+  // it from the instance root key would tie first-run to a secrets file that may be being created in
+  // the same boot. session.token_hash is unkeyed for the same reason.
+  column "token_hash" {
+    null = false
+    type = blob
+  }
+
+  // When this token stops being redeemable, in micros. Sixty minutes from arming (§9.2), renewable
+  // by restarting the binary or by `dkp admin bootstrap --new-token`.
+  column "expires_at" {
+    null = false
+    type = integer
+  }
+
+  // How many times a secret has been presented against this row, successful or not. The redeem path
+  // increments BEFORE it compares, so a crash mid-verify costs an attempt rather than granting a
+  // free one.
+  column "attempts" {
+    null    = false
+    type    = integer
+    default = 0
+  }
+
+  // When this token was redeemed. NULL means it never was — expired, superseded, or still live.
+  column "consumed_at" {
+    null = true
+    type = integer
+  }
+
+  column "created_at" {
+    null = false
+    type = integer
+  }
+
+  primary_key {
+    columns = [column.id]
+  }
+
+  // A count is a count. Nothing decrements it and a negative one would mean the row was written by
+  // something other than this product.
+  check "bootstrap_token_attempts_non_negative" {
+    expr = "attempts >= 0"
+  }
+
+  // UNIQUE over the hash, as every other credential table is: two rows carrying one secret would
+  // make "which token was this" unanswerable, and the redeem path reads at most one row.
+  index "ux_bootstrap_token_hash" {
+    unique  = true
+    columns = [column.token_hash]
+  }
+
+  // The live-token read is "the most recently armed row", and it is ordered by created_at. The table
+  // holds one row per arming on an instance that is armed at most a handful of times in its life, so
+  // this index is about the ORDER being answered from an index rather than about the row count.
+  index "ix_bootstrap_token_created" {
+    columns = [column.created_at]
+  }
+
+  // NO FOREIGN KEY TO app_user, and the absence is deliberate rather than an omission. The row is
+  // written before any account exists, and the account it goes on to create is named by the audit
+  // row rather than here: a column pointing at the owner would have to be nullable, would be
+  // populated exactly once, and would give this table a covering-index obligation (#274) for a
+  // lookup nothing performs.
+  strict = true
+}

@@ -318,3 +318,12 @@ sql:
             go_type:
               type: "int64"
               pointer: true
+          # bootstrap_token (Phase 2, #264). One nullable column and the same affinity loss as every
+          # block above: consumed_at is NULL for a token that was never redeemed — expired,
+          # superseded by a re-arm, or still live — and a Micros timestamp for the one that created
+          # this instance's owner. Without the override `make gen` writes `interface{}` into
+          # BootstrapToken and the redeem path would branch on `any`.
+          - column: "bootstrap_token.consumed_at"
+            go_type:
+              type: "int64"
+              pointer: true

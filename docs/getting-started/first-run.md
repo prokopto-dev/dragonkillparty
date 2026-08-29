@@ -1,8 +1,11 @@
 # First run
 
-**Status:** the wizard is specified, not built. It lands in Phase 2 (accounts, bootstrap) and Phase 3
-(the remaining steps). This page is reference material for what each step will do and what it commits
-you to — there are no screenshots because there is nothing to screenshot yet.
+**Status:** the bootstrap is built; the wizard is not. As of issue #264 an instance with no owner
+arms a one-time token on boot, prints it, and writes it to `<data-dir>/first-run-token.txt`, and
+`dkp admin create` creates the first `admin.owner` holder from the host. The server-rendered `/setup`
+form that redeems the token in a browser, and the `503 setup_required` gate over every other route
+while unbootstrapped, land with the web slice (issue #307) — so today the CLI is the way through.
+The six steps below are reference material for what each will do and what it commits you to.
 
 You have an instance running from [Docker](install-docker.md) or a [binary](install-binary.md). This
 page takes you from a blank instance to a guild that can hold a raid.
@@ -19,14 +22,46 @@ journalctl -u dkp        # systemd
 ```
 
 Until setup completes, **every route except `/setup`, `/healthz`, `/readyz` and the static assets
-returns `503 setup_required`**. There is no half-open state in which an unconfigured instance exposes
-an API.
+will return `503 setup_required`**. There is no half-open state in which an unconfigured instance
+exposes an API. *(Not built yet — issue #307. Today an unbootstrapped instance answers `401` to
+anything needing a credential, because there is no account to hold one.)*
 
 Open `/setup`, and paste the token into the form. It is never accepted as a query parameter — query
-strings end up in proxy logs, browser history and `Referer` headers.
+strings end up in proxy logs, browser history and `Referer` headers. *(Also #307.)*
 
-The token is single-use. If you lose it before finishing setup, restart the instance and read the new
-one.
+The token is single-use, allows **five attempts in total**, and expires **sixty minutes** after the
+instance booted. If you lose it, or spend the attempts, restarting the instance arms a new one — or
+run it from the host without a restart:
+
+```bash
+dkp admin bootstrap --new-token
+```
+
+It refuses an instance that already has an owner. A token armed on a live instance would be a
+credential for creating a second owner, printed into a log file; adding one is `dkp admin create`,
+which needs the same host access and prints nothing.
+
+## Create the owner from the host
+
+The CLI path needs no token at all, and that is not a hole: it needs a shell on the box and the
+database file, which is strictly more than the token proves. It is what to use on a headless install,
+on a first deploy over ssh, or when the only owner has stopped playing.
+
+```bash
+printf '%s' "$PASSWORD" | dkp admin create --username courtney --password-stdin
+```
+
+The password is read from standard input and is **never** accepted as a flag — a flag value is in the
+process table for every user on the box and in the shell history. It must be 12 to 128 bytes and must
+not contain your username, your email local part or the guild name.
+
+`--role` picks the built-in role (`owner` by default; also `admin`, `officer`, `raid_leader`,
+`raider`, `member`, `guest`). The first account to hold `owner` ends first-run setup and retires any
+armed token.
+
+**The last account holding `admin.owner` cannot afterwards be demoted, disabled or deleted.** The
+database refuses it outright, so an instance cannot be locked out of itself by an officer tidying the
+roster. Add a second owner before removing the first.
 
 ## The six steps
 

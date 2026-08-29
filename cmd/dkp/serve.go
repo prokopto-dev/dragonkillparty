@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -332,7 +333,7 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 				readyDetail: readyDetailPolicy(ctx),
 			}
 
-			return runServe(ctx, cfg, ready)
+			return runServe(ctx, cfg, cmd.OutOrStdout(), ready)
 		},
 	}
 
@@ -345,7 +346,7 @@ func newServeCmd(ready func(net.Addr)) *cobra.Command {
 //
 // It declares no routes. Law 1: routes are declared only in internal/api, so the whole handler
 // tree — router, Huma mount and middleware — arrives as api.New(api.Config{...}).
-func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error {
+func runServe(ctx context.Context, cfg serveConfig, out io.Writer, ready func(net.Addr)) error {
 	// Migrate BEFORE the listener opens. Not for tidiness: a listener bound first would accept
 	// requests during the migration, and the SPA would render half-migrated data as though it were
 	// the guild's real standings.
@@ -426,6 +427,12 @@ func runServe(ctx context.Context, cfg serveConfig, ready func(net.Addr)) error 
 
 		authService = auth.NewService(st, clock.System{}, keyring)
 	}
+
+	// First-run: an instance with no admin.owner holder arms a one-time bootstrap token before the
+	// listener opens, prints it once, and writes it to <data-dir>/first-run-token.txt at 0600
+	// (docs/design/03-security.md §9.2). There is no default password on any DKP instance, ever, and
+	// this is the whole of the alternative.
+	armBootstrapOnBoot(ctx, st, cfg, out)
 
 	var lc net.ListenConfig
 
@@ -583,4 +590,63 @@ func closedOrErr(err error, addr net.Addr) error {
 	}
 
 	return fmt.Errorf("serve on %s: %w", addr, err)
+}
+
+// armBootstrapOnBoot arms a first-run token when this instance has nobody who can administer it.
+//
+// IT IS THE ONLY THING ON THE BOOT PATH THAT PRINTS A SECRET, and it prints it to the command's
+// stdout rather than through slog. §9.2 requires the token to be visible in `docker logs dkp`, and
+// both streams satisfy that — but slog goes wherever an operator has pointed it, which may be a file
+// on a shared box or an aggregator a guild's whole Discord can read, and a one-time credential does
+// not belong in a retained log. internal/authz records that a token was armed, its id and its expiry,
+// and never what it says.
+//
+// EVERY FAILURE HERE IS NON-FATAL, and the reasons differ:
+//
+//   - NO STORE. The database could not be opened, which already degrades the store-backed operations
+//     to 500 while /healthz and /readyz keep telling an operator what is wrong (see runServe). An
+//     instance that cannot read its database cannot know whether it has an owner, and refusing to
+//     boot would take away the endpoints that explain why.
+//   - ALREADY BOOTSTRAPPED. The ordinary case on every boot after the first, and not a condition at
+//     all: it is what "this instance is set up" looks like from here.
+//   - ANYTHING ELSE — a table that does not exist because DKP_AUTO_MIGRATE is false and the migration
+//     has not run, a locked file — is logged at ERROR and the server starts. The consequence is an
+//     instance with no owner and no armed token, which is recoverable from the host with
+//     `dkp admin bootstrap --new-token`; crash-looping instead would leave the operator with no
+//     /readyz to read and no container to exec into.
+func armBootstrapOnBoot(ctx context.Context, st *store.Store, cfg serveConfig, out io.Writer) {
+	if st == nil {
+		return
+	}
+
+	boot := authz.NewBootstrapper(st, clock.System{}, argon2Profile(ctx), cfg.dataDir)
+
+	armed, err := boot.Arm(ctx)
+
+	switch {
+	case errors.Is(err, authz.ErrAlreadyBootstrapped):
+		return
+	case err != nil:
+		slog.ErrorContext(ctx, "could not arm a first-run bootstrap token; this instance has no "+
+			"owner and no way to create one through the browser",
+			"error", err,
+			"recovery", "run `dkp admin bootstrap --new-token` or `dkp admin create` on the host")
+
+		return
+	}
+
+	if armed.FileErr != nil {
+		slog.WarnContext(ctx, "the first-run token could not be written to the data directory; the "+
+			"copy on stdout is the only one",
+			"error", armed.FileErr, "data_dir", cfg.dataDir)
+	}
+
+	// Deliberately discarded, and this is the `_ =` waiver .claude/rules/go-idioms.md reserves for a
+	// write there is nothing to do about: the token is already armed and already in the log's
+	// "armed a first-run bootstrap token" line, the server is about to start, and there is nowhere to
+	// report a failed write to stdout that is more likely to work than stdout.
+	_, _ = fmt.Fprintf(out,
+		"\n  This instance has no owner yet. Open /setup and paste this token:\n\n    %s\n\n"+
+			"  It expires at %s and allows %d attempts. A copy is at %s\n\n",
+		armed.Secret, armed.ExpiresAt, authz.BootstrapMaxAttempts, armed.Path)
 }

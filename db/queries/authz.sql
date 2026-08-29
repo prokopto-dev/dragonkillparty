@@ -108,6 +108,26 @@ INSERT INTO role_permission (role_id, permission_key) VALUES (?, ?);
 -- suspended_until_at or expires_at, both of which the read below already honours, and the role
 -- editor decides between a soft revoke and a hard delete when it ships.
 
+-- GetRoleAssignment reads one assignment back by id.
+--
+-- THE READ-AFTER-WRITE THE ROLE EDITOR AND THE AUDIT SURFACE BOTH NEED, and it lands here for the
+-- reason InsertRoleAssignment did one wave earlier: it is the statement those will call verbatim,
+-- and a writer whose result nothing can read is a writer nobody can hold to a shape. Its caller
+-- today is the test that holds issue #264's acceptance criterion - that first run produces a
+-- GLOBAL, UNCONDITIONAL grant carrying granted_via = bootstrap - which is a claim about the row and
+-- cannot honestly be checked against the Go that wrote it.
+--
+-- BY ID RATHER THAN BY SUBJECT. "Every role this person holds" is a list with a scope filter and a
+-- deleted-role join, which is the role editor's screen and arrives with it; this is the single-row
+-- read, and it is the one shape that cannot become a different question later.
+
+-- name: GetRoleAssignment :one
+SELECT
+    id, subject_kind, subject_id, role_id, scope_type, scope_id,
+    suspended_until_at, granted_by, granted_via, expires_at, created_at, updated_at
+FROM role_assignment
+WHERE id = ?;
+
 -- name: InsertRoleAssignment :exec
 INSERT INTO role_assignment (
     id, subject_kind, subject_id, role_id, scope_type, scope_id,
@@ -201,3 +221,47 @@ SELECT
     ) AS INTEGER) AS granted
 FROM permission p
 WHERE p.key = sqlc.arg(permission_key) AND p.orphaned_at IS NULL;
+
+-- CountOwnerHolders answers the one question first-run turns on: does this instance have an owner?
+--
+-- docs/design/01-domain-model.md section 4 requires at least one non-suspended account to hold
+-- admin.owner, and docs/design/03-security.md section 4.3 makes the last one undemotable. Both need
+-- the same count, and so does the boot path that decides whether to arm a bootstrap token, so it is
+-- one statement rather than three readings of the same sentence.
+--
+-- IT IS THE TRIGGERS' PREDICATE, IN SQL THE PRODUCT CAN READ.
+-- 000011_bootstrap_token_and_last_owner_guard.sql enforces the invariant with eight triggers that
+-- carry this same shape inline, because a trigger body cannot be parameterised; this is the version
+-- Go asks. The two are held together from both ends: TestOwner_SuspendedHolder_IsNotAHolder in
+-- internal/authz suspends one of two owners and requires this count AND the triggers to agree that
+-- the other is now the last, and TestOwnerTriggers_EveryWritePath_RefusesTheLastHolder in
+-- test/migrations asks the same question of a raw handle after every refusal.
+--
+-- WHY IT IGNORES expires_at AND suspended_until_at ROWS: an assignment counts here only when both
+-- are NULL. That is the triggers' definition and it is deliberate - a trigger cannot read a clock
+-- without making a schema-level guarantee depend on wall time, so "holds admin.owner" is structural,
+-- and a time-boxed grant is never the thing that keeps an instance open. It is conservative in the
+-- safe direction: this count can be lower than the number of accounts that could authorise right
+-- now, never higher.
+--
+-- DISTINCT over the subject: two assignments to one account through two owner-granting roles are one
+-- holder, and "how many people can unlock this instance" is the question being asked.
+--
+-- The permission key, the subject kind and the active state are PARAMETERS rather than literals, so
+-- internal/authz and internal/auth/appuser/kinds stay the one place each is spelled. 'both' is a
+-- literal for the reason EffectivePermission's is, and it drifts the same safe way.
+
+-- name: CountOwnerHolders :one
+SELECT CAST(COUNT(DISTINCT ra.subject_id) AS INTEGER) AS holders
+FROM role_assignment ra
+JOIN role r ON r.id = ra.role_id
+JOIN role_permission rp
+  ON rp.role_id = ra.role_id AND rp.permission_key = sqlc.arg(permission_key)
+JOIN app_user u ON u.id = ra.subject_id
+WHERE ra.subject_kind = sqlc.arg(subject_kind)
+  AND ra.expires_at IS NULL
+  AND ra.suspended_until_at IS NULL
+  AND r.deleted_at IS NULL
+  AND (r.applies_to = 'both' OR r.applies_to = ra.subject_kind)
+  AND u.state = sqlc.arg(active_state)
+  AND u.deleted_at IS NULL;

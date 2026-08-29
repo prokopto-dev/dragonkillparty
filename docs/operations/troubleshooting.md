@@ -26,6 +26,9 @@ The same output renders at `/ops` for anyone with the `ops.read` permission.
 | `a previous upgrade was interrupted while restoring its snapshot` | The process was killed mid-restore, and finishing that restore failed on this boot too | Restore by hand from `<data-dir>/backups/` and report it. |
 | Refuses to start over `secrets.json` | The file is missing, malformed, or not mode `0600` | Fix the permissions, or restore it from a backup. It is never regenerated silently — that would invalidate every token and session and look exactly like a mass logout bug. |
 | `503 setup_required` on every route | Setup was never completed | Read the bootstrap token from the logs and open `/setup`. See [First run](../getting-started/first-run.md). |
+| The first-run token expired or its five attempts are spent | The token lives 60 minutes and allows five presentations in total | `dkp admin bootstrap --new-token` on the host, or restart the instance. Both refuse an instance that already has an owner. |
+| No owner at all — nobody can mint a token, edit a role or take a backup | First run never completed, or the only owner's account was lost | `printf '%s' "$PASSWORD" \| dkp admin create --username <name> --password-stdin`. It needs host access, which is the same bar as reading the database file. |
+| `the last admin.owner holder cannot be demoted, disabled or deleted` | You are removing the only account that can administer the instance | Create or promote a second owner first (`dkp admin create --role owner`), then retry. The database enforces this, not the API. |
 | Port already in use | Something else has `:8080` | Change `DKP_LISTEN`, or stop the other process. |
 | Permission denied on the data directory | The container user is `65532:65532` | `chown` the volume, or use a named Docker volume rather than a bind mount. |
 

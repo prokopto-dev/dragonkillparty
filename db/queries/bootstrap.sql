@@ -1,0 +1,81 @@
+-- The one-time first-run credential (docs/design/03-security.md section 9.2).
+--
+-- Shapes follow db/RECIPES.md. Every statement that reaches SQLite in this project is generated from
+-- a file like this one: db.Query and db.Exec outside internal/store are grep-banned (gate SQL002),
+-- so the only way a new query enters the codebase is by being written here first and reviewed as
+-- SQL.
+--
+-- THERE IS NO LOOKUP BY HASH, and that is the difference between this file and the two resolves in
+-- auth.sql. A session or a PAT is one of thousands and has to be found by an indexed lookup on its
+-- own hash; there is at most one live bootstrap token on an instance, so the read is "the most
+-- recently armed row" and the comparison happens in Go, in constant time, against a row that was
+-- already going to be read. Section 9.2 asks for a constant-time comparison in as many words, and a
+-- lookup keyed on the presented secret's hash cannot be one - the index decides, and it decides in a
+-- time that depends on the value.
+--
+-- THE ROW IS STAMPED, NEVER DELETED, so there is no DELETE here. "Delete the token" in section 9.2
+-- means the credential stops working, which ConsumeBootstrapToken does; the row goes on carrying the
+-- record that first-run happened and after how many attempts. What it stores is a SHA-256 of 256
+-- bits of entropy, which discloses nothing.
+--
+-- Keep this comment ASCII-only. sqlc v1.31.1 computes each query's text span in bytes but truncates
+-- by rune count, so a multibyte character (an em dash, a section sign) in a preceding comment lops
+-- that many trailing characters off the generated query string. The failure is silent at generate
+-- time and shows up as a syntax error only when the query runs.
+
+-- InsertBootstrapToken arms an instance. The caller has already generated 32 bytes from
+-- crypto/rand, hashed them, printed the plaintext once and written it to first-run-token.txt; the
+-- plaintext never reaches this statement and is not recoverable from what it stores.
+
+-- name: InsertBootstrapToken :exec
+INSERT INTO bootstrap_token (
+    id, token_hash, expires_at, attempts, consumed_at, created_at
+) VALUES (?, ?, ?, 0, NULL, ?);
+
+-- GetLatestBootstrapToken reads the most recently armed row, whatever state it is in.
+--
+-- UNFILTERED, for the reason auth.sql's two resolves are: the caller has to tell "no token was ever
+-- armed" from "it expired" from "it was already redeemed" from "five attempts have been spent",
+-- because the operator reading the log needs the difference and the caller on the wire gets the same
+-- refusal either way.
+--
+-- ORDER BY created_at DESC, id DESC: re-arming writes a new row rather than editing the old one, so
+-- the newest row is the live one and every earlier row is superseded by construction. The id tiebreak
+-- is a ULID, so it is monotonic within a microsecond and the order is total.
+
+-- name: GetLatestBootstrapToken :one
+SELECT id, token_hash, expires_at, attempts, consumed_at, created_at
+FROM bootstrap_token
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- RecordBootstrapTokenAttempt spends one of the five attempts section 9.2 allows.
+--
+-- IT RUNS BEFORE THE COMPARISON, not after a failure, and the difference is the whole point: a
+-- process killed between the compare and the increment would otherwise hand the next attempt back
+-- for free, and an attacker who can crash the server has unlimited guesses. Spending the attempt
+-- first makes a crash cost an attempt, which is the safe direction to be wrong in.
+--
+-- THE GUARD IS WHAT MAKES THE LIMIT REAL rather than advisory. `attempts < max_attempts` in the
+-- WHERE clause means the sixth concurrent attempt updates no row whatever two callers do at once,
+-- and `consumed_at IS NULL` means a redeemed token cannot have its counter moved afterwards. The
+-- caller reads the row back to learn whether it won.
+
+-- name: RecordBootstrapTokenAttempt :exec
+UPDATE bootstrap_token
+SET attempts = attempts + 1
+WHERE id = sqlc.arg(id)
+  AND consumed_at IS NULL
+  AND attempts < CAST(sqlc.arg(max_attempts) AS INTEGER);
+
+-- ConsumeBootstrapToken retires a token: redeemed if consumed_at is the redeeming instant.
+--
+-- The `consumed_at IS NULL` guard keeps the FIRST instant and makes the statement idempotent, as
+-- RevokeSession's and RevokeAPIToken's do. It runs in the SAME transaction as the owner it creates,
+-- so a token cannot be spent without an owner existing or an owner exist without the token being
+-- spent.
+
+-- name: ConsumeBootstrapToken :exec
+UPDATE bootstrap_token
+SET consumed_at = CAST(sqlc.arg(consumed_at) AS INTEGER)
+WHERE id = sqlc.arg(id) AND consumed_at IS NULL;

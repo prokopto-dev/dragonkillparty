@@ -5,12 +5,21 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/prokopto-dev/dragonkillparty/internal/authz"
 	rolekinds "github.com/prokopto-dev/dragonkillparty/internal/authz/role/kinds"
+	assignmentkinds "github.com/prokopto-dev/dragonkillparty/internal/authz/roleassignment/kinds"
+	"github.com/prokopto-dev/dragonkillparty/internal/clock"
+	"github.com/prokopto-dev/dragonkillparty/internal/core"
+	"github.com/prokopto-dev/dragonkillparty/internal/store"
+	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 )
+
+// rolesEpoch is the instant the seeded-assignment test's clock is frozen at.
+var rolesEpoch = time.Date(2026, 8, 21, 15, 0, 0, 0, time.UTC)
 
 // The built-in role seed's tests. docs/design/01-domain-model.md §5.1 is the source, and it is a prose
 // table rather than a fenced list — "the six `*.read` keys", "`officer` + `roster.write` …" — so it
@@ -212,6 +221,57 @@ func TestBuiltinRoles_OnlyOwnerHoldsTheOwnerCapability(t *testing.T) {
 
 	require.Equal(t, []string{authz.RoleKeyOwner}, holders,
 		"exactly one built-in role grants admin.owner")
+
+	require.Equal(t, "admin.owner", authz.PermissionAdminOwner,
+		"the key code looks the owner row up by must be the key the seed grants; a third spelling is "+
+			"how the last-holder rule ends up protecting a permission nobody has")
+}
+
+// TestBuiltinRoles_OnlyOwnerAssignments_HoldTheOwnerCapability is the same property one table over,
+// and it is the half issue #264 asked for: the role list says which ROLES grant admin.owner, and this
+// says which ASSIGNMENTS confer it once the boot seed and a real database are involved.
+//
+// WHY BOTH. The list above is a statement about Go and would still pass on an instance whose
+// role_permission table said something else — a partial upgrade, a role editor that has revoked a
+// grant, an officer with a SQLite client. This drives the seed into a real database, grants each of
+// the nine built-in roles to its own subject, and asks the effective-permission query which of them
+// reaches admin.owner. It is the query the middleware runs, so the answer is the one that decides.
+func TestBuiltinRoles_OnlyOwnerAssignments_HoldTheOwnerCapability(t *testing.T) {
+	t.Parallel()
+
+	st := store.NewDB(t)
+	clk := clock.NewFake(rolesEpoch)
+	authz.Boot(t, st, clk)
+
+	var conferring []string
+
+	for _, role := range authz.BuiltinRoles() {
+		kind := assignmentkinds.SubjectKindUser
+		if role.AppliesTo == rolekinds.AppliesToServiceAccount {
+			kind = assignmentkinds.SubjectKindServiceAccount
+		}
+
+		subject := core.NewGenerator(clk).MustNew()
+		authz.GrantRole(t, st, clk, kind, subject, role.ID)
+
+		row, err := st.Q().EffectivePermission(t.Context(), sqlitegen.EffectivePermissionParams{
+			SubjectKind:   kind,
+			SubjectID:     subject.String(),
+			PermissionKey: authz.PermissionAdminOwner,
+			ScopeType:     assignmentkinds.ScopeGlobal,
+			Now:           int64(core.FromTime(clk.Now())),
+		})
+		require.NoErrorf(t, err, "resolve admin.owner for a %s assignment", role.Key)
+
+		if row.Granted != 0 {
+			conferring = append(conferring, role.Key)
+		}
+	}
+
+	require.Equal(t, []string{authz.RoleKeyOwner}, conferring,
+		"exactly one built-in role's ASSIGNMENT confers admin.owner through the query the middleware "+
+			"runs; a second one would make the last-holder rule of 03-security.md §4.3 a rule about a "+
+			"set nobody can enumerate")
 }
 
 // TestBuiltinRoles_ServiceAccounts_HoldNoCapabilityFloorKey checks the seed against canonical §6's

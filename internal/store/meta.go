@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 
+	"modernc.org/sqlite"
+
 	"github.com/prokopto-dev/dragonkillparty/internal/store/sqlitegen"
 )
 
@@ -121,6 +123,27 @@ type Queries interface {
 	// exists to add would have exactly one observable answer.
 	EffectivePermission(ctx context.Context, arg sqlitegen.EffectivePermissionParams) (sqlitegen.EffectivePermissionRow, error)
 	InsertRoleAssignment(ctx context.Context, arg sqlitegen.InsertRoleAssignmentParams) error
+	GetRoleAssignment(ctx context.Context, id string) (sqlitegen.RoleAssignment, error)
+
+	// The admin.owner holder and the first-run bootstrap (Phase 2, issue #264).
+	//
+	// CountOwnerHolders is the question an instance's whole first-run turns on: is there an account
+	// that can still unlock this instance? docs/design/01-domain-model.md §4 requires at least one
+	// non-suspended user to hold admin.owner and §4.3 of 03-security.md makes the last one
+	// undemotable, so the boot path, the bootstrap and the CLI all ask it, and they ask it in one
+	// place. It is the Go-readable twin of the predicate the eight triggers in
+	// 000011_bootstrap_token_and_last_owner_guard.sql carry inline, because a trigger body cannot be
+	// parameterised.
+	//
+	// The four bootstrap_token statements are the one-time first-run credential of §9.2 — arm, read,
+	// spend an attempt, retire. There is no Delete among them and there will not be one: the row is
+	// stamped, and what it goes on carrying is the record that first-run happened and after how many
+	// attempts.
+	CountOwnerHolders(ctx context.Context, arg sqlitegen.CountOwnerHoldersParams) (int64, error)
+	InsertBootstrapToken(ctx context.Context, arg sqlitegen.InsertBootstrapTokenParams) error
+	GetLatestBootstrapToken(ctx context.Context) (sqlitegen.BootstrapToken, error)
+	RecordBootstrapTokenAttempt(ctx context.Context, arg sqlitegen.RecordBootstrapTokenAttemptParams) error
+	ConsumeBootstrapToken(ctx context.Context, arg sqlitegen.ConsumeBootstrapTokenParams) error
 
 	// Identity and credentials (Phase 2 Wave 0d, issue #273). The two Resolve methods are the auth
 	// hot path — one indexed lookup each, on ux_session_token and ux_api_token_prefix — and they are
@@ -212,6 +235,41 @@ func (s *Store) SetMetaValue(ctx context.Context, key, value string, updatedAt i
 			UpdatedAt: updatedAt,
 		})
 	})
+}
+
+// The two extended result codes a duplicate row arrives as. SQLite reports a unique-index violation
+// and a primary-key violation separately, and both mean the same thing to a caller writing a row:
+// something with this identity is already there.
+const (
+	sqliteConstraintUnique     = 2067
+	sqliteConstraintPrimaryKey = 1555
+)
+
+// IsUniqueViolation reports whether err is SQLite refusing a duplicate row.
+//
+// THE NUMERIC CODE, NOT THE MESSAGE, and the contrast with isMissingTable below is the point rather
+// than an inconsistency. That one has to match a string because SQLITE_ERROR (1) covers every parse
+// and binding failure and would swallow a typo'd column; these two are EXTENDED result codes that
+// mean one thing each, so matching them is exact and survives a wording change in the driver.
+//
+// WHY THE STORE OWNS IT. A caller that wanted to answer "is this username taken" would otherwise
+// either grep the driver's message itself — in a package that is not allowed to know it is talking
+// to SQLite — or run a check-then-insert, which is a race with a second operator running the same
+// command. This is what lets a writer INSERT and translate, which is the only shape that is correct
+// under concurrency.
+//
+// IT DOES NOT SAY WHICH INDEX. SQLite names the column in the message, and the message is the thing
+// this function deliberately does not read; a caller that needs to tell a duplicate username from a
+// duplicate email asks for one at a time or reads the row back.
+func IsUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+
+	code := sqliteErr.Code()
+
+	return code == sqliteConstraintUnique || code == sqliteConstraintPrimaryKey
 }
 
 // isMissingTable reports whether err is SQLite's "no such table".
